@@ -1,4 +1,4 @@
-import { Ban, CircleX, Globe, Wrench } from "lucide-react";
+import { Ban, CircleX, FileText, Globe, Pencil, Search, Sparkles, Terminal, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { CollapsiblePill, LoadingSpinner } from "../../common";
 import type { CollapsibleStatus } from "../../common";
@@ -12,9 +12,51 @@ export { WriteFileItem } from "./items/WriteFileItem";
 export { GrepItem } from "./items/GrepItem";
 export { LsItem } from "./items/LsItem";
 export { GlobItem } from "./items/GlobItem";
-export { ExecuteItem } from "./items/ExecuteItem";
 export { FileRevealItem } from "./items/FileRevealItem";
 export { ProjectRevealItem } from "./items/ProjectRevealItem";
+
+const PUBLIC_CATEGORY_LABELS: Readonly<Record<string, string>> = {
+  skill: "使用 Skill",
+  mcp: "调用 MCP 工具",
+  read: "读取",
+  write: "写入",
+  edit: "编辑",
+  search: "搜索",
+  execute: "执行",
+};
+
+function formatDurationMs(durationMs: number | undefined): string | null {
+  if (
+    typeof durationMs !== "number" ||
+    !Number.isInteger(durationMs) ||
+    durationMs < 0
+  ) {
+    return null;
+  }
+  return durationMs < 1000
+    ? `${durationMs}毫秒`
+    : `${(durationMs / 1000).toFixed(2)}秒`;
+}
+
+function publicCategoryIcon(category: string) {
+  switch (category) {
+    case "read":
+      return FileText;
+    case "write":
+    case "edit":
+      return Pencil;
+    case "search":
+      return Search;
+    case "execute":
+      return Terminal;
+    case "skill":
+      return Sparkles;
+    case "mcp":
+      return Globe;
+    default:
+      return Wrench;
+  }
+}
 
 // Collapsible Tool Call Item (compact design)
 export function ToolCallItem({
@@ -25,6 +67,9 @@ export function ToolCallItem({
   status: toolStatus,
   isPending,
   cancelled,
+  publicCategory,
+  publicOperationId,
+  durationMs,
 }: {
   name: string;
   args: Record<string, unknown>;
@@ -33,12 +78,16 @@ export function ToolCallItem({
   status?: "started" | "completed" | "failed" | "denied";
   isPending?: boolean;
   cancelled?: boolean;
+  publicCategory?: string;
+  publicOperationId?: string;
+  durationMs?: number;
 }) {
   const { t } = useTranslation();
-  const hasResult = result !== undefined;
+  const isPublicTool = Boolean(publicOperationId && publicCategory);
+  const hasResult = !isPublicTool && result !== undefined;
 
-  // Parse MCP server name from tool name (format: "server_name:tool_name")
-  const colonIdx = name.indexOf(":");
+  // Legacy history may still contain the old server:tool naming convention.
+  const colonIdx = isPublicTool ? -1 : name.indexOf(":");
   const isMcpTool = colonIdx > 0;
   const serverName = isMcpTool ? name.substring(0, colonIdx) : null;
   const toolName = isMcpTool ? name.substring(colonIdx + 1) : name;
@@ -47,18 +96,20 @@ export function ToolCallItem({
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(" ");
 
-  const displayArgs = (() => {
-    if (args.partial !== undefined) {
-      try {
-        return JSON.parse(args.partial as string);
-      } catch {
-        return { partial: args.partial };
-      }
-    }
-    return args;
-  })();
+  const displayArgs = isPublicTool
+    ? {}
+    : (() => {
+        if (args.partial !== undefined) {
+          try {
+            return JSON.parse(args.partial as string);
+          } catch {
+            return { partial: args.partial };
+          }
+        }
+        return args;
+      })();
 
-  const hasArgs = Object.keys(displayArgs).length > 0;
+  const hasArgs = !isPublicTool && Object.keys(displayArgs).length > 0;
 
   let status: CollapsibleStatus = "idle";
   const lifecycleStatus =
@@ -74,25 +125,29 @@ export function ToolCallItem({
     status = "error";
   }
   const statusLabel = lifecycleStatus === "started"
-    ? t("chat.message.running", { defaultValue: "Running" })
+    ? t("chat.runStatus.event.toolCallStarted", { defaultValue: "操作已开始" })
     : lifecycleStatus === "completed"
-      ? t("chat.message.complete", { defaultValue: "Completed" })
+      ? t("chat.runStatus.event.toolCallCompleted", { defaultValue: "操作已完成" })
       : lifecycleStatus === "denied"
-        ? t("chat.publicRun.activities.toolPermissionDenied", {
-            defaultValue: "Not authorized",
-          })
+        ? t("chat.runStatus.event.toolPermissionDenied", { defaultValue: "操作未获授权" })
         : lifecycleStatus === "failed"
-          ? t("chat.message.error", { defaultValue: "Failed" })
+          ? t("chat.runStatus.status.failed", { defaultValue: "失败" })
           : null;
-  const ToolIcon = lifecycleStatus === "denied"
-    ? Ban
-    : lifecycleStatus === "failed"
-      ? CircleX
-      : isMcpTool
-        ? Globe
-        : Wrench;
+  const durationLabel = isPublicTool ? formatDurationMs(durationMs) : null;
+  const ToolIcon = isPublicTool
+    ? publicCategoryIcon(publicCategory!)
+    : lifecycleStatus === "denied"
+      ? Ban
+      : lifecycleStatus === "failed"
+        ? CircleX
+        : isMcpTool
+          ? Globe
+          : Wrench;
 
-  const canExpand = hasArgs || hasResult;
+  const publicCategoryLabel = publicCategory
+    ? PUBLIC_CATEGORY_LABELS[publicCategory] || "工具"
+    : null;
+  const canExpand = !isPublicTool && (hasArgs || hasResult);
 
   const panelContent = canExpand && (
     <div className="space-y-3 max-h-full overflow-y-auto p-2 sm:p-4 [&_pre]:!text-sm">
@@ -130,14 +185,19 @@ export function ToolCallItem({
       <CollapsiblePill
         status={status}
         icon={<ToolIcon size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
-        label={toolName}
+        label={isPublicTool && publicCategoryLabel
+          ? `${publicCategoryLabel}：${name}`
+          : toolName}
         suffix={
-          serverName || statusLabel ? (
+          serverName || statusLabel || durationLabel || publicCategoryLabel ? (
             <span className="flex min-w-0 items-center gap-1.5">
               {serverName && (
                 <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-white/30 dark:bg-black/20 opacity-70 font-medium truncate max-w-[120px]">
                   {serverName}
                 </span>
+              )}
+              {durationLabel && (
+                <span className="text-[10px] font-medium">{durationLabel}</span>
               )}
               {statusLabel && (
                 <span role="status" aria-label={statusLabel} className="text-[10px] font-medium">
@@ -148,6 +208,7 @@ export function ToolCallItem({
           ) : undefined
         }
         variant="tool"
+        formatLabel={!isPublicTool}
         expandable={canExpand}
         onPanelOpen={() => {
           if (!canExpand) return;
@@ -155,7 +216,7 @@ export function ToolCallItem({
             title: formattedToolName,
             icon: <ToolIcon size={16} aria-hidden="true" />,
             status,
-            subtitle: serverName || undefined,
+            subtitle: publicCategoryLabel || serverName || undefined,
             children: panelContent,
           });
         }}

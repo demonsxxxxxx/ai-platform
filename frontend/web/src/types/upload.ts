@@ -18,6 +18,8 @@ export interface MessageAttachment {
   uploadProgress?: number;
   /** Whether upload is in progress */
   isUploading?: boolean;
+  /** Internal client-side state while uploads wait for the queue. */
+  uploadStatus?: "queued" | "uploading" | "retrying";
 }
 
 export interface UploadLimitsBytes {
@@ -37,6 +39,8 @@ export interface UploadConfig {
   /** Canonical per-category limits. Every value is a byte count. */
   uploadLimitsBytes?: UploadLimitsBytes;
   maxFiles?: number;
+  /** Maximum multipart file uploads this principal may keep active. */
+  maxActiveUploadSessions?: number;
   /** Pre-existing wire alias; category values remain byte counts. */
   uploadLimits?: LegacyUploadLimits;
   max_file_size_bytes?: number;

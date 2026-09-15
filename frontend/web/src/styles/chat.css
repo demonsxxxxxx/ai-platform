@@ -8,7 +8,7 @@
 
 .librechat-composer-shell {
   background: var(--theme-workbench-canvas);
-  padding-bottom: 1.25rem;
+  padding-bottom: 0.5rem;
 }
 
 .librechat-composer-shell .chat-input-container {
@@ -17,7 +17,7 @@
 
 .chat-input-container {
   border-radius: 1.5rem;
-  min-height: 72px;
+  min-height: 56px;
   max-height: min(52dvh, 420px);
   overflow: hidden;
   box-shadow:

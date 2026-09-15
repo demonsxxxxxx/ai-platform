@@ -10,6 +10,7 @@ import app.worker_main as worker_main
 from app.queue import LeaseMutationOutcome, QueueHeartbeatOutcome, QueueMessage
 from app.runs.api import RunTerminalizationProgress
 from app.worker import WorkerOutcome
+from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
 from app.worker_main import run_once as _run_once
 
 
@@ -25,22 +26,11 @@ class _EmptyV4PendingAdmissions:
         assert tenant_id and run_id and attempt_id
         return None
 
-    async def list_pending_admissions(self, *, limit):
-        return ()
-
-
-class _EmptyV4Authority:
-    async def get(self, *, tenant_id, run_id):
-        assert tenant_id and run_id
-        return None
-
-
-class _EmptyV4PublicationClaims:
-    async def list_due_scopes(self, *, limit):
-        return ()
-
 
 class _EmptyV4EventPersistence:
+    async def load_latest_run_event(self, *, tenant_id, run_id):
+        return None
+
     async def append_terminal_row(self, _conn, *, tenant_id, run_id):
         assert tenant_id and run_id
         return None
@@ -51,13 +41,12 @@ class _UnusedV4Transport:
         raise AssertionError("empty v4 maintenance must not publish")
 
 
-_TEST_V4_CAPABILITIES = SimpleNamespace(
-    authority=_EmptyV4Authority(),
+_TEST_V4_CAPABILITIES = WorkerV4Capabilities(
     pending_admissions=_EmptyV4PendingAdmissions(),
-    publication_claims=_EmptyV4PublicationClaims(),
     publication_transport=_UnusedV4Transport(),
     event_persistence=_EmptyV4EventPersistence(),
 )
+_TEST_ATTEMPT_LIFECYCLE = None
 
 
 class _TestWorkerV4Runtime:
@@ -69,17 +58,51 @@ class _TestWorkerV4Runtime:
 
 async def run_once(*args, **kwargs):
     kwargs.setdefault("v4_capabilities", _TEST_V4_CAPABILITIES)
+    if _TEST_ATTEMPT_LIFECYCLE is None:
+        raise RuntimeError("test_run_attempt_lifecycle_unavailable")
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     return await _run_once(*args, **kwargs)
 
 
+@pytest.mark.asyncio
+async def test_worker_run_once_requires_an_explicit_attempt_lifecycle():
+    with pytest.raises(TypeError, match="attempt_lifecycle"):
+        await _run_once(v4_capabilities=_TEST_V4_CAPABILITIES)
+
+
 _ORIGINAL_SANDBOX_CLEANUP = worker_main.cleanup_expired_sandbox_leases
+_ORIGINAL_FILE_UPLOAD_CLEANUP = worker_main.cleanup_expired_file_upload_sessions
 _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER = worker_main.cleanup_expired_memory_records_for_worker
-_ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE = worker_main.progress_pending_tool_permission_terminalizations_for_worker
-_ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE = worker_main.reconcile_stale_runs_for_worker
+_RAW_PERMISSION_TERMINALIZATION_MAINTENANCE = (
+    worker_main.progress_pending_tool_permission_terminalizations_for_worker
+)
+_RAW_STALE_RUN_RECONCILIATION_MAINTENANCE = worker_main.reconcile_stale_runs_for_worker
+
+
+async def _original_permission_terminalization_maintenance(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    return await _RAW_PERMISSION_TERMINALIZATION_MAINTENANCE(*args, **kwargs)
+
+
+async def _original_stale_run_reconciliation_maintenance(*args, **kwargs):
+    kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    return await _RAW_STALE_RUN_RECONCILIATION_MAINTENANCE(*args, **kwargs)
+
+
+_ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE = (
+    _original_permission_terminalization_maintenance
+)
+_ORIGINAL_STALE_RUN_RECONCILIATION_MAINTENANCE = (
+    _original_stale_run_reconciliation_maintenance
+)
 
 
 async def _controlled_terminal_reconciler(stop_event, **_kwargs):
     await stop_event.wait()
+
+
+async def _controlled_maintenance(*_args):
+    await asyncio.Event().wait()
 
 
 def test_write_worker_runtime_heartbeat_records_process_commit(monkeypatch, tmp_path):
@@ -169,11 +192,7 @@ async def test_queue_heartbeat_persists_the_exact_redis_timestamp(monkeypatch):
 
     monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
     monkeypatch.setattr(worker_main, "transaction", Transaction)
-    monkeypatch.setattr(
-        worker_main,
-        "heartbeat_worker_run_attempt",
-        heartbeat_attempt,
-    )
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "heartbeat_worker", heartbeat_attempt)
     ownership_lost = asyncio.Event()
 
     await worker_main._heartbeat_until_done(
@@ -182,6 +201,7 @@ async def test_queue_heartbeat_persists_the_exact_redis_timestamp(monkeypatch):
         0,
         30,
         ownership_lost,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert ownership_lost.is_set()
@@ -238,11 +258,7 @@ async def test_queue_heartbeat_tolerates_attempt_precreation_gap(monkeypatch):
 
     monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
     monkeypatch.setattr(worker_main, "transaction", Transaction)
-    monkeypatch.setattr(
-        worker_main,
-        "heartbeat_worker_run_attempt",
-        heartbeat_attempt,
-    )
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "heartbeat_worker", heartbeat_attempt)
     ownership_lost = asyncio.Event()
 
     await worker_main._heartbeat_until_done(
@@ -251,6 +267,7 @@ async def test_queue_heartbeat_tolerates_attempt_precreation_gap(monkeypatch):
         0,
         30,
         ownership_lost,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert redis_calls == 2
@@ -298,11 +315,7 @@ async def test_queue_heartbeat_stops_after_one_precreation_visibility_window(
 
     monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
     monkeypatch.setattr(worker_main, "transaction", Transaction)
-    monkeypatch.setattr(
-        worker_main,
-        "heartbeat_worker_run_attempt",
-        heartbeat_attempt,
-    )
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "heartbeat_worker", heartbeat_attempt)
     monkeypatch.setattr(worker_main.asyncio, "sleep", no_wait)
     ownership_lost = asyncio.Event()
 
@@ -312,6 +325,7 @@ async def test_queue_heartbeat_stops_after_one_precreation_visibility_window(
         10,
         30,
         ownership_lost,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
         monotonic=lambda: next(monotonic_values),
     )
 
@@ -371,11 +385,7 @@ async def test_queue_heartbeat_precreation_deadline_bounds_external_awaits(
 
     monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
     monkeypatch.setattr(worker_main, "transaction", Transaction)
-    monkeypatch.setattr(
-        worker_main,
-        "heartbeat_worker_run_attempt",
-        heartbeat_attempt,
-    )
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "heartbeat_worker", heartbeat_attempt)
     ownership_lost = asyncio.Event()
 
     await asyncio.wait_for(
@@ -385,6 +395,7 @@ async def test_queue_heartbeat_precreation_deadline_bounds_external_awaits(
             0,
             0.01,
             ownership_lost,
+            attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
         ),
         timeout=0.5,
     )
@@ -427,11 +438,7 @@ async def test_queue_heartbeat_fails_closed_when_postgres_cannot_commit(monkeypa
 
     monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
     monkeypatch.setattr(worker_main, "transaction", Transaction)
-    monkeypatch.setattr(
-        worker_main,
-        "heartbeat_worker_run_attempt",
-        heartbeat_attempt,
-    )
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "heartbeat_worker", heartbeat_attempt)
     ownership_lost = asyncio.Event()
 
     await worker_main._heartbeat_until_done(
@@ -440,6 +447,7 @@ async def test_queue_heartbeat_fails_closed_when_postgres_cannot_commit(monkeypa
         0,
         30,
         ownership_lost,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert ownership_lost.is_set()
@@ -481,11 +489,7 @@ async def test_queue_heartbeat_fails_closed_when_postgres_preserves_future_state
 
     monkeypatch.setattr(worker_main.queue, "heartbeat_run", heartbeat_run)
     monkeypatch.setattr(worker_main, "transaction", Transaction)
-    monkeypatch.setattr(
-        worker_main,
-        "heartbeat_worker_run_attempt",
-        heartbeat_attempt,
-    )
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "heartbeat_worker", heartbeat_attempt)
     ownership_lost = asyncio.Event()
 
     await worker_main._heartbeat_until_done(
@@ -494,6 +498,7 @@ async def test_queue_heartbeat_fails_closed_when_postgres_preserves_future_state
         0,
         30,
         ownership_lost,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert ownership_lost.is_set()
@@ -501,6 +506,12 @@ async def test_queue_heartbeat_fails_closed_when_postgres_preserves_future_state
 
 @pytest.fixture(autouse=True)
 def default_sandbox_cleanup(monkeypatch):
+    global _TEST_ATTEMPT_LIFECYCLE
+    async def cleanup_expired_file_upload_sessions():
+        return 0
+
+    monkeypatch.setattr(worker_main, "cleanup_expired_file_upload_sessions", cleanup_expired_file_upload_sessions)
+
     async def cleanup_expired_sandbox_leases():
         return []
 
@@ -590,75 +601,20 @@ def default_sandbox_cleanup(monkeypatch):
         verify_lease_ownership,
         raising=False,
     )
-    monkeypatch.setattr(
-        "app.worker_main.assert_worker_run_attempt_current",
-        assert_worker_run_attempt_current,
-    )
-    monkeypatch.setattr(
-        "app.worker_main.heartbeat_worker_run_attempt",
-        heartbeat_worker_run_attempt,
-    )
-    monkeypatch.setattr(
-        "app.worker_main.request_run_attempt_cancel",
-        request_run_attempt_cancel,
-    )
-    monkeypatch.setattr(
-        "app.worker_main.terminalize_run_attempt",
-        terminalize_run_attempt,
-    )
-    monkeypatch.setattr(
-        "app.worker_main.prepare_stale_run_attempt_reconciliation",
-        prepare_stale_run_attempt_reconciliation,
-    )
-    monkeypatch.setattr(
-        "app.worker_main.get_latest_run_attempt",
-        get_latest_run_attempt,
-    )
-    monkeypatch.setattr(
-        "app.worker_main.terminalize_latest_run_attempt",
-        terminalize_latest_run_attempt,
+    _TEST_ATTEMPT_LIFECYCLE = SimpleNamespace(
+        assert_worker_current=assert_worker_run_attempt_current,
+        heartbeat_worker=heartbeat_worker_run_attempt,
+        request_cancel=request_run_attempt_cancel,
+        terminalize=terminalize_run_attempt,
+        prepare_stale_reconciliation=prepare_stale_run_attempt_reconciliation,
+        get_latest=get_latest_run_attempt,
+        terminalize_latest=terminalize_latest_run_attempt,
     )
     monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
     monkeypatch.setattr(
         "app.worker_main.build_worker_v4_runtime",
         lambda _transaction: _TestWorkerV4Runtime(),
     )
-
-
-@pytest.mark.asyncio
-async def test_worker_maintenance_pending_admission_precedes_due_publication(monkeypatch):
-    order: list[str] = []
-
-    class Pending:
-        async def list_pending_admissions(self, *, limit):
-            order.append("pending.scan")
-            return ()
-
-    class Claims:
-        async def list_due_scopes(self, *, limit):
-            order.append("due.scan")
-            return ()
-
-    class Transport:
-        async def publish(self, canonical_envelope_bytes):
-            order.append("redis.publish")
-            return "1-0"
-
-    async def run_phases(phases, *, logger):
-        await phases["v4_pending_admission"]()
-        await phases["v4_publication"]()
-
-    monkeypatch.setattr(worker_main, "run_maintenance_phases", run_phases)
-    monkeypatch.setattr(worker_main.queue, "reclaim_expired_leases", lambda **kwargs: [])
-    await worker_main.run_worker_maintenance(
-        SimpleNamespace(v4_pending_admission_limit=1, v4_publication_scope_limit=1, v4_publication_event_limit=1),
-        v4_capabilities=SimpleNamespace(
-            pending_admissions=Pending(),
-            publication_claims=Claims(),
-            publication_transport=Transport(),
-        ),
-    )
-    assert order == ["pending.scan", "due.scan"]
 
 
 @pytest.mark.asyncio
@@ -669,13 +625,17 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
         queue_lease_visibility_timeout_seconds = 12
 
     async def progress_pending_tool_permission_terminalizations_for_worker(
-        settings, *, v4_capabilities
+        settings, *, v4_capabilities, attempt_lifecycle
     ):
+        assert attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         assert v4_capabilities is _TEST_V4_CAPABILITIES
         calls.append(("permission_terminalization", settings.queue_lease_visibility_timeout_seconds))
         return [{"tenant_id": "tenant-a", "run_id": "run-a", "completed": False}]
 
-    async def reconcile_stale_runs_for_worker(settings, *, v4_capabilities):
+    async def reconcile_stale_runs_for_worker(
+        settings, *, v4_capabilities, attempt_lifecycle
+    ):
+        assert attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         assert v4_capabilities is _TEST_V4_CAPABILITIES
         calls.append(("stale_run_reconciliation", settings.queue_lease_visibility_timeout_seconds))
         return []
@@ -697,7 +657,9 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
 
     await worker_main.run_worker_maintenance(
-        Settings(), v4_capabilities=_TEST_V4_CAPABILITIES
+        Settings(),
+        v4_capabilities=_TEST_V4_CAPABILITIES,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert calls == [
@@ -724,15 +686,21 @@ async def test_run_worker_maintenance_isolates_phase_failures(monkeypatch, caplo
     async def retain_data(_settings):
         calls.append("data_retention")
 
-    async def progress_permissions(_settings, *, v4_capabilities):
+    async def progress_permissions(
+        _settings, *, v4_capabilities, attempt_lifecycle
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         calls.append("tool_permission_terminalization")
 
     async def reclaim(**_kwargs):
         calls.append("queue_reclaim")
 
-    async def reconcile_stale(_settings, *, v4_capabilities):
+    async def reconcile_stale(
+        _settings, *, v4_capabilities, attempt_lifecycle
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         calls.append("stale_run_reconciliation")
 
     monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_sandbox)
@@ -747,7 +715,9 @@ async def test_run_worker_maintenance_isolates_phase_failures(monkeypatch, caplo
 
     with caplog.at_level("ERROR", logger="app.worker_main"):
         await worker_main.run_worker_maintenance(
-            Settings(), v4_capabilities=_TEST_V4_CAPABILITIES
+            Settings(),
+            v4_capabilities=_TEST_V4_CAPABILITIES,
+            attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
         )
 
     assert calls == [
@@ -830,7 +800,7 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
     )
     monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
     monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
-    monkeypatch.setattr("app.worker_main.get_latest_run_attempt", get_latest_attempt)
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "get_latest", get_latest_attempt)
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_terminal_children_requiring_reconciliation", recovery_candidates)
     monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_parent_runs_requiring_finalization", parent_recovery_candidates)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
@@ -1107,7 +1077,8 @@ async def test_stale_run_maintenance_terminalizes_cancel_requested_orphan_once(m
     monkeypatch.setattr("app.worker_main.queue.release_run_reconciliation_fence", release_fence)
     monkeypatch.setattr("app.worker_main.stage_stale_run_reconciliation", stage)
     monkeypatch.setattr(
-        "app.worker_main.prepare_stale_run_attempt_reconciliation",
+        _TEST_ATTEMPT_LIFECYCLE,
+        "prepare_stale_reconciliation",
         prepare_attempt,
     )
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
@@ -1553,8 +1524,16 @@ async def test_run_once_acknowledges_accepted_and_completed_messages(monkeypatch
         calls.append(("lease", worker_id))
         return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
-    async def process_run_payload(payload, registry=None, worker_id=None, *, v4_capabilities=None):
+    async def process_run_payload(
+        payload,
+        registry=None,
+        worker_id=None,
+        *,
+        v4_capabilities=None,
+        run_attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert run_attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         calls.append(("process", payload["run_id"], worker_id))
         return WorkerOutcome(status=outcome_status, run_id="run-a")
 
@@ -1613,10 +1592,12 @@ async def test_run_once_binds_the_exact_initial_queue_lease_to_worker_processing
         *,
         queue_lease,
         v4_capabilities=None,
+        run_attempt_lifecycle=None,
     ):
         assert registry is None
         assert worker_id == "worker-a"
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert run_attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         assert queue_lease.queue_message_id == "b" * 64
         assert queue_lease.last_heartbeat_at.timestamp() == 100.0
         assert (
@@ -1848,8 +1829,16 @@ async def test_run_once_keeps_queue_maintenance_running_during_long_processing(m
         calls.append(("lease", worker_id, max_processing_runs))
         return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
-    async def process_run_payload(payload, registry=None, worker_id=None, *, v4_capabilities=None):
+    async def process_run_payload(
+        payload,
+        registry=None,
+        worker_id=None,
+        *,
+        v4_capabilities=None,
+        run_attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert run_attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         calls.append(("process_started",))
         await asyncio.wait_for(maintenance_seen_during_processing.wait(), timeout=0.5)
         calls.append(("process_finished",))
@@ -1898,8 +1887,16 @@ async def test_run_once_dead_letters_unhandled_outcome(monkeypatch):
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
         return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
-    async def process_run_payload(payload, registry=None, worker_id=None, *, v4_capabilities=None):
+    async def process_run_payload(
+        payload,
+        registry=None,
+        worker_id=None,
+        *,
+        v4_capabilities=None,
+        run_attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert run_attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         return WorkerOutcome(status="dead_letter", run_id=None, error_code="bad", error_message="bad payload")
 
     async def ack_run(raw, message_id=None):
@@ -1938,8 +1935,16 @@ async def test_run_once_acknowledges_cancelled_message(monkeypatch):
         calls.append(("lease", worker_id))
         return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
-    async def process_run_payload(payload, registry=None, worker_id=None, *, v4_capabilities=None):
+    async def process_run_payload(
+        payload,
+        registry=None,
+        worker_id=None,
+        *,
+        v4_capabilities=None,
+        run_attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert run_attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         calls.append(("process", payload["run_id"], worker_id))
         return WorkerOutcome(status="cancelled", run_id="run-a")
 
@@ -1982,8 +1987,16 @@ async def test_run_once_does_not_ack_cancelled_message_before_execution_owner_fi
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
         return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
-    async def process_run_payload(payload, registry=None, worker_id=None, *, v4_capabilities=None):
+    async def process_run_payload(
+        payload,
+        registry=None,
+        worker_id=None,
+        *,
+        v4_capabilities=None,
+        run_attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert run_attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         processing.set()
         await quiescent.wait()
         return WorkerOutcome(status="cancelled", run_id=payload["run_id"])
@@ -2032,8 +2045,16 @@ async def test_run_once_dead_letters_process_exception(monkeypatch):
         calls.append(("lease", worker_id))
         return QueueMessage(raw="raw-run", payload={"run_id": "run-a"}, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
-    async def process_run_payload(payload, registry=None, worker_id=None, *, v4_capabilities=None):
+    async def process_run_payload(
+        payload,
+        registry=None,
+        worker_id=None,
+        *,
+        v4_capabilities=None,
+        run_attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert run_attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         calls.append(("process", payload["run_id"], worker_id))
         raise RuntimeError("boom")
 
@@ -2086,6 +2107,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     terminal_call,
 ):
     calls = []
+    diagnostic_calls = []
     pending_attempts = []
     payload = {
         "tenant_id": "tenant-a",
@@ -2135,10 +2157,8 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
         ):
             pending_attempts.append(attempt_id)
 
-    capabilities = SimpleNamespace(
-        authority=_TEST_V4_CAPABILITIES.authority,
+    capabilities = WorkerV4Capabilities(
         pending_admissions=PendingAdmissions(),
-        publication_claims=_TEST_V4_CAPABILITIES.publication_claims,
         publication_transport=_TEST_V4_CAPABILITIES.publication_transport,
         event_persistence=_TEST_V4_CAPABILITIES.event_persistence,
     )
@@ -2146,8 +2166,16 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
         return QueueMessage(raw="raw-run", payload=payload, message_id="msg-a", queue_message_id="msg-a", attempt_id="qat-test-attempt", owner_token="qown-test-owner")
 
-    async def process_run_payload(payload, registry=None, worker_id=None, *, v4_capabilities=None):
+    async def process_run_payload(
+        payload,
+        registry=None,
+        worker_id=None,
+        *,
+        v4_capabilities=None,
+        run_attempt_lifecycle=None,
+    ):
         assert v4_capabilities is capabilities
+        assert run_attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         raise RuntimeError("snapshot persistence failed")
 
     async def get_run(_conn, *, tenant_id, run_id, for_update):
@@ -2195,6 +2223,15 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
         calls.append(("dead_letter",))
         return LeaseMutationOutcome("failed")
 
+    class Diagnostics:
+        async def capture_failure_result(self, _conn, **kwargs):
+            diagnostic_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.worker_main.build_run_diagnostics_service",
+        lambda: Diagnostics(),
+    )
+
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
@@ -2202,7 +2239,8 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker_main.repositories.cancel_run", cancel_run)
     monkeypatch.setattr(
-        "app.worker_main.assert_worker_run_attempt_current",
+        _TEST_ATTEMPT_LIFECYCLE,
+        "assert_worker_current",
         assert_worker_run_attempt_current,
     )
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
@@ -2233,6 +2271,21 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
                 run_id="run-a",
                 queue_attempt_id="qat-test-attempt",
             )
+        ]
+    if terminal_call is None:
+        assert diagnostic_calls == []
+    else:
+        assert len(diagnostic_calls) == 1
+        assert diagnostic_calls[0]["attempt_id"] == "rat-run-a"
+        assert diagnostic_calls[0]["source"] == "worker_escaped"
+        assert diagnostic_calls[0]["stage"] == "worker_process"
+        escaped_sdk = diagnostic_calls[0]["result_json"]["runtime_diagnostics"][
+            "sdk"
+        ]
+        assert escaped_sdk["exception_type"] == "RuntimeError"
+        assert escaped_sdk["exception_message"] == "snapshot persistence failed"
+        assert [item["type"] for item in escaped_sdk["exception_chain"]] == [
+            "RuntimeError"
         ]
     if terminal_call == "fail":
         failure = next(call for call in calls if call[0] == "fail")
@@ -2413,7 +2466,8 @@ async def test_run_once_acknowledges_terminalized_process_exception_when_child_r
     monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker_main.repositories.fail_run", fail_run)
     monkeypatch.setattr(
-        "app.worker_main.assert_worker_run_attempt_current",
+        _TEST_ATTEMPT_LIFECYCLE,
+        "assert_worker_current",
         assert_worker_run_attempt_current,
     )
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
@@ -2473,6 +2527,7 @@ async def test_escaped_terminalization_rejects_stale_owner_or_fence_before_trans
         "worker-a",
         RuntimeError("boom"),
         v4_capabilities=_TEST_V4_CAPABILITIES,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome.status == "ownership_lost"
@@ -2532,10 +2587,10 @@ async def test_escaped_terminalization_rejects_missing_durable_attempt(monkeypat
     monkeypatch.setattr(worker_main, "transaction", Transaction)
     monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
     monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
-    monkeypatch.setattr(worker_main, "assert_worker_run_attempt_current", missing_attempt)
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "assert_worker_current", missing_attempt)
     monkeypatch.setattr(worker_main, "fail_run_with_v4", forbidden)
     monkeypatch.setattr(worker_main, "cancel_run_with_v4", forbidden)
-    monkeypatch.setattr(worker_main, "terminalize_run_attempt", forbidden)
+    monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", forbidden)
     monkeypatch.setattr(worker_main, "drain_run_tool_permission_terminalization", forbidden)
 
     outcome = await worker_main._terminalize_escaped_process_exception(
@@ -2543,6 +2598,7 @@ async def test_escaped_terminalization_rejects_missing_durable_attempt(monkeypat
         "worker-a",
         RuntimeError("boom"),
         v4_capabilities=_TEST_V4_CAPABILITIES,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome.status == "ownership_lost"
@@ -2614,8 +2670,8 @@ async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transact
     monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
     monkeypatch.setattr(worker_main.repositories, "fail_run", fail_run)
     monkeypatch.setattr(
-        worker_main,
-        "assert_worker_run_attempt_current",
+        _TEST_ATTEMPT_LIFECYCLE,
+        "assert_worker_current",
         assert_worker_run_attempt_current,
     )
 
@@ -2624,6 +2680,7 @@ async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transact
         "worker-a",
         RuntimeError("boom"),
         v4_capabilities=_TEST_V4_CAPABILITIES,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome.status == "failed"
@@ -2725,10 +2782,31 @@ async def test_run_once_passes_queue_quota_settings_to_queue(monkeypatch):
 async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
     calls = []
 
-    async def fake_run_once(registry=None, timeout_seconds=5, worker_id=None, *, v4_capabilities=None):
+    async def fake_run_once(
+        registry=None,
+        timeout_seconds=5,
+        worker_id=None,
+        run_initial_maintenance=True,
+        run_background_maintenance=True,
+        *,
+        v4_capabilities=None,
+        attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is not None
+        assert run_initial_maintenance is False
+        assert run_background_maintenance is False
         calls.append(("run_once", timeout_seconds, worker_id is not None))
         raise asyncio.CancelledError()
+
+    async def fake_run_worker_maintenance(
+        _settings,
+        *,
+        v4_capabilities,
+        attempt_lifecycle,
+    ):
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is not None
 
     async def fake_close_pool():
         calls.append(("close_pool",))
@@ -2737,12 +2815,16 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
 
     with pytest.raises(asyncio.CancelledError):
-        await worker_main.run_forever(poll_timeout_seconds=2)
+        await worker_main.run_forever(
+            poll_timeout_seconds=2,
+            attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
+        )
 
     assert calls == [
         ("run_once", 2, True),
@@ -2756,13 +2838,34 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
     calls = []
     continued = asyncio.Event()
 
-    async def fake_run_once(registry=None, timeout_seconds=5, worker_id=None, *, v4_capabilities=None):
+    async def fake_run_once(
+        registry=None,
+        timeout_seconds=5,
+        worker_id=None,
+        run_initial_maintenance=True,
+        run_background_maintenance=True,
+        *,
+        v4_capabilities=None,
+        attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is not None
+        assert run_initial_maintenance is False
+        assert run_background_maintenance is False
         calls.append(("run_once", timeout_seconds, worker_id is not None))
         if len(calls) == 1:
             raise TimeoutError("Timeout reading from redis:6379")
         continued.set()
         raise asyncio.CancelledError()
+
+    async def fake_run_worker_maintenance(
+        _settings,
+        *,
+        v4_capabilities,
+        attempt_lifecycle,
+    ):
+        assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is not None
 
     async def fake_sleep(seconds):
         calls.append(("sleep", seconds))
@@ -2774,13 +2877,19 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
+    monkeypatch.setattr("app.worker_main._maintenance_until_done", _controlled_maintenance)
     monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
 
     with pytest.raises(asyncio.CancelledError):
-        await worker_main.run_forever(poll_timeout_seconds=2, idle_sleep_seconds=0.25)
+        await worker_main.run_forever(
+            poll_timeout_seconds=2,
+            idle_sleep_seconds=0.25,
+            attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
+        )
 
     assert continued.is_set()
     assert calls == [
@@ -2798,10 +2907,17 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
     calls = []
 
     class Settings:
+        database_url = "postgresql+asyncpg://fixture:fixture@127.0.0.1:5432/fixture"
         worker_maintenance_interval_seconds = 60.0
 
-    async def fake_run_worker_maintenance(settings, *, v4_capabilities=None):
+    async def fake_run_worker_maintenance(
+        settings,
+        *,
+        v4_capabilities=None,
+        attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is not None
         calls.append(("maintenance", settings.worker_maintenance_interval_seconds))
 
     async def fake_run_worker_slot(
@@ -2810,8 +2926,10 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
         poll_timeout_seconds,
         idle_sleep_seconds,
         v4_capabilities,
+        attempt_lifecycle,
     ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is not None
         calls.append(("slot", bool(worker_id), poll_timeout_seconds, idle_sleep_seconds))
         if len([call for call in calls if call[0] == "slot"]) == 3:
             started.set()
@@ -2850,8 +2968,10 @@ async def test_run_worker_slot_continues_after_transient_run_once_error(monkeypa
         run_initial_maintenance=True,
         run_background_maintenance=True,
         v4_capabilities=None,
+        attempt_lifecycle=None,
     ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
         calls.append(
             (
                 "run_once",
@@ -2878,6 +2998,7 @@ async def test_run_worker_slot_continues_after_transient_run_once_error(monkeypa
             poll_timeout_seconds=2,
             idle_sleep_seconds=0.25,
             v4_capabilities=_TEST_V4_CAPABILITIES,
+            attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
         )
 
     assert continued.is_set()
@@ -2892,7 +3013,13 @@ async def test_run_worker_slot_continues_after_transient_run_once_error(monkeypa
 async def test_run_worker_pool_clamps_invalid_worker_count_to_one(monkeypatch):
     calls = []
 
-    async def fake_run_forever(poll_timeout_seconds=5, idle_sleep_seconds=0.5):
+    async def fake_run_forever(
+        poll_timeout_seconds=5,
+        idle_sleep_seconds=0.5,
+        *,
+        attempt_lifecycle=None,
+    ):
+        assert attempt_lifecycle is not None
         calls.append(("run_forever", poll_timeout_seconds, idle_sleep_seconds))
 
     monkeypatch.setattr("app.worker_main.run_forever", fake_run_forever)
@@ -2908,8 +3035,14 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
     def configure_model_services():
         calls.append(("configure_model_services",))
 
-    async def fake_run_once(timeout_seconds=5, *, v4_capabilities=None):
+    async def fake_run_once(
+        timeout_seconds=5,
+        *,
+        v4_capabilities=None,
+        attempt_lifecycle=None,
+    ):
         assert v4_capabilities is _TEST_V4_CAPABILITIES
+        assert attempt_lifecycle is not None
         calls.append(("run_once", timeout_seconds))
         return WorkerOutcome(status="idle", run_id=None)
 
@@ -3130,7 +3263,6 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
     class Settings:
         max_active_worker_runs = 3
         default_tenant_id = "tenant-a"
-        default_workspace_id = "workspace-a"
         memory_retention_worker_cleanup_enabled = True
         memory_retention_worker_cleanup_interval_seconds = 300.0
         memory_retention_worker_cleanup_limit = 25
@@ -3215,7 +3347,6 @@ async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(mo
     class Settings:
         max_active_worker_runs = 3
         default_tenant_id = "tenant-a"
-        default_workspace_id = "workspace-a"
         memory_retention_worker_cleanup_enabled = True
         memory_retention_worker_cleanup_interval_seconds = 300.0
         memory_retention_worker_cleanup_limit = 25
@@ -3269,7 +3400,6 @@ async def test_run_once_skips_memory_cleanup_until_interval_elapsed(monkeypatch)
     class Settings:
         max_active_worker_runs = 3
         default_tenant_id = "tenant-a"
-        default_workspace_id = "workspace-a"
         memory_retention_worker_cleanup_enabled = True
         memory_retention_worker_cleanup_interval_seconds = 3600.0
         memory_retention_worker_cleanup_limit = 25
@@ -3331,7 +3461,6 @@ async def test_run_once_skips_memory_cleanup_when_disabled(monkeypatch):
     class Settings:
         max_active_worker_runs = 3
         default_tenant_id = "tenant-a"
-        default_workspace_id = "workspace-a"
         memory_retention_worker_cleanup_enabled = False
         memory_retention_worker_cleanup_interval_seconds = 300.0
         memory_retention_worker_cleanup_limit = 25
@@ -3422,3 +3551,73 @@ async def test_run_once_reclaims_queue_when_sandbox_runtime_cleanup_fails(monkey
         ("lease", "worker-a"),
     ]
     assert "Sandbox runtime cleanup maintenance failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_upload_cleanup_uses_storage_operation_owned_by_reservation_kind(monkeypatch):
+    operations: list[tuple[str, str, str | None]] = []
+    deleted: list[str] = []
+    retained: list[tuple[str, int]] = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Storage:
+        def delete_object(self, *, storage_key):
+            operations.append(("delete", storage_key, None))
+
+        def abort_multipart_uploads_for_key(self, *, storage_key):
+            operations.append(("abort_key", storage_key, None))
+
+        def cleanup_multipart_upload(self, *, storage_key, upload_id):
+            operations.append(("cleanup", storage_key, upload_id))
+
+    async def expire(_conn, **_kwargs):
+        return [
+            {
+                "id": "upload-direct",
+                "tenant_id": "default",
+                "workspace_id": "default",
+                "session_id": None,
+                "file_id": "file-direct",
+                "storage_key": (
+                    "tenants/default/workspaces/default/sessions/unbound/"
+                    "files/file-direct/generations/direct_owner/content"
+                ),
+                "upload_id": "direct_owner",
+            },
+            {"id": "initializing", "storage_key": "initializing-key", "upload_id": "initializing_initializing"},
+            {"id": "multipart", "storage_key": "multipart-key", "upload_id": "s3-upload"},
+            {"id": "opaque", "storage_key": "opaque-key", "upload_id": "direct_opaque-upload"},
+        ]
+
+    async def delete(_conn, *, upload_session_id):
+        deleted.append(upload_session_id)
+
+    async def retry(_conn, *, upload_session_id, delay_seconds=60):
+        retained.append((upload_session_id, delay_seconds))
+
+    monkeypatch.setattr(worker_main, "transaction", Transaction)
+    monkeypatch.setattr(worker_main, "ObjectStorage", Storage)
+    monkeypatch.setattr(worker_main, "expire_file_upload_sessions", expire)
+    monkeypatch.setattr(worker_main, "retry_expired_file_upload_session", retry)
+    monkeypatch.setattr(worker_main, "delete_expired_file_upload_session", delete)
+
+    assert await _ORIGINAL_FILE_UPLOAD_CLEANUP() == 4
+    assert operations == [
+        (
+            "delete",
+            "tenants/default/workspaces/default/sessions/unbound/"
+            "files/file-direct/generations/direct_owner/content",
+            None,
+        ),
+        ("abort_key", "initializing-key", None),
+        ("cleanup", "multipart-key", "s3-upload"),
+        ("cleanup", "opaque-key", "direct_opaque-upload"),
+    ]
+    assert deleted == ["upload-direct", "multipart", "opaque"]
+    assert retained == [("initializing", 86_400)]

@@ -79,6 +79,11 @@ const AgentWorkspaceRoute = lazy(() =>
     default: m.AgentWorkspaceRoute,
   })),
 );
+const AgentApplicationRoute = lazy(() =>
+  import("./features/ai-applications/AgentApplicationRoute").then((m) => ({
+    default: m.AgentApplicationRoute,
+  })),
+);
 const NotFoundPage = lazy(() =>
   import("./components/common/NotFoundPage").then((m) => ({
     default: m.NotFoundPage,
@@ -178,7 +183,7 @@ function RootRedirect() {
   }
 
   return isAuthenticated ? (
-    <Navigate to={APP_ROUTE_PATHS.agentMarket} replace />
+    <Navigate to={APP_ROUTE_PATHS.apps} replace />
   ) : (
     <Navigate to="/auth/login" replace />
   );
@@ -219,15 +224,6 @@ function RolesPage() {
     path: "/roles",
   });
   return <AppContent key="roles" activeTab="roles" />;
-}
-
-function SettingsPage() {
-  useSEO({
-    title: "seo.settings.title",
-    description: "seo.settings.description",
-    path: "/settings",
-  });
-  return <AppContent key="settings" activeTab="settings" />;
 }
 
 function MCPPage() {
@@ -311,7 +307,7 @@ function WorkbenchForbiddenPage({
   );
 }
 
-// Auth page wrapper - opens the Agent-first service catalog after login/register.
+// Auth page wrapper - opens Company Navigation after login/register.
 function AuthPageWrapper({
   initialMode,
 }: {
@@ -327,7 +323,7 @@ function AuthPageWrapper({
     <AuthPage
       initialMode={initialMode}
       onSuccess={(redirectPath) =>
-        navigate(redirectPath ?? APP_ROUTE_PATHS.agentMarket, { replace: true })
+        navigate(redirectPath ?? APP_ROUTE_PATHS.apps, { replace: true })
       }
     />
   );
@@ -410,6 +406,14 @@ function App() {
               }
             />
             <Route
+              path={APP_ROUTE_PATHS.aiApplication}
+              element={
+                <ProtectedRoute>
+                  <AgentApplicationRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path={APP_ROUTE_PATHS.agentMarketDetail}
               element={
                 <ProtectedRoute>
@@ -469,7 +473,7 @@ function App() {
               path={APP_ROUTE_PATHS.settings}
               element={
                 <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
-                  <SettingsPage />
+                  <Navigate to={APP_ROUTE_PATHS.models} replace />
                 </ProtectedRoute>
               }
             />

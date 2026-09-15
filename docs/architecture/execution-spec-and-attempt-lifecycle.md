@@ -234,6 +234,12 @@ Callback receipt requires the exact tenant/Run/attempt/runtime fence. Executor
 terminal callbacks remain observations; they do not own Run terminalization.
 Accepted and rejected callback receipts retain the attempt identity and a safe
 reason without persisting callback secrets.
+For a first accepted terminal receipt, the private failure observation and the
+immutable Sandbox receipt commit in the same PostgreSQL transaction. Duplicate
+receipts keep the existing receipt and diagnostic revision. Worker terminal paths
+append private diagnostics only after the current Attempt lifecycle fence and
+before the same transaction projects the Run terminal state. These observations
+do not authorize an Attempt transition or replace the Run result.
 
 ## 5. Ownership and dependency rules
 
@@ -244,6 +250,7 @@ reason without persisting callback secrets.
 | Queue claim and worker orchestration | `app.execution` | queue message as durable attempt truth |
 | Sandbox phases and cleanup | `app.sandbox` | Runs calling a provider or marking a lease released |
 | Live/terminal projection | `app.streaming` | Redis callback or stream entry as terminal authority |
+| Private Run diagnostics | `app.runs.application` / `app.runs.infrastructure` | `runs.result_json` or a lease receipt as the administrator query store |
 | Provider credential injection | trusted host adapter | raw credential in Run, queue, spec, Sandbox request, event, or audit |
 
 Routes may validate transport and request admission. They MUST NOT construct a

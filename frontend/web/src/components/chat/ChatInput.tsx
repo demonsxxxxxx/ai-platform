@@ -78,6 +78,7 @@ export const ChatInput = memo(function ChatInput({
   initialDraftKey,
   draftSnapshotRef,
   draftScopeKey,
+  attachmentScopeKey,
   draftScopeHandoffKey,
   onSend,
   onStop,
@@ -112,6 +113,7 @@ export const ChatInput = memo(function ChatInput({
   onSelectModel,
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
+  uploadControls: sharedUploadControls,
   pendingInput,
   onPendingInputConsumed,
   className,
@@ -239,12 +241,26 @@ export const ChatInput = memo(function ChatInput({
   const attachments = externalAttachments ?? internalAttachments;
   const setAttachments = externalOnAttachmentsChange ?? setInternalAttachments;
 
-  const { uploadFiles, uploadLimitsBytes, validateCount, cancelUpload } =
-    useFileUpload({
-      attachments,
-      onAttachmentsChange: setAttachments,
-      acceptedFileTypes,
-    });
+  const {
+    uploadFiles,
+    uploadLimitsBytes,
+    validateCount,
+    cancelUpload,
+    clearUploads,
+    removeAttachment,
+  } = useFileUpload({
+    attachments,
+    onAttachmentsChange: setAttachments,
+    acceptedFileTypes,
+    sharedControls: sharedUploadControls,
+  });
+
+  const previousAttachmentScopeKeyRef = useRef(attachmentScopeKey);
+  useLayoutEffect(() => {
+    if (previousAttachmentScopeKeyRef.current === attachmentScopeKey) return;
+    previousAttachmentScopeKeyRef.current = attachmentScopeKey;
+    clearUploads();
+  }, [attachmentScopeKey, clearUploads]);
 
   const { history, pushHistory, navigateUp, navigateDown } = useInputHistory();
 
@@ -293,9 +309,11 @@ export const ChatInput = memo(function ChatInput({
     };
   }, [scheduleTextareaResize, setInput]);
 
+  const hasUploadingAttachment = attachments.some((a) => a.isUploading);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSend) return;
+    if (!canSend || hasUploadingAttachment) return;
     if (!disableSlashCommands && handleComposerCommandSubmit(input)) return;
     if (input.trim() && !isLoading && !disabled) {
       const trimmed = input.trim();
@@ -433,7 +451,6 @@ export const ChatInput = memo(function ChatInput({
   };
 
   const hasContent = !!input.trim() && !disabled;
-  const hasUploadingAttachment = attachments.some((a) => a.isUploading);
   const skillsAvailable =
     enableSkills && !!onSelectSkill;
   const toolsAvailable = !!onToggleTool && !!onToggleCategory && !!onToggleAll;
@@ -787,9 +804,8 @@ export const ChatInput = memo(function ChatInput({
       dispatchComposerSelection({ type: "remove", id });
       if (id.startsWith("file:")) {
         const attachmentId = id.slice("file:".length);
-        setAttachments((previous) =>
-          previous.filter((attachment) => attachment.id !== attachmentId),
-        );
+        const attachment = attachments.find((item) => item.id === attachmentId);
+        if (attachment) removeAttachment(attachment);
         return;
       }
       if (id.startsWith("skill:")) {
@@ -807,9 +823,10 @@ export const ChatInput = memo(function ChatInput({
       }
     },
     [
+      attachments,
       onClearSelectedSkill,
       onToggleTool,
-      setAttachments,
+      removeAttachment,
       tools,
     ],
   );
@@ -839,7 +856,7 @@ export const ChatInput = memo(function ChatInput({
       <form
         onSubmit={handleSubmit}
         className={
-          className ?? "mx-auto max-w-3xl lg:max-w-4xl xl:max-w-5xl px-2"
+          className ?? "mx-auto max-w-[68rem] px-2"
         }
       >
         <div
@@ -857,19 +874,25 @@ export const ChatInput = memo(function ChatInput({
           )}
           <LibreChatComposerBox
             ref={containerRef}
+            data-disable-global-file-drop="true"
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             dragging={isDraggingOver}
           >
-            <ChatInputAttachments
-              attachments={attachments}
-              onAttachmentsChange={setAttachments}
-              onCancelUpload={cancelUpload}
-              onImageViewerOpen={(url) => setImageViewerSrc(url)}
-            />
+            <LibreChatComposerRegion
+              region="attachments"
+              className="col-span-2"
+            >
+              <ChatInputAttachments
+                attachments={attachments}
+                onRemoveAttachment={removeAttachment}
+                onCancelUpload={cancelUpload}
+                onImageViewerOpen={(url) => setImageViewerSrc(url)}
+              />
+            </LibreChatComposerRegion>
 
-            <LibreChatComposerRegion region="chips">
+            <LibreChatComposerRegion region="chips" className="col-span-2">
               <ComposerChips
                 selections={composerSelections}
                 onRemove={handleRemoveComposerSelection}
@@ -878,7 +901,7 @@ export const ChatInput = memo(function ChatInput({
 
             {selectedSkillState?.recoveryCode && (
               <div
-                className="mx-3 mt-2 rounded-lg border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs leading-relaxed text-[var(--theme-warning)]"
+                className="col-span-2 mx-3 mt-2 rounded-lg border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs leading-relaxed text-[var(--theme-warning)]"
                 role="status"
                 data-selected-skill-error={selectedSkillState.recoveryCode}
               >
@@ -926,7 +949,7 @@ export const ChatInput = memo(function ChatInput({
               </div>
             </LibreChatComposerRegion>
 
-            <LibreChatComposerRegion region="toolbar">
+            <LibreChatComposerRegion region="toolbar" className="min-w-0">
               <ChatInputToolbar
                 activePanel={activePanel}
                 onActivePanelChange={handlePanelChange}

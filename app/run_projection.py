@@ -17,7 +17,7 @@ from app.control_plane_contracts import (
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
 from app.memory_redaction import sanitizer_unstable_suffix_length
-from app.platform.public_payload import FORBIDDEN_PUBLIC_MARKERS
+from app.platform.public_payload import sanitize_public_answer_text
 from app.projection_redaction import (
     PUBLIC_AGENT_ID_BY_CAPABILITY,
     capability_id_from_skill,
@@ -65,6 +65,7 @@ def public_text_or_fallback(value: object, fallback: object = "") -> str:
 
 
 RESULT_UNAVAILABLE_MESSAGE = "本次执行未能生成可展示的回复内容。"
+CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
 
 
 def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
@@ -82,7 +83,7 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
     otherwise redacted. A private or unprojectable answer is never fabricated
     into a success message: an empty result propagates to the caller.
     """
-    content = sanitize_public_text(value)
+    content = sanitize_public_answer_text(value)
     if not content:
         return ""
     raw_skill_id = str(run.get("skill_id") or "")
@@ -119,7 +120,7 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
         else:
             redaction_pattern = re.compile(rf"\s*{token_pattern.pattern}\s*")
             content = redaction_pattern.sub("", content)
-    content = sanitize_public_text(content)
+    content = sanitize_public_answer_text(content)
     return content if content.strip() else ""
 
 
@@ -160,10 +161,6 @@ class PublicChatAnswerStreamProjector:
                 if start and token_character.fullmatch(self._raw[start - 1]):
                     continue
                 unstable = max(unstable, length)
-        for marker in FORBIDDEN_PUBLIC_MARKERS:
-            for length in range(2, min(len(marker) - 1, len(self._raw)) + 1):
-                if self._raw.endswith(marker[:length]):
-                    unstable = max(unstable, length)
         unstable = max(
             unstable,
             sanitizer_unstable_suffix_length(
@@ -214,18 +211,25 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
     status = normalize_run_status(str(run.get("status") or ""))
     if status == "succeeded":
         content = public_chat_answer_text(run, _chat_terminal_answer_candidate(run))
-        if content:
+        run_id = str(run.get("id") or "")
+        if content and run_id:
             return {
                 "event_type": "message:chunk",
                 "payload": {
                     "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                    "projection_kind": "assistant_final",
+                    "projection_kind": "assistant_delta",
+                    "event_id": f"{run_id}:final",
+                    "message_id": f"{run_id}:assistant",
+                    "run_id": run_id,
+                    "source": CHAT_ASSISTANT_DELTA_SOURCE,
                     "content": content,
                 },
                 "message": content,
                 "event_payload": {},
                 "severity": "info",
             }
+        if content:
+            return None
         return {
             "event_type": "final_detail",
             "payload": {
@@ -248,17 +252,6 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
     detail_kind = str(terminal["detail_kind"])
     detail_code = str(terminal["detail_code"])
     message = str(terminal["message"])
-    terminal_event_payload = terminal.get("event_payload")
-    projection_failure_reason = (
-        terminal_event_payload.get("projection_failure_reason")
-        if isinstance(terminal_event_payload, dict)
-        else None
-    )
-    reason_payload = (
-        {"projection_failure_reason": projection_failure_reason}
-        if isinstance(projection_failure_reason, str)
-        else {}
-    )
     return {
         "event_type": "final_detail",
         "payload": {
@@ -266,10 +259,9 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
             "detail_kind": detail_kind,
             "detail_code": detail_code,
             "message": message,
-            **reason_payload,
         },
         "message": message,
-        "event_payload": {"detail_code": detail_code, **reason_payload},
+        "event_payload": {"detail_code": detail_code},
         "severity": "error" if detail_kind == "failed" else "info",
     }
 

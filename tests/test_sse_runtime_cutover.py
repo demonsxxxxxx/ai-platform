@@ -30,8 +30,8 @@ def test_release_atomic_cutover_rejects_optional_v3_runtime_markers():
 def test_assistant_delta_ownership_guard_rejects_a_second_worker_ingress():
     valid = {
         "worker_source": "raise WorkerDirectAssistantDeltaError",
-        "redis_source": "class RunStreamPublisher: pass",
-        "callback_source": "canonical_assistant_delta_event(); await bridge.append(event)",
+        "redis_source": "class RedisStreamBridge: pass",
+        "callback_source": "append_callback_v4_rows(); await publish_callback_rows(capabilities, rows)",
         "executor_source": "async def run(): pass",
         "adr_source": (
             "assistant_text_delta` has one ingress\n"
@@ -92,8 +92,8 @@ async def publish(bridge, payload):
 def test_assistant_delta_ownership_guard_requires_an_adr_for_a_second_ingress():
     failures = cutover._assistant_delta_ownership_failures(
         worker_source="raise WorkerDirectAssistantDeltaError",
-        redis_source="class RunStreamPublisher: pass",
-        callback_source="canonical_assistant_delta_event(); await bridge.append(event)",
+        redis_source="class RedisStreamBridge: pass",
+        callback_source="append_callback_v4_rows(); await publish_callback_rows(capabilities, rows)",
         executor_source="async def run(): pass",
         adr_source="producer ownership is unspecified",
     )
@@ -206,7 +206,7 @@ def test_checker_detects_active_v4_application_publisher_inside_transaction():
         """
 async def callback(transaction):
     async with transaction():
-        await publish_pending_v4_events(capabilities)
+        await publish_callback_rows(capabilities, rows)
 """
     ).body[0]
 
@@ -460,7 +460,7 @@ export async function connectToSSE(): Promise<void> {
   const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
     commitTransportCursor(semanticApplied);
   };
-  handlePublicRunStreamFrameV4({
+  handlePublicRunStreamFrameV4Result({
     frame,
     onCommitted: commitAcceptedStreamEvent,
   });
@@ -477,7 +477,7 @@ export async function connectToSSE(): Promise<void> {
     )
     calls = cutover._typescript_call_arguments(
         connect,
-        "handlePublicRunStreamFrameV4",
+        "handlePublicRunStreamFrameV4Result",
     )
 
     assert "fake.acceptedStreamCursorRef" not in connect
@@ -493,7 +493,7 @@ export async function connectToSSE(): Promise<void> {
     ctx.acceptedStreamCursorRef.current = accepted;
   };
   const commitAcceptedStreamEvent = (semanticApplied: boolean) => {};
-  handlePublicRunStreamFrameV4({
+  handlePublicRunStreamFrameV4Result({
     frame,
     onCommitted: commitAcceptedStreamEvent,
   });

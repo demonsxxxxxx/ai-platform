@@ -17,7 +17,6 @@ class RunTerminalEventFact:
     terminal_reason: str
     error_code: str | None
     trace_ref: str | None
-    projection_failure_reason: str | None = None
 
 
 @dataclass(frozen=True)

@@ -44,8 +44,8 @@ MODEL_GATEWAY_BACKPRESSURE_POLICY_SCHEMA = "ai-platform.model-gateway-backpressu
 _MODEL_GATEWAY_BACKPRESSURE_POLICY = {
     "schema_version": MODEL_GATEWAY_BACKPRESSURE_POLICY_SCHEMA,
     "status": "contract_only_not_enforced",
-    "config_signal": "MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT",
-    "default_limit_policy": "0_disables_platform_request_limit",
+    "config_signal": None,
+    "default_limit_policy": "unbounded_by_platform",
     "required_admin_runtime_fields": [
         "capacity.limits.model_gateway",
         "backpressure.model_gateway",
@@ -592,11 +592,6 @@ def _bool_setting(settings: object, name: str) -> bool:
     return _coerce_bool(getattr(settings, name, False))
 
 
-def _positive_int_setting(settings: object, name: str) -> int | None:
-    value = _int_setting(settings, name)
-    return value if value > 0 else None
-
-
 def _string_setting(settings: object, name: str, default: str = "") -> str:
     value = getattr(settings, name, default)
     return str(value or default)
@@ -1021,16 +1016,6 @@ def build_capacity_baseline(settings: object | None = None) -> dict[str, Any]:
                 default="fake",
                 allowed_values=_SANDBOX_PROVIDER_VALUES,
             ),
-            "max_active_ephemeral_containers": _int_setting(
-                resolved_settings,
-                "sandbox_max_active_ephemeral_containers",
-                2,
-            ),
-            "max_active_persistent_containers": _int_setting(
-                resolved_settings,
-                "sandbox_max_active_persistent_containers",
-                1,
-            ),
             "container_start_timeout_seconds": _int_setting(
                 resolved_settings,
                 "sandbox_container_start_timeout_seconds",
@@ -1050,10 +1035,8 @@ def build_capacity_baseline(settings: object | None = None) -> dict[str, Any]:
                 allowed_values=_MODEL_GATEWAY_PROVIDER_VALUES,
             ),
             "request_concurrency_limit": None,
-            "configured_request_concurrency_limit": _positive_int_setting(
-                resolved_settings,
-                "model_gateway_request_concurrency_limit",
-            ),
+            # Preserve the snapshot field for Admin Runtime and recorded evidence.
+            "configured_request_concurrency_limit": None,
             "limit_enforcement": "not_implemented",
             "capacity_evidence": "unproven_without_load_test",
         },
@@ -2987,13 +2970,6 @@ def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
         ("User queue processing limit", str(limits["queue"]["user_processing_limit"])),
         ("Queue lease scan limit", str(limits["queue"]["lease_scan_limit"])),
         ("Sandbox provider", str(limits["sandbox"]["container_provider"])),
-        (
-            "Sandbox active containers",
-            (
-                f"ephemeral={limits['sandbox']['max_active_ephemeral_containers']}, "
-                f"persistent={limits['sandbox']['max_active_persistent_containers']}"
-            ),
-        ),
         ("Model gateway concurrency", model_gateway_concurrency),
     ]
     table = "\n".join(f"| {name} | {value} |" for name, value in rows)
@@ -3014,7 +2990,7 @@ def render_capacity_baseline_markdown(baseline: dict[str, Any]) -> str:
         "## Model Gateway Backpressure Policy\n\n"
         f"Schema: `{policy['schema_version']}`\n\n"
         f"Status: `{policy['status']}`\n\n"
-        f"Config signal: `{policy['config_signal']}`\n\n"
+        f"Config signal: `{policy['config_signal'] or 'unavailable'}`\n\n"
         f"Default limit policy: `{policy['default_limit_policy']}`\n\n"
         f"Required load-test gate: `{policy['required_load_test_gate']}`\n\n"
         f"Enforcement status: `{policy['enforcement_status']}`\n\n"

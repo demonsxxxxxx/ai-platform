@@ -2,11 +2,8 @@
  * Session management hooks
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
-import { useInView } from "react-intersection-observer";
+import { useState, useCallback, useEffect } from "react";
 import { sessionApi, type BackendSession } from "../services/api";
-
-const PAGE_SIZE = 20;
 
 function dedup(sessions: BackendSession[]): BackendSession[] {
   const seen = new Set<string>();
@@ -39,7 +36,7 @@ export function reconcileSessionList(input: {
   return dedup(merged);
 }
 
-// ─── Paginated active session list ──────────────────────────────────
+// ─── Authorized active session list ────────────────────────────────
 
 export interface UseSessionListReturn {
   sessions: BackendSession[];
@@ -55,113 +52,41 @@ export interface UseSessionListReturn {
   updateSession: (session: BackendSession) => void;
 }
 
-/** Lists active chat sessions with pagination, deduplication, and refresh helpers. */
+/** Lists the bounded, disclosure-safe active-session projection. */
 export function useSessionList(
-  scrollRoot?: Element | null,
+  _scrollRoot?: Element | null,
   enabled = true,
 ): UseSessionListReturn {
   const [sessions, setSessions] = useState<BackendSession[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-  const [skip, setSkip] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const loadedCountRef = useRef(PAGE_SIZE);
+  const loadMoreRef = useCallback((_element: HTMLElement | null) => {}, []);
 
-  const { ref: loadMoreRef, inView } = useInView({
-    threshold: 0.1,
-    root: scrollRoot ?? undefined,
-  });
-
-  const fetchSessions = async (reset = false) => {
-    const targetSkip = reset ? 0 : skip;
-    if (!reset && (isLoadingMore || !hasMore)) return;
-    if (reset) {
-      setIsLoading(true);
-      setSkip(0);
-    } else {
-      setIsLoadingMore(true);
-    }
+  const fetchSessions = useCallback(async () => {
+    setIsLoading(true);
     setError(null);
-
     try {
-      const response = await sessionApi.list({
-        limit: PAGE_SIZE,
-        skip: targetSkip,
-        status: "active",
-      });
-
-      const newSessions =
-        "sessions" in response
-          ? response.sessions
-          : Array.isArray(response)
-            ? response
-            : [];
-      const newHasMore = "has_more" in response ? response.has_more : false;
-
-      if (reset) {
-        setSessions(dedup(newSessions));
-        setSkip(newSessions.length);
-        loadedCountRef.current = Math.max(PAGE_SIZE, newSessions.length);
-      } else {
-        setSessions((prev) => dedup([...prev, ...newSessions]));
-        setSkip(targetSkip + newSessions.length);
-        loadedCountRef.current = Math.max(
-          loadedCountRef.current,
-          targetSkip + newSessions.length,
-        );
-      }
-      setHasMore(newSessions.length > 0 ? newHasMore : false);
+      setSessions(dedup(await sessionApi.listAuthoritative()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load sessions");
     } finally {
       setIsLoading(false);
-      setIsLoadingMore(false);
     }
-  };
+  }, []);
 
-  // Infinite scroll
-  useEffect(() => {
-    if (enabled && inView && hasMore && !isLoadingMore && !isLoading) {
-      fetchSessions(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, inView, hasMore, isLoadingMore, isLoading]);
-
-  // Fetch the active session projection on mount.
   useEffect(() => {
     setSessions([]);
-    setSkip(0);
-    setHasMore(false);
-    loadedCountRef.current = PAGE_SIZE;
-    if (enabled) fetchSessions(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled]);
+    if (enabled) void fetchSessions();
+  }, [enabled, fetchSessions]);
 
   const refresh = useCallback(async () => {
-    if (!enabled) return;
-    await fetchSessions(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled]);
+    if (enabled) await fetchSessions();
+  }, [enabled, fetchSessions]);
 
   const softRefresh = useCallback(async () => {
     if (!enabled) return;
     try {
-      const requestLimit = Math.min(
-        100,
-        Math.max(PAGE_SIZE, loadedCountRef.current),
-      );
-      const response = await sessionApi.list({
-        limit: requestLimit,
-        skip: 0,
-        status: "active",
-      });
-      const newSessions =
-        "sessions" in response
-          ? response.sessions
-          : Array.isArray(response)
-            ? response
-            : [];
+      const newSessions = await sessionApi.listAuthoritative();
       setSessions((prev) =>
         reconcileSessionList({
           previous: prev,
@@ -169,9 +94,6 @@ export function useSessionList(
           removeMissing: false,
         }),
       );
-      loadedCountRef.current = Math.max(PAGE_SIZE, newSessions.length);
-      setSkip(newSessions.length);
-      setHasMore("has_more" in response ? response.has_more : false);
     } catch {
       // silent — soft refresh is best-effort
     }
@@ -189,14 +111,25 @@ export function useSessionList(
   }, []);
 
   const updateSession = useCallback((session: BackendSession) => {
-    setSessions((prev) => prev.map((s) => (s.id === session.id ? session : s)));
+    setSessions((prev) =>
+      prev.map((current) =>
+        current.id === session.id
+          ? {
+              ...current,
+              ...session,
+              agent_conversation:
+                session.agent_conversation ?? current.agent_conversation,
+            }
+          : current,
+      ),
+    );
   }, []);
 
   return {
     sessions,
     isLoading,
-    isLoadingMore,
-    hasMore,
+    isLoadingMore: false,
+    hasMore: false,
     error,
     loadMoreRef,
     refresh,

@@ -174,6 +174,10 @@ class _UnitOfWork:
                 "event_ids_json": [],
                 "first_sequence": None,
                 "through_sequence": None,
+                "payload_digest": params[5],
+                "projection_version": params[6],
+                "item_count": params[7],
+                "callback_received_at": "2026-09-11T00:00:00Z",
             }
             return _Cursor({"id": str(params[0])})
         if "select id, event_ids_json, first_sequence, through_sequence" in sql:
@@ -182,7 +186,7 @@ class _UnitOfWork:
             if self.fail_event_insert:
                 raise RuntimeError("write_failed")
             self.events[str(params[0])] = {"id": str(params[0]), "sequence": int(params[5])}
-            return _Cursor()
+            return _Cursor({"created_at": "2026-09-11T00:00:00Z"})
         if sql.startswith("select sequence from run_events"):
             return _Cursor(self.events[str(params[1])])
         if "update run_event_batches" in sql:
@@ -261,7 +265,7 @@ def test_batch_receipt_replay_and_rollback_are_owned_by_the_transaction_protocol
                 run_id="run-a",
                 attempt_id="attempt-a",
                 batch_id="batch-a",
-                events=[],
+                events=[postgres.LedgerEvent(event_type="assistant_delta", stage="answer", payload={"delta": "once"})],
             )
         )
         failing = _UnitOfWork(fail_event_insert=True)

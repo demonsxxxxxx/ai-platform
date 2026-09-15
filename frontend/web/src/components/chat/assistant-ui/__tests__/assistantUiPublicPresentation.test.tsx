@@ -7,6 +7,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { MessagePart } from "../../../../types";
 import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
+import { MessageWorkActivity } from "../../ChatMessage/MessageWorkActivity";
 import {
   closePersistentToolPanel,
   getPersistentToolPanelState,
@@ -26,6 +27,127 @@ function activateNativeButton(
   assert.equal(shouldRunDefault, true);
   button.click();
 }
+
+test("chat work disclosure collapses on completion and keeps answer content outside", () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
+    url: "http://localhost/",
+  });
+  for (const key of [
+    "window",
+    "document",
+    "navigator",
+    "HTMLElement",
+    "Node",
+    "Event",
+    "KeyboardEvent",
+  ] as const) {
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      value: dom.window[key],
+    });
+  }
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
+    configurable: true,
+    value: true,
+  });
+  const container = dom.window.document.getElementById("root") as HTMLDivElement;
+  const root = createRoot(container);
+  const thinking: Extract<MessagePart, { type: "thinking" }> = {
+    type: "thinking",
+    content: "公开思考摘要",
+    thinking_id: "thinking-public-1",
+    public_reasoning: true,
+    isStreaming: true,
+  };
+  const renderMessage = (isStreaming: boolean, parts: MessagePart[]) =>
+    createElement(MessageWorkActivity, {
+      messageId: "message-work-details",
+      isStreaming,
+      parts,
+      partKeys: parts.map((part, index) => `${part.type}:${index}`),
+      renderPart: (part, index, withinWorkDetails) =>
+        createElement(MessagePartRenderer, {
+          part,
+          messageId: "message-work-details",
+          partIndex: index,
+          isStreaming,
+          isLast: index === parts.length - 1,
+          withinWorkDetails,
+        }),
+    });
+
+  try {
+    act(() => {
+      root.render(renderMessage(true, [thinking]));
+    });
+    let toggle = container.querySelector(
+      "[data-message-work-details-toggle]",
+    ) as HTMLButtonElement;
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    assert.equal(toggle.hasAttribute("aria-label"), false);
+    assert.match(toggle.textContent || "", /工作中.*全部收起/s);
+    assert.equal(
+      container.querySelector("[data-public-thinking] button")?.getAttribute("aria-expanded"),
+      null,
+    );
+
+    act(() => {
+      root.render(
+        renderMessage(false, [
+          { ...thinking, isStreaming: false },
+          { type: "text", content: "最终正文保持可见" },
+          {
+            type: "tool",
+            id: "tool-public-1",
+            name: "读取已授权文件",
+            args: {},
+            status: "completed",
+            success: true,
+            isPending: false,
+            public_operation_id: "operation-public-1",
+            public_category: "read",
+          },
+        ]),
+      );
+    });
+    toggle = container.querySelector(
+      "[data-message-work-details-toggle]",
+    ) as HTMLButtonElement;
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    const controlledIds = (toggle.getAttribute("aria-controls") || "")
+      .split(" ")
+      .filter(Boolean);
+    assert.equal(controlledIds.length, 2);
+    controlledIds.forEach((id) => {
+      assert.equal(dom.window.document.getElementById(id)?.hidden, true);
+    });
+    assert.equal(
+      container.querySelector("[data-public-thinking] button")?.getAttribute("aria-expanded"),
+      null,
+    );
+    const answer = [...container.querySelectorAll("p")].find((node) =>
+      node.textContent?.includes("最终正文保持可见"),
+    );
+    assert.ok(answer);
+    assert.equal(answer.closest("[hidden]"), null);
+
+    act(() => activateNativeButton(toggle, "Enter"));
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    controlledIds.forEach((id) => {
+      assert.equal(dom.window.document.getElementById(id)?.hidden, false);
+    });
+    const thinkingButton = container.querySelector(
+      "[data-public-thinking] button",
+    ) as HTMLButtonElement;
+    act(() => activateNativeButton(thinkingButton, " "));
+    assert.equal(thinkingButton.getAttribute("aria-expanded"), null);
+    assert.doesNotMatch(container.textContent || "", /公开思考摘要/);
+  } finally {
+    closePersistentToolPanel();
+    act(() => root.unmount());
+    dom.window.close();
+  }
+});
 
 test("generic public tools expose distinct safe failed and denied states", () => {
   const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {

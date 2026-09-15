@@ -1,4 +1,4 @@
-"""Clean-commit deployment, dirty-source preservation, and runtime parity checks."""
+"""Controlled source builds, legacy host migration, and runtime parity checks."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from collections import OrderedDict, deque
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
 import ipaddress
 import json
 import os
@@ -18,7 +17,6 @@ import shlex
 import signal
 import stat
 import subprocess
-import tarfile
 import threading
 import time
 import unicodedata
@@ -86,7 +84,6 @@ else:
     )
 
 
-PRESERVATION_SCHEMA_VERSION = "ai-platform.release-authority-preservation.v1"
 SCHEMA_VERSION = _PARITY_SCHEMA_VERSION
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_DIRECTORY_RE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -125,7 +122,6 @@ AUTHORITATIVE_REPOSITORY_ALIASES = {
     "git@github.com:demonsxxxxxx/ai-platform.git",
     "ssh://git@github.com/demonsxxxxxx/ai-platform.git",
 }
-SECRET_PATH_NAMES = {".env", ".env.local", ".env.production", ".env.development"}
 DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 300
 HTTP_PROBE_TIMEOUT_SECONDS = 15
 APT_MIRROR_PROBE_MAX_BYTES = 256 * 1024
@@ -1814,94 +1810,9 @@ def materialize_main_checkout(release_root: Path, commit: str) -> Path:
     return checkout
 
 
-def _is_secret_path(relative_path: str) -> bool:
-    path = Path(relative_path)
-    name = path.name.lower()
-    return name in SECRET_PATH_NAMES or name.startswith(".env.")
-
-
-def _sha256_path(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _write_bytes(path: Path, content: bytes) -> dict[str, Any]:
-    path.write_bytes(content)
-    return {"size": path.stat().st_size, "sha256": _sha256_path(path)}
-
-
 def _git_paths(repo_root: Path, *args: str) -> list[str]:
     raw = bytes(_git(repo_root, *args, "-z", text=False))
     return [item.decode("utf-8", "replace") for item in raw.split(b"\0") if item]
-
-
-def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
-    """Preserve dirty Git evidence without changing or cleaning the source tree."""
-    repo_root = repo_root.resolve()
-    output_root = output_root.resolve()
-    head = str(_git(repo_root, "rev-parse", "HEAD")).strip().lower()
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    destination = output_root / f"{timestamp}-{head}"
-    destination.mkdir(parents=True, exist_ok=False)
-    status = str(_git(repo_root, "status", "--short", "--branch", "--untracked-files=all"))
-    status_bytes = status.encode("utf-8")
-    tracked_patch = bytes(_git(repo_root, "diff", "--binary", text=False))
-    staged_patch = bytes(_git(repo_root, "diff", "--cached", "--binary", text=False))
-    modified = set(_git_paths(repo_root, "diff", "--name-only"))
-    staged = set(_git_paths(repo_root, "diff", "--cached", "--name-only"))
-    untracked = set(_git_paths(repo_root, "ls-files", "--others", "--exclude-standard"))
-    inventory: list[dict[str, Any]] = []
-    for relative_path in sorted(modified | staged | untracked):
-        path = repo_root / relative_path
-        secret = _is_secret_path(relative_path)
-        category = "untracked" if relative_path in untracked else "tracked"
-        if relative_path in staged:
-            category = "staged" if category == "tracked" else f"{category}+staged"
-        record: dict[str, Any] = {
-            "path": relative_path,
-            "category": category,
-            "exists": path.exists(),
-            "content_preserved": bool(path.is_file() and not secret),
-            "secret_path_excluded": secret,
-            "size": path.stat().st_size if path.is_file() else None,
-            "mode": oct(path.stat().st_mode & 0o777) if path.exists() else None,
-            "sha256": _sha256_path(path) if path.is_file() and not secret else None,
-        }
-        inventory.append(record)
-    inventory_path = destination / "inventory.json"
-    inventory_path.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    artifacts = {
-        "status.txt": _write_bytes(destination / "status.txt", status_bytes),
-        "tracked.patch": _write_bytes(destination / "tracked.patch", tracked_patch),
-        "staged.patch": _write_bytes(destination / "staged.patch", staged_patch),
-        "inventory.json": {
-            "size": inventory_path.stat().st_size,
-            "sha256": _sha256_path(inventory_path),
-        },
-    }
-    tar_path = destination / "untracked.tar"
-    with tarfile.open(tar_path, "w") as archive:
-        for relative_path in sorted(untracked):
-            path = repo_root / relative_path
-            if path.is_file() and not _is_secret_path(relative_path):
-                archive.add(path, arcname=relative_path, recursive=False)
-    artifacts["untracked.tar"] = {"size": tar_path.stat().st_size, "sha256": _sha256_path(tar_path)}
-    manifest = {
-        "schema_version": PRESERVATION_SCHEMA_VERSION,
-        "captured_at": datetime.now(timezone.utc).isoformat(),
-        "source_path": str(repo_root),
-        "source_head": head,
-        "source_was_dirty": bool(status.strip()),
-        "source_tree_unchanged_by_preservation": True,
-        "secret_path_policy": "record_metadata_only_without_hash_or_archive_content",
-        "artifacts": artifacts,
-    }
-    manifest_path = destination / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return destination
 
 
 def build_parity_report(
@@ -3195,39 +3106,9 @@ def _write_json(payload: dict[str, Any], output: Path | None) -> None:
 
 
 def main() -> int:
-    """Run the release-authority preservation, deployment, or verification command."""
+    """Run a controlled source build, mirror probe, or parity verification."""
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    preserve = subparsers.add_parser("preserve-dirty", help="Preserve dirty source without cleaning it")
-    preserve.add_argument("--repo-root", type=Path, required=True)
-    preserve.add_argument("--output-root", type=Path, required=True)
-    deploy = subparsers.add_parser("deploy", help="Build and deploy one clean commit")
-    deploy.add_argument("--repo-root", type=Path, required=True)
-    deploy.add_argument("--commit", required=True)
-    deploy.add_argument("--docker-cmd", default="docker")
-    deploy.add_argument("--env-file", type=Path, required=True)
-    deploy.add_argument("--replace-known-manual-frontend", action="store_true")
-    deploy.add_argument("--expected-manual-frontend-image")
-    deploy.add_argument("--expected-manual-frontend-image-id")
-    deploy.add_argument(
-        "--canonical-build-timeout-seconds",
-        type=_canonical_dependency_build_timeout_argument,
-        default=CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS,
-        metavar="SECONDS",
-        help=(
-            "Per-stage dependency-triggered canonical build timeout "
-            f"({MIN_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS}.."
-            f"{MAX_CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS}; "
-            f"default: {CANONICAL_DEPENDENCY_BUILD_TIMEOUT_SECONDS})"
-        ),
-    )
-    deploy.add_argument(
-        "--compose-file",
-        dest="compose_files",
-        action="append",
-        metavar="REPO_RELATIVE_PATH",
-        help="Ordered repo-relative Compose file; repeat for overlays",
-    )
     deploy_main = subparsers.add_parser(
         "deploy-main-commit",
         help="Fetch, deploy, and verify one exact main commit",
@@ -3304,27 +3185,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        if args.command == "preserve-dirty":
-            destination = preserve_dirty_source(args.repo_root, args.output_root)
-            _write_json({"preserved": True, "path": str(destination)}, None)
-        elif args.command == "deploy":
-            _write_json(
-                deploy_clean_commit(
-                    args.repo_root,
-                    args.commit,
-                    docker_cmd=args.docker_cmd,
-                    env_file=args.env_file,
-                    replace_known_manual_frontend=args.replace_known_manual_frontend,
-                    expected_manual_frontend_image=args.expected_manual_frontend_image,
-                    expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
-                    compose_files=args.compose_files,
-                    canonical_dependency_build_timeout_seconds=(
-                        args.canonical_build_timeout_seconds
-                    ),
-                ),
-                None,
-            )
-        elif args.command == "deploy-main-commit":
+        if args.command == "deploy-main-commit":
             _write_json(
                 deploy_main_commit(
                     args.release_root,

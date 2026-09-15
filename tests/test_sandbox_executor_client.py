@@ -574,6 +574,56 @@ async def test_executor_client_non_2xx_error_identity_is_bounded_and_secret_safe
         assert secret not in projected
 
 
+def test_executor_http_error_carries_bounded_private_diagnostics_separately():
+    runtime_diagnostics = {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": "executor_health_timeout",
+        "failure_source": "executor_health",
+        "failure_stage": "dispatch",
+        "sdk": {},
+    }
+
+    class StubResponse:
+        status_code = 504
+        content = b"bounded-json"
+
+        @staticmethod
+        def json():
+            return {
+                "error_code": "executor_health_timeout",
+                "runtime_diagnostics": runtime_diagnostics,
+            }
+
+    error = executor_client_module._executor_http_error(StubResponse())
+
+    assert error.error_code == "executor_health_timeout"
+    assert str(error) == "Executor health timeout (HTTP 504)"
+    assert error.runtime_diagnostics["error_code"] == "executor_health_timeout"
+    assert error.runtime_diagnostics["failure_observations"][0] == {
+        "error_code": "executor_health_timeout",
+        "failure_source": "executor_health",
+        "failure_stage": "dispatch",
+    }
+
+
+def test_executor_http_error_explains_oversized_unparsed_body():
+    class StubResponse:
+        status_code = 502
+        content = b"x" * 4_097
+
+        @staticmethod
+        def json():
+            raise AssertionError("oversized error body must not be parsed")
+
+    error = executor_client_module._executor_http_error(StubResponse())
+
+    assert error.error_code == "executor_http_failure"
+    assert error.runtime_diagnostics["error_code"] == "runtime_diagnostics_rejected"
+    assert error.runtime_diagnostics["normalization_losses"] == [
+        {"field": "http_error_body", "reason": "truncated"}
+    ]
+
+
 @pytest.mark.asyncio
 async def test_executor_client_rejects_http_200_reported_failure_as_invalid_protocol():
     async def post_json(url, payload, timeout, headers=None):
@@ -670,7 +720,20 @@ def test_executor_failure_normalizer_preserves_private_runtime_diagnostics():
         expected_run_id="run-a",
     )
 
-    assert normalized["runtime_diagnostics"] == runtime_diagnostics
+    bounded = normalized["runtime_diagnostics"]
+    assert bounded["error_code"] == runtime_diagnostics["error_code"]
+    assert bounded["failure_observations"] == [
+        {
+            "error_code": "claude_agent_sdk_tool_admission_failed",
+            "failure_source": "sdk_result_error",
+            "failure_stage": "model_wait",
+        }
+    ]
+    assert bounded["normalization_losses"] == []
+    assert bounded["sdk"] == runtime_diagnostics["sdk"]
+    assert bounded["tool_policy_denials"] == runtime_diagnostics[
+        "tool_policy_denials"
+    ]
 
 
 def test_executor_failure_normalizer_bounds_and_validates_runtime_diagnostics():
@@ -708,10 +771,12 @@ def test_executor_failure_normalizer_bounds_and_validates_runtime_diagnostics():
     assert len(bounded["tool_calls"]) == 8
     assert bounded["tool_calls"][-1]["invocation_id"] == "call-19"
     assert bounded["tool_calls"][-1]["tool_input"]["truncated"] is True
-    assert bounded["truncated"]["tool_calls"] == {
+    assert {
+        "field": "tool_calls",
+        "reason": "truncated",
         "original": 20,
         "retained": 8,
-    }
+    } in bounded["normalization_losses"]
 
     malformed = executor_client_module.normalize_executor_reported_failure(
         {
@@ -723,52 +788,11 @@ def test_executor_failure_normalizer_bounds_and_validates_runtime_diagnostics():
             },
         }
     )
-    assert "runtime_diagnostics" not in malformed
-
-
-def test_executor_failure_normalizer_keeps_only_safe_projection_reason():
-    common = {
-        "status": "failed",
-        "run_id": "run-a",
-        "error_code": "claude_agent_sdk_public_projection_failed",
-    }
-    safe = executor_client_module.normalize_executor_reported_failure(
-        {
-            **common,
-            "sdk_turn_diagnostics": {
-                "projection_failure_reason": "terminal_text_mismatch",
-                "private": "must-not-cross",
-            },
-        },
-        expected_run_id="run-a",
-    )
-    unsafe = executor_client_module.normalize_executor_reported_failure(
-        {
-            **common,
-            "sdk_turn_diagnostics": {
-                "projection_failure_reason": "C:/private/path?token=secret"
-            },
-        },
-        expected_run_id="run-a",
-    )
-    unrelated = executor_client_module.normalize_executor_reported_failure(
-        {
-            **common,
-            "error_code": "claude_agent_sdk_tool_admission_failed",
-            "sdk_turn_diagnostics": {
-                "projection_failure_reason": "terminal_text_mismatch"
-            },
-        },
-        expected_run_id="run-a",
-    )
-
-    assert safe["sdk_turn_diagnostics"] == {
-        "projection_failure_reason": "terminal_text_mismatch"
-    }
-    assert "sdk_turn_diagnostics" not in unsafe
-    assert "sdk_turn_diagnostics" not in unrelated
-    assert "must-not-cross" not in str(safe)
-    assert "secret" not in str(unsafe)
+    rejected = malformed["runtime_diagnostics"]
+    assert rejected["error_code"] == "runtime_diagnostics_rejected"
+    assert rejected["normalization_losses"] == [
+        {"field": "error_code", "reason": "invalid_field"}
+    ]
 
 
 def test_executor_failure_normalizer_drops_unknown_private_fields():

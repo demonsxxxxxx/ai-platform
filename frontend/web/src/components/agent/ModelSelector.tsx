@@ -297,15 +297,6 @@ const ModelSelector = memo(function ModelSelector({
         />
       </button>
 
-      {!isDefault && (
-        <button
-          onClick={handleSetDefault}
-          className="absolute left-[1px] top-full mt-[1px] text-[0.7rem] text-stone-400 hover:text-stone-600 dark:text-stone-500 dark:hover:text-stone-300 transition-colors cursor-pointer select-none"
-        >
-          {t("models.setDefault")}
-        </button>
-      )}
-
       {showSelector &&
         createPortal(
           <div
@@ -343,6 +334,20 @@ const ModelSelector = memo(function ModelSelector({
                 />
               ))}
             </div>
+            {!isDefault ? (
+              <div className="border-t border-stone-200 p-2 dark:border-stone-700">
+                <button
+                  className="w-full rounded-md px-3 py-2 text-left text-sm text-stone-600 transition-colors hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-700"
+                  onClick={() => {
+                    handleSetDefault();
+                    setShowSelector(false);
+                  }}
+                  type="button"
+                >
+                  {t("models.setDefault")}
+                </button>
+              </div>
+            ) : null}
           </div>,
           document.body,
         )}

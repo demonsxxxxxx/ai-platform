@@ -282,6 +282,43 @@ async def get_skill_version(
     return _project_skill_version(row) if row is not None else None
 
 
+async def lock_skill_for_version_upload(
+    conn: AsyncConnection,
+    *,
+    skill_id: str,
+) -> None:
+    cursor = await conn.execute(
+        "select id from skills where id = %s for update",
+        (skill_id,),
+    )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("skill_not_found")
+
+
+async def list_uploaded_skill_display_version_rows(
+    conn: AsyncConnection,
+    *,
+    skill_ids: list[str],
+) -> list[dict[str, Any]]:
+    if not skill_ids:
+        return []
+    cursor = await conn.execute(
+        """
+        select
+          skill_id,
+          version,
+          created_at,
+          source_json->>'display_version' as display_version
+        from skill_versions
+        where skill_id = any(%s)
+          and source_json->>'kind' = 'uploaded'
+        order by skill_id asc, created_at asc, version asc
+        """,
+        (skill_ids,),
+    )
+    return [dict(row) for row in list(await cursor.fetchall())]
+
+
 async def validate_replay_skill_manifests(
     conn: AsyncConnection,
     *,

@@ -121,6 +121,7 @@ import {
   type SessionWorkspaceProjection,
 } from "./sessionWorkspaceFiles";
 import { mergeProjectedSessionFiles } from "./sessionInputFiles";
+import type { FileUploadControls } from "../../../hooks/useFileUpload";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
 
@@ -138,6 +139,7 @@ const ASSISTANT_UI_MESSAGE_COMPONENTS = {
 interface ChatViewProps {
   messages: Message[];
   sessionId: string | null;
+  conversationIdentityKey: string;
   currentRunId: string | null;
   isLoading: boolean;
   isLoadingHistory: boolean;
@@ -196,6 +198,7 @@ interface ChatViewProps {
   onAttachmentsChange: React.Dispatch<
     React.SetStateAction<MessageAttachment[]>
   >;
+  uploadControls: FileUploadControls;
   externalNavigationToken?: string | null;
   externalNavigationTargetFile?: ExternalNavigationTargetFile | null;
   externalNavigationTargetRunId?: string | null;
@@ -213,6 +216,7 @@ interface ChatViewProps {
 export function ChatView({
   messages,
   sessionId,
+  conversationIdentityKey,
   currentRunId,
   isLoading,
   isLoadingHistory,
@@ -257,6 +261,7 @@ export function ChatView({
   onLoadHistory,
   attachments,
   onAttachmentsChange,
+  uploadControls,
   externalNavigationToken,
   externalNavigationTargetFile,
   externalNavigationTargetRunId,
@@ -814,6 +819,7 @@ export function ChatView({
     initialDraftKey: initialComposerDraftKey,
     draftSnapshotRef: composerDraftSnapshotRef,
     draftScopeKey: sessionId,
+    attachmentScopeKey: conversationIdentityKey,
     draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
     onStop: onStopGeneration,
@@ -847,6 +853,7 @@ export function ChatView({
     onSelectModel,
     attachments,
     onAttachmentsChange,
+    uploadControls,
   };
 
   const assistantUiActions = useMemo(
@@ -928,7 +935,7 @@ export function ChatView({
       )}
 
       {canRetryPendingSubmission && (
-        <div className="mx-auto mb-2 flex max-w-4xl px-2">
+        <div className="mx-auto mb-2 flex max-w-[68rem] px-2">
           <button
             type="button"
             onClick={() => void onRetryPendingSubmission()}
@@ -942,7 +949,7 @@ export function ChatView({
       )}
       {messages.length === 0 && agentEmptyProfile?.starter_prompts.length ? (
         <div
-          className="mx-auto mb-3 flex max-w-4xl flex-wrap gap-2 px-2"
+          className="mx-auto mb-3 flex max-w-[68rem] flex-wrap gap-2 px-2"
           data-agent-starter-prompts
         >
           <p className="w-full text-xs font-medium text-[var(--theme-text-secondary)]">
@@ -963,7 +970,7 @@ export function ChatView({
       ) : null}
       <ChatInput
         {...chatInputProps}
-        className="mx-auto max-w-4xl px-2"
+        className="mx-auto max-w-[68rem] px-2"
       />
     </div>
   );
@@ -1011,9 +1018,9 @@ export function ChatView({
                     <h1 className="mt-3 text-2xl font-semibold text-[var(--theme-text)]">
                       {agentEmptyProfile.name}
                     </h1>
-                    {agentEmptyProfile.welcome_message ? (
+                    {agentEmptyProfile.description ? (
                       <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)]">
-                        {agentEmptyProfile.welcome_message}
+                        {agentEmptyProfile.description}
                       </p>
                     ) : null}
                   </div>

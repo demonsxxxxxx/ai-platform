@@ -10,6 +10,23 @@ import {
   type EventData,
 } from "./types";
 
+const PUBLIC_EXECUTION_MAX_ELAPSED_MS = 24 * 60 * 60 * 1000;
+
+/** Keep only timestamps that can safely participate in a public duration. */
+export function validPublicExecutionTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()) {
+    return undefined;
+  }
+  return Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
+function executionEventTimestamp(data: EventData): string | undefined {
+  return (
+    validPublicExecutionTimestamp(data.created_at) ||
+    validPublicExecutionTimestamp(data.timestamp)
+  );
+}
+
 const PUBLIC_AGENT_PROGRESS_KINDS: Readonly<Record<string, ExecutionTimelineKind>> = {
   attachment_materialization: "file_read",
   skill_staging: "capability",
@@ -47,6 +64,13 @@ export function projectPublicAgentProgress(
   const lifecycle = String(payload.lifecycle);
   const kind = PUBLIC_AGENT_PROGRESS_KINDS[phase];
   if (!kind) return null;
+  const status =
+    lifecycle === "completed"
+      ? "completed"
+      : lifecycle === "failed"
+        ? "failed"
+        : "running";
+  const timestamp = executionEventTimestamp(data);
   return {
     type: "execution_step",
     sequence: data.sequence,
@@ -54,17 +78,16 @@ export function projectPublicAgentProgress(
     kind,
     stage: phase,
     title: String(payload.message),
-    status:
-      lifecycle === "completed"
-        ? "completed"
-        : lifecycle === "failed"
-          ? "failed"
-          : "running",
+    status,
     progress: {
-      current: lifecycle === "completed" ? 1 : 0,
+      current: status === "completed" ? 1 : 0,
       total: 1,
     },
     safe_file_name: null,
+    ...(timestamp ? { started_at: timestamp } : {}),
+    ...(status !== "running" && timestamp
+      ? { completed_at: timestamp }
+      : {}),
   };
 }
 
@@ -195,7 +218,7 @@ export function upsertPublicThinkingActivity(
 
 export const EXECUTION_PROGRESS_MIN_INTERVAL_MS = 250;
 
-/** Exact stream owner required before buffered public presentation may commit. */
+/** Exact stream owner required before deferred execution presentation may commit. */
 export interface PublicStreamPresentationOwner {
   sessionId: string;
   runId: string;
@@ -203,22 +226,15 @@ export interface PublicStreamPresentationOwner {
   streamVersion: number;
 }
 
-export type PublicExecutionPresentationPhase =
-  | "started"
-  | "progress"
-  | "terminal";
-
 export interface PublicExecutionPresentationUpdate {
   stepId: string;
   sequence: number;
-  phase: PublicExecutionPresentationPhase;
+  phase: "started" | "progress" | "terminal";
   commit: () => void;
 }
 
 export interface PublicStreamPresentationClock {
   now: () => number;
-  requestAnimationFrame: (callback: FrameRequestCallback) => number;
-  cancelAnimationFrame: (handle: number) => void;
   setTimeout: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimeout: (handle: ReturnType<typeof setTimeout>) => void;
 }
@@ -226,8 +242,6 @@ export interface PublicStreamPresentationClock {
 function browserClock(): PublicStreamPresentationClock {
   return {
     now: () => Date.now(),
-    requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
-    cancelAnimationFrame: (handle) => window.cancelAnimationFrame(handle),
     setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimeout: (handle) => clearTimeout(handle),
   };
@@ -244,34 +258,14 @@ function ownersEqual(
     left.streamVersion === right.streamVersion;
 }
 
-interface PendingText {
-  content: string;
-  commit: (content: string, onApplied: () => void) => void;
-  acknowledgements: Array<() => void>;
-  semanticEventIds: Set<string>;
-  latestSequence: number | null;
-}
-
-export interface PublicTextPresentationAcceptance {
-  onCommitted?: () => void;
-  semanticEventId?: string;
-  sequence?: number | null;
-}
-
 interface PendingProgress extends PublicExecutionPresentationUpdate {
   dueAt: number;
 }
 
-/**
- * Coalesce safe public stream presentation without changing durable event order.
- * The owner key is intentionally complete so stale session/run shells cannot
- * publish after an auth, session, or stream-generation replacement.
- */
+/** Throttle execution-only progress without delaying text or protocol acceptance. */
 export class PublicStreamPresentation {
   private owner: PublicStreamPresentationOwner | null = null;
-  private animationFrame: number | null = null;
   private progressTimer: ReturnType<typeof setTimeout> | null = null;
-  private pendingText: PendingText | null = null;
   private pendingProgressByStep = new Map<string, PendingProgress>();
   private acceptedSequenceByStep = new Map<string, number>();
   private lastProgressCommitAt = new Map<string, number>();
@@ -289,67 +283,6 @@ export class PublicStreamPresentation {
     this.owner = null;
   }
 
-  owns(owner: PublicStreamPresentationOwner): boolean {
-    return ownersEqual(this.owner, owner);
-  }
-
-  enqueueAssistantDelta(
-    owner: PublicStreamPresentationOwner,
-    content: string,
-    commit: (content: string, onApplied: () => void) => void,
-    acceptance: PublicTextPresentationAcceptance = {},
-  ): boolean {
-    if (!ownersEqual(this.owner, owner) || !content) return false;
-    if (this.pendingText) {
-      if (
-        (acceptance.semanticEventId &&
-          this.pendingText.semanticEventIds.has(acceptance.semanticEventId)) ||
-        (typeof acceptance.sequence === "number" &&
-          this.pendingText.latestSequence !== null &&
-          acceptance.sequence <= this.pendingText.latestSequence)
-      ) {
-        return false;
-      }
-      const semanticEventIds = new Set(this.pendingText.semanticEventIds);
-      if (acceptance.semanticEventId) {
-        semanticEventIds.add(acceptance.semanticEventId);
-      }
-      this.pendingText = {
-        content: this.pendingText.content + content,
-        // The latest callback owns the latest accepted Redis cursor while its
-        // merged content commits every earlier delta in receive order.
-        commit,
-        acknowledgements: [
-          ...this.pendingText.acknowledgements,
-          ...(acceptance.onCommitted ? [acceptance.onCommitted] : []),
-        ],
-        semanticEventIds,
-        latestSequence:
-          typeof acceptance.sequence === "number"
-            ? acceptance.sequence
-            : this.pendingText.latestSequence,
-      };
-      return true;
-    }
-    this.pendingText = {
-      content,
-      commit,
-      acknowledgements: acceptance.onCommitted
-        ? [acceptance.onCommitted]
-        : [],
-      semanticEventIds: new Set(
-        acceptance.semanticEventId ? [acceptance.semanticEventId] : [],
-      ),
-      latestSequence:
-        typeof acceptance.sequence === "number" ? acceptance.sequence : null,
-    };
-    this.animationFrame = this.clock.requestAnimationFrame(() => {
-      this.animationFrame = null;
-      this.flushText(owner);
-    });
-    return true;
-  }
-
   enqueueExecutionUpdate(
     owner: PublicStreamPresentationOwner,
     update: PublicExecutionPresentationUpdate,
@@ -361,10 +294,10 @@ export class PublicStreamPresentation {
     }
     this.acceptedSequenceByStep.set(update.stepId, update.sequence);
 
-    if (update.phase === "started" || update.phase === "terminal") {
+    if (update.phase !== "progress") {
       this.pendingProgressByStep.delete(update.stepId);
       this.rescheduleProgressTimer();
-      this.commitExecutionImmediately(owner, update.commit);
+      update.commit();
       return true;
     }
 
@@ -375,7 +308,7 @@ export class PublicStreamPresentation {
       now - lastCommittedAt >= EXECUTION_PROGRESS_MIN_INTERVAL_MS
     ) {
       this.lastProgressCommitAt.set(update.stepId, now);
-      this.commitExecutionImmediately(owner, update.commit);
+      update.commit();
       return true;
     }
 
@@ -387,18 +320,12 @@ export class PublicStreamPresentation {
     return true;
   }
 
-  /** Flush accepted presentation before a final, terminal, close, or reconnect. */
   flush(owner: PublicStreamPresentationOwner): boolean {
     if (!ownersEqual(this.owner, owner)) return false;
-    if (this.animationFrame !== null) {
-      this.clock.cancelAnimationFrame(this.animationFrame);
-      this.animationFrame = null;
-    }
     if (this.progressTimer !== null) {
       this.clock.clearTimeout(this.progressTimer);
       this.progressTimer = null;
     }
-    this.flushText(owner);
     const pending = [...this.pendingProgressByStep.values()].sort(
       (left, right) => left.sequence - right.sequence,
     );
@@ -408,28 +335,6 @@ export class PublicStreamPresentation {
       update.commit();
     });
     return true;
-  }
-
-  private flushText(owner: PublicStreamPresentationOwner): void {
-    if (!ownersEqual(this.owner, owner) || !this.pendingText) return;
-    const pending = this.pendingText;
-    this.pendingText = null;
-    pending.commit(pending.content, () => {
-      pending.acknowledgements.forEach((acknowledge) => acknowledge());
-    });
-  }
-
-  /** Preserve receive order when an execution update cannot wait for rAF. */
-  private commitExecutionImmediately(
-    owner: PublicStreamPresentationOwner,
-    commit: () => void,
-  ): void {
-    if (this.animationFrame !== null) {
-      this.clock.cancelAnimationFrame(this.animationFrame);
-      this.animationFrame = null;
-    }
-    this.flushText(owner);
-    commit();
   }
 
   private rescheduleProgressTimer(): void {
@@ -462,19 +367,39 @@ export class PublicStreamPresentation {
   }
 
   private discard(): void {
-    if (this.animationFrame !== null) {
-      this.clock.cancelAnimationFrame(this.animationFrame);
-      this.animationFrame = null;
-    }
     if (this.progressTimer !== null) {
       this.clock.clearTimeout(this.progressTimer);
       this.progressTimer = null;
     }
-    this.pendingText = null;
     this.pendingProgressByStep.clear();
     this.acceptedSequenceByStep.clear();
     this.lastProgressCommitAt.clear();
   }
+}
+
+function isTerminalExecutionStatus(
+  status: ExecutionTimelinePart["status"],
+): boolean {
+  return status === "completed" || status === "failed";
+}
+
+function mergeExecutionStep(
+  existing: ExecutionTimelinePart | undefined,
+  step: ExecutionTimelinePart,
+): ExecutionTimelinePart {
+  const startedAt =
+    validPublicExecutionTimestamp(existing?.started_at) ||
+    validPublicExecutionTimestamp(step.started_at);
+  const completedAt = isTerminalExecutionStatus(step.status)
+    ? validPublicExecutionTimestamp(step.completed_at) ||
+      validPublicExecutionTimestamp(existing?.completed_at)
+    : validPublicExecutionTimestamp(existing?.completed_at);
+  const merged = { ...step };
+  if (startedAt) merged.started_at = startedAt;
+  else delete merged.started_at;
+  if (completedAt) merged.completed_at = completedAt;
+  else delete merged.completed_at;
+  return merged;
 }
 
 function updateExecutionStep(
@@ -483,10 +408,61 @@ function updateExecutionStep(
 ): ExecutionTimelinePart[] {
   const existing = steps.find((candidate) => candidate.step_id === step.step_id);
   if (existing && step.sequence <= existing.sequence) return steps;
-  if (!existing) return [...steps, step];
+  const nextStep = mergeExecutionStep(existing, step);
+  if (!existing) return [...steps, nextStep];
   return steps.map((candidate) =>
-    candidate.step_id === step.step_id ? step : candidate,
+    candidate.step_id === step.step_id ? nextStep : candidate,
   );
+}
+
+function parseExecutionTimestamp(value: string | undefined): number | undefined {
+  const timestamp = validPublicExecutionTimestamp(value);
+  if (!timestamp) return undefined;
+  const milliseconds = Date.parse(timestamp);
+  return Number.isFinite(milliseconds) ? milliseconds : undefined;
+}
+
+function executionElapsedMs(steps: ExecutionTimelinePart[]): number | undefined {
+  const starts = steps
+    .map((step) => parseExecutionTimestamp(step.started_at))
+    .filter((value): value is number => value !== undefined);
+  const terminals = steps
+    .filter((step) => isTerminalExecutionStatus(step.status))
+    .map((step) => parseExecutionTimestamp(step.completed_at))
+    .filter((value): value is number => value !== undefined);
+  if (starts.length === 0 || terminals.length === 0) return undefined;
+  return Math.min(
+    PUBLIC_EXECUTION_MAX_ELAPSED_MS,
+    Math.max(0, Math.max(...terminals) - Math.min(...starts)),
+  );
+}
+
+export function groupPublicExecutionStepsForDisplay(
+  parts: MessagePart[],
+): MessagePart[] {
+  const grouped: MessagePart[] = [];
+  let pending: ExecutionTimelinePart[] = [];
+  const flush = () => {
+    if (pending.length === 0) return;
+    const elapsedMs = executionElapsedMs(pending);
+    grouped.push({
+      type: "execution_process",
+      steps: pending,
+      ...(elapsedMs === undefined ? {} : { elapsed_ms: elapsedMs }),
+    });
+    pending = [];
+  };
+
+  parts.forEach((part) => {
+    if (part.type === "execution_step") {
+      pending.push(part);
+      return;
+    }
+    flush();
+    grouped.push(part);
+  });
+  flush();
+  return grouped;
 }
 
 /** Upsert one safe execution step without retaining the raw public envelope. */
@@ -500,53 +476,25 @@ export function upsertPublicExecutionStep(
   );
   if (process) {
     const nextSteps = updateExecutionStep(process.steps, step);
-    return nextSteps === process.steps
-      ? parts
-      : parts.map((part) =>
-          part.type === "execution_process"
-            ? { ...part, steps: nextSteps }
-            : part,
-        );
+    if (nextSteps === process.steps) return parts;
+    const elapsedMs = executionElapsedMs(nextSteps);
+    const nextProcess = { ...process, steps: nextSteps };
+    if (elapsedMs === undefined) delete nextProcess.elapsed_ms;
+    else nextProcess.elapsed_ms = elapsedMs;
+    return parts.map((part) =>
+      part.type === "execution_process" ? nextProcess : part,
+    );
   }
   const existing = parts.find(
     (part): part is ExecutionTimelinePart =>
       part.type === "execution_step" && part.step_id === step.step_id,
   );
   if (existing && step.sequence <= existing.sequence) return parts;
-  if (!existing) return [...parts, step];
+  const nextStep = mergeExecutionStep(existing, step);
+  if (!existing) return [...parts, nextStep];
   return parts.map((part) =>
-    part.type === "execution_step" && part.step_id === step.step_id ? step : part,
-  );
-}
-
-/** Collapse public execution steps into one terminal-only process summary. */
-export function collapsePublicExecutionSteps(parts: MessagePart[]): MessagePart[] {
-  const steps = parts.flatMap((part) =>
-    part.type === "execution_process"
-      ? part.steps
-      : part.type === "execution_step"
-        ? [part]
-        : [],
-  );
-  if (steps.length === 0) return parts;
-  const process = {
-    type: "execution_process" as const,
-    steps: steps.reduce(updateExecutionStep, [] as ExecutionTimelinePart[]),
-  };
-  let inserted = false;
-  return parts.flatMap((part): MessagePart[] => {
-    if (part.type !== "execution_step" && part.type !== "execution_process") {
-      return [part];
-    }
-    if (inserted) return [];
-    inserted = true;
-    return [process];
-  });
-}
-
-/** Restore running execution rows after an active-run history hydration. */
-export function expandPublicExecutionSteps(parts: MessagePart[]): MessagePart[] {
-  return parts.flatMap((part): MessagePart[] =>
-    part.type === "execution_process" ? part.steps : [part],
+    part.type === "execution_step" && part.step_id === step.step_id
+      ? nextStep
+      : part,
   );
 }

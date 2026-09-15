@@ -39,18 +39,32 @@ test("company navigation provides searchable responsive website sections", () =>
   assert.match(panelSource, /focus-visible:ring-2/);
 });
 
-test("website cards use copied icons and safe external anchors", () => {
+test("website cards use copied icons and safe external navigation", () => {
   assert.match(panelSource, /getLaunchpadIconUrl/);
   assert.match(panelSource, /<img/);
   assert.match(panelSource, /size-12/);
   assert.match(panelSource, /object-contain/);
-  assert.match(panelSource, /href=\{entry\.url\}/);
+  assert.match(panelSource, /resolveLaunchpadDestination/);
+  assert.match(panelSource, /href=\{destination\.href\}/);
   assert.match(panelSource, /target="_blank"/);
   assert.match(panelSource, /rel="noopener noreferrer"/);
   assert.match(panelSource, /companyNavigation\.openEntry/);
   assert.match(panelSource, /onError=/);
   assert.match(panelSource, /motion-safe:animate-pulse/);
-  assert.doesNotMatch(panelSource, /window\.open/);
+});
+
+test("document translator handoff binds the company credential to one trusted child window", () => {
+  assert.match(panelSource, /DOCUMENT_TRANSLATOR_ORIGIN = "http:\/\/10\.56\.0\.210:8000"/);
+  assert.match(panelSource, /event\.origin !== DOCUMENT_TRANSLATOR_ORIGIN \|\| event\.source !== childWindow/);
+  assert.match(panelSource, /DOCUMENT_TRANSLATOR_NONCE\.test\(nonce\)/);
+  assert.match(panelSource, /readyAccepted = true/);
+  assert.match(panelSource, /authApi[\s\S]{0,80}\.getCompanyCredentialForHandoff\(/);
+  assert.match(panelSource, /AbortSignal\.timeout\(DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS\)/);
+  assert.match(panelSource, /\{ type: "doctrans:auth", nonce, token: credential \}/);
+  assert.match(panelSource, /childWindow\.postMessage\([\s\S]*DOCUMENT_TRANSLATOR_ORIGIN/);
+  assert.match(panelSource, /DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS/);
+  assert.doesNotMatch(panelSource, /localStorage|sessionStorage/);
+  assert.doesNotMatch(panelSource, /[?&](?:authorization|jwt|token|usertoken)=/i);
 });
 
 test("favorites use authenticated profile persistence instead of browser storage", () => {
@@ -67,13 +81,25 @@ test("favorites use authenticated profile persistence instead of browser storage
   assert.match(favoritesSource, /allowedIds\.has/);
 });
 
-test("obsolete tab, iframe, and runtime configuration paths stay deleted", () => {
+test("AI application destinations use internal routes and direct external URLs", () => {
+  assert.doesNotMatch(panelSource, /fetchBrowserRuntimeConfig/);
+  assert.doesNotMatch(panelSource, /configureLaunchpadCatalog/);
+  assert.match(panelSource, /resolveLaunchpadDestination/);
+  assert.match(panelSource, /destination\.kind === "internal"/);
+  assert.match(panelSource, /navigate\(destination\.path\)/);
+  assert.match(catalogSource, /internalPath: "\/ai-apps\/sop-assistant"/);
+  assert.match(catalogSource, /internalPath: "\/ai-apps\/word-review"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.0\.210:8000"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:21465\/zh"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:21463\/"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:21464\/"/);
+});
+
+test("obsolete tabs, iframe, and legacy configuration paths stay deleted", () => {
   for (const source of [catalogSource, panelSource]) {
     assert.doesNotMatch(source, /launchpadTabs/);
     assert.doesNotMatch(source, /activeTab/);
     assert.doesNotMatch(source, /Lingxi/);
-    assert.doesNotMatch(source, /BrowserRuntimeConfig/);
-    assert.doesNotMatch(source, /runtimeUrlKey/);
     assert.doesNotMatch(source, /<iframe/);
     assert.doesNotMatch(source, /VITE_LEGACY/);
   }

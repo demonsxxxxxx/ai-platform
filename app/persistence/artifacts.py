@@ -2,10 +2,154 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
 from psycopg import AsyncConnection
+
+
+async def reserve_provisional_artifact_cleanup(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    storage_key: str,
+) -> str:
+    """Own an object key durably before a reconciliation writer can mutate it."""
+
+    artifact_id = f"art_cleanup_{hashlib.sha256(storage_key.encode('utf-8')).hexdigest()[:32]}"
+    outbox_id = f"objdel_{artifact_id}"
+    await conn.execute(
+        """
+        insert into artifacts(
+          id, tenant_id, run_id, artifact_type, label, content_type, storage_key,
+          size_bytes, manifest_json, lifecycle_state, delete_requested_at
+        )
+        values (
+          %s, %s, null, 'reconciliation_provisional', 'Pending artifact cleanup',
+          'application/octet-stream', %s, 0,
+          jsonb_build_object(
+            'provisional_reconciliation_cleanup', true,
+            'expected_run_id', %s::text
+          ),
+          'delete_pending', now()
+        )
+        on conflict (id) do nothing
+        """,
+        (artifact_id, tenant_id, storage_key, run_id),
+    )
+    artifact = await (
+        await conn.execute(
+            """
+            select id
+            from artifacts
+            where id = %s and tenant_id = %s and run_id is null
+              and storage_key = %s
+              and lifecycle_state = 'delete_pending'
+              and manifest_json @> jsonb_build_object(
+                'provisional_reconciliation_cleanup', true,
+                'expected_run_id', %s::text
+              )
+            for update
+            """,
+            (artifact_id, tenant_id, storage_key, run_id),
+        )
+    ).fetchone()
+    if artifact is None:
+        raise RuntimeError("provisional_artifact_cleanup_conflict")
+    await conn.execute(
+        """
+        insert into object_deletion_outbox(
+          id, tenant_id, target_type, artifact_id, file_id, storage_key,
+          state, available_at
+        )
+        values (%s, %s, 'artifact', %s, null, %s, 'pending', now() + interval '15 minutes')
+        on conflict (tenant_id, artifact_id) do update
+        set state = 'pending',
+            attempts = 0,
+            available_at = now() + interval '15 minutes',
+            leased_at = null,
+            receipt_at = null,
+            dead_letter_at = null,
+            reconcile_required = false,
+            last_error_code = null,
+            updated_at = now()
+        where object_deletion_outbox.id = excluded.id
+          and object_deletion_outbox.storage_key = excluded.storage_key
+          and object_deletion_outbox.state in ('pending', 'failed', 'dead_letter', 'deleted')
+        """,
+        (outbox_id, tenant_id, artifact_id, storage_key),
+    )
+    receipt = await (
+        await conn.execute(
+            """
+            select id
+            from object_deletion_outbox
+            where id = %s and tenant_id = %s and target_type = 'artifact'
+              and artifact_id = %s and storage_key = %s and state = 'pending'
+            for update
+            """,
+            (outbox_id, tenant_id, artifact_id, storage_key),
+        )
+    ).fetchone()
+    if receipt is None:
+        raise RuntimeError("provisional_artifact_cleanup_receipt_conflict")
+    return artifact_id
+
+
+async def promote_provisional_artifact_cleanup(
+    conn: AsyncConnection,
+    *,
+    artifact_id: str,
+    tenant_id: str,
+    run_id: str,
+    storage_key: str,
+) -> bool:
+    """Retire provisional cleanup only inside the final artifact transaction."""
+
+    receipt = await (
+        await conn.execute(
+            """
+            select outbox.id
+            from object_deletion_outbox outbox
+            join artifacts
+              on artifacts.id = outbox.artifact_id
+             and artifacts.tenant_id = outbox.tenant_id
+             and artifacts.storage_key = outbox.storage_key
+            where outbox.id = %s and outbox.tenant_id = %s
+              and outbox.target_type = 'artifact' and outbox.state = 'pending'
+              and artifacts.run_id is null and artifacts.storage_key = %s
+              and artifacts.lifecycle_state = 'delete_pending'
+              and artifacts.manifest_json @> jsonb_build_object(
+                'provisional_reconciliation_cleanup', true,
+                'expected_run_id', %s::text
+              )
+            for update of outbox, artifacts
+            """,
+            (f"objdel_{artifact_id}", tenant_id, storage_key, run_id),
+        )
+    ).fetchone()
+    if receipt is None:
+        return False
+    await conn.execute(
+        "delete from object_deletion_outbox where id = %s and tenant_id = %s",
+        (str(receipt["id"]), tenant_id),
+    )
+    cursor = await conn.execute(
+        """
+        delete from artifacts
+        where id = %s and tenant_id = %s and run_id is null and storage_key = %s
+          and lifecycle_state = 'delete_pending'
+          and manifest_json @> jsonb_build_object(
+            'provisional_reconciliation_cleanup', true,
+            'expected_run_id', %s::text
+          )
+        returning id
+        """,
+        (artifact_id, tenant_id, storage_key, run_id),
+    )
+    return await cursor.fetchone() is not None
 
 
 async def queue_expired_artifacts_for_deletion(
@@ -55,7 +199,12 @@ async def queue_expired_artifacts_for_deletion(
         ), tombstoned as (
           update artifacts
           set lifecycle_state = 'delete_pending',
-              delete_requested_at = coalesce(delete_requested_at, now())
+              delete_requested_at = coalesce(delete_requested_at, now()),
+              manifest_json = artifacts.manifest_json || jsonb_build_object(
+                'retention_artifact_cleanup', true,
+                'deletion_owner_run_id', artifacts.run_id
+              ),
+              run_id = null
           from requested
           where artifacts.id = requested.id
             and artifacts.lifecycle_state = 'active'

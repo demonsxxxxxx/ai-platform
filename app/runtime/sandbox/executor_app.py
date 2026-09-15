@@ -36,7 +36,6 @@ from app.execution.api import sdk_session_id_for_run
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
-    _translation_target_language,
     run_claude_agent_sdk,
 )
 from app.public_execution import (
@@ -63,7 +62,6 @@ from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrieva
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
-    runtime_diagnostic_text,
 )
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
@@ -118,6 +116,10 @@ class _CallbackDeliveryError(RuntimeError):
     def __init__(self, error_code: str) -> None:
         super().__init__(error_code)
         self.error_code = error_code
+
+
+class _ShutdownDeadlineExceeded(RuntimeError):
+    pass
 
 
 class _CallbackBatchIdFactory:
@@ -192,6 +194,247 @@ class _CallbackBatchDelivery:
             return
         self.state = "cancelled"
         self.error_code = "executor_cancelled"
+
+
+_MESSAGE_DELTA_FLUSH_SECONDS = 0.05
+_MESSAGE_DELTA_MAX_BATCH_BYTES = 8 * 1024
+_MESSAGE_DELTA_MAX_BATCH_EVENTS = 100
+_MESSAGE_DELTA_QUEUE_SIZE = 100
+_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+
+
+def _message_delta_size(callback: ExecutorCallbackEvent) -> int | None:
+    if (
+        callback.status != "running"
+        or callback.new_message is not None
+        or callback.terminal_result is not None
+        or not callback.events
+        or len(callback.events) > _MESSAGE_DELTA_MAX_BATCH_EVENTS
+    ):
+        return None
+    size = 0
+    for event in callback.events:
+        delta = event.payload.get("delta")
+        if (
+            event.type != "message.delta"
+            or not event.event_id
+            or not event.run_id
+            or not event.message_id
+            or event.message
+            or not isinstance(delta, str)
+            or not delta
+        ):
+            return None
+        size += len(delta.encode("utf-8"))
+    return size if size <= _MESSAGE_DELTA_MAX_BATCH_BYTES else None
+
+
+def _merge_message_delta_callbacks(
+    current: ExecutorCallbackEvent,
+    incoming: ExecutorCallbackEvent,
+) -> ExecutorCallbackEvent | None:
+    current_size = _message_delta_size(current)
+    incoming_size = _message_delta_size(incoming)
+    if (
+        current_size is None
+        or incoming_size is None
+        or len(current.events) + len(incoming.events) > _MESSAGE_DELTA_MAX_BATCH_EVENTS
+        or current_size + incoming_size > _MESSAGE_DELTA_MAX_BATCH_BYTES
+        or current.model_dump(exclude={"batch_id", "events"})
+        != incoming.model_dump(exclude={"batch_id", "events"})
+    ):
+        return None
+    return current.model_copy(update={"events": [*current.events, *incoming.events]})
+
+
+class _QueuedCallback(NamedTuple):
+    callback: ExecutorCallbackEvent
+    enqueued_at: float
+    receipt: asyncio.Future[bool] | None = None
+
+
+class _MessageDeltaCallbackBuffer:
+    """Serialize runner callbacks in one worker; only adjacent deltas batch."""
+
+    def __init__(
+        self,
+        deliver: Callable[[ExecutorCallbackEvent], Awaitable[bool]],
+    ) -> None:
+        self._deliver = deliver
+        self._queue: asyncio.Queue[_QueuedCallback] = asyncio.Queue(
+            maxsize=_MESSAGE_DELTA_QUEUE_SIZE
+        )
+        self._failed = False
+        self._error: Exception | None = None
+        self._closed = False
+        self._wake = asyncio.Event()
+        self._flush_waiters = 0
+        self._barrier_receipt: asyncio.Future[bool] | None = None
+        self._worker = asyncio.create_task(self._run())
+
+    def _complete(self, item: _QueuedCallback, accepted: bool) -> None:
+        if item.receipt is not None and not item.receipt.done():
+            item.receipt.set_result(accepted)
+        self._queue.task_done()
+
+    def _discard_queued(self) -> None:
+        while not self._queue.empty():
+            self._complete(self._queue.get_nowait(), False)
+
+    async def _run(self) -> None:
+        carried: _QueuedCallback | None = None
+        try:
+            while True:
+                item = carried or await self._queue.get()
+                carried = None
+                callback = item.callback
+                consumed = [item]
+                accepted = False
+                try:
+                    if item.receipt is None and not self._failed:
+                        deadline = item.enqueued_at + _MESSAGE_DELTA_FLUSH_SECONDS
+                        while len(consumed) < _MESSAGE_DELTA_QUEUE_SIZE:
+                            try:
+                                candidate = self._queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                remaining = deadline - asyncio.get_running_loop().time()
+                                if (
+                                    remaining <= 0
+                                    or self._flush_waiters
+                                    or self._closed
+                                    or self._failed
+                                ):
+                                    break
+                                self._wake.clear()
+                                try:
+                                    await asyncio.wait_for(self._wake.wait(), remaining)
+                                except TimeoutError:
+                                    break
+                                continue
+                            merged = (
+                                _merge_message_delta_callbacks(callback, candidate.callback)
+                                if candidate.receipt is None
+                                else None
+                            )
+                            if merged is None:
+                                carried = candidate
+                                break
+                            callback = merged
+                            consumed.append(candidate)
+                    accepted = False if self._failed else await self._deliver(callback)
+                    self._failed = self._failed or not accepted
+                except asyncio.CancelledError:
+                    self._closed = self._failed = True
+                    raise
+                except Exception as exc:
+                    self._failed = True
+                    self._error = self._error or exc
+                finally:
+                    for consumed_item in consumed:
+                        self._complete(consumed_item, accepted)
+        finally:
+            if carried is not None:
+                self._complete(carried, False)
+            self._discard_queued()
+
+    async def enqueue(self, callback: ExecutorCallbackEvent) -> bool:
+        """Return local admission only; flush/send provide the receipt barrier."""
+        if self._closed or self._failed:
+            return False
+        if self._barrier_receipt is not None:
+            if not await asyncio.shield(self._barrier_receipt):
+                return False
+            self._barrier_receipt = None
+        if self._closed or self._failed:
+            return False
+        try:
+            await self._queue.put(
+                _QueuedCallback(callback, asyncio.get_running_loop().time())
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(self.cancel())
+            raise
+        self._wake.set()
+        return not self._failed
+
+    async def flush(self) -> bool:
+        self._flush_waiters += 1
+        self._wake.set()
+        try:
+            await self._queue.join()
+        finally:
+            self._flush_waiters -= 1
+        if self._error is not None:
+            raise self._error
+        return not self._failed
+
+    async def send(self, callback: ExecutorCallbackEvent) -> bool:
+        """Wait for a receipt from the same worker that sends queued deltas."""
+        if self._closed or not await self.flush():
+            return False
+        receipt = asyncio.get_running_loop().create_future()
+        self._barrier_receipt = receipt
+        await self._queue.put(
+            _QueuedCallback(callback, asyncio.get_running_loop().time(), receipt)
+        )
+        self._wake.set()
+        accepted = await asyncio.shield(receipt)
+        if self._error is not None:
+            raise self._error
+        return accepted
+
+    async def close(self) -> bool:
+        self._closed = True
+        try:
+            accepted = await self.flush()
+        except asyncio.CancelledError:
+            await asyncio.shield(self.cancel())
+            raise
+        except Exception:
+            await self.cancel()
+            raise
+        self._worker.cancel()
+        await asyncio.gather(self._worker, return_exceptions=True)
+        return accepted
+
+    async def cancel(self, *, deadline: float | None = None) -> bool:
+        self._closed = self._failed = True
+        self._wake.set()
+        self._discard_queued()
+        # Preserve an in-flight exact-batch outcome before terminal delivery.
+        drain = asyncio.create_task(self._queue.join())
+        if deadline is None:
+            deadline = (
+                asyncio.get_running_loop().time()
+                + _EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS
+            )
+        try:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            done, _ = await asyncio.wait({drain}, timeout=remaining)
+            if drain not in done:
+                drain.cancel()
+                _observe_detached_task(drain)
+                self._worker.cancel()
+                await asyncio.sleep(0)
+                if self._worker.done():
+                    await asyncio.gather(self._worker, return_exceptions=True)
+                else:
+                    _observe_detached_task(self._worker)
+                return False
+            await drain
+        except asyncio.CancelledError:
+            drain.cancel()
+            _observe_detached_task(drain)
+            self._worker.cancel()
+            _observe_detached_task(self._worker)
+            raise
+        self._worker.cancel()
+        await asyncio.gather(self._worker, return_exceptions=True)
+        return True
+
+    @property
+    def delivery_task(self) -> asyncio.Task[None]:
+        return self._worker
 
 
 class _PrivateExecutionFact(NamedTuple):
@@ -321,37 +564,64 @@ def _merge_runtime_diagnostics(
     exception: BaseException | None = None,
     tool_lifecycles: list[dict[str, object]] | None = None,
 ) -> dict[str, Any]:
-    merged = dict(existing) if isinstance(existing, dict) else {}
-    previous_error_code = merged.get("error_code")
-    if previous_error_code and previous_error_code != error_code:
-        merged.setdefault("runner_error_code", previous_error_code)
-    previous_failure_source = merged.get("failure_source")
-    if previous_failure_source and previous_failure_source != failure_source:
-        merged.setdefault("runner_failure_source", previous_failure_source)
-    merged.update(
+    raw_existing = dict(existing) if isinstance(existing, dict) else {}
+    if raw_existing and "schema_version" not in raw_existing:
+        raw_existing["schema_version"] = SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION
+    normalized_existing = normalize_sdk_runtime_diagnostics(raw_existing) if raw_existing else {}
+    has_existing_failure = bool(
+        normalized_existing
+        and normalized_existing.get("error_code") != "runtime_diagnostics_rejected"
+    )
+    exception_diagnostic = (
         {
+            "type": type(exception).__name__,
+            "message": str(exception),
+            "traceback": "".join(
+                traceback.format_exception(
+                    type(exception), exception, exception.__traceback__
+                )
+            ),
+        }
+        if exception is not None
+        else None
+    )
+    current_observation: dict[str, object] = {
+        "error_code": error_code,
+        "failure_source": failure_source,
+        "failure_stage": failure_stage,
+    }
+    if exception_diagnostic is not None:
+        current_observation["exception"] = exception_diagnostic
+
+    if has_existing_failure:
+        merged = dict(normalized_existing)
+        observations = list(merged.get("failure_observations") or [])
+        if not observations or observations[-1] != current_observation:
+            observations.append(current_observation)
+        merged["failure_observations"] = observations
+    else:
+        existing_sdk = (
+            dict(raw_existing.get("sdk"))
+            if isinstance(raw_existing.get("sdk"), dict)
+            else {}
+        )
+        if not existing_sdk and exception_diagnostic is not None:
+            existing_sdk = {
+                "exception_type": exception_diagnostic["type"],
+                "exception_message": exception_diagnostic["message"],
+                "exception_traceback": exception_diagnostic["traceback"],
+            }
+        merged = {
             "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
             "error_code": error_code,
             "failure_source": failure_source,
             "failure_stage": failure_stage,
+            "sdk": existing_sdk,
+            "failure_observations": [current_observation],
+            "normalization_losses": list(
+                normalized_existing.get("normalization_losses") or []
+            ),
         }
-    )
-    sdk = dict(merged.get("sdk")) if isinstance(merged.get("sdk"), dict) else {}
-    if exception is not None:
-        sdk.update(
-            {
-                "exception_type": type(exception).__name__,
-                "exception_message": runtime_diagnostic_text(exception),
-                "exception_traceback": runtime_diagnostic_text(
-                    "".join(
-                        traceback.format_exception(
-                            type(exception), exception, exception.__traceback__
-                        )
-                    )
-                ),
-            }
-        )
-    merged["sdk"] = sdk
     merged.setdefault("tool_calls", [])
     merged.setdefault("tool_policy_denials", [])
     existing_lifecycles = (
@@ -508,10 +778,9 @@ def _private_capability_fact(
     )
 
 
-_CONTROLLED_FILE_SKILLS = {"baoyu-translate", "qa-file-reviewer"}
+_CONTROLLED_FILE_SKILLS = {"qa-file-reviewer"}
 _CONTROLLED_FILE_SKILL_CAPABILITIES = {
     # These exactly mirror the server-owned builtin declarations in skills.pinning.
-    "baoyu-translate": frozenset({"Bash", "Write"}),
     "qa-file-reviewer": frozenset({"Bash", "Write"}),
 }
 _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
@@ -682,13 +951,33 @@ def _canonical_sdk_failure_code(raw_error: str, *, used_sdk: bool) -> str:
     return "claude_agent_sdk_runtime_error" if used_sdk else "executor_reported_failure"
 
 
-async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
+async def _post_callback(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: CallbackPayload,
+    token: str,
+) -> CallbackResult:
     headers = {"X-AI-Platform-Callback-Token": token}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    response = await client.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+    data = response.json()
     return data if isinstance(data, dict) else {"accepted": True}
+
+
+class _SharedCallbackSender:
+    def __init__(self) -> None:
+        self._client = httpx.AsyncClient(timeout=10.0)
+
+    async def __call__(self, url: str, payload: CallbackPayload, token: str) -> CallbackResult:
+        return await _post_callback(self._client, url, payload, token)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+
+async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await _post_callback(client, url, payload, token)
 
 
 async def _dispatch_callback(
@@ -1092,18 +1381,14 @@ def _controlled_file_skill_command(
         output_dir.resolve(strict=True).relative_to(workspace.resolve(strict=True))
     except (OSError, ValueError):
         return None, "controlled_skill_output_path_invalid"
-    script_name = "run_translation.py" if skill_id == "baoyu-translate" else "run_qa_review.py"
     script = _resolved_workspace_file(
         workspace,
-        workspace / ".claude" / "skills" / skill_id / "scripts" / script_name,
+        workspace / ".claude" / "skills" / skill_id / "scripts" / "run_qa_review.py",
     )
     if script is None:
         return None, "controlled_skill_runner_missing"
     command = [sys.executable, str(script), str(input_path), str(output_dir)]
-    if skill_id == "baoyu-translate":
-        command.extend(["--target-language", _translation_target_language(user_message)])
-    else:
-        command.append("--with-comments")
+    command.append("--with-comments")
     command.extend(["--original-filename", input_path.name])
     return command, None
 
@@ -1633,6 +1918,7 @@ async def _default_executor_runner(
     invocation_owners: dict[str, str] = {}
     capability_evidence_error = {"code": ""}
     capability_evidence_lock = asyncio.Lock()
+    v4_answer_stream_active = False
 
     def reject_capability_evidence(error_code: str) -> bool:
         capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
@@ -1646,11 +1932,12 @@ async def _default_executor_runner(
         return True
 
     async def on_text(delta: str) -> None:
-        if not delta or capability_evidence_error["code"]:
+        if not delta or capability_evidence_error["code"] or v4_answer_stream_active:
             return
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
     async def on_agent_event(candidates: tuple[Any, ...]) -> bool:
+        nonlocal v4_answer_stream_active
         if capability_evidence_error["code"] or not candidates:
             return False
         try:
@@ -1681,6 +1968,8 @@ async def _default_executor_runner(
             if isinstance(emit_event, _SealableExecutorEventEmitter):
                 emit_event.seal_capability_failure()
             return False
+        if any(event.type == "message.delta" for event in events):
+            v4_answer_stream_active = True
         return True
 
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
@@ -1982,9 +2271,6 @@ async def _default_executor_runner(
             "on_tool_lifecycle": on_tool_lifecycle,
             "tool_policy_subjects": _task_tool_policy_subjects(request),
             "execution_policy": "sandbox_brokered",
-            "require_selected_skill_invocation": request.config.get(
-                "require_selected_skill_invocation", True
-            ) is not False,
             "thinking_effort": normalize_thinking_effort(
                 request.config.get("thinking_effort")
             ),
@@ -2027,18 +2313,15 @@ async def _default_executor_runner(
     )
     if used_sdk and not error and not received_structured_terminal:
         error = "claude_agent_sdk_missing_structured_terminal"
-    if used_sdk and not error:
-        # Only a successful SDK run may be downgraded by missing completion
-        # evidence.  When the SDK already failed (timeout, cancelled, upstream
-        # error, ...) preserve that structured error so callers see the real
-        # terminal cause instead of a misleading evidence mismatch.
-        if required_capability_declaration is not None:
-            required_tool_states = set(required_tool_invocation_states.values())
-            if "started" in required_tool_states or "completed" not in required_tool_states:
-                required_capability_evidence = None
-                reject_capability_evidence("required_tool_completion_evidence_mismatch")
-        elif any(state == "started" for state in required_tool_invocation_states.values()):
-            reject_capability_evidence("tool_invocation_evidence_mismatch")
+    if used_sdk and required_capability_declaration is not None and received_structured_terminal:
+        required_tool_states = set(required_tool_invocation_states.values())
+        if "started" in required_tool_states or "completed" not in required_tool_states:
+            required_capability_evidence = None
+            reject_capability_evidence("required_tool_completion_evidence_mismatch")
+    elif used_sdk and not error and any(
+        state == "started" for state in required_tool_invocation_states.values()
+    ):
+        reject_capability_evidence("tool_invocation_evidence_mismatch")
     await emit_event(
         _PlatformExecutionPhaseFact(
             "model_wait",
@@ -2048,7 +2331,8 @@ async def _default_executor_runner(
     response = {
         "status": "completed" if used_sdk and not error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
-        "sdk_session_id": sdk_session_id_for_run(request.run_id),
+        "answer_receipt": getattr(sdk_result, "answer_receipt", None),
+        "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
         "sdk_used": used_sdk,
         "sdk_received_structured_terminal": received_structured_terminal,
@@ -2131,6 +2415,7 @@ def create_executor_app(
     nonterminal_callback_retry_policy: _CallbackRetryPolicy | None = None,
     callback_retry_sleep: CallbackRetrySleep | None = None,
 ) -> FastAPI:
+    resolved_callback_sender: CallbackSender = callback_sender or _default_callback_sender
     task_state: dict[str, Any] = {
         "status": "idle",
         "result": None,
@@ -2139,20 +2424,184 @@ def create_executor_app(
         "attempt_id": None,
         "delivery_error": None,
     }
+    shutdown_state: dict[str, float | bool | None] = {
+        "deadline": None,
+        "delivery_uncertain": False,
+        "publishing_closed": False,
+    }
+    uncertain_delivery_tasks: set[asyncio.Task[Any]] = set()
+    callback_delivery_tasks: set[asyncio.Task[Any]] = set()
+
+    def mark_delivery_uncertain(
+        error_code: str,
+        *,
+        active_task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        shutdown_state["delivery_uncertain"] = True
+        shutdown_state["publishing_closed"] = True
+        if active_task is not None and not active_task.done():
+            uncertain_delivery_tasks.add(active_task)
+            active_task.add_done_callback(uncertain_delivery_tasks.discard)
+        task_state["delivery_error"] = error_code
+        if task_state["status"] != "idle":
+            task_state["status"] = "callback_failed"
+
+    def mark_shutdown_delivery_uncertain(
+        *,
+        active_task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        mark_delivery_uncertain(
+            "executor_shutdown_delivery_uncertain",
+            active_task=active_task,
+        )
+
+    async def dispatch_owned_callback(
+        url: str,
+        payload: CallbackPayload,
+        token: str,
+    ) -> CallbackResult:
+        cancel_requested = False
+        clock = asyncio.get_running_loop().time
+        shutdown_deadline = shutdown_state["deadline"]
+        if isinstance(shutdown_deadline, float) and clock() >= shutdown_deadline:
+            shutdown_state["publishing_closed"] = True
+            raise _ShutdownDeadlineExceeded
+        attempt = asyncio.create_task(
+            _dispatch_callback(resolved_callback_sender, url, payload, token)
+        )
+        callback_delivery_tasks.add(attempt)
+        attempt.add_done_callback(callback_delivery_tasks.discard)
+        while True:
+            shutdown_deadline = shutdown_state["deadline"]
+            if not isinstance(shutdown_deadline, float):
+                try:
+                    result = await asyncio.shield(attempt)
+                except asyncio.CancelledError:
+                    if attempt.done():
+                        if not attempt.cancelled():
+                            exception = attempt.exception()
+                            if exception is not None:
+                                raise exception
+                        raise
+                    cancel_requested = True
+                    continue
+                if cancel_requested:
+                    raise asyncio.CancelledError
+                return result
+            remaining = max(0.0, shutdown_deadline - clock())
+            try:
+                done, _ = await asyncio.wait({attempt}, timeout=remaining)
+            except asyncio.CancelledError:
+                continue
+            if attempt in done:
+                if cancel_requested:
+                    if attempt.cancelled():
+                        raise asyncio.CancelledError
+                    exception = attempt.exception()
+                    if exception is not None:
+                        raise exception
+                    raise asyncio.CancelledError
+                return attempt.result()
+            attempt.cancel()
+            await asyncio.sleep(0)
+            _observe_detached_task(attempt)
+            mark_shutdown_delivery_uncertain(
+                active_task=attempt if not attempt.done() else None
+            )
+            raise _ShutdownDeadlineExceeded
+
+    def ensure_shutdown_deadline() -> float:
+        deadline = (
+            asyncio.get_running_loop().time()
+            + _EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS
+        )
+        current = shutdown_state["deadline"]
+        if isinstance(current, float):
+            deadline = min(deadline, current)
+        shutdown_state["deadline"] = deadline
+        return deadline
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        yield
-        task = task_state.get("task")
-        if not isinstance(task, asyncio.Task) or task.done():
-            return
-        task.cancel()
+        nonlocal resolved_callback_sender
+        shared_callback_sender = _SharedCallbackSender() if callback_sender is None else None
+        if shared_callback_sender is not None:
+            resolved_callback_sender = shared_callback_sender
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=30.0)
-        except asyncio.CancelledError:
-            pass
-        except TimeoutError:
-            task.cancel()
+            yield
+        finally:
+            deadline = ensure_shutdown_deadline()
+            task = task_state.get("task")
+            if isinstance(task, asyncio.Task) and not task.done():
+                task.cancel()
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                done, _ = await asyncio.wait({task}, timeout=remaining)
+                if task in done:
+                    await asyncio.gather(task, return_exceptions=True)
+                else:
+                    task.cancel()
+                    await asyncio.sleep(0)
+                    mark_shutdown_delivery_uncertain(
+                        active_task=task if not task.done() else None
+                    )
+                    if task.done():
+                        await asyncio.gather(task, return_exceptions=True)
+                    else:
+                        _observe_detached_task(task)
+            active_callback_tasks = {
+                callback_task
+                for callback_task in callback_delivery_tasks
+                if not callback_task.done()
+            }
+            if active_callback_tasks:
+                for callback_task in active_callback_tasks:
+                    callback_task.cancel()
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                if remaining:
+                    done, pending = await asyncio.wait(
+                        active_callback_tasks,
+                        timeout=remaining,
+                    )
+                else:
+                    await asyncio.sleep(0)
+                    done = {task for task in active_callback_tasks if task.done()}
+                    pending = active_callback_tasks - done
+                if done:
+                    await asyncio.gather(*done, return_exceptions=True)
+                if pending:
+                    for callback_task in pending:
+                        callback_task.cancel()
+                    await asyncio.sleep(0)
+                    for callback_task in pending:
+                        if callback_task.done():
+                            await asyncio.gather(
+                                callback_task,
+                                return_exceptions=True,
+                            )
+                        else:
+                            _observe_detached_task(callback_task)
+                            mark_shutdown_delivery_uncertain(
+                                active_task=callback_task
+                            )
+            if (
+                shared_callback_sender is not None
+                and not any(
+                    not task.done()
+                    for task in uncertain_delivery_tasks | callback_delivery_tasks
+                )
+            ):
+                close_task = asyncio.create_task(shared_callback_sender.close())
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                if remaining:
+                    done, _ = await asyncio.wait({close_task}, timeout=remaining)
+                else:
+                    await asyncio.sleep(0)
+                    done = {close_task} if close_task.done() else set()
+                if close_task in done:
+                    await close_task
+                else:
+                    close_task.cancel()
+                    _observe_detached_task(close_task)
 
     app = FastAPI(
         title="AI Platform Sandbox Executor",
@@ -2161,7 +2610,6 @@ def create_executor_app(
     )
     app.state.dispatch_in_background = dispatch_in_background
     resolved_workspace_root = Path(workspace_root)
-    resolved_callback_sender = callback_sender or _default_callback_sender
     resolved_nonterminal_callback_retry_policy = nonterminal_callback_retry_policy or _CallbackRetryPolicy()
     resolved_callback_retry_sleep = callback_retry_sleep or asyncio.sleep
     configured_executor_auth_token = _configured_executor_auth_token(executor_auth_token)
@@ -2325,8 +2773,18 @@ def create_executor_app(
             runner_events_open["value"] = False
             stop_all_active_progress()
 
-        async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
-            if stream_delivery_failure["error_code"] is not None:
+        heartbeat_callback_retry_policy = _CallbackRetryPolicy(
+            max_attempts=1,
+            attempt_timeout_seconds=(
+                resolved_nonterminal_callback_retry_policy.attempt_timeout_seconds
+            ),
+        )
+
+        async def deliver_callback_event(event: ExecutorCallbackEvent) -> bool:
+            if (
+                shutdown_state["publishing_closed"]
+                or stream_delivery_failure["error_code"] is not None
+            ):
                 return False
             batch = _CallbackBatchDelivery(
                 content=_CallbackBatchContent.freeze(event.model_dump())
@@ -2337,7 +2795,11 @@ def create_executor_app(
                     request.callback_url,
                     batch,
                     request.callback_token,
-                    retry_policy=resolved_nonterminal_callback_retry_policy,
+                    retry_policy=(
+                        heartbeat_callback_retry_policy
+                        if event.state_patch.get("executor_heartbeat") is True
+                        else resolved_nonterminal_callback_retry_policy
+                    ),
                     retry_sleep=resolved_callback_retry_sleep,
                 )
             except asyncio.CancelledError:
@@ -2346,8 +2808,117 @@ def create_executor_app(
             except _CallbackDeliveryError as exc:
                 callback_errors.append(event.status)
                 seal_runner_events_after_delivery_failure(exc.error_code)
+                if exc.error_code == "stream_delivery_exhausted":
+                    mark_delivery_uncertain("executor_callback_delivery_uncertain")
                 return False
             return True
+
+        message_delta_callbacks = _MessageDeltaCallbackBuffer(deliver_callback_event)
+
+        async def cancel_message_delta_callbacks() -> None:
+            cleanup = asyncio.create_task(
+                message_delta_callbacks.cancel(
+                    deadline=shutdown_state["deadline"]
+                    if isinstance(shutdown_state["deadline"], float)
+                    else None
+                )
+            )
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    deadline = shutdown_state["deadline"]
+                    if not isinstance(deadline, float) or asyncio.get_running_loop().time() < deadline:
+                        continue
+                    cleanup.cancel()
+                    _observe_detached_task(cleanup)
+                    mark_shutdown_delivery_uncertain(
+                        active_task=message_delta_callbacks.delivery_task
+                    )
+                    return
+            if not await cleanup:
+                mark_shutdown_delivery_uncertain(
+                    active_task=message_delta_callbacks.delivery_task
+                )
+
+        async def await_with_callback_buffer_cleanup(
+            awaitable: Awaitable[Any],
+        ) -> Any:
+            try:
+                return await awaitable
+            except asyncio.CancelledError:
+                await cancel_message_delta_callbacks()
+                raise
+            except Exception:
+                await cancel_message_delta_callbacks()
+                raise
+
+        async def await_shutdown_task(task: asyncio.Task[Any]) -> None:
+            deadline = shutdown_state["deadline"]
+            if not isinstance(deadline, float):
+                await asyncio.gather(task, return_exceptions=True)
+                return
+            while not task.done():
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                if remaining == 0:
+                    break
+                try:
+                    done, _ = await asyncio.wait({task}, timeout=remaining)
+                except asyncio.CancelledError:
+                    continue
+                if task in done:
+                    await asyncio.gather(task, return_exceptions=True)
+                    return
+            task.cancel()
+            await asyncio.sleep(0)
+            if task.done():
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+                _observe_detached_task(task)
+                mark_shutdown_delivery_uncertain(active_task=task)
+
+        async def dispatch_callback_event(event: ExecutorCallbackEvent) -> bool:
+            nonlocal executor_first_token_latency_ms
+            if shutdown_state["publishing_closed"]:
+                return False
+            if executor_first_token_latency_ms is None and any(
+                item.type == "assistant_delta"
+                or (
+                    item.type == "message.delta"
+                    and isinstance(item.payload.get("delta"), str)
+                    and item.payload["delta"]
+                )
+                for item in event.events
+            ):
+                executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
+            if len(event.events) != 1 or _message_delta_size(event) is None:
+                return await message_delta_callbacks.send(event)
+            return await message_delta_callbacks.enqueue(event)
+
+        async def send_supervisor_heartbeats() -> None:
+            while True:
+                await asyncio.sleep(heartbeat_interval_seconds)
+                try:
+                    accepted = await dispatch_callback_event(
+                        ExecutorCallbackEvent(
+                            session_id=request.session_id,
+                            run_id=request.run_id,
+                            attempt_id=request.attempt_id,
+                            callback_token_id=request.callback_token_id,
+                            batch_id=f"heartbeat-{uuid.uuid4().hex}",
+                            status="running",
+                            progress=5,
+                            state_patch={"executor_heartbeat": True},
+                        )
+                    )
+                    if not accepted:
+                        return
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Heartbeats are best-effort liveness hints.
+                    continue
+
 
         def apply_stream_delivery_failure(result: dict[str, Any]) -> bool:
             error_code = stream_delivery_failure["error_code"]
@@ -2360,7 +2931,7 @@ def create_executor_app(
             return True
 
         async def emit_runner_event_locked(event: ExecutorEvent) -> bool:
-            nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
+            nonlocal artifact_upload_latency_ms, executor_tool_call_latency_ms
             if capability_callback_failed["value"] or not runner_events_open["value"]:
                 return False
             if isinstance(event, ExecutorCallbackEvent):
@@ -2406,8 +2977,6 @@ def create_executor_app(
                     causation_event_id=agent_event.causation_event_id,
                 )]
                 event_type = agent_event.type
-            if event_type == "assistant_delta" and executor_first_token_latency_ms is None:
-                executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
             if event_type and event_type.startswith("tool_call") and executor_tool_call_latency_ms is None:
                 executor_tool_call_latency_ms = _elapsed_ms(executor_started_at)
 
@@ -2495,15 +3064,26 @@ def create_executor_app(
             seal_capability_failure=seal_runner_events_after_capability_failure,
         )
 
-        await emit_runner_event(
-            _PlatformExecutionPhaseFact("sandbox_preparation", "started")
+        await await_with_callback_buffer_cleanup(
+            emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_preparation", "started")
+            )
         )
-        await dispatch_callback_event(running_event)
-        await emit_runner_event(
-            _PlatformExecutionPhaseFact("sandbox_preparation", "completed")
+        await await_with_callback_buffer_cleanup(dispatch_callback_event(running_event))
+        await await_with_callback_buffer_cleanup(
+            emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_preparation", "completed")
+            )
         )
-        await emit_runner_event(
-            _PlatformExecutionPhaseFact("sandbox_submission", "started")
+        await await_with_callback_buffer_cleanup(
+            emit_runner_event(
+                _PlatformExecutionPhaseFact("sandbox_submission", "started")
+            )
+        )
+        heartbeat_task = (
+            asyncio.create_task(send_supervisor_heartbeats())
+            if app.state.dispatch_in_background
+            else None
         )
         runner_result: dict[str, Any] = {}
         try:
@@ -2565,8 +3145,15 @@ def create_executor_app(
                                 exception=exc,
                             ),
                         }
+        except asyncio.CancelledError:
+            await cancel_message_delta_callbacks()
+            raise
         finally:
-            await drain_active_progress()
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                await await_shutdown_task(heartbeat_task)
+            progress_cleanup = asyncio.create_task(drain_active_progress())
+            await await_shutdown_task(progress_cleanup)
 
         if capability_callback_failed["value"]:
             error_code = "capability_callback_not_acknowledged"
@@ -2588,14 +3175,20 @@ def create_executor_app(
         failed = timed_out or runner_status not in {"completed", "succeeded"}
         if runner_events_open["value"]:
             phase_lifecycle = "failed" if failed else "completed"
-            await emit_runner_event(
-                _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+            await await_with_callback_buffer_cleanup(
+                emit_runner_event(
+                    _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+                )
             )
-            await emit_runner_event(
-                _PlatformExecutionPhaseFact("artifact_validation", "started")
+            await await_with_callback_buffer_cleanup(
+                emit_runner_event(
+                    _PlatformExecutionPhaseFact("artifact_validation", "started")
+                )
             )
-            await emit_runner_event(
-                _PlatformExecutionPhaseFact("artifact_validation", phase_lifecycle)
+            await await_with_callback_buffer_cleanup(
+                emit_runner_event(
+                    _PlatformExecutionPhaseFact("artifact_validation", phase_lifecycle)
+                )
             )
         if apply_stream_delivery_failure(runner_result):
             runner_status = "failed"
@@ -2659,7 +3252,10 @@ def create_executor_app(
             error_message=error_message,
         )
 
-        await dispatch_callback_event(execution_observation)
+        await await_with_callback_buffer_cleanup(
+            dispatch_callback_event(execution_observation)
+        )
+        await await_with_callback_buffer_cleanup(message_delta_callbacks.close())
         if apply_stream_delivery_failure(runner_result):
             runner_status = "failed"
             failed = True
@@ -2684,6 +3280,7 @@ def create_executor_app(
         }
         for key in (
             "message",
+            "answer_receipt",
             "sdk_session_id",
             "sdk_usage",
             "sdk_used",
@@ -2737,61 +3334,57 @@ def create_executor_app(
             error_message=str(result.get("error_message") or "") or None,
             terminal_result=result,
         )
-        deadline = time.monotonic() + terminal_callback_retry_seconds
+
+        clock = asyncio.get_running_loop().time
+        retry_deadline = clock() + terminal_callback_retry_seconds
         delay = 0.5
         while True:
             try:
-                acknowledged = resolved_callback_sender(
+                shutdown_deadline = shutdown_state["deadline"]
+                if (
+                    isinstance(shutdown_deadline, float)
+                    and clock() >= shutdown_deadline
+                ):
+                    shutdown_state["publishing_closed"] = True
+                    task_state["delivery_error"] = (
+                        "executor_terminal_callback_not_acknowledged"
+                    )
+                    raise _ShutdownDeadlineExceeded
+                acknowledged = await dispatch_owned_callback(
                     request.callback_url,
                     callback.model_dump(exclude_none=True),
                     request.callback_token,
                 )
-                if inspect.isawaitable(acknowledged):
-                    acknowledged = await acknowledged
                 if isinstance(acknowledged, dict) and acknowledged.get("accepted") is True:
                     return
+            except _ShutdownDeadlineExceeded:
+                raise
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 task_state["delivery_error"] = (
                     f"{type(exc).__name__}: {str(exc)}"[:512]
                 )
-            if time.monotonic() >= deadline:
+            shutdown_deadline = shutdown_state["deadline"]
+            deadline = min(
+                retry_deadline,
+                shutdown_deadline,
+            ) if isinstance(shutdown_deadline, float) else retry_deadline
+            remaining = deadline - clock()
+            if remaining <= 0:
+                if isinstance(shutdown_deadline, float) and shutdown_deadline <= retry_deadline:
+                    mark_shutdown_delivery_uncertain()
+                    raise _ShutdownDeadlineExceeded
                 raise RuntimeError("executor_terminal_callback_not_acknowledged")
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 10.0)
-
-    async def send_supervisor_heartbeats(request: ExecutorTaskRequest) -> None:
-        while True:
-            await asyncio.sleep(heartbeat_interval_seconds)
-            heartbeat = ExecutorCallbackEvent(
-                session_id=request.session_id,
-                run_id=request.run_id,
-                attempt_id=request.attempt_id,
-                callback_token_id=request.callback_token_id,
-                batch_id=f"heartbeat-{uuid.uuid4().hex}",
-                status="running",
-                progress=5,
-                state_patch={"executor_heartbeat": True},
-            )
             try:
-                acknowledged = resolved_callback_sender(
-                    request.callback_url,
-                    heartbeat.model_dump(exclude_none=True),
-                    request.callback_token,
-                )
-                if inspect.isawaitable(acknowledged):
-                    await acknowledged
+                await asyncio.sleep(min(delay, remaining))
             except asyncio.CancelledError:
-                raise
-            except Exception:
-                # Heartbeats are best-effort liveness hints. Runner events and
-                # terminal delivery keep their own acknowledgement semantics.
-                continue
+                if not isinstance(shutdown_state["deadline"], float):
+                    raise
+            delay = min(delay * 2, 10.0)
 
     async def supervise_task(request: ExecutorTaskRequest) -> None:
         task_state["status"] = "running"
-        heartbeat_task = asyncio.create_task(send_supervisor_heartbeats(request))
         try:
             result = await execute_claimed_task(request)
         except asyncio.CancelledError as exc:
@@ -2826,14 +3419,16 @@ def create_executor_app(
                     exception=exc,
                 ),
             }
-        finally:
-            heartbeat_task.cancel()
-            await asyncio.gather(heartbeat_task, return_exceptions=True)
         _log_sandbox_execution_terminal(request, result)
         task_state["result"] = result
         task_state["status"] = str(result.get("status") or "failed")
+        if shutdown_state["delivery_uncertain"]:
+            task_state["status"] = "callback_failed"
+            return
         try:
             await deliver_terminal_callback(request, result)
+        except _ShutdownDeadlineExceeded:
+            task_state["status"] = "callback_failed"
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -2916,6 +3511,7 @@ def create_executor_app(
         validate_control_scope(run_id, attempt_id)
         task = task_state.get("task")
         if isinstance(task, asyncio.Task) and not task.done():
+            ensure_shutdown_deadline()
             task.cancel()
         return {"status": "cancel_requested", "run_id": run_id, "attempt_id": attempt_id}
 

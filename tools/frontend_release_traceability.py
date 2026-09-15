@@ -22,7 +22,7 @@ FRONTEND_NODE_BASE = (
 )
 FRONTEND_NGINX_BASE = (
     "nginx:1.30.4-alpine@"
-    "sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46"
+    "sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c"
 )
 CI_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",

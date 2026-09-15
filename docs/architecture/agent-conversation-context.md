@@ -15,12 +15,13 @@ admission.
 
 ## Problem
 
-Before provider-session continuity, the path stored immutable context snapshots
-but projected recent conversation messages through a public-safe manifest before
-execution. A prior message that exceeds a per-message inline limit is reduced to
-an identifier and `requires_retrieval`. The previous Claude Agent SDK path
-received no message body unless the model elected to call
-`read_session_messages`.
+The motivating pre-cutover path stored immutable context snapshots but
+projected recent conversation messages through a public-safe manifest before
+execution. This paragraph records the original failure mode, not a fresh
+implementation or deployment assessment. A prior message that exceeds a
+per-message inline limit is reduced to an identifier and `requires_retrieval`.
+The Claude Agent SDK then received no message body unless the model elected
+to call `read_session_messages`.
 
 Claude bootstrap now receives bounded reconstructed recent conversation through
 the executor-private context pack. After a committed provider transcript exists,

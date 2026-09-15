@@ -591,7 +591,7 @@ async def read_event_rows(
                event.error_code, event.latency_ms, event.input_token_count,
                event.output_token_count, event.total_token_count,
                event.estimated_cost_minor, event.payload_json,
-               event.stream_publication_state, event.created_at,
+               event.created_at,
                exists (
                    select 1
                    from run_attempts as attempt

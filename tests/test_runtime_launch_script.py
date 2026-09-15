@@ -30,7 +30,6 @@ OPENSANDBOX_PRODUCTION_SERVICE = Path(
     "deploy/opensandbox/opensandbox-production.service"
 )
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
-REPOSITORY_DEPLOY_ENV = "${PROJECT_DIR}/deploy/ai-platform/.env"
 
 
 def compose_service_text(compose_text: str, service_name: str) -> str:
@@ -136,26 +135,6 @@ def test_skill_manifest_reference_transport_has_no_rollout_switch():
     assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in env_values
 
 
-def test_run_api_with_deploy_env_derives_database_and_s3_settings():
-    script = Path("tools/run_api_with_deploy_env.sh")
-
-    text = script.read_text(encoding="utf-8")
-
-    assert REPOSITORY_DEPLOY_ENV in text
-    assert "/home/" not in text
-    assert 'PORT="${AI_PLATFORM_PORT:-8020}"' in text
-    assert "Default: 8020" in text
-    assert "18080" not in text
-    assert 'DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/${POSTGRES_DB}"' in text
-    assert 'S3_ENDPOINT_URL="http://localhost:${MINIO_API_PORT}"' in text
-    assert 'S3_ACCESS_KEY_ID="${MINIO_ROOT_USER}"' in text
-    assert 'S3_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}"' in text
-    assert 'CLAUDE_AGENT_SDK_ENABLED=false' in text
-    assert "--check-env" in text
-    assert "sed -E 's/=.*/=SET/'" in text
-    assert "TRUSTED_PRINCIPAL_SECRET|CLAUDE_AGENT_SDK_ENABLED" not in text
-
-
 def test_compose_forwards_database_pool_settings_to_api_and_worker():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
@@ -208,7 +187,7 @@ def test_worker_compose_forwards_worker_concurrency_setting_only_to_worker():
     assert name not in api_section
 
 
-def test_compose_and_example_use_unbounded_sdk_timeout_by_default():
+def test_compose_and_example_use_sdk_execution_defaults():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
 
@@ -220,6 +199,14 @@ def test_compose_and_example_use_unbounded_sdk_timeout_by_default():
         == 2
     )
     assert "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-1200}" not in compose_text
+    assert "CLAUDE_AGENT_SDK_MAX_TURNS=256" in env_example_text
+    assert (
+        compose_text.count(
+            "CLAUDE_AGENT_SDK_MAX_TURNS: ${CLAUDE_AGENT_SDK_MAX_TURNS:-256}"
+        )
+        == 2
+    )
+    assert "CLAUDE_AGENT_SDK_MAX_TURNS:-128}" not in compose_text
 
 
 def test_compose_forwards_bounded_redis_pool_to_api_and_worker_without_limiting_server():
@@ -288,7 +275,7 @@ def test_dockerfile_precreates_private_workspace_before_nonroot_executor():
 def test_dockerfile_installs_required_runtime_packages():
     content = Path("Dockerfile").read_text(encoding="utf-8")
 
-    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git libexpat1 pandoc passwd" in content
+    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git libexpat1 libssh2-1 pandoc passwd" in content
 
 
 def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabling_apt_security():
@@ -553,7 +540,14 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         assert overlay["services"][service_name]["ports"] == []
     assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" not in env_example
     assert "OPENSANDBOX_EGRESS_PROXY_URL=http://egress.opensandbox.internal:8080" in env_example
-    assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
+    for fixed_key in (
+        "DEPLOYMENT_ENVIRONMENT",
+        "SANDBOX_SECURITY_PROFILE",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE",
+        "AI_PLATFORM_BUILD_COMMIT",
+        "AI_PLATFORM_BUILD_DIRTY",
+    ):
+        assert f"{fixed_key}=" not in env_example
     assert "trusted_internal" not in env_example
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
 
@@ -871,13 +865,11 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
 
     for expected in [
         "SANDBOX_CONTAINER_PROVIDER=opensandbox",
-        "SANDBOX_SECURITY_PROFILE=governed",
         "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
         "SANDBOX_EXECUTOR_PUBLISHED_HOST=host.docker.internal",
         "SANDBOX_WORKSPACE_ROOT=/tmp/ai-platform-sandbox-workspaces",
         "SANDBOX_CALLBACK_BASE_URL=http://api.sandbox.internal:8020",
         "SANDBOX_EGRESS_POLICY_ENABLED=false",
-        "SANDBOX_EGRESS_NETWORK_NAME=ai-platform-sandbox-egress-internal-v1",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY=replace_me_with_a_random_32_byte_minimum_value",
         "SANDBOX_EGRESS_PROOF_KEY_ID=current",
         "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=",
@@ -903,7 +895,6 @@ def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():
         service_text = compose_service_text(compose_text, service_name)
         for expected in [
             "SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}",
-            "SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress-internal-v1}",
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:-}",
             "SANDBOX_EGRESS_PROOF_KEY_ID: ${SANDBOX_EGRESS_PROOF_KEY_ID:-current}",
             "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON: ${SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON:-}",

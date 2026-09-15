@@ -11,9 +11,11 @@ from app.executors.claude_agent_sdk_runner import (
     project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
 )
+from app.runs.domain.diagnostics import sanitize_runtime_diagnostics
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES,
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    exception_chain_from_error,
     normalize_sdk_runtime_diagnostics,
 )
 
@@ -67,7 +69,11 @@ def test_runtime_diagnostics_fit_keeps_latest_evidence_within_result_budget():
     )
     assert fitted["tool_calls"][-1]["invocation_id"] == "call-7"
     assert fitted["tool_policy_denials"][-1]["invocation_id"] == "denial-7"
-    assert fitted["truncated"]["tool_lifecycles"]["original"] == 128
+    assert "truncated" not in fitted
+    assert any(
+        loss["reason"] == "truncated"
+        for loss in fitted["normalization_losses"]
+    )
 
 
 def test_runtime_diagnostics_fit_handles_json_escaping_and_invalid_unicode():
@@ -113,6 +119,200 @@ def test_runtime_diagnostics_fit_handles_json_escaping_and_invalid_unicode():
     )
     assert len(encoded) <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
     assert fitted["tool_calls"][0]["tool_input"] == {"command": "?"}
+
+
+def test_runtime_diagnostics_explains_rejected_schema_without_echoing_it():
+    rejected = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": "private-future-schema",
+            "error_code": "private_error",
+            "sdk": {"exception_message": "token=private-token"},
+        }
+    )
+
+    assert rejected["error_code"] == "runtime_diagnostics_rejected"
+    assert rejected["normalization_losses"] == [
+        {"field": "schema_version", "reason": "unsupported_schema"}
+    ]
+    assert "private-future-schema" not in str(rejected)
+    assert "private-token" not in str(rejected)
+
+    invalid_field = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failed",
+            "failure_source": {"token": "private-token"},
+        }
+    )
+    assert invalid_field["failure_source"] == ""
+    assert "private-token" not in str(invalid_field)
+    assert {
+        "field": "failure_source",
+        "reason": "invalid_field",
+    } in invalid_field["normalization_losses"]
+
+
+def test_runtime_diagnostics_preserves_traceback_tail_and_loss_metadata_idempotently():
+    terminal_cause = "SYNTHETIC_TERMINAL_CAUSE"
+    fitted = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "claude_agent_sdk_runtime_error",
+            "failure_source": "sdk_exception",
+            "failure_stage": "model_wait",
+            "sdk": {
+                "exception_type": "TimeoutError",
+                "exception_traceback": "synthetic frame\n" * 1_200
+                + terminal_cause,
+            },
+        }
+    )
+
+    assert fitted["sdk"]["exception_traceback"].endswith(terminal_cause)
+    assert "... [truncated] ..." in fitted["sdk"]["exception_traceback"]
+    assert any(
+        loss["field"] == "sdk.exception_traceback"
+        and loss["reason"] == "truncated"
+        for loss in fitted["normalization_losses"]
+    )
+    assert normalize_sdk_runtime_diagnostics(fitted) == fitted
+
+
+def test_runtime_diagnostics_upgrades_retired_runner_slots_to_failure_observations():
+    fitted = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failed",
+            "failure_source": "sandbox_terminal_normalization",
+            "failure_stage": "sandbox_submission",
+            "runner_error_code": "claude_agent_sdk_timeout",
+            "runner_failure_source": "sdk_exception",
+            "sdk": {"exception_type": "TimeoutError"},
+        }
+    )
+
+    assert fitted["error_code"] == "claude_agent_sdk_timeout"
+    assert fitted["failure_source"] == "sdk_exception"
+    assert fitted["failure_observations"] == [
+        {
+            "error_code": "claude_agent_sdk_timeout",
+            "failure_source": "sdk_exception",
+            "failure_stage": "",
+        },
+        {
+            "error_code": "executor_failed",
+            "failure_source": "sandbox_terminal_normalization",
+            "failure_stage": "sandbox_submission",
+        },
+    ]
+    assert "runner_error_code" not in fitted
+    assert "runner_failure_source" not in fitted
+
+
+def test_runtime_diagnostics_preserves_bounded_exception_cause_chain():
+    cause = RuntimeError("root cause")
+    wrapper = ValueError("wrapper failure")
+    wrapper.__cause__ = cause
+
+    normalized = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failure",
+            "failure_source": "worker_executor",
+            "failure_stage": "executor",
+            "sdk": {"exception_chain": exception_chain_from_error(wrapper)},
+        }
+    )
+
+    chain = normalized["sdk"]["exception_chain"]
+    assert [item["type"] for item in chain] == ["ValueError", "RuntimeError"]
+    assert chain[0]["relation"] == "cause"
+    assert chain[-1]["message"] == "root cause"
+    assert sanitize_runtime_diagnostics(normalized)["sdk"]["exception_chain"] == chain
+    assert normalize_sdk_runtime_diagnostics(normalized) == normalized
+
+
+def test_runtime_diagnostics_names_exception_chain_cycle_and_depth_losses():
+    first = RuntimeError("first")
+    second = ValueError("second")
+    first.__cause__ = second
+    second.__cause__ = first
+    cycle_losses: list[dict[str, object]] = []
+
+    cycle = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failure",
+            "failure_source": "sdk_exception",
+            "failure_stage": "model_wait",
+            "sdk": {
+                "exception_chain": exception_chain_from_error(
+                    first,
+                    losses=cycle_losses,
+                )
+            },
+            "normalization_losses": cycle_losses,
+        }
+    )
+
+    assert {loss["reason"] for loss in cycle["normalization_losses"]} == {"cycle"}
+
+    current: BaseException = RuntimeError("root")
+    for index in range(10):
+        wrapper = RuntimeError(f"wrapper-{index}")
+        wrapper.__cause__ = current
+        current = wrapper
+    deep = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "executor_failure",
+            "failure_source": "sdk_exception",
+            "failure_stage": "model_wait",
+            "sdk": {"exception_chain": exception_chain_from_error(current)},
+        }
+    )
+
+    assert len(deep["sdk"]["exception_chain"]) == 8
+    assert deep["sdk"]["exception_chain"][0]["message"] == "wrapper-9"
+    assert deep["sdk"]["exception_chain"][-1]["message"] == "root"
+    assert any(
+        loss["field"] == "sdk.exception_chain" and loss["reason"] == "truncated"
+        for loss in deep["normalization_losses"]
+    )
+
+
+def test_runtime_diagnostics_truncation_keeps_root_earliest_and_latest_failures():
+    fitted = normalize_sdk_runtime_diagnostics(
+        {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": "wrapper_failure",
+            "failure_source": "executor_wrapper",
+            "failure_stage": "terminalization",
+            "failure_observations": [
+                {
+                    "error_code": f"cause_{index}",
+                    "failure_source": "sdk_exception",
+                    "failure_stage": "model_wait",
+                }
+                for index in range(10)
+            ],
+        }
+    )
+
+    assert [item["error_code"] for item in fitted["failure_observations"]] == [
+        "wrapper_failure",
+        "cause_0",
+        "cause_4",
+        "cause_5",
+        "cause_6",
+        "cause_7",
+        "cause_8",
+        "cause_9",
+    ]
+    assert any(
+        item["field"] == "failure_observations" and item["reason"] == "truncated"
+        for item in fitted["normalization_losses"]
+    )
 
 
 def _settings(*, timeout_seconds: float = 5.0):
@@ -244,6 +444,7 @@ async def test_sdk_turn_limit_variants_share_one_actionable_public_diagnostic(
             "tool_policy_denials": 0,
             "tool_lifecycle_denials": 0,
             "skill_invocations": 0,
+            "public_projection_omissions": 0,
         },
         "last_public_stage": "runtime",
         "selected_skill": None,
@@ -292,13 +493,16 @@ async def test_sdk_timeout_and_missing_terminal_are_distinct(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_selected_skill_not_invoked_and_policy_admission_are_distinct(
+async def test_authorized_skill_is_optional_and_policy_admission_remains_distinct(
     monkeypatch,
     tmp_path: Path,
 ):
     sdk_types: dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     async def success_query(prompt, options):
+        captured["prompt_messages"] = [message async for message in prompt]
+        captured["options"] = options.kwargs
         yield sdk_types["ResultMessage"]()
 
     sdk = _install_sdk(monkeypatch, success_query)
@@ -337,15 +541,23 @@ async def test_selected_skill_not_invoked_and_policy_admission_are_distinct(
         public_skill_metadata=metadata,
     )
 
-    assert not_invoked.error == "claude_agent_sdk_selected_skill_not_invoked"
-    assert not_invoked.turn_diagnostics["terminal_class"] == "selected_skill_not_invoked"
+    assert not_invoked.error is None
+    assert not_invoked.turn_diagnostics["terminal_class"] == "completed"
     assert not_invoked.turn_diagnostics["selected_skill"] == metadata["review-skill"]
+    assert not_invoked.used_skills == []
+    assert captured["options"]["skills"] == ["review-skill"]
+    assert "Skill" in captured["options"]["tools"]
+    assert "Skill(review-skill)" in captured["options"]["allowed_tools"]
+    assert captured["prompt_messages"][0]["message"]["content"] == "review"
+    assert "Authoritative platform Skill requirement" not in (
+        captured["prompt_messages"][0]["message"]["content"]
+    )
     assert not_admitted.error == "claude_agent_sdk_selected_skill_not_authorized"
     assert not_admitted.turn_diagnostics["terminal_class"] == "tool_policy_or_admission_failure"
 
 
 @pytest.mark.asyncio
-async def test_sdk_error_terminal_preserves_selected_skill_not_invoked_classification(
+async def test_sdk_error_terminal_preserves_sdk_error_without_skill_invocation(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -372,8 +584,9 @@ async def test_sdk_error_terminal_preserves_selected_skill_not_invoked_classific
         skills=["review-skill"],
     )
 
-    assert result.error == "claude_agent_sdk_selected_skill_not_invoked"
-    assert result.turn_diagnostics["terminal_class"] == "selected_skill_not_invoked"
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.turn_diagnostics["terminal_class"] == "upstream_error"
+    assert result.used_skills == []
     assert "private upstream detail" not in str(result.turn_diagnostics)
     assert result.runtime_diagnostics["error_code"] == result.error
     assert result.runtime_diagnostics["failure_source"] == "sdk_result_error"
@@ -388,27 +601,31 @@ async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_e
     tmp_path: Path,
 ):
     async def query(prompt, options):
+        pre_hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
         success_hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
         failure_hook = options.kwargs["hooks"]["PostToolUseFailure"][0].hooks[0]
-        await success_hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "review-skill"},
-                "tool_use_id": "selected-tool-id",
-            }
-        )
-        await failure_hook(
-            {
-                "hook_event_name": "PostToolUseFailure",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "minimax-docx"},
-                "tool_use_id": "dependency-tool-id",
-            }
-        )
+        selected = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "review-skill"},
+            "tool_use_id": "selected-tool-id",
+        }
+        dependency = {
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "minimax-docx"},
+            "tool_use_id": "dependency-tool-id",
+        }
+        await pre_hook(selected)
+        await success_hook(selected)
+        await pre_hook(dependency)
+        await failure_hook(dependency)
         raise RuntimeError("private dependency command failed")
         if False:
             yield None
+
+    async def acknowledge(_fact):
+        return True
 
     _install_sdk(monkeypatch, query)
     monkeypatch.setattr(
@@ -429,6 +646,7 @@ async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_e
         skill_id="review-skill",
         skills=["review-skill", "minimax-docx"],
         public_skill_metadata=metadata,
+        on_capability_evidence=acknowledge,
     )
 
     assert result.error == "claude_agent_sdk_upstream_error"
@@ -494,16 +712,20 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
 
     async def query(prompt, options):
         yield sdk_types["AssistantMessage"]([sdk_types["TextBlock"]("working")])
-        hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
-        await hook(
-            {
-                "hook_event_name": "PostToolUse",
-                "tool_name": "Skill",
-                "tool_input": {"skill": "internal-review-id"},
-                "tool_use_id": "tool-secret-id",
-            }
-        )
+        hook_input = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "internal-review-id"},
+            "tool_use_id": "tool-secret-id",
+        }
+        pre_hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
+        post_hook = options.kwargs["hooks"]["PostToolUse"][0].hooks[0]
+        await pre_hook(hook_input)
+        await post_hook(hook_input)
         yield sdk_types["ResultMessage"](num_turns=3)
+
+    async def acknowledge(_fact):
+        return True
 
     sdk = _install_sdk(monkeypatch, query)
     sdk_types.update(
@@ -531,6 +753,7 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
         skill_id="internal-review-id",
         skills=["internal-review-id"],
         public_skill_metadata=metadata,
+        on_capability_evidence=acknowledge,
     )
 
     diagnostics = result.turn_diagnostics
@@ -549,6 +772,7 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
         "tool_policy_denials": 0,
         "tool_lifecycle_denials": 0,
         "skill_invocations": 1,
+        "public_projection_omissions": 0,
     }
     assert "internal-review-id" not in str(diagnostics)
     assert "tool-secret-id" not in str(diagnostics)

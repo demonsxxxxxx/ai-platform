@@ -10,7 +10,7 @@ from app.skills.dependencies import (
 
 
 def test_skill_dependency_policy_does_not_infer_dependencies_from_skill_id():
-    available = {"qa-file-reviewer", "minimax-docx", "baoyu-translate"}
+    available = {"qa-file-reviewer", "minimax-docx"}
 
     assert skill_dependency_policy("qa-file-reviewer", available) == {
         "skill_id": "qa-file-reviewer",
@@ -58,8 +58,8 @@ def test_declared_dependency_must_be_internal():
     with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal"):
         validate_skill_dependency_ids(
             "qa-file-reviewer",
-            ["baoyu-translate"],
-            {"qa-file-reviewer", "baoyu-translate"},
+            ["ragflow-knowledge-search"],
+            {"qa-file-reviewer", "ragflow-knowledge-search"},
         )
 
     with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_allowed"):

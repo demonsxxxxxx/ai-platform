@@ -358,14 +358,23 @@ def test_v2_cancel_stops_background_task_and_delivers_cancelled_terminal(tmp_pat
 
 def test_v2_supervisor_sends_heartbeat_while_runner_is_silent(tmp_path):
     callbacks: list[dict[str, object]] = []
+    active_senders = 0
+    max_active_senders = 0
 
     async def executor_runner(_request, _workspace_root, _emit_event):
         await asyncio.sleep(0.06)
         return {"status": "completed", "message": "done"}
 
     async def callback_sender(_url, payload, _token):
-        callbacks.append(payload)
-        return callback_ack(payload)
+        nonlocal active_senders, max_active_senders
+        active_senders += 1
+        max_active_senders = max(max_active_senders, active_senders)
+        try:
+            await asyncio.sleep(0.02)
+            callbacks.append(payload)
+            return callback_ack(payload)
+        finally:
+            active_senders -= 1
 
     app = create_executor_app(
         workspace_root=tmp_path,
@@ -390,3 +399,4 @@ def test_v2_supervisor_sends_heartbeat_while_runner_is_silent(tmp_path):
     ]
     assert heartbeats
     assert all(item["status"] == "running" for item in heartbeats)
+    assert max_active_senders == 1

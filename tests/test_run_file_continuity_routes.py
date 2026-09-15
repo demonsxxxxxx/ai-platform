@@ -6,6 +6,7 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.models import ChatStreamRequest, CreateRunRequest
 from app.routes import runs as runs_module
+from app.skills.pinning import build_skill_manifest_ref
 
 
 def _principal() -> AuthPrincipal:
@@ -74,7 +75,8 @@ async def test_replay_queue_preparation_preserves_prior_file_through_child_snaps
     source,
 ):
     calls = {}
-    skill_version = "hash-v1"
+    skill_version = "a" * 64
+    manifest = _replay_manifest("qa-file-reviewer", skill_version)
     copied = {
         "session_id": "session-a",
         "run_id": f"run-{source}",
@@ -91,11 +93,14 @@ async def test_replay_queue_preparation_preserves_prior_file_through_child_snaps
             "selected_version": skill_version,
             "selected_track": "manifest_pin",
         },
-        "skill_manifests": [_replay_manifest("qa-file-reviewer", skill_version)],
+        "skill_manifests": [build_skill_manifest_ref(manifest)],
     }
 
     async def allow(*_args, **_kwargs):
         return None
+
+    async def materialize(*_args, **_kwargs):
+        return [manifest]
 
     async def record_context(_conn, **kwargs):
         calls["context"] = kwargs
@@ -112,6 +117,7 @@ async def test_replay_queue_preparation_preserves_prior_file_through_child_snaps
         calls["execution_snapshot"] = kwargs["execution_snapshot"]
 
     monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", allow)
+    monkeypatch.setattr(repository_module, "materialize_run_skill_manifests", materialize)
     monkeypatch.setattr(repository_module, "update_run_auth_snapshot", allow)
     monkeypatch.setattr(repository_module, "append_event", allow)
     monkeypatch.setattr(repository_module, "update_run_input_execution_snapshot", update_input)

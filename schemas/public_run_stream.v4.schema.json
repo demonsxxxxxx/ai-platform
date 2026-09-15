@@ -218,7 +218,7 @@
     "MessageCompletedEventV4": {
       "allOf": [
         { "$ref": "#/$defs/PublicMessageApplicationEnvelopeV4" },
-        { "type": "object", "properties": { "event_type": { "const": "message.completed" }, "payload": { "type": "object", "properties": { "content": { "type": "string", "maxLength": 262144 } }, "required": ["content"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+        { "type": "object", "properties": { "event_type": { "const": "message.completed" }, "payload": { "type": "object", "properties": { "delta_count": { "type": "integer", "minimum": 1 }, "text_length": { "type": "integer", "minimum": 1 } }, "required": ["delta_count", "text_length"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
       ], "unevaluatedProperties": false
     },
     "ThinkingStartedEventV4": {
@@ -362,7 +362,7 @@
     "RunFailedEventV4": {
       "allOf": [
         { "$ref": "#/$defs/PublicApplicationEnvelopeV4" },
-        { "type": "object", "properties": { "event_type": { "const": "run.failed" }, "payload": { "type": "object", "properties": { "terminal_event_id": { "$ref": "#/$defs/SafeRefV4" }, "hydrate_required": { "const": true }, "projection_version": { "const": "ai-platform.chat-public-projection.v1" }, "code": { "type": "string", "minLength": 1, "maxLength": 128 }, "default_message": { "type": "string", "minLength": 1, "maxLength": 1024 }, "detail": { "oneOf": [{ "type": "string", "maxLength": 2048 }, { "type": "null" }] }, "projection_failure_reason": { "enum": ["answer_too_large", "invalid_configuration", "invalid_input", "private_replacement_invalid", "private_token_already_published", "private_token_boundary_conflict", "private_token_prefix_overflow", "sanitizer_bound_exceeded", "sanitizer_failed", "sanitizer_rejected", "terminal_text_mismatch", "upstream_projection_failed"] } }, "dependentSchemas": { "projection_failure_reason": { "properties": { "code": { "const": "claude_agent_sdk_public_projection_failed" } } } }, "required": ["terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
+        { "type": "object", "properties": { "event_type": { "const": "run.failed" }, "payload": { "type": "object", "properties": { "terminal_event_id": { "$ref": "#/$defs/SafeRefV4" }, "hydrate_required": { "const": true }, "projection_version": { "const": "ai-platform.chat-public-projection.v1" }, "code": { "type": "string", "minLength": 1, "maxLength": 128 }, "default_message": { "type": "string", "minLength": 1, "maxLength": 1024 }, "detail": { "oneOf": [{ "type": "string", "maxLength": 2048 }, { "type": "null" }] } }, "required": ["terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"], "additionalProperties": false } }, "required": ["event_type", "payload"] }
       ], "unevaluatedProperties": false
     },
     "PublicApplicationEventV4": {
@@ -389,7 +389,7 @@
     },
     "RunEventSourceV4": {
       "type": "object",
-      "properties": { "kind": { "const": "run_event" }, "run_event_id": { "$ref": "#/$defs/SafeRefV4" }, "sequence": { "type": "integer", "minimum": 1 } },
+      "properties": { "kind": { "const": "run_event" }, "run_event_id": { "$ref": "#/$defs/SafeRefV4" }, "sequence": { "type": "integer", "minimum": 1 }, "callback_sequence": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 } },
       "required": ["kind", "run_event_id", "sequence"],
       "additionalProperties": false
     },
@@ -397,12 +397,6 @@
       "type": "object",
       "properties": { "kind": { "const": "stream_authority" }, "authority_id": { "$ref": "#/$defs/SafeRefV4" } },
       "required": ["kind", "authority_id"],
-      "additionalProperties": false
-    },
-    "TerminalIntentSourceV4": {
-      "type": "object",
-      "properties": { "kind": { "const": "terminal_intent" }, "terminal_event_id": { "$ref": "#/$defs/SafeRefV4" } },
-      "required": ["kind", "terminal_event_id"],
       "additionalProperties": false
     },
     "InternalStreamEnvelopeV4": {
@@ -430,8 +424,7 @@
         "payload": { "type": "object", "maxProperties": 64 },
         "source": { "oneOf": [
           { "$ref": "#/$defs/RunEventSourceV4" },
-          { "$ref": "#/$defs/StreamAuthoritySourceV4" },
-          { "$ref": "#/$defs/TerminalIntentSourceV4" }
+          { "$ref": "#/$defs/StreamAuthoritySourceV4" }
         ] }
       },
       "required": [

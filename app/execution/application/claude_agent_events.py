@@ -14,12 +14,25 @@ from collections.abc import Mapping
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Callable
 
-from app.execution.domain.public_projection import PUBLIC_ANSWER_FAILURE_REASONS
-from app.streaming.events import PUBLIC_APPLICATION_EVENT_TYPES_V4
+from app.kernel.memory_redaction import (
+    MEMORY_REDACTION_MODE_STRICT,
+    redact_memory_text,
+)
+from app.sandbox.api import AssistantAnswerReceipt
+from app.streaming.domain.protocol_v4 import (
+    PUBLIC_APPLICATION_EVENT_TYPES,
+    PUBLIC_PAYLOAD_ENUMS,
+    PUBLIC_PAYLOAD_FIELDS,
+    PUBLIC_PAYLOAD_INTEGER_BOUNDS,
+    PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS,
+    PUBLIC_PAYLOAD_REF_ARRAY_FIELDS,
+    PUBLIC_PAYLOAD_REF_FIELDS,
+    PUBLIC_PAYLOAD_STRING_BOUNDS,
+    PUBLIC_REQUIRED_PAYLOAD_FIELDS,
+    PUBLIC_TOOL_CATEGORIES,
+)
 
-_APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES_V4
-_THINKING_SUMMARY_EVENT_TYPE = "claude_sdk_thinking_summary"
-_TOOL_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "search", "execute"})
+_APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES
 _BUILTIN_TOOL_CATEGORIES = {
     "Read": "read",
     "Glob": "search",
@@ -34,9 +47,27 @@ _BUILTIN_TOOL_CATEGORIES = {
     "WebSearch": "search",
     "Skill": "skill",
 }
-_FAILURE_CATEGORIES = frozenset(
-    {"invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"}
-)
+
+
+def _sanitize_public_answer_text(value: object) -> str:
+    """Apply the kernel redaction policy while preserving answer file paths."""
+
+    return redact_memory_text(value, mode=MEMORY_REDACTION_MODE_STRICT)
+
+
+def runtime_terminal_payload(
+    executor_response: Mapping[str, Any],
+    *,
+    runtime_status: str,
+) -> dict[str, Any]:
+    """Build the executor-owned terminal fields forwarded by the adapter."""
+
+    return {
+        "runtime_terminal_status": runtime_status,
+        "answer_receipt": executor_response.get("answer_receipt"),
+    }
+
+
 _PRIVATE_KEYS = frozenset(
     {
         "id",
@@ -74,10 +105,7 @@ _MAX_DURATION = 86_400_000
 _MAX_TURNS = 10_000
 _MAX_SIZE_BYTES = 1_099_511_627_776
 _MAX_REFS = 32
-_ALLOWED_CATEGORIES = frozenset({"skill", "mcp", "read", "write", "edit", "search", "execute"})
-_ALLOWED_STOP_CATEGORIES = frozenset({"completed", "max_turns", "cancelled", "failed", "unknown"})
-_ALLOWED_FAILURE_CATEGORIES = frozenset({"invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"})
-_ALLOWED_TASK_REASON_CODES = frozenset({"user_cancelled", "run_cancelled", "timeout"})
+
 
 
 _SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
@@ -231,8 +259,13 @@ class ClaudeAgentEventCandidate:
     causation_event_id: str | None
     payload: dict[str, object]
     payload_sanitizer: InitVar[Callable[[object], object]]
+    text_sanitizer: InitVar[Callable[[object], object]] = _sanitize_public_answer_text
 
-    def __post_init__(self, payload_sanitizer: Callable[[object], object]) -> None:
+    def __post_init__(
+        self,
+        payload_sanitizer: Callable[[object], object],
+        text_sanitizer: Callable[[object], object],
+    ) -> None:
         _assert_run_id(self.run_id)
         _assert_event_id(self.event_id)
         if self.message_id is not None:
@@ -247,11 +280,26 @@ class ClaudeAgentEventCandidate:
             "causation_event_id": self.causation_event_id,
             "payload": self.payload,
         }
-        if payload_sanitizer(public_candidate) != _without_none_public_values(public_candidate):
+        identity_candidate = {**public_candidate, "payload": {}}
+        if payload_sanitizer(identity_candidate) != _without_none_public_values(identity_candidate):
             raise ValueError("public event candidate contains private text")
         if self.event_type not in _APPLICATION_EVENT_TYPES:
             raise ValueError("unsupported Claude application event")
         _validate_payload(self.event_type, self.payload)
+        if not callable(text_sanitizer):
+            raise ValueError("text sanitizer must be callable")
+        if self.event_type not in {"message.delta", "thinking.delta"}:
+            if payload_sanitizer(public_candidate) != _without_none_public_values(public_candidate):
+                raise ValueError("public event candidate contains private text")
+        else:
+            delta = self.payload.get("delta")
+            if text_sanitizer(delta) != delta:
+                raise ValueError("public event candidate contains private text")
+            structured_payload = {
+                key: value for key, value in self.payload.items() if key != "delta"
+            }
+            if payload_sanitizer(structured_payload) != _without_none_public_values(structured_payload):
+                raise ValueError("public event candidate contains private text")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -275,186 +323,69 @@ class ClaudeAgentEventCandidate:
         }
 
 
-@dataclass(frozen=True)
-class ClaudeSdkThinkingSummaryCandidate:
-    """One private executor fact awaiting server-owned public projection."""
-
-    run_id: str
-    event_id: str
-    message_id: str
-    summary: str
-    sanitizer: InitVar[Callable[[object], str]]
-
-    def __post_init__(self, sanitizer: Callable[[object], str]) -> None:
-        _assert_run_id(self.run_id)
-        _assert_event_id(self.event_id)
-        _assert_safe_ref(self.message_id, "message_id")
-        if not self.summary or len(self.summary) > _MAX_TEXT:
-            raise ValueError("invalid summarized thinking bound")
-        if sanitizer(self.summary) != self.summary:
-            raise ValueError("summarized thinking is not sanitized")
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "run_id": self.run_id,
-            "event_id": self.event_id,
-            "event_type": _THINKING_SUMMARY_EVENT_TYPE,
-            "message_id": self.message_id,
-            "summary": self.summary,
-        }
-
-    def as_agent_event_fields(self) -> dict[str, object]:
-        return {
-            "type": _THINKING_SUMMARY_EVENT_TYPE,
-            "message": "",
-            "payload": {"summary": self.summary},
-            "event_id": self.event_id,
-            "run_id": self.run_id,
-            "message_id": self.message_id,
-            "causation_event_id": None,
-            "admin_only": True,
-        }
-
-
 def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
+    if event_type not in _APPLICATION_EVENT_TYPES:
+        raise ValueError("unsupported Claude application event")
     if not isinstance(payload, dict) or len(payload) > 64:
         raise ValueError("event payload must be an object")
-    required: dict[str, set[str]] = {
-        "message.started": set(),
-        "message.delta": {"delta"},
-        "message.completed": {"content"},
-        "thinking.started": {"thinking_id"},
-        "thinking.delta": {"thinking_id", "delta"},
-        "thinking.completed": {"thinking_id"},
-        "model.completed": {"duration_ms", "turn_count", "stop_category"},
-        "tool.started": {"operation_id", "category", "display_name"},
-        "tool.completed": {"operation_id", "category", "display_name", "duration_ms"},
-        "tool.failed": {"operation_id", "category", "display_name", "duration_ms", "failure_category"},
-        "tool.denied": {"operation_id", "category", "display_name", "denial_code"},
-        "subagent.started": {"subagent_id", "display_name"},
-        "subagent.progress": {"subagent_id", "display_name", "duration_ms", "current_category"},
-        "subagent.completed": {"subagent_id", "display_name", "duration_ms"},
-        "subagent.failed": {"subagent_id", "display_name", "duration_ms", "failure_category"},
-        "subagent.cancelled": {"subagent_id", "display_name", "duration_ms", "reason_code"},
-        "artifact.created": {"artifact_id", "filename", "media_type", "size_bytes", "status"},
-        "artifact.ready": {"artifact_id", "filename", "media_type", "size_bytes", "status"},
-        "artifact.failed": {"artifact_id", "status", "failure_category"},
-        "policy.checking": {"decision_id", "category", "display_name"},
-        "policy.allowed": {"decision_id", "category", "display_name", "decision_code"},
-        "policy.denied": {"decision_id", "category", "display_name", "decision_code"},
-        "run.cancel_requested": {"source"},
-        "run.succeeded": {"terminal_event_id", "hydrate_required"},
-        "run.cancelled": {"terminal_event_id", "hydrate_required", "reason_code"},
-        "run.failed": {"terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"},
-    }
-    optional = {
-        "tool.started": {"input_summary", "evidence_refs"},
-        "tool.completed": {"result_summary", "evidence_refs", "artifact_refs"},
-        "tool.failed": {"evidence_refs"},
-        "subagent.progress": {"progress_percent"},
-        "artifact.created": {"evidence_ref"},
-        "artifact.ready": {"evidence_ref"},
-        "artifact.failed": {"filename", "media_type"},
-        "run.failed": {"projection_failure_reason"},
-    }
-    expected = required[event_type]
+    required = PUBLIC_REQUIRED_PAYLOAD_FIELDS[event_type]
+    allowed = PUBLIC_PAYLOAD_FIELDS[event_type]
     keys = set(payload)
-    if not expected <= keys or not keys <= expected | optional.get(event_type, set()):
+    if not required.issubset(keys) or not keys.issubset(allowed):
         raise ValueError("event payload fields do not match schema")
     if any(key.lower() in _PRIVATE_KEYS for key in keys):
         raise ValueError("private event payload field")
 
-    string_bounds = {
-        "delta": (1, _MAX_DELTA),
-        "content": (0, _MAX_TEXT),
-        "display_name": (1, _MAX_DISPLAY),
-        "public_summary": (1, _MAX_SUMMARY),
-        "input_summary": (0, _MAX_SUMMARY),
-        "result_summary": (0, _MAX_RESULT_SUMMARY),
-        "filename": (1, _MAX_FILENAME),
-        "media_type": (1, _MAX_MEDIA_TYPE),
-        "code": (1, _MAX_CODE),
-        "default_message": (1, _MAX_DEFAULT_MESSAGE),
-        "detail": (0, _MAX_DETAIL),
-    }
-    integer_bounds = {
-        "duration_ms": (0, _MAX_DURATION),
-        "turn_count": (0, _MAX_TURNS),
-        "progress_percent": (0, 100),
-        "size_bytes": (0, _MAX_SIZE_BYTES),
-    }
-    ref_fields = {"thinking_id", "operation_id", "subagent_id", "artifact_id", "decision_id", "terminal_event_id", "evidence_ref"}
-    array_fields = {"evidence_refs", "artifact_refs"}
     for key, value in payload.items():
-        if key in string_bounds:
-            if key == "detail" and value is None:
-                continue
-            minimum, maximum = string_bounds[key]
-            if not isinstance(value, str) or len(value) < minimum or len(value) > maximum:
-                raise ValueError(f"invalid {key} bound")
-            if key == "filename" and any(ord(char) < 32 or ord(char) == 127 or char in "/\\\\" for char in value):
-                raise ValueError("invalid filename")
-        elif key in integer_bounds:
-            minimum, maximum = integer_bounds[key]
-            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
-                raise ValueError(f"invalid {key} bound")
-        elif key in ref_fields:
-            if key == "evidence_ref" and value is None:
-                continue
-            _assert_safe_ref(value, key)
-        elif key in array_fields:
-            if not isinstance(value, list) or len(value) > _MAX_REFS or any(not isinstance(ref, str) for ref in value):
+        enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
+        if enum_values is not None:
+            if value not in enum_values:
                 raise ValueError(f"invalid {key}")
-            if len(set(value)) != len(value):
+            continue
+        if key in PUBLIC_PAYLOAD_REF_FIELDS:
+            _assert_safe_ref(value, key)
+            continue
+        if key in PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS:
+            if value is not None:
+                _assert_safe_ref(value, key)
+            continue
+        if key in PUBLIC_PAYLOAD_REF_ARRAY_FIELDS:
+            if (
+                not isinstance(value, list)
+                or len(value) > _MAX_REFS
+                or len(set(value)) != len(value)
+            ):
                 raise ValueError(f"invalid {key}")
             for ref in value:
                 _assert_safe_ref(ref, key)
-        elif key == "detail":
-            if value is not None and not isinstance(value, str):
-                raise ValueError("invalid detail")
-
-    if "public_summary" in payload:
-        expected_summary = {
-            "thinking.started": "Analyzing the request",
-            "thinking.completed": "Analysis step completed",
-        }.get(event_type)
-        if payload["public_summary"] != expected_summary:
-            raise ValueError("invalid public_summary")
-    if "category" in payload and payload["category"] not in _ALLOWED_CATEGORIES:
-        raise ValueError("invalid category")
-    if "current_category" in payload and payload["current_category"] not in _ALLOWED_CATEGORIES:
-        raise ValueError("invalid current_category")
-    if "stop_category" in payload and payload["stop_category"] not in _ALLOWED_STOP_CATEGORIES:
-        raise ValueError("invalid stop_category")
-    if "failure_category" in payload:
-        allowed = {"subagent_failed"} if event_type == "subagent.failed" else {"artifact_failed", "unavailable"} if event_type == "artifact.failed" else _ALLOWED_FAILURE_CATEGORIES
-        if payload["failure_category"] not in allowed:
-            raise ValueError("invalid failure_category")
-    if "reason_code" in payload:
-        allowed = {"user_cancelled", "policy_cancelled", "timeout"} if event_type == "run.cancelled" else _ALLOWED_TASK_REASON_CODES
-        if payload["reason_code"] not in allowed:
-            raise ValueError("invalid reason_code")
-    if "denial_code" in payload and payload["denial_code"] not in {"capability_not_authorized", "policy_denied"}:
-        raise ValueError("invalid denial_code")
-    if "decision_code" in payload:
-        allowed = {"allowed"} if event_type == "policy.allowed" else {"capability_not_authorized", "policy_denied"}
-        if payload["decision_code"] not in allowed:
-            raise ValueError("invalid decision_code")
-    if (
-        "projection_failure_reason" in payload
-        and payload["projection_failure_reason"] not in PUBLIC_ANSWER_FAILURE_REASONS
-    ):
-        raise ValueError("invalid projection_failure_reason")
-    if "source" in payload and payload["source"] not in {"user", "system"}:
-        raise ValueError("invalid source")
-    if "status" in payload:
-        expected_status = {"artifact.created": "created", "artifact.ready": "ready", "artifact.failed": "failed"}[event_type]
-        if payload["status"] != expected_status:
-            raise ValueError("invalid status")
-    if "hydrate_required" in payload and payload["hydrate_required"] is not True:
-        raise ValueError("hydrate_required must be true")
-    if "projection_version" in payload and payload["projection_version"] != "ai-platform.chat-public-projection.v1":
-        raise ValueError("invalid projection_version")
+            continue
+        if key == "detail" and value is None:
+            continue
+        string_bounds = PUBLIC_PAYLOAD_STRING_BOUNDS.get((event_type, key))
+        if string_bounds is not None:
+            minimum, maximum = string_bounds
+            if not isinstance(value, str) or not minimum <= len(value) <= maximum:
+                raise ValueError(f"invalid {key} bound")
+            if key == "filename" and any(
+                ord(char) < 32 or ord(char) == 127 or char in "/\\\\"
+                for char in value
+            ):
+                raise ValueError("invalid filename")
+            continue
+        integer_bounds = PUBLIC_PAYLOAD_INTEGER_BOUNDS.get((event_type, key))
+        if integer_bounds is not None:
+            minimum, maximum = integer_bounds
+            if maximum is None and key in {"delta_count", "text_length"}:
+                maximum = 2**63 - 1
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < minimum
+                or (maximum is not None and value > maximum)
+            ):
+                raise ValueError(f"invalid {key} bound")
+            continue
+        raise ValueError(f"unsupported schema field: {key}")
 
 
 @dataclass
@@ -489,7 +420,6 @@ class ClaudeSdkAgentEventAdapter:
         public_skill_metadata: Mapping[str, Mapping[str, str]] | None = None,
         sanitizer: Callable[[object], object],
         payload_sanitizer: Callable[[object], object],
-        reasoning_sanitizer: Callable[[object], str] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         _assert_run_id(run_id)
@@ -498,13 +428,16 @@ class ClaudeSdkAgentEventAdapter:
         self.attempt_id = attempt_id
         self._clock = clock
         self._sanitizer = sanitizer
-        self._reasoning_sanitizer = reasoning_sanitizer or sanitizer
         self._payload_sanitizer = payload_sanitizer
         self._sealed = False
         self._message_id = _opaque("msg", run_id, "assistant", attempt_id)
         self._answer_started = False
-        self._answer_content = ""
-        self._thinking_indices: set[tuple[object, object]] = set()
+        self._answer_delta_count = 0
+        self._answer_text_length = 0
+        self._last_delta_identity: str | None = None
+        self._last_delta_event_id: str | None = None
+        self._answer_completed = False
+        self._public_projection_omissions = 0
         self._task_progress_seen: set[tuple[str, str]] = set()
         self._accepted_event_ids: dict[str, str] = {}
         self._tool_blocks: dict[str, tuple[str, dict[str, object]]] = {}
@@ -523,6 +456,22 @@ class ClaudeSdkAgentEventAdapter:
     @property
     def message_id(self) -> str:
         return self._message_id
+
+    @property
+    def answer_receipt(self) -> dict[str, object] | None:
+        if not self._answer_completed or self._last_delta_event_id is None:
+            return None
+        return AssistantAnswerReceipt(
+            schema_version="ai-platform.assistant-answer-receipt.v1",
+            message_id=self._message_id,
+            delta_count=self._answer_delta_count,
+            text_length=self._answer_text_length,
+            last_delta_event_id=self._last_delta_event_id,
+        ).model_dump(mode="json")
+
+    @property
+    def public_projection_omissions(self) -> int:
+        return self._public_projection_omissions
 
     def seal(self, reason: str = "") -> None:
         del reason
@@ -547,7 +496,7 @@ class ClaudeSdkAgentEventAdapter:
                     category = value[0] if isinstance(value[0], str) else None
                     label = value[1]
                 safe_label = _safe_display(label, sanitizer=self._sanitizer)
-                if category in _TOOL_CATEGORIES and safe_label:
+                if category in PUBLIC_TOOL_CATEGORIES and safe_label:
                     self._capabilities[identity] = (category, safe_label)
         for subject in subjects or []:
             if not isinstance(subject, dict) or subject.get("active") is False or subject.get("identity_authorized") is False:
@@ -573,10 +522,13 @@ class ClaudeSdkAgentEventAdapter:
             category = _tool_category(identity, identity)
             label = subject.get("public_tool_label") or identity if category != "mcp" else subject.get("public_tool_label")
             safe_label = _safe_display(label, sanitizer=self._sanitizer)
-            if category in _TOOL_CATEGORIES and safe_label:
+            if category in PUBLIC_TOOL_CATEGORIES and safe_label:
                 self._capabilities[identity] = (category, safe_label)
 
-    def _candidate(
+    def _omit_public_projection(self) -> None:
+        self._public_projection_omissions += 1
+
+    def _build_candidate(
         self,
         event_type: str,
         payload: dict[str, object],
@@ -588,12 +540,12 @@ class ClaudeSdkAgentEventAdapter:
         event_id = _opaque("evt", self.run_id, event_type, identity)
         if event_id in self._seen_events:
             raise KeyError("duplicate semantic event")
-        self._seen_events.add(event_id)
-        if causation_identity:
-            causation = self._accepted_event_ids.get(causation_identity)
-        else:
-            causation = None
-        candidate = ClaudeAgentEventCandidate(
+        causation = (
+            self._accepted_event_ids.get(causation_identity)
+            if causation_identity
+            else None
+        )
+        return ClaudeAgentEventCandidate(
             run_id=self.run_id,
             event_id=event_id,
             event_type=event_type,
@@ -601,77 +553,144 @@ class ClaudeSdkAgentEventAdapter:
             causation_event_id=causation,
             payload=payload,
             payload_sanitizer=self._payload_sanitizer,
+            text_sanitizer=self._sanitizer,
         )
-        self._accepted_event_ids[identity] = candidate.event_id
+
+    def _commit_candidate(
+        self,
+        identity: str,
+        candidate: ClaudeAgentEventCandidate,
+    ) -> None:
+        self._commit_candidates(((identity, candidate),))
+
+    def _commit_candidates(
+        self,
+        candidates: list[tuple[str, ClaudeAgentEventCandidate]]
+        | tuple[tuple[str, ClaudeAgentEventCandidate], ...],
+    ) -> None:
+        event_ids = [candidate.event_id for _, candidate in candidates]
+        if len(event_ids) != len(set(event_ids)) or any(
+            event_id in self._seen_events for event_id in event_ids
+        ):
+            raise KeyError("duplicate semantic event")
+        self._seen_events.update(event_ids)
+        self._accepted_event_ids.update(
+            {identity: candidate.event_id for identity, candidate in candidates}
+        )
+
+    def _candidate(
+        self,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        identity: str,
+        causation_identity: str | None = None,
+        message_id: str | None = None,
+        commit: bool = True,
+    ) -> ClaudeAgentEventCandidate:
+        candidate = self._build_candidate(
+            event_type,
+            payload,
+            identity=identity,
+            causation_identity=causation_identity,
+            message_id=message_id,
+        )
+        if commit:
+            self._commit_candidate(identity, candidate)
         return candidate
 
     def accept_answer_text(self, value: object, *, already_gated: bool = False) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed or not isinstance(value, str) or not value:
             return ()
-        sanitized = self._sanitizer(value)
-        if not isinstance(sanitized, str) or sanitized != value:
-            return ()
-        if not already_gated and _safe_text(
-            value,
-            maximum=_MAX_TEXT,
-            sanitizer=self._sanitizer,
-        ) is None:
-            return ()
-        if len(self._answer_content + value) > _MAX_TEXT:
-            self._sealed = True
-            return ()
-        events: list[ClaudeAgentEventCandidate] = []
-        if not self._answer_started:
-            self._answer_started = True
-            events.append(self._candidate("message.started", {}, identity="message"))
-        self._answer_content += value
-        events.append(self._candidate("message.delta", {"delta": value}, identity=f"delta:{len(self._answer_content)}"))
-        return tuple(events)
+        if not already_gated:
+            try:
+                sanitized = self._sanitizer(value)
+                if (
+                    not isinstance(sanitized, str)
+                    or sanitized != value
+                    or _safe_text(
+                        value,
+                        maximum=len(value),
+                        sanitizer=self._sanitizer,
+                    )
+                    is None
+                ):
+                    self._omit_public_projection()
+                    return ()
+            except Exception:  # noqa: BLE001 - projection faults omit only this text.
+                self._omit_public_projection()
+                return ()
 
-    def complete_answer(self, value: object) -> tuple[ClaudeAgentEventCandidate, ...]:
-        if self._sealed or not self._answer_started:
+        next_delta_count = self._answer_delta_count
+        next_text_length = self._answer_text_length
+        pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
+        try:
+            if not self._answer_started:
+                pending.append(
+                    (
+                        "message",
+                        self._candidate(
+                            "message.started",
+                            {},
+                            identity="message",
+                            commit=False,
+                        ),
+                    )
+                )
+            for offset in range(0, len(value), _MAX_DELTA):
+                chunk = value[offset : offset + _MAX_DELTA]
+                next_delta_count += 1
+                next_text_length += len(chunk)
+                identity = f"delta:{next_delta_count}"
+                pending.append(
+                    (
+                        identity,
+                        self._candidate(
+                            "message.delta",
+                            {"delta": chunk},
+                            identity=identity,
+                            commit=False,
+                        ),
+                    )
+                )
+        except Exception:  # noqa: BLE001 - no candidate state has been committed.
+            self._omit_public_projection()
             return ()
-        content = _safe_text(value, maximum=_MAX_TEXT, sanitizer=self._sanitizer)
-        if content is None:
-            return ()
-        self._answer_content = content
-        return (self._candidate("message.completed", {"content": content}, identity="message.completed"),)
 
-    def accept_thinking_summary(
+        self._commit_candidates(pending)
+        self._answer_started = True
+        self._answer_delta_count = next_delta_count
+        self._answer_text_length = next_text_length
+        self._last_delta_identity = pending[-1][0]
+        self._last_delta_event_id = pending[-1][1].event_id
+        return tuple(candidate for _identity, candidate in pending)
+
+    def complete_answer(
         self,
         value: object,
         *,
-        block_index: object,
-        message_identity: object,
-    ) -> tuple[ClaudeSdkThinkingSummaryCandidate, ...]:
-        if self._sealed or not isinstance(value, str) or not value or len(value) > _MAX_TEXT:
+        commit: bool = True,
+    ) -> tuple[ClaudeAgentEventCandidate, ...]:
+        del value
+        if self._sealed or not self._answer_started or self._answer_completed:
             return ()
-        key = (message_identity, block_index)
-        if key in self._thinking_indices:
+        try:
+            completed = self._candidate(
+                "message.completed",
+                {
+                    "delta_count": self._answer_delta_count,
+                    "text_length": self._answer_text_length,
+                },
+                identity="message.completed",
+                causation_identity=self._last_delta_identity,
+                commit=commit,
+            )
+        except Exception:  # noqa: BLE001 - preserve delivered deltas without a receipt.
+            self._omit_public_projection()
             return ()
-        sanitized = self._reasoning_sanitizer(value)
-        if not isinstance(sanitized, str) or not sanitized or len(sanitized) > _MAX_TEXT:
-            return ()
-        identity = f"thinking:{message_identity!s}:{block_index!s}"
-        event_id = _opaque(
-            "evt",
-            self.run_id,
-            _THINKING_SUMMARY_EVENT_TYPE,
-            identity,
-        )
-        if event_id in self._seen_events:
-            return ()
-        self._thinking_indices.add(key)
-        self._seen_events.add(event_id)
-        return (
-            ClaudeSdkThinkingSummaryCandidate(
-                run_id=self.run_id,
-                event_id=event_id,
-                message_id=self._message_id,
-                summary=sanitized,
-                sanitizer=self._reasoning_sanitizer,
-            ),
-        )
+        if commit:
+            self._answer_completed = True
+        return (completed,)
 
     def accept_content_block(
         self,
@@ -821,7 +840,6 @@ class ClaudeSdkAgentEventAdapter:
                         "operation_id": _opaque("op", self.run_id, "tool", call_id),
                         "category": category,
                         "display_name": label,
-                        "input_summary": f"Starting {label}",
                     },
                     identity=f"started:{call_id}",
                 ),
@@ -848,7 +866,6 @@ class ClaudeSdkAgentEventAdapter:
                     "category": category,
                     "display_name": label,
                     "duration_ms": duration,
-                    "result_summary": f"{label} completed",
                 },
                 identity=f"completed:{call_id}",
             ),
@@ -904,7 +921,7 @@ class ClaudeSdkAgentEventAdapter:
         last_tool = getattr(message, "last_tool_name", None) or patch.get("last_tool_name")
         resolved = self._resolve_tool(last_tool, {}) if isinstance(last_tool, str) else None
         category = resolved[1] if resolved else patch.get("current_category", "execute")
-        if category not in _ALLOWED_CATEGORIES:
+        if category not in PUBLIC_TOOL_CATEGORIES:
             category = "execute"
         usage = getattr(message, "usage", None)
         progress = usage.get("progress_percent") if isinstance(usage, Mapping) else patch.get("progress_percent")
@@ -927,17 +944,27 @@ class ClaudeSdkAgentEventAdapter:
             return ()
         duration = _bounded_int(getattr(result, "duration_ms", 0), maximum=_MAX_DURATION)
         turns = _bounded_int(getattr(result, "num_turns", 0), maximum=_MAX_TURNS)
-        events: list[ClaudeAgentEventCandidate] = []
+        pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
+        completed: tuple[ClaudeAgentEventCandidate, ...] = ()
         if self._answer_started:
-            events.extend(self.complete_answer(final_content))
-        events.append(
-            self._candidate(
+            completed = self.complete_answer(final_content, commit=False)
+            if completed:
+                pending.append(("message.completed", completed[0]))
+        pending.append(
+            (
                 "model.completed",
-                {"duration_ms": duration, "turn_count": turns, "stop_category": _stop_category(result)},
-                identity="model.completed",
+                self._candidate(
+                    "model.completed",
+                    {"duration_ms": duration, "turn_count": turns, "stop_category": _stop_category(result)},
+                    identity="model.completed",
+                    commit=False,
+                ),
             )
         )
-        return tuple(events)
+        self._commit_candidates(pending)
+        if completed:
+            self._answer_completed = True
+        return tuple(candidate for _identity, candidate in pending)
 
     def accept_artifact_reference(self, reference: Mapping[str, object]) -> tuple[ClaudeAgentEventCandidate, ...]:
         """Project only an already-authorized artifact reference."""
@@ -966,8 +993,3 @@ class ClaudeSdkAgentEventAdapter:
         if event_type == "artifact.failed":
             payload = {"artifact_id": payload["artifact_id"], "status": "failed", "failure_category": "artifact_failed", "filename": safe_filename, "media_type": safe_media_type}
         return (self._candidate(event_type, payload, identity=f"artifact:{artifact_id}:{status}"),)
-
-
-# Short aliases make the ownership boundary discoverable to runner callers.
-ClaudeSdkAgentEventProjector = ClaudeSdkAgentEventAdapter
-ClaudeSdkEventCandidate = ClaudeAgentEventCandidate

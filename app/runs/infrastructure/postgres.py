@@ -14,6 +14,7 @@ from app.runs.application.cancellation import (
     CancelRequestAuthority,
     CancelRequestResult,
 )
+from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.domain.attempt_lifecycle import (
     RUN_ATTEMPT_OWNER_KINDS,
     TERMINAL_RUN_ATTEMPT_STATUSES,
@@ -22,9 +23,6 @@ from app.runs.domain.attempt_lifecycle import (
 )
 from app.runs.domain.execution_spec import ExecutionSpec
 from app.runs.domain.model_snapshot import legacy_queue_model_snapshot
-from app.runs.domain.public_terminal import (
-    public_projection_failure_reason_from_result,
-)
 from app.runs.domain.terminalization import (
     RunTerminalEventFact,
     RunTerminalizationProgress,
@@ -101,10 +99,6 @@ async def load_current_terminal_event_fact(
         terminal_reason=error_code or ("run_cancelled" if status == "cancelled" else status),
         error_code=error_code,
         trace_ref=str(row.get("trace_id") or "") or None,
-        projection_failure_reason=public_projection_failure_reason_from_result(
-            error_code or "",
-            row.get("result_json"),
-        ),
     )
 
 
@@ -1397,10 +1391,12 @@ class PostgresRunCancellationPersistence:
     def __init__(
         self,
         *,
+        attempt_lifecycle: RunAttemptLifecycleService,
         append_event: _AppendRunEvent,
         append_audit_log: _AppendAuditLog,
         list_active_sandbox_leases: _ListActiveSandboxLeases,
     ) -> None:
+        self._attempt_lifecycle = attempt_lifecycle
         self._append_event = append_event
         self._append_audit_log = append_audit_log
         self._list_active_sandbox_leases = list_active_sandbox_leases
@@ -1452,7 +1448,7 @@ class PostgresRunCancellationPersistence:
         row = await cursor.fetchone()
         if not row:
             return None
-        attempt_row = await get_latest_run_attempt(
+        attempt_row = await self._attempt_lifecycle.get_latest(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -1477,7 +1473,7 @@ class PostgresRunCancellationPersistence:
             )
         target_status = "cancelled" if row["status"] == "queued" else "cancel_requested"
         if attempt_id is not None and target_status == "cancel_requested":
-            await request_run_attempt_cancel(
+            await self._attempt_lifecycle.request_cancel(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
@@ -1548,7 +1544,7 @@ class PostgresRunCancellationPersistence:
         row = await cursor.fetchone()
         if not row:
             return None
-        attempt_row = await get_latest_run_attempt(
+        attempt_row = await self._attempt_lifecycle.get_latest(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -1575,7 +1571,7 @@ class PostgresRunCancellationPersistence:
             )
         target_status = "cancelled" if row["status"] == "queued" else "cancel_requested"
         if attempt_id is not None and target_status == "cancel_requested":
-            await request_run_attempt_cancel(
+            await self._attempt_lifecycle.request_cancel(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
@@ -1613,7 +1609,7 @@ class PostgresRunCancellationPersistence:
             and progress is not None
             and progress.is_terminal("cancelled")
         ):
-            await terminalize_run_attempt(
+            await self._attempt_lifecycle.terminalize(
                 conn,
                 tenant_id=tenant_id,
                 run_id=authority.run_id,

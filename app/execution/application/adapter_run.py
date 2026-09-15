@@ -32,10 +32,11 @@ async def submit_run_until_cancelled(
     poll_interval_seconds: float = _RUN_CANCEL_POLL_INTERVAL_SECONDS,
     stop_timeout_seconds: float = _RUN_STOP_ATTEMPT_TIMEOUT_SECONDS,
     progress_interval_seconds: float = _RUN_PROGRESS_INTERVAL_SECONDS,
+    execution_owner: Any | None = None,
 ) -> Any:
     """Own one adapter until dispatch acceptance, result, or bounded cancellation."""
 
-    owner = owner_factory(run_payload.run_id)
+    owner = execution_owner or owner_factory(run_payload.run_id)
     submit_task = owner.start_adapter(adapter, run_payload, event_sink=event_sink)
     last_progress_at = time.monotonic()
 

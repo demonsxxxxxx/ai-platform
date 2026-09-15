@@ -8,9 +8,9 @@ from app.context.retrieval import (
     ContextRetrievalDenied,
     ContextRetrievalIdentity,
     ContextRetrievalInputError,
-    InMemoryContextRetrievalRepository,
 )
 from app.storage import ObjectStorageSizeLimitError
+from tests.support.context_retrieval import InMemoryContextRetrievalRepository
 
 
 def _symlink_or_skip(target, link):
@@ -73,6 +73,7 @@ def _retrieval() -> ContextRetrieval:
                 "original_name": "source.txt",
                 "content_type": "text/plain",
                 "content": "file content is bounded by bytes",
+                "size_bytes": len("file content is bounded by bytes".encode("utf-8")),
                 "storage_key": "tenants/tenant-a/private/source.txt",
             }
         ],
@@ -87,6 +88,7 @@ def _retrieval() -> ContextRetrieval:
                 "artifact_type": "report_txt",
                 "label": "report.txt",
                 "content": "artifact content",
+                "size_bytes": len("artifact content".encode("utf-8")),
                 "storage_key": "tenants/tenant-a/private/report.txt",
             },
             {
@@ -99,6 +101,7 @@ def _retrieval() -> ContextRetrieval:
                 "artifact_type": "report_txt",
                 "label": "cross.txt",
                 "content": "cross artifact",
+                "size_bytes": len("cross artifact".encode("utf-8")),
                 "storage_key": "tenants/tenant-a/private/cross.txt",
             },
         ],
@@ -482,6 +485,7 @@ async def test_stage_context_file_to_workspace_uses_stable_file_prefix_to_avoid_
                     "original_name": "source.txt",
                     "content_type": "text/plain",
                     "content": "alpha",
+                    "size_bytes": 5,
                 },
                 {
                     "tenant_id": "tenant-a",
@@ -493,6 +497,7 @@ async def test_stage_context_file_to_workspace_uses_stable_file_prefix_to_avoid_
                     "original_name": "source.txt",
                     "content_type": "text/plain",
                     "content": "bravo",
+                    "size_bytes": 5,
                 },
             ]
         )
@@ -538,6 +543,7 @@ async def test_stage_context_file_to_workspace_normalizes_windows_path_separator
                     "original_name": "..\\..\\.claude\\settings.txt",
                     "content_type": "text/plain",
                     "content": "safe staged content",
+                    "size_bytes": len("safe staged content".encode("utf-8")),
                 }
             ]
         )
@@ -578,6 +584,7 @@ async def test_stage_context_file_to_workspace_rejects_symlinked_context_parent(
                     "original_name": "source.txt",
                     "content_type": "text/plain",
                     "content": "must not escape workspace",
+                    "size_bytes": len("must not escape workspace".encode("utf-8")),
                 }
             ]
         )

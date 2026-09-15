@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Package2, Pencil, UploadCloud } from "lucide-react";
 import { useAuth } from "../../../hooks/useAuth";
 import { Permission } from "../../../types";
 import { isPermissionError } from "../../governance/frontendGovernanceState";
@@ -8,7 +9,6 @@ import { useSkillsActions } from "./useSkillsActions";
 import { SkillsList } from "./SkillsList";
 import { SkillFormSidebar } from "./SkillFormSidebar";
 import { ZipUploadModal } from "./ZipUploadModal";
-import { GithubImportModal } from "./GithubImportModal";
 import { BatchActionBar } from "./BatchActionBar";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
 import { SkillDistributionGovernancePanel } from "../SkillDistributionGovernancePanel";
@@ -202,7 +202,7 @@ export function SkillsPanel({
   const selectedSkill = selectedCatalogEntry?.runtimeSkill ?? null;
   const selectedAdminSkill = selectedCatalogEntry?.adminSkill ?? null;
 
-  const selectedDetailContent = showDistributionEditor ? (
+  const selectedDetailBody = showDistributionEditor ? (
     <SkillDistributionGovernancePanel
       selectedSkill={selectedAdminSkill}
       selectedSkillId={selectedAdminSkill?.skillId ?? null}
@@ -210,19 +210,10 @@ export function SkillsPanel({
   ) : selectedSkill ? (
     <section
       aria-label={t("skills.managementTable.selectedDetail")}
-      className="p-4 sm:p-5"
+      className="border-t border-[var(--theme-border)] p-4 sm:p-5"
       data-selected-skill-detail
     >
-      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--theme-text-tertiary)]">
-        {t("skills.managementTable.selectedDetail")}
-      </p>
-      <h2 className="mt-2 text-lg font-semibold text-[var(--theme-text)]">
-        {selectedSkill.name}
-      </h2>
-      <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-        {selectedSkill.description || t("skills.noDescription")}
-      </p>
-      <dl className="mt-5 grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-3 border-t border-[var(--theme-border)] pt-4 text-sm">
+      <dl className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-3 text-sm">
         <dt className="text-[var(--theme-text-secondary)]">
           {t("skills.managementTable.runtimeStatus")}
         </dt>
@@ -237,6 +228,65 @@ export function SkillsPanel({
         <dd>{selectedSkill.input_modes?.filter((mode) => mode !== "chat").join(" / ") || "-"}</dd>
       </dl>
     </section>
+  ) : null;
+
+  const selectedDetailContent = selectedCatalogEntry ? (
+    <div className="min-h-0">
+      <header className="skill-detail-header">
+        <span className="skill-detail-header__icon" aria-hidden="true">
+          <Package2 size={20} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="truncate text-base font-semibold text-[var(--theme-text)]">
+              {selectedCatalogEntry.displayName}
+            </h2>
+            <span
+              className={`skill-management-table__status ${
+                selectedCatalogEntry.runtimeEnabled
+                  ? "skill-management-table__status--active"
+                  : selectedCatalogEntry.catalogStatus === "internal"
+                    ? "skill-management-table__status--internal"
+                    : ""
+              }`}
+            >
+              <span aria-hidden="true" />
+              {selectedCatalogEntry.catalogStatus === "internal"
+                ? t("skills.managementTable.internalRuntime")
+                : selectedCatalogEntry.runtimeEnabled
+                  ? t("skills.managementTable.enabled")
+                  : t("skills.managementTable.disabled")}
+            </span>
+          </div>
+          <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
+            {selectedCatalogEntry.description || t("skills.noDescription")}
+          </p>
+        </div>
+        <div className="skill-detail-header__actions">
+          {selectedSkill && canEditSkills ? (
+            <button
+              className="btn-secondary h-9"
+              onClick={() => actions.handleEdit(selectedSkill)}
+              type="button"
+            >
+              <Pencil size={15} />
+              {t("skills.managementTable.edit")}
+            </button>
+          ) : null}
+          {actions.canAdminUploadSkills && selectedCatalogEntry.actionName ? (
+            <button
+              className="btn-primary h-9"
+              onClick={() => actions.handleZipClick(selectedCatalogEntry.actionName!)}
+              type="button"
+            >
+              <UploadCloud size={15} />
+              {t("skills.managementTable.updateVersion")}
+            </button>
+          ) : null}
+        </div>
+      </header>
+      {selectedDetailBody}
+    </div>
   ) : (
     <div className="flex min-h-56 items-center justify-center p-6 text-sm text-[var(--theme-text-secondary)]">
       {t("skills.managementTable.selectDetailPrompt")}
@@ -346,7 +396,6 @@ export function SkillsPanel({
         onSelectSkill={actions.handleSelectSkill}
         onSelectAll={() => actions.handleSelectAll(selectableNames)}
         onSelectDetail={handleSelectDetail}
-        onGithubClick={actions.handleGithubClick}
         onZipClick={actions.handleZipClick}
         selectedDetail={selectedDetail}
         selectedSkillId={selectedSkillId}
@@ -369,6 +418,7 @@ export function SkillsPanel({
         zipPreviewing={actions.zipPreviewing}
         zipSkills={actions.zipSkills}
         selectedZipSkills={actions.selectedZipSkills}
+        targetSkillName={actions.zipTargetSkillName}
         adminRelease={actions.canAdminUploadSkills}
         adminReleasePhase={actions.adminReleasePhase}
         adminReleaseBlocked={actions.adminReleaseBlocked}
@@ -382,25 +432,6 @@ export function SkillsPanel({
         onZipSkillToggle={actions.handleZipSkillToggle}
         onZipSelectAll={actions.handleZipSelectAll}
         onZipUpload={actions.handleZipUpload}
-      />
-
-      <GithubImportModal
-        showGithubModal={actions.showGithubModal}
-        setShowGithubModal={actions.setShowGithubModal}
-        githubUrl={actions.githubUrl}
-        setGithubUrl={actions.setGithubUrl}
-        githubBranch={actions.githubBranch}
-        setGithubBranch={actions.setGithubBranch}
-        githubSkills={actions.githubSkills}
-        selectedGithubSkills={actions.selectedGithubSkills}
-        githubLoading={actions.githubLoading}
-        githubInstalling={actions.githubInstalling}
-        githubExporting={actions.githubExporting}
-        onGithubPreview={actions.handleGithubPreview}
-        onGithubSkillToggle={actions.handleGithubSkillToggle}
-        onGithubInstall={actions.handleGithubInstall}
-        onGithubExport={actions.handleGithubExport}
-        setSelectedGithubSkills={actions.setSelectedGithubSkills}
       />
 
       {actions.selectionMode && canBatchSkills && (

@@ -14,6 +14,9 @@ from app.bootstrap.model_services import (
 )
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.run_lifecycle import build_run_cancellation_use_case
+from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
+from app.bootstrap.run_diagnostics import build_run_diagnostics_service
+from app.bootstrap.skills import configure_skill_services
 from app.bootstrap.streaming import build_run_stream_runtime
 from app.db import close_pool, transaction
 from app.redis_client import close_redis_client
@@ -59,7 +62,9 @@ def _cors_origins(raw_value: str) -> list[str]:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     run_stream_runtime = build_run_stream_runtime(transaction)
     app.state.run_stream_runtime = run_stream_runtime
-    app.state.run_cancellation_use_case = build_run_cancellation_use_case()
+    app.state.run_cancellation_use_case = build_run_cancellation_use_case(
+        attempt_lifecycle=app.state.run_attempt_lifecycle,
+    )
     try:
         yield
     finally:
@@ -77,8 +82,11 @@ def create_app() -> FastAPI:
     configure_context_services()
     configure_mcp_runtime()
     configure_model_services()
+    configure_skill_services()
     configure_agent_profile_routes(configure_agent_profile_favorites)
     app = FastAPI(title="AI Platform API", version="0.1.0", lifespan=lifespan)
+    app.state.run_attempt_lifecycle = build_run_attempt_lifecycle_service()
+    app.state.run_diagnostics_service = build_run_diagnostics_service()
     settings = get_settings()
     app.add_middleware(
         CORSMiddleware,

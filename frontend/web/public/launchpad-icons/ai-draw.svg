@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="AI Draw">
+  <rect width="128" height="128" rx="24" fill="#17324d"/>
+  <path d="M34 91 70 35l24 24-36 35H34z" fill="#f2c14e"/>
+  <path d="m70 35 8-8 24 24-8 8z" fill="#ef8354"/>
+  <path d="M34 91h25" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+</svg>

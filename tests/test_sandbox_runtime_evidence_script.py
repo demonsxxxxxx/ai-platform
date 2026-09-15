@@ -1511,6 +1511,7 @@ def test_run_platform_runtime_probe_uses_configured_sdk_model(monkeypatch, tmp_p
 
 
 def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENSANDBOX_STARTUP_IO_PROBE_ENABLED", "true")
     generator = load_generator()
     recorder = generator.EvidenceRecorder(
         run_id="run-a",
@@ -1645,9 +1646,9 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
         "executor_endpoint_present": True,
     }
     assert recorder.provider_lifecycle["startup_io"] == {
-        "file_write_read_verified": True,
-        "command_execution_verified": True,
-        "source": "OpenSandboxContainerProvider.startup_io_probe",
+        "file_write_read_verified": False,
+        "command_execution_verified": False,
+        "source": "not_observed",
     }
     assert recorder.provider_lifecycle["resource_policy"]["resource_limits_requested"] is True
     assert recorder.provider_lifecycle["egress_policy"] == {
@@ -1663,6 +1664,14 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
     serialized = json.dumps(recorder.to_dict())
     assert str(tmp_path) not in serialized
     assert "secret-token" not in serialized
+
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(serialized, encoding="utf-8")
+    checked = load_verifier().check_opensandbox_provider_lifecycle_evidence(
+        evidence, run_id="run-a"
+    )
+    assert checked.passed is False
+    assert "startup_io.file_write_read_verified" in checked.message
 
 
 def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_results(tmp_path):

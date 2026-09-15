@@ -58,7 +58,6 @@ def fixed_runtime_identity_test_seams(monkeypatch, request):
 
     class EgressEnabledTestSettings:
         sandbox_egress_policy_enabled = True
-        sandbox_egress_network_name = "ai-platform-sandbox-egress-internal-v1"
         sandbox_executor_image = "registry.example/ai-platform@sha256:" + "a" * 64
         sandbox_callback_base_url = "http://api.sandbox.internal:8020"
         sandbox_callback_host_gateway = ""
@@ -136,7 +135,6 @@ def governed_docker_settings(**overrides: Any) -> SimpleNamespace:
         "sandbox_workspace_root": "/tmp/ai-platform-sandbox-workspaces",
         "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
         "sandbox_egress_policy_enabled": True,
-        "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
         "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
         "sandbox_egress_proof_key_id": "current",
         "ai_platform_runtime_commit": "a" * 40,
@@ -1018,9 +1016,6 @@ class OpenSandboxSettings:
     opensandbox_timeout_seconds = 1800
     opensandbox_executor_image = ""
     opensandbox_executor_entrypoint = "/app/docker-entrypoint.sh uvicorn"
-    opensandbox_workspace_mount_enabled = True
-    opensandbox_startup_io_probe_enabled = True
-    opensandbox_allowed_egress_hosts = ""
     sandbox_runtime_subject = "runtime-subject-a"
     opensandbox_base_url = "http://172.19.0.1:8080"
     opensandbox_egress_proxy_url = "http://egress.opensandbox.internal:8080"
@@ -1308,6 +1303,7 @@ async def test_opensandbox_stages_skills_inputs_and_attempt_sentinel_after_ready
     (local_workspace / ".ai-platform").mkdir()
     (local_workspace / ".claude" / "skills" / "reporting").mkdir(parents=True)
     (local_workspace / "brief.txt").write_text("brief", encoding="utf-8")
+    (local_workspace / "CLAUDE.md").write_text("默认使用简体中文回复用户。", encoding="utf-8")
     (local_workspace / "inputs" / "input.txt").write_text("input", encoding="utf-8")
     (local_workspace / ".ai-platform" / "manifest.json").write_text("{}", encoding="utf-8")
     (local_workspace / ".claude" / "skills" / "reporting" / "SKILL.md").write_text(
@@ -1325,6 +1321,7 @@ async def test_opensandbox_stages_skills_inputs_and_attempt_sentinel_after_ready
     remote_files = {entry.path: entry.data for entry in sandbox_files.written}
     assert sandbox_files.operations[:1] == ["mkdir"]
     assert remote_files["/workspace/brief.txt"] == b"brief"
+    assert remote_files["/workspace/CLAUDE.md"] == "默认使用简体中文回复用户。".encode()
     assert remote_files["/workspace/inputs/input.txt"] == b"input"
     assert remote_files["/workspace/.ai-platform/manifest.json"] == b"{}"
     assert remote_files["/workspace/.claude/skills/reporting/SKILL.md"] == (
@@ -1428,7 +1425,7 @@ async def test_opensandbox_workspace_stream_contract(mode):
 
 @pytest.mark.asyncio
 @requires_secure_opensandbox_transfer
-async def test_opensandbox_collects_only_legacy_and_delivery_outputs_atomically(monkeypatch, tmp_path):
+async def test_opensandbox_collects_user_files_from_arbitrary_workspace_directories_atomically(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
@@ -1444,6 +1441,8 @@ async def test_opensandbox_collects_only_legacy_and_delivery_outputs_atomically(
             FakeOpenSandboxFile(path="/workspace/output/legacy.txt", data=b"legacy"),
             FakeOpenSandboxFile(path="/workspace/outputs/review/delivery/final.txt", data=b"final"),
             FakeOpenSandboxFile(path="/workspace/outputs/review/private.txt", data=b"private"),
+            FakeOpenSandboxFile(path="/workspace/tasks/facts.json", data=b"{}"),
+            FakeOpenSandboxFile(path="/workspace/CLAUDE.md", data=b"platform instructions"),
         ]
     )
 
@@ -1451,7 +1450,9 @@ async def test_opensandbox_collects_only_legacy_and_delivery_outputs_atomically(
 
     assert (local_workspace / "output" / "legacy.txt").read_bytes() == b"legacy"
     assert (local_workspace / "outputs" / "review" / "delivery" / "final.txt").read_bytes() == b"final"
-    assert not (local_workspace / "outputs" / "review" / "private.txt").exists()
+    assert (local_workspace / "outputs" / "review" / "private.txt").read_bytes() == b"private"
+    assert (local_workspace / "tasks" / "facts.json").read_bytes() == b"{}"
+    assert not (local_workspace / "CLAUDE.md").exists()
 
 
 @pytest.mark.parametrize("relative_path", ["", "/absolute.txt", "../escape.txt", "nested/../escape.txt", "nul\x00.txt"])
@@ -1900,6 +1901,8 @@ async def test_opensandbox_internal_test_forwards_only_provider_credentials(monk
     lease = await opensandbox_provider().create_or_reuse(request(), workspace())
 
     created = FakeOpenSandbox.created[0]
+    assert created["env"]["OPENAI_BASE_URL"] == settings.openai_base_url
+    assert created["env"]["ANTHROPIC_BASE_URL"] == settings.anthropic_base_url
     assert created["env"]["OPENAI_API_KEY"] == settings.openai_api_key
     assert created["env"]["ANTHROPIC_AUTH_TOKEN"] == settings.anthropic_auth_token
     assert "ANTHROPIC_API_KEY" not in created["env"]
@@ -3922,7 +3925,6 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
                 "sandbox_executor_published_host": "127.0.0.1",
                 "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
                 "sandbox_egress_policy_enabled": True,
-                    "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
                     "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
                     "ai_platform_runtime_commit": "a" * 40,
                 "sandbox_callback_host_gateway": "host.docker.internal",
@@ -5674,7 +5676,7 @@ async def test_docker_restart_with_expired_signed_proof_cleans_remote_before_col
         identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
     )
     lease = await first.create_or_reuse(sandbox_request, workspace())
-    network_name = settings.sandbox_egress_network_name
+    network_name = "ai-platform-sandbox-egress-internal-v1"
     network_id = fake.networks_by_name[network_name]["attrs"]["Id"]
     now = datetime.now(timezone.utc)
     expired_proof = build_governed_egress_proof(
@@ -6615,7 +6617,6 @@ async def test_docker_provider_requires_published_executor_port(monkeypatch):
                 "sandbox_executor_image": "registry.example/ai-platform@sha256:" + "a" * 64,
             "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
             "sandbox_egress_policy_enabled": True,
-                "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
                     "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
                 "ai_platform_runtime_commit": "a" * 40,
             "sandbox_container_start_timeout_seconds": 1,
@@ -6735,7 +6736,6 @@ async def test_docker_provider_uses_loopback_executor_url_and_private_auth_heade
             "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
             "sandbox_callback_host_gateway": "host.docker.internal",
             "sandbox_egress_policy_enabled": True,
-                "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
                     "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
                 "ai_platform_runtime_commit": "a" * 40,
             "sandbox_container_start_timeout_seconds": 5,
@@ -6938,7 +6938,6 @@ async def test_docker_provider_publishes_configured_hostname_without_governed_ho
             "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
             "sandbox_callback_host_gateway": "host.docker.internal",
             "sandbox_egress_policy_enabled": True,
-                "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
                     "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
                 "ai_platform_runtime_commit": "a" * 40,
             "sandbox_container_start_timeout_seconds": 5,
@@ -7001,7 +7000,6 @@ async def test_docker_provider_rebuilds_instead_of_reusing_when_inspected_bind_i
             "sandbox_callback_base_url": "http://api.sandbox.internal:8020",
             "sandbox_callback_host_gateway": "host.docker.internal",
             "sandbox_egress_policy_enabled": True,
-                "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
                     "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
                 "ai_platform_runtime_commit": "a" * 40,
             "sandbox_container_start_timeout_seconds": 5,
@@ -7044,7 +7042,6 @@ async def test_docker_provider_rejects_untrusted_public_callback_base_url(monkey
             "sandbox_callback_base_url": "http://example.com",
             "sandbox_callback_host_gateway": "",
             "sandbox_egress_policy_enabled": True,
-            "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
                 "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
             "sandbox_container_start_timeout_seconds": 5,
             "sandbox_executor_health_timeout_seconds": 5,
@@ -7076,7 +7073,6 @@ async def test_docker_provider_rejects_link_local_callback_base_url(monkeypatch)
             "sandbox_callback_base_url": "http://169.254.169.254",
             "sandbox_callback_host_gateway": "",
             "sandbox_egress_policy_enabled": True,
-            "sandbox_egress_network_name": "ai-platform-sandbox-egress-internal-v1",
                 "sandbox_egress_proof_signing_key": "provider-test-proof-key-with-enough-entropy-2026",
             "sandbox_container_start_timeout_seconds": 5,
             "sandbox_executor_health_timeout_seconds": 5,

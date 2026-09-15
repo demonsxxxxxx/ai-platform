@@ -613,9 +613,20 @@ def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
             },
             {
                 "id": "ses_translate",
-                "agent_id": "baoyu-translate",
+                "agent_id": "translate",
                 "workspace_id": "default",
-                "title": "翻译",
+                "title": "旧翻译",
+                "status": "active",
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "ses_custom_translate",
+                "agent_id": "custom-translate",
+                "agent_default_skill_id": "baoyu-translate",
+                "agent_profile_skill_id": "baoyu-translate",
+                "workspace_id": "default",
+                "title": "旧自定义翻译",
                 "status": "active",
                 "created_at": None,
                 "updated_at": None,
@@ -636,10 +647,15 @@ def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
     sessions = response.json()["sessions"]
     assert sessions[0]["agent_id"] == "document-review"
     assert sessions[0]["metadata"]["agent_id"] == "document-review"
-    assert sessions[1]["agent_id"] == "document-translation"
-    assert sessions[1]["metadata"]["agent_id"] == "document-translation"
+    assert sessions[1]["agent_id"] == "retired-agent"
+    assert sessions[1]["metadata"]["agent_id"] == "retired-agent"
+    assert sessions[1]["name"] == "已停用 Agent 会话"
+    assert sessions[2]["agent_id"] == "retired-agent"
+    assert sessions[2]["metadata"]["agent_id"] == "retired-agent"
+    assert sessions[2]["name"] == "已停用 Agent 会话"
     assert "qa-word-review" not in str(response.json())
     assert "baoyu-translate" not in str(response.json())
+    assert "旧自定义翻译" not in str(response.json())
 
 
 def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
@@ -674,6 +690,40 @@ def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
     assert "qa-word-review" not in str(payload)
 
 
+def test_lambchat_session_detail_redacts_custom_retired_agent(monkeypatch):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
+        return {
+            "id": session_id,
+            "agent_id": "custom-translate",
+            "agent_default_skill_id": "baoyu-translate",
+            "workspace_id": "default",
+            "title": "旧自定义翻译",
+            "status": "active",
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/sessions/ses_custom_translate", headers=auth_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_id"] == "retired-agent"
+    assert payload["metadata"]["agent_id"] == "retired-agent"
+    assert payload["name"] == "已停用 Agent 会话"
+    assert "baoyu-translate" not in str(payload)
+    assert "旧自定义翻译" not in str(payload)
+
+
 async def test_lambchat_agent_repository_exposes_only_canonical_agents():
     from app.repositories import list_lambchat_agents
 
@@ -695,7 +745,7 @@ async def test_lambchat_agent_repository_exposes_only_canonical_agents():
 
     assert rows == []
     sql, params = conn.executed[-1]
-    assert "agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')" in sql
+    assert "agents.id in ('general-agent', 'qa-word-review')" in sql
     assert "sop-assistant" not in sql
     assert "agents.status = 'active'" in sql
     assert "skills.status = 'active'" in sql
@@ -737,7 +787,6 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
         "/api/auth/permissions": {"groups": list, "all_permissions": list},
         "/api/agent/models/": {"enabled_count": 1},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
-        "/api/settings/": {"settings": {}},
         "/api/version": {"version": "ai-platform-poc"},
         "/api/projects": [],
         "/api/notifications/active": {"notifications": []},
@@ -786,12 +835,13 @@ def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
     }
     assert payload["uploadLimitsBytes"] == expected_limits_bytes
     assert payload["maxFiles"] == 32
+    assert payload["maxActiveUploadSessions"] == 3
     assert payload["max_file_size_bytes"] == MAX_UPLOAD_BYTES
     assert payload["uploadLimits"] == {**expected_limits_bytes, "maxFiles": 32}
     assert payload["max_file_size"] == MAX_UPLOAD_BYTES
 
 
-def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
+def test_notifications_have_one_workbench_route_owner(monkeypatch):
     from app.routes.lambchat_compat import router as lambchat_router
     from app.routes.workbench_projections import router as workbench_router
     from tests.test_workbench_projection_routes import (
@@ -800,7 +850,7 @@ def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
     )
 
     install_workbench_route_fakes(monkeypatch)
-    for path in ("/settings/", "/notifications/active"):
+    for path in ("/notifications/active",):
         workbench_owners = [
             route.endpoint.__module__
             for route in workbench_router.routes
@@ -818,20 +868,11 @@ def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
 
     client = TestClient(create_app())
 
-    anonymous_settings = client.get("/api/settings/")
-    authenticated_settings = client.get("/api/settings/", headers=user_headers())
     anonymous_notifications = client.get("/api/notifications/active")
     authenticated_notifications = client.get(
         "/api/notifications/active", headers=user_headers()
     )
 
-    assert anonymous_settings.status_code == 200
-    assert anonymous_settings.json() == {"settings": {}}
-    assert authenticated_settings.status_code == 200
-    assert set(authenticated_settings.json()["settings"]) == {
-        "personal_preferences",
-        "system_runtime",
-    }
     assert anonymous_notifications.status_code == 200
     assert anonymous_notifications.json() == {"notifications": []}
     assert authenticated_notifications.status_code == 200
@@ -1234,20 +1275,22 @@ def test_lambchat_terminal_answer_requires_consistent_identifier_capabilities(
 
 
 @pytest.mark.parametrize(
-    ("agent_id", "skill_id", "message", "private_marker", "expected_detail_code"),
+    ("agent_id", "skill_id", "message", "private_marker", "expected_content", "expected_detail_code"),
     [
         (
             "general-agent",
             "general-chat",
             "general-chat 拒绝读取 /var/lib/private/answer.txt",
-            "/var/",
-            "result_unavailable",
+            "",
+            "general-agent 拒绝读取 /var/lib/private/answer.txt",
+            None,
         ),
         (
             "executor_native",
             "custom-skill",
             "custom-skill 拒绝暴露运行时详情",
             "executor_native",
+            "拒绝暴露运行时详情",
             None,
         ),
     ],
@@ -1257,6 +1300,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
     skill_id,
     message,
     private_marker,
+    expected_content,
     expected_detail_code,
 ):
     from app.routes.lambchat_compat import _terminal_final_payload
@@ -1273,7 +1317,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
 
     assert final_payload is not None
     event_type, payload, _ = final_payload
-    assert private_marker not in str(payload)
+    assert private_marker not in str(payload) if private_marker else True
     assert skill_id not in str(payload)
     if expected_detail_code is not None:
         assert event_type == "final_detail"
@@ -1281,7 +1325,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
         assert "content" not in payload
     else:
         assert event_type == "message:chunk"
-        assert payload["content"] == "拒绝暴露运行时详情"
+        assert payload["content"] == expected_content
 
 
 def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
@@ -1396,15 +1440,11 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
         ),
         (
             "failed",
-            "claude_agent_sdk_public_projection_failed",
-            {
-                "sdk_turn_diagnostics": {
-                    "projection_failure_reason": "private_token_boundary_conflict"
-                }
-            },
+            "run_failed",
+            {},
             "failed",
-            "claude_agent_sdk_public_projection_failed",
-            "private_token_boundary_conflict",
+            "run_failed",
+            None,
         ),
         ("canceled", None, {}, "cancelled", "run_cancelled", None),
     ],
@@ -1489,7 +1529,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
             "stage": "answer",
             "message": "",
             "payload_json": {
-                "delta": "secret token at /home/private/result.txt",
+                "delta": "api_key=actual-secret-value at /home/private/result.txt",
                 "source": "worker_answer_delta_v1",
                 "visible_to_user": True,
                 "severity": "info",
@@ -1513,17 +1553,14 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         "run_started",
         "agent_step_started",
         "message:chunk",
+        "message:chunk",
         "final_detail",
         "done",
     ]
     assert history[2]["data"]["content"] == "已完成公开部分；"
-    assert history[3]["data"]["detail_kind"] == detail_kind
-    assert history[3]["data"]["detail_code"] == detail_code
-    if expected_reason is not None:
-        assert history[3]["data"]["projection_failure_reason"] == expected_reason
-        assert expected_reason in history[3]["data"]["message"]
-    else:
-        assert "projection_failure_reason" not in history[3]["data"]
+    assert history[4]["data"]["detail_kind"] == detail_kind
+    assert history[4]["data"]["detail_code"] == detail_code
+    assert "projection_failure_reason" not in history[4]["data"]
     assert history[-1]["data"]["status"] == (
         "cancelled" if status == "canceled" else status
     )
@@ -1531,8 +1568,8 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     assert "已完成请求准备，正在进入受控执行阶段" in serialized
     assert "受控处理步骤仍在进行" in serialized
     assert "private chain of thought" not in serialized
-    assert "secret token" not in serialized
-    assert "/home/private" not in serialized
+    assert "actual-secret-value" not in serialized
+    assert "/home/private/result.txt" in serialized
     assert "worker-private" not in serialized
     assert "current_step" not in serialized
 
@@ -1649,7 +1686,7 @@ def test_lambchat_failed_history_reconstructs_authorized_v4_body() -> None:
 
 @pytest.mark.parametrize(
     ("v4_attempt_authorized", "expected_event_id"),
-    [(True, "evt4_mixed_delta"), (False, "evt-legacy-mixed")],
+    [(True, "evt4_mixed_delta"), (False, None)],
 )
 def test_lambchat_history_selects_one_authorized_body_source(
     v4_attempt_authorized,
@@ -1727,9 +1764,12 @@ def test_lambchat_history_selects_one_authorized_body_source(
         if record.history_event["event_type"] == "message:chunk"
     ]
 
-    assert len(chunks) == 1
-    assert chunks[0]["id"] == expected_event_id
-    assert chunks[0]["data"]["content"] == "同一份公开正文。"
+    if expected_event_id is None:
+        assert chunks == []
+    else:
+        assert len(chunks) == 1
+        assert chunks[0]["id"] == expected_event_id
+        assert chunks[0]["data"]["content"] == "同一份公开正文。"
 
 
 def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer():
@@ -1876,13 +1916,10 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
         for payload in answer_payloads
         if payload["projection_kind"] == "assistant_delta"
     ]
-    final = next(
-        payload
-        for payload in answer_payloads
-        if payload["projection_kind"] == "assistant_final"
-    )
 
-    assert "".join(deltas) == final["content"] == "已开始，general-agent 完成。"
+    assert len(answer_payloads) == 1
+    assert [payload["event_id"] for payload in answer_payloads] == ["evt-split-b"]
+    assert "".join(deltas) == "已开始，general-agent 完成。"
     assert "general-chat" not in str(answer_payloads)
     assert "qa-word-review" not in str(answer_payloads)
 
@@ -1961,13 +1998,10 @@ def test_lambchat_history_fold_preserves_split_identifier_across_pages():
         for payload in answer_payloads
         if payload["projection_kind"] == "assistant_delta"
     ]
-    final = next(
-        payload
-        for payload in answer_payloads
-        if payload["projection_kind"] == "assistant_final"
-    )
 
-    assert "".join(deltas) == final["content"] == "已开始，general-agent 完成。"
+    assert len(answer_payloads) == 1
+    assert [payload["event_id"] for payload in answer_payloads] == ["evt-page-b"]
+    assert "".join(deltas) == "已开始，general-agent 完成。"
     assert "general-chat" not in str(answer_payloads)
     assert "qa-word-review" not in str(answer_payloads)
 
@@ -2365,7 +2399,7 @@ def test_lambchat_session_runs_redacts_raw_skill_agent_id_for_ordinary_user(
 
     assert response.status_code == 200
     run = response.json()["runs"][0]
-    assert run["capability_id"] == "document_translation"
+    assert run["capability_id"] is None
     assert "skill_id" not in run
     assert "baoyu-translate" not in str(run)
 
@@ -2578,6 +2612,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
         "progress_kind": "completed",
         "wait_reason": None,
         "payload": {"activity": {"category": "capability", "status": "completed"}},
+        "activity": {"category": "capability", "status": "completed"},
         "created_at": None,
         "content": "已加载授权处理能力，下一步将按所选流程分析请求",
         "status": "planning",
@@ -3274,7 +3309,10 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
     assert event["payload"] == {
         "run_id": "run_a",
         "projection_version": "ai-platform.chat-public-projection.v1",
-        "projection_kind": "assistant_final",
+        "projection_kind": "assistant_delta",
+        "event_id": "run_a:final",
+        "message_id": "run_a:assistant",
+        "source": "worker_answer_delta_v1",
         "content": "hello",
     }
     assert event["data"] == event["payload"]

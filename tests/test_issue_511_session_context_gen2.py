@@ -374,7 +374,10 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
 
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", allow_admission)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", allow_reauthorization)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        allow_reauthorization,
+    )
     monkeypatch.setattr(
         "app.routes.runs.repositories.acquire_run_control_operation_lock",
         acquire_operation_lock,

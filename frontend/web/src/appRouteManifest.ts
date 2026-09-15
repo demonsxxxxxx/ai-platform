@@ -9,6 +9,7 @@ export const APP_ROUTE_PATHS = {
   agentMarket: "/agent-market",
   agentMarketDetail: "/agent-market/:agentId/:revision",
   agentMarketWorkspace: "/agent-market/:agentId/:revision/chat/:sessionId?",
+  aiApplication: "/ai-apps/:appKey",
   apps: "/apps",
   skills: "/skills",
   marketplace: "/marketplace",

@@ -65,14 +65,15 @@ test("company navigation owns copied webUI links without iframe embedding", () =
   const zh = readSource("src/i18n/locales/zh.json");
 
   assert.match(panel, /data-company-navigation-shell/);
-  assert.match(panel, /href=\{entry\.url\}/);
+  assert.match(panel, /resolveLaunchpadDestination/);
+  assert.match(panel, /href=\{destination\.href\}/);
   assert.match(panel, /target="_blank"/);
   assert.match(panel, /getLaunchpadIconUrl/);
   assert.match(panel, /authApi[\s\S]{0,40}\.getProfile/);
   assert.match(panel, /authApi\.updateMetadata/);
   assert.match(panel, /LAUNCHPAD_FAVORITES_METADATA_KEY/);
   assert.doesNotMatch(panel, /localStorage/);
-  assert.match(catalog, /icon: string/);
+  assert.match(catalog, /icon\?: string/);
   assert.doesNotMatch(catalog, /runtimeUrlKey/);
   assert.doesNotMatch(catalog, /systemKey/);
   assert.doesNotMatch(catalog, /VITE_LEGACY_WEBUI_FRAME_URL/);

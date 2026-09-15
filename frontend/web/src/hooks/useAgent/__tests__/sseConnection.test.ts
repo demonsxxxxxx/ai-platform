@@ -21,6 +21,7 @@ import {
 } from "../sseConnection.ts";
 import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
 import { PUBLIC_RUN_STREAM_SCHEMA } from "../../../generated/publicRunStreamV4.ts";
+import { ApiRequestError } from "../../../services/api/fetch.ts";
 import type { Message } from "../../../types";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -145,6 +146,7 @@ function v4Frame({
   eventId = cursor,
   seq = 1,
   messageId,
+  streamIncarnation = 1,
 }: {
   cursor: string;
   runId: string;
@@ -153,6 +155,7 @@ function v4Frame({
   eventId?: string;
   seq?: number;
   messageId?: string | null;
+  streamIncarnation?: number;
 }) {
   const isControl = eventType.startsWith("stream.");
   return {
@@ -171,7 +174,7 @@ function v4Frame({
           : (messageId ?? null),
       seq: isControl ? null : seq,
       event_type: eventType,
-      stream_incarnation: 1,
+      stream_incarnation: streamIncarnation,
       replayable:
         eventType !== "stream.heartbeat" && eventType !== "stream.gap",
       trace_ref: null,
@@ -181,93 +184,6 @@ function v4Frame({
     }),
   };
 }
-
-test("flushes accepted public text before reconnect status can replay-deduplicate it", async () => {
-  let messages: Message[] = [
-    {
-      id: "assistant-flush",
-      role: "assistant" as const,
-      content: "A",
-      timestamp: new Date(),
-      isStreaming: true,
-      parts: [{ type: "text" as const, content: "A" }],
-    },
-  ];
-  const presentation = new PublicStreamPresentation({
-    now: () => 0,
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame: () => undefined,
-    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
-    clearTimeout: () => undefined,
-  });
-  const owner = {
-    sessionId: "session-flush",
-    runId: "run-flush",
-    assistantMessageId: "assistant-flush",
-    streamVersion: 4,
-  };
-  presentation.activate(owner);
-  presentation.enqueueAssistantDelta(owner, "B", (content) => {
-    messages = messages.map((message) =>
-      message.id === owner.assistantMessageId
-        ? {
-            ...message,
-            content: message.content + content,
-            parts: [{ type: "text" as const, content: message.content + content }],
-          }
-        : message,
-    );
-  });
-  let contentObservedByStatus = "";
-  const context = {
-    abortControllerRef: { current: null },
-    isConnectingRef: { current: false },
-    streamingMessageIdRef: { current: owner.assistantMessageId },
-    reconnectTimeoutRef: { current: null },
-    retryCountRef: { current: 0 },
-    statusRetryCountRef: { current: 0 },
-    messagesRef: { current: messages },
-    sessionIdRef: { current: owner.sessionId },
-    currentRunIdRef: { current: owner.runId },
-    processedEventIdsRef: { current: new Set<string>() },
-    acceptedRunEventSequenceRef: {
-      current: { sessionId: owner.sessionId, runId: owner.runId, sequence: 8 },
-    },
-    lastHistoryTimestampRef: { current: null },
-    activeSubagentStackRef: { current: [] },
-    streamVersionRef: { current: owner.streamVersion },
-    isReconnectFromHistoryRef: { current: false },
-    publicStreamPresentation: presentation,
-    setSessionId: () => undefined,
-    setMessages: (updater) => {
-      messages = typeof updater === "function" ? updater(messages) : updater;
-      context.messagesRef.current = messages;
-    },
-    setConnectionStatus: () => undefined,
-    setIsInitializingSandbox: () => undefined,
-    setSandboxError: () => undefined,
-    onRunTerminal: (_runId, _status, _messageId, settle) => {
-      settle?.(true);
-      return true;
-    },
-  } satisfies SSEConnectionContext & {
-    isReconnectFromHistoryRef: { current: boolean };
-  };
-
-  await reconnectSSE(context, {
-    getStatus: async () => {
-      contentObservedByStatus = messages[0]?.content || "";
-      return {
-        session_id: owner.sessionId,
-        run_id: owner.runId,
-        status: "completed",
-      };
-    },
-  });
-
-  assert.equal(contentObservedByStatus, "AB");
-  assert.equal(messages[0]?.content, "AB");
-});
 
 function createTokenRefreshContext() {
   const connectionStates: string[] = [];
@@ -303,6 +219,93 @@ function createDeferred<T>() {
   });
   return { promise, resolve };
 }
+
+test("releases the connection owner when access-token acquisition fails", async () => {
+  const { context } = createTokenRefreshContext();
+  const tokenError = new Error("token unavailable");
+
+  await assert.rejects(
+    connectToSSE(
+      "session-old",
+      "run-old",
+      "assistant-old",
+      context,
+      false,
+      async () => {
+        assert.fail("fetch must not start without a token decision");
+      },
+      {
+        getValidAccessToken: async () => {
+          throw tokenError;
+        },
+      },
+    ),
+    tokenError,
+  );
+  assert.equal(context.isConnectingRef.current, false);
+  assert.equal(context.abortControllerRef.current, null);
+
+  let replacementStarted = false;
+  await assert.rejects(
+    connectToSSE(
+      "session-old",
+      "run-old",
+      "assistant-old",
+      context,
+      false,
+      async () => {
+        replacementStarted = true;
+        throw new Error("replacement probe complete");
+      },
+      { getValidAccessToken: async () => null },
+    ),
+    /replacement probe complete/,
+  );
+  assert.equal(replacementStarted, true);
+});
+
+test("releases a stale connection owner after delayed token resolution", async () => {
+  const { context } = createTokenRefreshContext();
+  const token = createDeferred<string | null>();
+  let fetchCalls = 0;
+  const pending = connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    async () => {
+      fetchCalls += 1;
+    },
+    { getValidAccessToken: () => token.promise },
+  );
+
+  context.sessionIdRef.current = "session-replacement";
+  token.resolve(null);
+  await pending;
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(context.isConnectingRef.current, false);
+  assert.equal(context.abortControllerRef.current, null);
+
+  context.sessionIdRef.current = "session-old";
+  await assert.rejects(
+    connectToSSE(
+      "session-old",
+      "run-old",
+      "assistant-old",
+      context,
+      false,
+      async () => {
+        fetchCalls += 1;
+        throw new Error("replacement probe complete");
+      },
+      { getValidAccessToken: async () => null },
+    ),
+    /replacement probe complete/,
+  );
+  assert.equal(fetchCalls, 1);
+});
 
 type FetchEventSourceInit = Parameters<SSEFetchEventSource>[1];
 
@@ -413,6 +416,7 @@ test("retries startup-not-ready inside one SSE owner and persists the accepted c
       reducerMessageId: "assistant-old",
     },
   };
+  context.v4TerminalFenceRef = { current: null };
   context.onRunTerminal = (_runId, _status, _messageId, settle) => {
     settle?.(true);
     return true;
@@ -763,6 +767,25 @@ test("uses raw_status as the authoritative compatibility status", async () => {
   assert.deepEqual(bareError, { kind: "unavailable" });
 });
 
+test("classifies authoritative status authentication failures without retrying", async () => {
+  for (const status of [401, 403]) {
+    let statusCalls = 0;
+    const result = await queryAuthoritativeRunStatus({
+      sessionId: "session-auth",
+      runId: "run-auth",
+      isCurrent: () => true,
+      statusRetryCountRef: { current: 0 },
+      getStatus: async () => {
+        statusCalls += 1;
+        throw new ApiRequestError("authentication rejected", status, "unauthorized");
+      },
+    });
+
+    assert.deepEqual(result, { kind: "unauthorized" });
+    assert.equal(statusCalls, 1);
+  }
+});
+
 test("resolves an idle session only for runless history reconciliation", async () => {
   let statusCalls = 0;
   const retryRef = { current: MAX_STATUS_QUERY_RETRIES };
@@ -945,7 +968,7 @@ test("does not let a stale connection target abort the active stream", async () 
   assert.equal(context.streamingMessageIdRef.current, "active-message");
 });
 
-test("fails closed when reconnect cannot read the authoritative run status", async () => {
+test("keeps the reconnect owner when authoritative status is temporarily unavailable", async () => {
   const connectionStates: string[] = [];
   let connectCalls = 0;
   const context = {
@@ -981,8 +1004,70 @@ test("fails closed when reconnect cannot read the authoritative run status", asy
   });
 
   assert.equal(connectCalls, 0);
+  assert.equal(context.currentRunIdRef.current, "run-1");
+  assert.equal(context.streamingMessageIdRef.current, "assistant-1");
   assert.equal(context.reconnectTimeoutRef.current, null);
   assert.equal(connectionStates.at(-1), "disconnected");
+});
+
+test("fails closed when reconnect status is unauthorized or its assistant owner is missing", async () => {
+  const cases = [
+    {
+      name: "unauthorized",
+      messageId: "assistant-1",
+      error: new ApiRequestError("authentication rejected", 401, "unauthorized"),
+      expectedMessageId: "assistant-1",
+    },
+    {
+      name: "missing assistant",
+      messageId: null,
+      error: new Error("status unavailable"),
+      expectedMessageId: "run-1",
+    },
+  ];
+
+  for (const candidate of cases) {
+    const unavailableCalls: Array<[string, string]> = [];
+    const context = {
+      abortControllerRef: { current: null },
+      isConnectingRef: { current: false },
+      streamingMessageIdRef: { current: candidate.messageId },
+      reconnectTimeoutRef: { current: null },
+      retryCountRef: { current: 0 },
+      messagesRef: { current: [] },
+      sessionIdRef: { current: "session-1" },
+      currentRunIdRef: { current: "run-1" },
+      processedEventIdsRef: { current: new Set<string>() },
+      lastHistoryTimestampRef: { current: null },
+      activeSubagentStackRef: { current: [] },
+      streamVersionRef: { current: 0 },
+      setSessionId: () => undefined,
+      setMessages: () => undefined,
+      setConnectionStatus: () => undefined,
+      setIsInitializingSandbox: () => undefined,
+      setSandboxError: () => undefined,
+      isReconnectFromHistoryRef: { current: false },
+      onRunStatusUnavailable: (runId: string, messageId: string) => {
+        unavailableCalls.push([runId, messageId]);
+        return true;
+      },
+    } satisfies SSEConnectionContext & {
+      isReconnectFromHistoryRef: { current: boolean };
+    };
+
+    await reconnectSSE(context, {
+      getStatus: async () => {
+        throw candidate.error;
+      },
+    });
+
+    assert.deepEqual(
+      unavailableCalls,
+      [["run-1", candidate.expectedMessageId]],
+      candidate.name,
+    );
+    assert.equal(context.reconnectTimeoutRef.current, null);
+  }
 });
 
 test("drops a reconnect when its status response belongs to an old stream generation", async () => {
@@ -1037,7 +1122,7 @@ test("drops a reconnect when its status response belongs to an old stream genera
   assert.equal(context.reconnectTimeoutRef.current, null);
 });
 
-test("bounds status-query retries before converging to local unavailable state", async () => {
+test("bounds status-query retries without terminalizing the reconnect owner", async () => {
   let statusCalls = 0;
   let unavailableCalls = 0;
   const context = {
@@ -1077,8 +1162,10 @@ test("bounds status-query retries before converging to local unavailable state",
   });
 
   assert.equal(statusCalls, 3);
-  assert.equal(context.statusRetryCountRef.current, 2);
-  assert.equal(unavailableCalls, 1);
+  assert.equal(context.statusRetryCountRef.current, 0);
+  assert.equal(unavailableCalls, 0);
+  assert.equal(context.currentRunIdRef.current, "run-1");
+  assert.equal(context.streamingMessageIdRef.current, "assistant-1");
   assert.equal(context.reconnectTimeoutRef.current, null);
 });
 
@@ -1355,6 +1442,7 @@ test("does not let a deferred stale 401 refresh mutate a replacement SSE stream"
 
 test("retries a current 401 once and aborts only its captured stream controller", async () => {
   const { context, connectionStates } = createTokenRefreshContext();
+  context.v4TerminalFenceRef = { current: null };
   context.onRunTerminal = (_runId, _status, _messageId, settle) => {
     settle?.(true);
     return true;
@@ -1424,131 +1512,6 @@ test("retries a current 401 once and aborts only its captured stream controller"
   assert.equal(context.abortControllerRef.current?.signal, signals[1]);
   assert.equal(context.isConnectingRef.current, false);
   assert.equal(connectionStates.at(-1), "disconnected");
-});
-
-test("flushes a paused accepted answer delta exactly once before a 401 refresh handoff", async () => {
-  let messages: Message[] = [
-    {
-      id: "assistant-refresh-flush",
-      role: "assistant",
-      content: "A",
-      timestamp: new Date(),
-      parts: [{ type: "text", content: "A" }],
-      isStreaming: true,
-    },
-  ];
-  let pendingFrame: FrameRequestCallback | null = null;
-  let commitCount = 0;
-  const owner = {
-    sessionId: "session-refresh-flush",
-    runId: "run-refresh-flush",
-    assistantMessageId: "assistant-refresh-flush",
-    streamVersion: 6,
-  };
-  const presentation = new PublicStreamPresentation({
-    now: () => 0,
-    requestAnimationFrame: (callback) => {
-      pendingFrame = callback;
-      return 1;
-    },
-    cancelAnimationFrame: () => {
-      pendingFrame = null;
-    },
-    setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
-    clearTimeout: () => undefined,
-  });
-  presentation.activate(owner);
-  assert.equal(
-    presentation.enqueueAssistantDelta(owner, "B", (content) => {
-      commitCount += 1;
-      messages = messages.map((message) =>
-        message.id === owner.assistantMessageId
-          ? {
-              ...message,
-              content: message.content + content,
-              parts: [{ type: "text", content: message.content + content }],
-            }
-          : message,
-      );
-    }),
-    true,
-  );
-  assert.notEqual(pendingFrame, null);
-
-  let contentObservedByRefreshedAttempt = "";
-  const context = {
-    abortControllerRef: { current: null },
-    isConnectingRef: { current: false },
-    streamingMessageIdRef: { current: owner.assistantMessageId },
-    reconnectTimeoutRef: { current: null },
-    retryCountRef: { current: 0 },
-    messagesRef: { current: messages },
-    sessionIdRef: { current: owner.sessionId },
-    currentRunIdRef: { current: owner.runId },
-    processedEventIdsRef: { current: new Set<string>() },
-    acceptedRunEventSequenceRef: {
-      current: { sessionId: owner.sessionId, runId: owner.runId, sequence: 8 },
-    },
-    lastHistoryTimestampRef: { current: null },
-    activeSubagentStackRef: { current: [] },
-    streamVersionRef: { current: owner.streamVersion },
-    publicStreamPresentation: presentation,
-    setSessionId: () => undefined,
-    setMessages: (updater: React.SetStateAction<Message[]>) => {
-      messages = typeof updater === "function" ? updater(messages) : updater;
-      context.messagesRef.current = messages;
-    },
-    setConnectionStatus: () => undefined,
-    setIsInitializingSandbox: () => undefined,
-    setSandboxError: () => undefined,
-    onRunTerminal: (_runId, _status, _messageId, settle) => {
-      settle?.(true);
-      return true;
-    },
-  } satisfies SSEConnectionContext;
-
-  await connectToSSE(
-    owner.sessionId,
-    owner.runId,
-    owner.assistantMessageId,
-    context,
-    false,
-    createAbortResolvingFetchEventSource([
-      { response: new Response(null, { status: 401 }) },
-      {
-        response: new Response(null, { status: 200 }),
-        onStart: () => {
-          contentObservedByRefreshedAttempt = messages[0]?.content || "";
-        },
-        afterOpen: async (init) => {
-          init.onmessage?.(
-            v4Frame({
-              cursor: "run-refresh-flush:1:2-0",
-              runId: owner.runId,
-              eventType: "run.succeeded",
-              eventId: "terminal-refresh-flush",
-              payload: {
-                terminal_event_id: "terminal-refresh-flush",
-                hydrate_required: true,
-              },
-              seq: 9,
-            }) as never,
-          );
-          await init.onclose?.();
-        },
-      },
-    ]),
-    {
-      getValidAccessToken: async () => "access",
-      getRefreshToken: () => "refresh-marker",
-      refreshAccessToken: async () => "refreshed-access",
-    },
-  );
-
-  assert.equal(contentObservedByRefreshedAttempt, "AB");
-  assert.equal(messages[0]?.content, "AB");
-  assert.equal(commitCount, 1);
-  assert.equal(pendingFrame, null);
 });
 
 test("fails closed when the refreshed SSE retry is still unauthorized", async () => {
@@ -2031,7 +1994,7 @@ test("a scheduled reconnect reconciles a post-refresh transport failure", async 
   }
 });
 
-test("bounds replayed active run_event reconnects and converges unavailable once", async (t) => {
+test("keeps an active run recoverable after repeated replay-only transport losses", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let statusCalls = 0;
   let connectCalls = 0;
@@ -2098,15 +2061,23 @@ test("bounds replayed active run_event reconnects and converges unavailable once
         false,
         async (_input, init) => {
           await init.onopen?.(new Response(null, { status: 200 }));
-          init.onmessage?.({
-            event: "run_event",
-            id: "evt-replayed-progress",
-            data: JSON.stringify({
-              run_id: "run-1",
-              sequence: 42,
-              event_type: "worker_started",
-            }),
-          } as never);
+          init.onmessage?.(
+            v4Frame({
+              cursor: `run-1:1:42-0`,
+              runId: "run-1",
+              eventType: "agent.progress",
+              eventId: "evt-replayed-progress",
+              seq: 42,
+              messageId: null,
+              payload: {
+                schema_version: "ai-platform.public-agent-progress.v1",
+                step_id: "phase_model_wait",
+                phase: "model_wait",
+                lifecycle: "progress",
+                message: "Waiting for the model response",
+              },
+            }) as never,
+          );
           await init.onclose?.();
         },
       );
@@ -2120,21 +2091,32 @@ test("bounds replayed active run_event reconnects and converges unavailable once
 
   assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
   assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-  assert.equal(unavailableCalls, 1);
-  assert.equal(context.reconnectTimeoutRef.current, null);
+  assert.equal(unavailableCalls, 0);
+  assert.notEqual(context.reconnectTimeoutRef.current, null);
 
-  t.mock.timers.tick(60_000);
+  t.mock.timers.tick(29_999);
   await flushAsync();
   assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
-  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-  assert.equal(unavailableCalls, 1);
+  t.mock.timers.tick(1);
+  await flushAsync();
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 2);
+  assert.equal(unavailableCalls, 0);
+
+  context.streamVersionRef.current += 1;
+  t.mock.timers.tick(30_000);
+  await flushAsync();
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 2);
 });
 
-test("bounds heartbeat-then-close reconnect loops without assistant text or new work", async (t) => {
+test("recovers a terminal run after heartbeat-only losses without inventing content", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let statusCalls = 0;
   let connectCalls = 0;
   let unavailableCalls = 0;
+  let terminalCalls = 0;
+  let status = "running";
   const messages = [
     {
       id: "assistant-heartbeat-loop",
@@ -2155,6 +2137,7 @@ test("bounds heartbeat-then-close reconnect loops without assistant text or new 
     messagesRef: { current: messages },
     sessionIdRef: { current: "session-heartbeat-loop" },
     currentRunIdRef: { current: "run-heartbeat-loop" },
+    onRunTerminal: () => { terminalCalls += 1; return true; },
     processedEventIdsRef: { current: new Set<string>() },
     acceptedRunEventSequenceRef: {
       current: {
@@ -2192,7 +2175,7 @@ test("bounds heartbeat-then-close reconnect loops without assistant text or new 
       return {
         session_id: "session-heartbeat-loop",
         run_id: "run-heartbeat-loop",
-        status: "running",
+        status,
       };
     },
     connect: async (sessionId, runId, messageId, reconnectContext) => {
@@ -2205,14 +2188,15 @@ test("bounds heartbeat-then-close reconnect loops without assistant text or new 
         false,
         async (_input, init) => {
           await init.onopen?.(new Response(null, { status: 200 }));
-          init.onmessage?.({
-            event: "heartbeat",
-            id: `run-heartbeat-loop:heartbeat:${connectCalls}`,
-            data: JSON.stringify({
-              run_id: "run-heartbeat-loop",
-              status: "running",
-            }),
-          } as never);
+          init.onmessage?.(
+            v4Frame({
+              cursor: `run-heartbeat-loop:1:${connectCalls}-0`,
+              runId: "run-heartbeat-loop",
+              eventType: "stream.heartbeat",
+              eventId: `heartbeat-${connectCalls}`,
+              payload: { status: "running" },
+            }) as never,
+          );
           await init.onclose?.();
         },
       );
@@ -2226,9 +2210,9 @@ test("bounds heartbeat-then-close reconnect loops without assistant text or new 
 
   assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
   assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-  assert.equal(unavailableCalls, 1);
-  assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS);
-  assert.equal(context.reconnectTimeoutRef.current, null);
+  assert.equal(unavailableCalls, 0);
+  assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.notEqual(context.reconnectTimeoutRef.current, null);
   assert.deepEqual(messages, [
     {
       id: "assistant-heartbeat-loop",
@@ -2240,11 +2224,19 @@ test("bounds heartbeat-then-close reconnect loops without assistant text or new 
     },
   ]);
 
+  status = "succeeded";
+  t.mock.timers.tick(30_000);
+  await flushAsync();
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 2);
+  assert.equal(unavailableCalls, 0);
+  assert.equal(terminalCalls, 1);
+  assert.equal(context.reconnectTimeoutRef.current, null);
+
   t.mock.timers.tick(60_000);
   await flushAsync();
-  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
-  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-  assert.equal(unavailableCalls, 1);
+  assert.equal(terminalCalls, 1);
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
 });
 
 test("resets reconnect budget only after a unique current-run progress frame", async () => {
@@ -2421,7 +2413,6 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
     acceptedStreamCursorRef: {
       current: { sessionId: null, runId: null, eventId: null, streamIncarnation: null },
     },
-    v4TerminalEventIdsRef: { current: new Set<string>() },
     v4TerminalReservationsRef: { current: new Set<string>() },
     v4TerminalFenceRef: { current: null },
     lastHistoryTimestampRef: { current: null },
@@ -2511,7 +2502,6 @@ test("failed terminal hydration releases close without accepting its cursor", as
         streamIncarnation: null,
       },
     },
-    v4TerminalEventIdsRef: { current: new Set<string>() },
     v4TerminalReservationsRef: { current: new Set<string>() },
     v4TerminalFenceRef: { current: null },
     lastHistoryTimestampRef: { current: null },
@@ -2618,7 +2608,7 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
   assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS);
 });
 
-test("replay gap preserves partial output until an active run reaches terminal hydration", async () => {
+test("cross-incarnation replay gap preserves partial output until terminal hydration", async () => {
   let statusCalls = 0;
   let hydrateCalls = 0;
   let capturedInit: Parameters<SSEFetchEventSource>[1] | undefined;
@@ -2678,16 +2668,17 @@ test("replay gap preserves partial output until an active run reaches terminal h
       await init.onopen?.(new Response(null, { status: 200 }));
       init.onmessage?.(
         v4Frame({
-          cursor: "run-1:1:2-0",
+          cursor: "run-1:2:2-0",
           runId: "run-1",
           eventType: "stream.gap",
           eventId: "gap-1",
+          streamIncarnation: 2,
           payload: {
             reason: "retained_history_unavailable",
             recovery: "reload_durable_state",
             requested_event_id: "1-0",
             requested_stream_incarnation: 1,
-            current_stream_incarnation: 1,
+            current_stream_incarnation: 2,
             earliest_available_event_id: "2-0",
             latest_available_event_id: "2-0",
           },
@@ -3031,9 +3022,24 @@ test("fresh no-cursor gap enters durable recovery without committing its cursor"
 });
 
 
-test("non-resumable gap clears rejected state before unavailable status convergence", async () => {
+test("non-resumable gap preserves transient failure state and rejects status authentication failure", async () => {
   const states: string[] = [];
   let invalidations = 0;
+  let unavailableCalls = 0;
+  const gap = {
+    streamIncarnation: 1,
+    event: {
+      payload: {
+        reason: "stream_missing",
+        recovery: "reload_durable_state",
+        requested_event_id: "8-0",
+        requested_stream_incarnation: 1,
+        current_stream_incarnation: 1,
+        earliest_available_event_id: null,
+        latest_available_event_id: null,
+      },
+    },
+  } as never;
   let messages: Message[] = [
     {
       id: "assistant-1",
@@ -3044,6 +3050,7 @@ test("non-resumable gap clears rejected state before unavailable status converge
       isStreaming: true,
     },
   ];
+  const messagesRef = { current: messages };
   const context = {
     isMountedRef: { current: true },
     sessionIdRef: { current: "session-1" },
@@ -3067,11 +3074,18 @@ test("non-resumable gap clears rejected state before unavailable status converge
         invalidations += 1;
       },
     } as unknown as PublicStreamPresentation,
+    messagesRef,
     setMessages: (updater: React.SetStateAction<Message[]>) => {
       messages = typeof updater === "function" ? updater(messages) : updater;
+      messagesRef.current = messages;
     },
     setConnectionStatus: (status: string) => states.push(status),
     setIsInitializingSandbox: () => undefined,
+    onRunStatusUnavailable: (runId: string, messageId: string) => {
+      unavailableCalls += 1;
+      assert.deepEqual([runId, messageId], ["run-1", "assistant-1"]);
+      return true;
+    },
   } satisfies Partial<SSEConnectionContext>;
 
   await recoverReplayGap(
@@ -3081,20 +3095,7 @@ test("non-resumable gap clears rejected state before unavailable status converge
       runId: "run-1",
       messageId: "assistant-1",
       streamVersion: 4,
-      gap: {
-        streamIncarnation: 1,
-        event: {
-          payload: {
-            reason: "stream_missing",
-            recovery: "reload_durable_state",
-            requested_event_id: "8-0",
-            requested_stream_incarnation: 1,
-            current_stream_incarnation: 1,
-            earliest_available_event_id: null,
-            latest_available_event_id: null,
-          },
-        },
-      } as never,
+      gap,
     },
     {
       getStatus: async () => {
@@ -3104,19 +3105,38 @@ test("non-resumable gap clears rejected state before unavailable status converge
   );
 
   assert.deepEqual(context.acceptedStreamCursorRef.current, {
-    sessionId: null,
-    runId: null,
-    eventId: null,
-    streamIncarnation: null,
+    sessionId: "session-1",
+    runId: "run-1",
+    eventId: "run-1:1:8-0",
+    streamIncarnation: 1,
   });
   assert.deepEqual(context.acceptedRunEventSequenceRef.current, {
-    sessionId: null,
-    runId: null,
-    sequence: null,
+    sessionId: "session-1",
+    runId: "run-1",
+    sequence: 8,
   });
-  assert.equal(invalidations, 1);
-  assert.equal(messages[0]?.isStreaming, false);
+  assert.equal(invalidations, 0);
+  assert.equal(messages[0]?.isStreaming, true);
+  assert.equal(unavailableCalls, 0);
   assert.deepEqual(states, ["recovering_gap", "disconnected"]);
+
+  await recoverReplayGap(
+    context as unknown as SSEConnectionContext,
+    {
+      sessionId: "session-1",
+      runId: "run-1",
+      messageId: "assistant-1",
+      streamVersion: 4,
+      gap,
+    },
+    {
+      getStatus: async () => {
+        throw new ApiRequestError("authentication rejected", 403, "unauthorized");
+      },
+    },
+  );
+
+  assert.equal(unavailableCalls, 1);
 });
 
 

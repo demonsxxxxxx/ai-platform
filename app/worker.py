@@ -7,10 +7,14 @@ from typing import Any
 from pydantic import ValidationError
 
 from app import repositories
+from app.bootstrap.worker_attempt_lifecycle import (
+    build_worker_attempt_lifecycle_ports,
+    build_worker_parent_finalizer,
+)
 from app.agent_apps.capability_state import (
     bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
 )
-from app.agent_profiles import reauthorize_bound_profile_for_worker_dispatch
+from app.agent_apps.api import reauthorize_bound_profile_for_worker_dispatch
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (
@@ -41,15 +45,17 @@ from app.control_plane_contracts import (
 from app.db import transaction
 from app.execution.api import (
     WorkerAttemptLifecycle,
-    WorkerAttemptLifecyclePorts,
     WorkerExecutorReconciliation,
-    WorkerQueueLease,
-    WorkerRunCancelled,
+    WorkerQueueLease, WorkerRunCancelled, AnswerPersistenceLimits, append_artifact_links,
     bind_worker_attempt_lifecycle,
+    build_artifact_execution_owner,
+    build_artifact_records,
     fail_run_and_reconcile_worker_child as _fail_run_and_reconcile_worker_child,
-    finalize_worker_child_parent as _finalize_worker_child_parent,
+    executor_exception_failure as _executor_exception_failure,
     locked_run_payload_candidate as _locked_run_payload_candidate,
-    prepare_worker_execution_spec,
+    materialize_worker_answer,
+    promote_artifact_reservations,
+    predispatch_failure_result as _pre_dispatch_failure_result,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
@@ -70,13 +76,18 @@ from app.executors.base import (
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.mcp import api as mcp_api
+from app.persistence_limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
+from app.persistence.artifacts import promote_provisional_artifact_cleanup, reserve_provisional_artifact_cleanup
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
     resolve_current_principal,
 )
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
-from app.runs.api import load_run_model_snapshot as _load_run_model_snapshot
-from app.runs import api as run_attempts
+from app.runs.api import (
+    RunAttemptLifecycleService,
+    compile_execution_spec_for_dispatch,
+    load_run_model_snapshot as _load_run_model_snapshot,
+)
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
     builtin_capability_subjects,
@@ -84,10 +95,8 @@ from app.required_tool_contract import (
     required_tool_completion_for_run,
     with_boundary_sandbox_local_tool_subjects,
 )
-from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.executor_client import (
-    SandboxExecutorHttpError,
     canonical_executor_reported_failure_code,
     executor_reported_failure_message,
     normalize_executor_reported_failure,
@@ -97,8 +106,8 @@ from app.streaming.api import (
     WorkerV4Capabilities,
     admit_v4_stream,
     finalize_parent_and_publish,
-    persist_and_publish_worker_event,
-    publish_pending_run_terminal,
+    persist_worker_event,
+    publish_run_event,
 )
 from app.streaming.worker_projection import persist_worker_failure_event
 from app.skills.api import restore_admitted_skill_manifest_authority
@@ -113,9 +122,6 @@ from app.skills.catalog import (
 from app.skills.execution_profiles import effective_skill_execution_profile
 from app.tool_permission_lifecycle import (
     cancel_run_with_v4,
-    complete_run_with_v4,
-    drain_run_tool_permission_terminalization,
-    fail_run_with_v4,
     reconcile_terminalized_permission_run,
 )
 from app.tool_policy import evaluate_tool_policy
@@ -128,30 +134,13 @@ from app.worker_principal_authority import (
 )
 
 
+_ANSWER_PERSISTENCE_LIMITS = AnswerPersistenceLimits(MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes)
+
+
 _submit_run_until_cancelled = _partial(
     _submit_run_until_cancelled_with_owner,
     owner_factory=RunExecutionOwner,
 )
-
-
-def _worker_attempt_lifecycle_ports() -> WorkerAttemptLifecyclePorts:
-    return WorkerAttemptLifecyclePorts(
-        lock_run=repositories.get_run,
-        complete_run=complete_run_with_v4,
-        fail_run=fail_run_with_v4,
-        cancel_run=cancel_run_with_v4,
-        drain_terminalization=drain_run_tool_permission_terminalization,
-        is_reconciliation_claim_current=(
-            sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current
-        ),
-        get_attempt=run_attempts.get_run_attempt,
-        get_attempt_for_queue_attempt=run_attempts.get_run_attempt_for_queue_attempt,
-        start_attempt=run_attempts.start_worker_run_attempt,
-        assert_current_attempt=run_attempts.assert_worker_run_attempt_current,
-        request_attempt_cancel=run_attempts.request_run_attempt_cancel,
-        terminalize_attempt=run_attempts.terminalize_run_attempt,
-        conflict_error=repositories.RepositoryConflictError,
-    )
 
 
 @dataclass(frozen=True)
@@ -246,18 +235,6 @@ def _public_executor_failure_message(result: ExecutorResult) -> str:
     return generic_message
 
 
-def _executor_exception_failure(exc: Exception) -> tuple[str, str]:
-    """Keep typed executor failures distinguishable without projecting private exceptions."""
-
-    if isinstance(exc, NativeToolAdmissionError):
-        return exc.error_code, "Native tool sandbox admission failed"
-    if isinstance(exc, SandboxExecutorHttpError):
-        return exc.error_code, exc.public_message
-    if isinstance(exc, WorkerDirectAssistantDeltaError):
-        return "worker_direct_assistant_delta_forbidden", "Executor used an unsupported text ingress"
-    return "executor_failure", "Executor failed"
-
-
 def _normalize_sandbox_reported_failure(result: ExecutorResult) -> ExecutorResult:
     if (
         result.status != "failed"
@@ -311,17 +288,6 @@ def parse_leased_queue_envelope(raw: dict[str, Any]) -> LeasedQueueEnvelope:
     return LeasedQueueEnvelope(payload=parse_queue_payload(parseable_raw), attempt_id=attempt_id)
 
 
-async def _finalize_multi_agent_parent_after_child_commit(
-    transaction_factory, payload: QueueRunPayload, reconciled: Any | None,
-) -> Any | None:
-    return await _finalize_worker_child_parent(
-        transaction_factory,
-        payload,
-        reconciled,
-        reconcile_terminalized_run=reconcile_terminalized_permission_run,
-    )
-
-
 async def _fail_run_and_reconcile_with_write(
     conn,
     *,
@@ -332,8 +298,12 @@ async def _fail_run_and_reconcile_with_write(
     error_message: str,
     result_json: dict[str, Any] | None = None,
     is_multi_agent_child: bool | None = None,
-    v4_capabilities: WorkerV4Capabilities, attempt_lifecycle: WorkerAttemptLifecycle | None = None,
+    v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: WorkerAttemptLifecycle,
 ) -> tuple[bool, Any | None]:
+    result_json = result_json or _pre_dispatch_failure_result(
+        error_code, "worker", reason=error_code
+    )
     return await _fail_run_and_reconcile_worker_child(
         conn,
         payload=payload,
@@ -342,22 +312,11 @@ async def _fail_run_and_reconcile_with_write(
         error_code=error_code,
         error_message=error_message,
         capabilities=v4_capabilities,
-        fail_run=fail_run_with_v4,
         reconcile_child=_reconcile_multi_agent_child_terminal_state,
         attempt_lifecycle=attempt_lifecycle,
         result_json=result_json,
         is_multi_agent_child=is_multi_agent_child,
     )
-
-
-def _strip_local_output_paths(message: str) -> str:
-    lines = []
-    for line in message.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("详细报告:", "批注文档:")) and "/tmp/" in stripped:
-            continue
-        lines.append(line)
-    return "\n".join(lines).strip()
 
 
 def _artifact_download_url(artifact_id: str) -> str:
@@ -451,15 +410,6 @@ async def append_user_event(
         payload=merged,
         **event_kwargs,
     )
-
-
-def _append_artifact_links(message: str, artifact_records: list[dict[str, Any]]) -> str:
-    base = _strip_local_output_paths(message)
-    if not artifact_records:
-        return base
-    links = [f"- {item['label']}: {item['download_url']}" for item in artifact_records]
-    suffix = "输出文件:\n" + "\n".join(links)
-    return f"{base}\n\n{suffix}" if base else suffix
 
 
 def _int_payload_value(payload: dict[str, Any], key: str, default: int = 0) -> int:
@@ -764,26 +714,12 @@ def _required_agent_skill_id(payload: QueueRunPayload) -> str | None:
     return None
 
 
-def _inferred_used_skills_from_result(result: ExecutorResult) -> list[str]:
-    source = {**result.result, **result.executor_payload}
-    raw = source.get("inferred_used_skills")
-    if not isinstance(raw, list):
-        return []
-    inferred: list[str] = []
-    for item in raw:
-        skill_name = str(item).strip()
-        if skill_name and skill_name not in inferred:
-            inferred.append(skill_name)
-    return inferred
-
-
 def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]:
     source = {**result.executor_payload, **result.result}
     raw = source.get("skill_manifests")
     if not isinstance(raw, list):
         return []
     used_skills = set(_native_used_skills_from_result(result))
-    inferred_used_skills = set(_inferred_used_skills_from_result(result))
     used_skills_source = str(result.executor_payload.get("used_skills_source") or "").strip()
     manifests: list[dict[str, Any]] = []
     for item in raw:
@@ -794,10 +730,6 @@ def _skill_manifests_from_result(result: ExecutorResult) -> list[dict[str, Any]]
         manifest["used"] = bool(skill_id and skill_id in used_skills)
         if manifest["used"]:
             manifest["used_skills_source"] = used_skills_source
-            manifest["inferred_used"] = False
-        elif skill_id and skill_id in inferred_used_skills:
-            manifest["used_skills_source"] = "inferred"
-            manifest["inferred_used"] = True
         manifests.append(manifest)
     return manifests
 
@@ -1707,7 +1639,7 @@ async def _fail_worker_pre_dispatch_error(
     event_stage: str,
     event_payload: dict[str, Any],
     v4_capabilities: WorkerV4Capabilities,
-    attempt_lifecycle: WorkerAttemptLifecycle | None = None,
+    attempt_lifecycle: WorkerAttemptLifecycle,
     is_multi_agent_child: bool | None = None,
 ) -> _WorkerTerminalAfterTransaction:
     terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
@@ -1754,7 +1686,8 @@ async def _fail_locked_run_snapshot(
     locked_run: object,
     run_identity: dict[str, str],
     trace_id: str,
-    v4_capabilities: WorkerV4Capabilities, attempt_lifecycle: WorkerAttemptLifecycle | None = None,
+    v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: WorkerAttemptLifecycle,
 ) -> _WorkerTerminalAfterTransaction:
     error_code = "capability_not_authorized"
     error_message = "Capability is not authorized for this run"
@@ -1808,7 +1741,8 @@ async def _fail_worker_capability_authorization(
     authorization: _WorkerCapabilityAuthorization,
     run_identity: dict[str, str],
     trace_id: str,
-    v4_capabilities: WorkerV4Capabilities, attempt_lifecycle: WorkerAttemptLifecycle | None = None,
+    v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: WorkerAttemptLifecycle,
     policy: str = "capability_distribution",
 ) -> _WorkerTerminalAfterTransaction:
     denial = authorization.denial
@@ -2016,6 +1950,7 @@ async def process_run_payload(
     queue_lease: WorkerQueueLease | None = None,
     transaction_factory: Any | None = None,
     v4_capabilities: WorkerV4Capabilities,
+    run_attempt_lifecycle: RunAttemptLifecycleService,
 ) -> WorkerOutcome:
     transaction_factory = transaction_factory if transaction_factory is not None else transaction
     try:
@@ -2042,10 +1977,14 @@ async def process_run_payload(
         leased_attempt_id=envelope.attempt_id,
         worker_id=worker_id,
         reconciliation=reconciliation,
-        ports=_worker_attempt_lifecycle_ports(),
+        ports=build_worker_attempt_lifecycle_ports(run_attempt_lifecycle),
         queue_lease=queue_lease,
     )
     attempt_id = attempt_lifecycle.attempt_id
+    finalize_multi_agent_parent = build_worker_parent_finalizer(
+        run_attempt_lifecycle,
+        reconcile_terminalized_run=reconcile_terminalized_permission_run,
+    )
     trace_id = standard_trace_id(payload.run_id)
 
     adapter_registry = registry if registry is not None else AdapterRegistry()
@@ -2073,7 +2012,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                 )
                 if reconciliation is not None
-                else await run_attempts.lock_queued_run_for_attempt(
+                else await run_attempt_lifecycle.lock_queued_run(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
@@ -2130,6 +2069,7 @@ async def process_run_payload(
                         run_id=payload.run_id,
                         error_code=error_code,
                         error_message=error_message,
+                        attempt_lifecycle=attempt_lifecycle,
                     )
                     if not terminal_written:
                         terminal_after_transaction = _WorkerTerminalAfterTransaction(
@@ -2354,7 +2294,11 @@ async def process_run_payload(
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
                     error_code="unknown_executor_type",
-                    error_message=str(exc), attempt_lifecycle=attempt_lifecycle,
+                    error_message=str(exc),
+                    result_json=_pre_dispatch_failure_result(
+                        "unknown_executor_type", "executor_resolution", error=exc
+                    ),
+                    attempt_lifecycle=attempt_lifecycle,
                 )
                 if not terminal_written:
                     terminal_after_transaction = _WorkerTerminalAfterTransaction(
@@ -2383,24 +2327,42 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            try:
-                execution_spec, run_payload, context_ref = await prepare_worker_execution_spec(
+            context_ref = await _ensure_worker_context_snapshot(
+                conn, payload, trace_id=trace_id, run_identity=run_identity
+            )
+            if context_ref is None:
+                terminal_after_transaction = await _fail_worker_pre_dispatch_error(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
+                    error_code="context_snapshot_unavailable",
+                    error_message="Run context snapshot is unavailable",
+                    event_stage="context",
+                    event_payload={
+                        "visible_to_user": False,
+                        "error_code": "context_snapshot_unavailable",
+                    },
+                )
+                return terminal_after_transaction.outcome
+            payload = payload.model_copy(update={"file_ids": context_ref["file_ids"]})
+            try:
+                execution_spec = compile_execution_spec_for_dispatch(
+                    run_identity=run_identity,
+                    queue_payload=payload,
                     trace_id=trace_id,
-                    attempt_id=attempt_id,
-                    attempt_lifecycle=attempt_lifecycle,
-                    context_loader=_partial(
-                        _ensure_worker_context_snapshot,
-                        conn,
-                        payload,
-                        trace_id=trace_id, run_identity=run_identity,
-                    ),
-                    context_pack_builder=executor_context_pack_from_snapshot,
-                    project_run_payload=project_execution_spec_to_run_payload,
-                    mcp_attacher=mcp_api.attach_mcp_server_configs,
-                    principal=capability_authorization.principal,
+                    context_snapshot_id=str(context_ref["context_snapshot_id"]),
+                    context_snapshot=context_ref["context_snapshot"],
+                    context_pack={
+                        **executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
+                        "conversation_context": context_ref["conversation_context"],
+                    },
+                )
+                run_payload = project_execution_spec_to_run_payload(
+                    execution_spec, attempt_id=attempt_id
+                )
+                run_payload = await mcp_api.attach_mcp_server_configs(
+                    conn, principal=capability_authorization.principal, run_payload=run_payload
                 )
             except ValueError as exc:
                 mcp_error = exc if isinstance(exc, mcp_api.McpRuntimeContextError) else None
@@ -2419,22 +2381,6 @@ async def process_run_payload(
                         "error_code": error_code,
                     },
                     is_multi_agent_child=_locked_run_is_multi_agent_child(locked),
-                )
-                return terminal_after_transaction.outcome
-            if execution_spec is None:
-                terminal_after_transaction = await _fail_worker_pre_dispatch_error(
-                    conn,
-                    payload=payload,
-                    run_identity=run_identity,
-                    v4_capabilities=v4_capabilities,
-                    attempt_lifecycle=attempt_lifecycle,
-                    error_code="context_snapshot_unavailable",
-                    error_message="Run context snapshot is unavailable",
-                    event_stage="context",
-                    event_payload={
-                        "visible_to_user": False,
-                        "error_code": "context_snapshot_unavailable",
-                    },
                 )
                 return terminal_after_transaction.outcome
             await attempt_lifecycle.bind_execution_spec(conn, execution_spec)
@@ -2470,11 +2416,12 @@ async def process_run_payload(
                 run_id=terminal_after_transaction.payload.run_id,
                 attempt_id=attempt_id,
             )
-            await _finalize_multi_agent_parent_after_child_commit(
-                transaction_factory, terminal_after_transaction.payload,
+            await finalize_multi_agent_parent(
+                transaction_factory,
+                terminal_after_transaction.payload,
                 terminal_after_transaction.reconciled_parent,
             )
-            await publish_pending_run_terminal(
+            await publish_run_event(
                 v4_capabilities,
                 tenant_id=terminal_after_transaction.payload.tenant_id,
                 run_id=terminal_after_transaction.payload.run_id,
@@ -2489,10 +2436,9 @@ async def process_run_payload(
     ) -> None:
         if event_type == "assistant_delta":
             raise WorkerDirectAssistantDeltaError
-        if await persist_and_publish_worker_event(
+        if await persist_worker_event(
             v4_capabilities,
             run_payload=run_payload,
-            attempt_id=attempt_id,
             persist_event=True,
             event_type=event_type,
             stage=stage,
@@ -2545,12 +2491,16 @@ async def process_run_payload(
                         run_id=run_payload.run_id,
                     )
 
+            execution_owner = build_artifact_execution_owner(
+                run_payload, transaction_factory, reserve_provisional_artifact_cleanup, RunExecutionOwner
+            )
             started_at = time.monotonic()
             result = await _submit_run_until_cancelled(
                 adapter,
                 run_payload,
                 event_sink=event_sink,
                 cancel_requested=cancel_requested,
+                execution_owner=execution_owner,
             )
         if isinstance(result, ExecutorDispatchAccepted):
             if not result.lease_id:
@@ -2643,11 +2593,17 @@ async def process_run_payload(
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_cancelled")
                 cancelled_outcome = WorkerOutcome("cancelled", payload.run_id)
-        await finalize_parent_and_publish(transaction_factory, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+        await finalize_parent_and_publish(
+            transaction_factory,
+            v4_capabilities,
+            finalize_multi_agent_parent,
+            payload,
+            reconciled_parent,
+        )
         return cancelled_outcome
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
         reconciled_parent = None
-        failure_code, failure_message = _executor_exception_failure(exc)
+        failure_code, failure_message, failure_result = _executor_exception_failure(exc)
         outcome_after_exception = WorkerOutcome(
             "failed", payload.run_id, failure_code, failure_message
         )
@@ -2690,6 +2646,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                     error_code=failure_code,
                     error_message=failure_message,
+                    result_json=failure_result,
                     attempt_lifecycle=attempt_lifecycle,
                 )
                 if not terminal_written:
@@ -2735,28 +2692,22 @@ async def process_run_payload(
                     failure_code if final_status == "failed" else None,
                     failure_message if final_status == "failed" else None,
                 )
-        await finalize_parent_and_publish(transaction_factory, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+        await finalize_parent_and_publish(
+            transaction_factory,
+            v4_capabilities,
+            finalize_multi_agent_parent,
+            payload,
+            reconciled_parent,
+        )
         return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
     event_observability_kwargs = _event_observability_kwargs(observability, result.executor_payload)
     terminal_event_kwargs = {"trace_id": trace_id, **event_observability_kwargs} if event_observability_kwargs else {}
 
-    artifact_records = []
-    for artifact in result.artifacts:
-        artifact_id = repositories.new_id("art")
-        artifact_records.append(
-            {
-                "id": artifact_id,
-                "artifact_type": artifact.artifact_type,
-                "label": artifact.label,
-                "content_type": artifact.content_type,
-                "storage_key": artifact.storage_key,
-                "size_bytes": artifact.size_bytes,
-                "download_url": _artifact_download_url(artifact_id),
-                "manifest_json": artifact.manifest,
-            }
-        )
+    artifact_records = build_artifact_records(
+        result.artifacts, reconciliation is not None, repositories.new_id, _artifact_download_url
+    )
     skill_snapshot = _skill_snapshot_from_result(result)
     agent_capability_state = (
         project_agent_capability_state(
@@ -2770,7 +2721,7 @@ async def process_run_payload(
     )
     public_result = {
         key: value
-        for key, value in result.result.items()
+        for key, value in (result.result | ({"runtime_diagnostics": result.executor_payload["runtime_diagnostics"]} if "runtime_diagnostics" in result.executor_payload else {})).items()
         if key not in {"skill_manifests", "used_skills", "used_skills_source", "inferred_used_skills"}
     }
     if required_agent_skill_id is None and (
@@ -2780,7 +2731,7 @@ async def process_run_payload(
     result_payload = {
         **public_result,
         **observability,
-        "message": _append_artifact_links(str(result.result.get("message") or ""), artifact_records),
+        "message": append_artifact_links(str(result.result.get("message") or ""), artifact_records),
         "artifacts": [
             {
                 "id": item["id"],
@@ -2804,6 +2755,8 @@ async def process_run_payload(
         result_payload["skills"] = skill_snapshot
     if agent_capability_state is not None:
         result_payload["capability_state"] = agent_capability_state.public_projection()
+    assistant_message_for_persistence: str | None = None
+    assistant_message_metadata: dict[str, Any] = {}
     reconciled_parent = None
     try:
         async with transaction_factory() as conn:
@@ -2869,6 +2822,14 @@ async def process_run_payload(
                     "error_code": error_code,
                     "artifacts": [],
                 }
+            answer_receipt = result.executor_payload.get("answer_receipt")
+            if result.status == "succeeded" and answer_receipt is not None:
+                materialized = await materialize_worker_answer(v4_capabilities, conn, result=result, result_payload=result_payload, artifact_records=artifact_records, tenant_id=payload.tenant_id, run_id=payload.run_id, attempt_id=attempt_id, answer_receipt=answer_receipt, limits=_ANSWER_PERSISTENCE_LIMITS)
+                result = materialized.result
+                result_payload = materialized.result_payload
+                artifact_records = materialized.artifact_records
+                assistant_message_for_persistence = materialized.assistant_message_for_persistence
+                assistant_message_metadata = materialized.assistant_message_metadata
             cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if result.status == "succeeded" and cancel_requested:
                 result_payload = {
@@ -2934,6 +2895,9 @@ async def process_run_payload(
                             "count": agent_capability_state.optional_not_invoked_count,
                         },
                     )
+            await promote_artifact_reservations(
+                conn, artifact_records, payload, promote_provisional_artifact_cleanup
+            )
             for artifact in artifact_records:
                 manifest_json = artifact_manifest_contract(
                     artifact_type=artifact["artifact_type"],
@@ -2995,7 +2959,6 @@ async def process_run_payload(
                     staged=bool(item.get("staged")),
                     used=bool(item.get("used")),
                     used_skills_source=str(item.get("used_skills_source") or "").strip(),
-                    inferred_used=bool(item.get("inferred_used")),
                 )
             if result.status == "succeeded":
                 await _attach_multi_agent_result_summary(
@@ -3011,11 +2974,16 @@ async def process_run_payload(
                     session_id=payload.session_id,
                     run_id=payload.run_id,
                     role="assistant",
-                    content=str(result_payload.get("message") or ""),
+                    content=(
+                        assistant_message_for_persistence
+                        if assistant_message_for_persistence is not None
+                        else str(result_payload.get("message") or "")
+                    ),
                     metadata_json={
                         "artifact_count": len(result.artifacts),
                         "executor_type": result.executor_type,
                         "adapter_version": result.adapter_version,
+                        **assistant_message_metadata,
                         **(
                             {"capability_state": agent_capability_state.public_projection()}
                             if agent_capability_state is not None
@@ -3252,6 +3220,7 @@ async def process_run_payload(
                 run_id=payload.run_id,
                 progress=terminalization_progress,
                 transaction_factory=transaction_factory,
+                attempt_lifecycle=run_attempt_lifecycle,
             )
         if terminalization_progress and terminalization_progress.get("completed") is True:
             final_status = str(terminalization_progress.get("status") or "")
@@ -3262,7 +3231,13 @@ async def process_run_payload(
                     terminal_outcome.error_code if final_status == "failed" else None,
                     terminal_outcome.error_message if final_status == "failed" else None,
                 )
-    await finalize_parent_and_publish(transaction_factory, v4_capabilities, _finalize_multi_agent_parent_after_child_commit, payload, reconciled_parent)
+    await finalize_parent_and_publish(
+        transaction_factory,
+        v4_capabilities,
+        finalize_multi_agent_parent,
+        payload,
+        reconciled_parent,
+    )
     return terminal_outcome
 
 
@@ -3275,6 +3250,7 @@ async def reconcile_executor_terminal_result(
     claim_token: str,
     transaction_factory: Any | None = None,
     v4_capabilities: WorkerV4Capabilities,
+    run_attempt_lifecycle: RunAttemptLifecycleService,
 ) -> WorkerOutcome:
     queue_payload, attempt_id = _restored_executor_reconciliation_queue_payload(
         lease_row.get("executor_reconciliation_context_json"),
@@ -3292,4 +3268,5 @@ async def reconcile_executor_terminal_result(
         reconciliation=WorkerExecutorReconciliation(result, lease_row, claim_token),
         transaction_factory=transaction_factory,
         v4_capabilities=v4_capabilities,
+        run_attempt_lifecycle=run_attempt_lifecycle,
     )

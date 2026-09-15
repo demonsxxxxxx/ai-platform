@@ -59,7 +59,6 @@ def test_shipped_platform_skills_include_general_chat():
     descriptions = {skill.name: skill.description for skill in skills}
 
     assert "general-chat" in skill_names
-    assert "baoyu-translate" in skill_names
     assert "ragflow-knowledge-search" in skill_names
     assert "read-only company SOP and policy knowledge" in descriptions["ragflow-knowledge-search"]
 

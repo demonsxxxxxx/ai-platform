@@ -36,6 +36,97 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   assert.doesNotMatch(messages[0]?.content || "", /\/skill/);
 });
 
+test("reconstructs zero model completion duration without inventing a run time", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "model-completed-zero",
+        type: "model.completed",
+        event_type: "model.completed",
+        run_id: "run-model",
+        timestamp: "2026-05-08T00:00:00.000Z",
+        data: {
+          duration_ms: 0,
+          turn_count: 1,
+          stop_category: "completed",
+        },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.duration, 0);
+  assert.equal(messages[0]?.content, "");
+});
+
+test("history reconstruction preserves sandbox readiness duration", () => {
+  const historyProgress = (
+    eventId: string,
+    sequence: number,
+    timestamp: string,
+    lifecycle: "started" | "completed",
+  ): HistoryEvent => ({
+    id: eventId,
+    sequence,
+    event_type: "agent_public_progress",
+    run_id: "run-sandbox-history",
+    timestamp,
+    data: {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      event_id: eventId,
+      event_type: "agent_public_progress",
+      stage: "sandbox_preparation",
+      message:
+        lifecycle === "completed"
+          ? "Controlled execution is ready"
+          : "Preparing controlled execution",
+      severity: "info",
+      progress_kind: lifecycle === "completed" ? "completed" : "active",
+      payload: {
+        schema_version: "ai-platform.public-agent-progress.v1",
+        step_id: "phase_sandbox_preparation",
+        phase: "sandbox_preparation",
+        lifecycle,
+        message:
+          lifecycle === "completed"
+            ? "Controlled execution is ready"
+            : "Preparing controlled execution",
+      },
+    },
+  });
+  const messages = reconstructMessagesFromEvents(
+    [
+      historyProgress(
+        "sandbox-history-started",
+        1,
+        "2026-05-08T00:00:00.000Z",
+        "started",
+      ),
+      historyProgress(
+        "sandbox-history-completed",
+        2,
+        "2026-05-08T00:00:01.250Z",
+        "completed",
+      ),
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const process = getVisibleMessageParts(messages[0]?.parts ?? []).find(
+    (
+      part,
+    ): part is Extract<MessagePart, { type: "execution_process" }> =>
+      part.type === "execution_process",
+  );
+  assert.ok(process);
+  assert.equal(process.elapsed_ms, 1_250);
+  assert.equal(process.steps[0]?.started_at, "2026-05-08T00:00:00.000Z");
+  assert.equal(process.steps[0]?.completed_at, "2026-05-08T00:00:01.250Z");
+});
+
 test("production compatibility history reconstructs each persisted user turn before its run answer", () => {
   const messages = reconstructMessagesFromEvents(
     [
@@ -95,29 +186,186 @@ test("production compatibility history reconstructs each persisted user turn bef
   );
 });
 
-test("history preserves the same safe terminal process structure as live presentation", () => {
-  const execution = (event_type: string, sequence: number, status: string) => ({
-    id: `evt-${sequence}`,
-    event_type,
-    run_id: "run-public-process",
-    timestamp: "2026-07-31T01:00:00.000Z",
-    data: {
-      schema_version: "ai-platform.public-execution-event.v1",
-      event_id: `evt-${sequence}`,
-      run_id: "run-public-process",
-      sequence,
-      step_id: "step-private-id",
-      kind: "processing",
-      stage: "private-stage",
-      status,
-      title: "private title",
-      summary: "private summary",
-      progress: { current: sequence, total: 3 },
-      safe_file_name: "report.xlsx",
-      artifact_public_id: "artifact-private-id",
-      created_at: "2026-07-31T01:00:00.000Z",
+test("reconstructs a long multi-frame v4 answer once across replay and preserves interleaved parts", () => {
+  const first = "a".repeat(9000);
+  const second = "b".repeat(9000);
+  const events: HistoryEvent[] = [
+    {
+      id: "delta-1-row",
+      event_type: "message:chunk",
+      run_id: "run-v4-history",
+      sequence: 1,
+      timestamp: "2026-08-21T00:00:00Z",
+      data: {
+        event_id: "delta-1",
+        message_id: "protocol-message-1",
+        run_id: "run-v4-history",
+        sequence: 1,
+        projection_version: "ai-platform.chat-public-projection.v1",
+        projection_kind: "assistant_delta",
+        content: first,
+      },
     },
-  });
+    {
+      id: "status-row",
+      event_type: "run_event",
+      run_id: "run-v4-history",
+      sequence: 2,
+      timestamp: "2026-08-21T00:00:00Z",
+      data: {
+        event_id: "status-1",
+        run_id: "run-v4-history",
+        sequence: 2,
+        event_type: "public_activity",
+        projection_version: "ai-platform.chat-public-projection.v1",
+        stage: "tool_started",
+        status: "running",
+        severity: "info",
+        message: "Reading authorized files",
+      },
+    },
+    {
+      id: "todo-row",
+      event_type: "todo:updated",
+      run_id: "run-v4-history",
+      sequence: 3,
+      timestamp: "2026-08-21T00:00:00Z",
+      data: {
+        event_id: "todo-1",
+        run_id: "run-v4-history",
+        sequence: 3,
+        todos: [{ content: "Follow up", status: "pending" }],
+      },
+    },
+    {
+      id: "delta-2-row",
+      event_type: "message:chunk",
+      run_id: "run-v4-history",
+      sequence: 4,
+      timestamp: "2026-08-21T00:00:01Z",
+      data: {
+        event_id: "delta-2",
+        message_id: "protocol-message-1",
+        run_id: "run-v4-history",
+        sequence: 4,
+        projection_version: "ai-platform.chat-public-projection.v1",
+        projection_kind: "assistant_delta",
+        content: second,
+      },
+    },
+    {
+      id: "delta-2-replayed-row",
+      event_type: "message:chunk",
+      run_id: "run-v4-history",
+      sequence: 4,
+      timestamp: "2026-08-21T00:00:01Z",
+      data: {
+        event_id: "delta-2",
+        message_id: "protocol-message-1",
+        run_id: "run-v4-history",
+        sequence: 4,
+        projection_version: "ai-platform.chat-public-projection.v1",
+        projection_kind: "assistant_delta",
+        content: second,
+      },
+    },
+    {
+      id: "completed-row",
+      event_type: "run_event",
+      run_id: "run-v4-history",
+      sequence: 5,
+      timestamp: "2026-08-21T00:00:01Z",
+      data: {
+        event_id: "completed-1",
+        run_id: "run-v4-history",
+        sequence: 5,
+        event_type: "public_activity",
+        projection_version: "ai-platform.chat-public-projection.v1",
+        stage: "message_completed",
+        status: "completed",
+        severity: "info",
+        message: "Assistant response complete",
+        payload: { delta_count: 2, text_length: first.length + second.length },
+      },
+    },
+  ];
+
+  const messages = reconstructMessagesFromEvents(
+    events,
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+  const assistant = messages.find((message) => message.role === "assistant");
+  assert.ok(assistant);
+  assert.equal(assistant.content, first + second);
+  assert.deepEqual(
+    assistant.parts?.map((part) => part.type),
+    ["text", "run_status", "todo", "text", "run_status"],
+  );
+  assert.deepEqual(
+    assistant.parts
+      ?.filter((part) => part.type === "text")
+      .map((part) =>
+        part.type === "text"
+          ? { content: part.content, logical_id: part.logical_id }
+          : null,
+      ),
+    [
+      {
+        content: first,
+        logical_id: "protocol-message-1:text:0:0:root",
+      },
+      {
+        content: second,
+        logical_id: "protocol-message-1:text:1:0:root",
+      },
+    ],
+  );
+  assert.equal(assistant.parts?.some((part) => part.type === "todo"), true);
+  assert.equal(
+    assistant.parts?.some(
+      (part) => part.type === "run_status" && part.event_id === "status-row",
+    ),
+    true,
+  );
+  const completion = assistant.parts?.find(
+    (part) => part.type === "run_status" && part.event_id === "completed-row",
+  );
+  assert.equal(completion?.type, "run_status");
+  assert.doesNotMatch(JSON.stringify(assistant), /canonical/);
+});
+
+test("history preserves the same safe terminal process structure as live presentation", () => {
+  const execution = (event_type: string, sequence: number, status: string) => {
+    const timestamp =
+      sequence === 1
+        ? "2026-07-31T01:00:00.000Z"
+        : sequence === 2
+          ? "2026-07-31T01:00:02.000Z"
+          : "2026-07-31T01:00:05.000Z";
+    return {
+      id: `evt-${sequence}`,
+      event_type,
+      run_id: "run-public-process",
+      timestamp,
+      data: {
+        schema_version: "ai-platform.public-execution-event.v1",
+        event_id: `evt-${sequence}`,
+        run_id: "run-public-process",
+        sequence,
+        step_id: "step-private-id",
+        kind: "processing",
+        stage: "private-stage",
+        status,
+        title: "private title",
+        summary: "private summary",
+        progress: { current: sequence, total: 3 },
+        safe_file_name: "report.xlsx",
+        artifact_public_id: "artifact-private-id",
+        created_at: timestamp,
+      },
+    };
+  };
   const messages = reconstructMessagesFromEvents(
     [
       execution("execution_step", 1, "running"),
@@ -155,6 +403,16 @@ test("history preserves the same safe terminal process structure as live present
     getVisibleMessageParts(assistant.parts || []).map((part) => part.type),
     ["execution_process", "artifact", "text"],
   );
+  const process = getVisibleMessageParts(assistant.parts || []).find(
+    (part) => part.type === "execution_process",
+  );
+  assert.equal(process?.type, "execution_process");
+  if (process?.type !== "execution_process") {
+    throw new Error("expected execution process");
+  }
+  assert.equal(process.elapsed_ms, 5_000);
+  assert.equal(process.steps[0]?.started_at, "2026-07-31T01:00:00.000Z");
+  assert.equal(process.steps[0]?.completed_at, "2026-07-31T01:00:05.000Z");
   assert.doesNotMatch(
     JSON.stringify(assistant),
     /private-stage|private title|private summary|artifact-private-id|evt-[123]/,
@@ -873,8 +1131,8 @@ test("failed history retains canonical public execution activity through termina
   const tool = visibleParts[2];
   assert.equal(tool?.type, "tool");
   if (tool?.type !== "tool") throw new Error("expected tool part");
-  assert.equal(tool.public_input_summary, "Starting Search authorized sources");
-  assert.equal(tool.result, "Search authorized sources completed");
+  assert.equal(Object.hasOwn(tool, "public_input_summary"), false);
+  assert.equal(tool.result, undefined);
   const terminal = visibleParts[3];
   assert.equal(terminal?.type, "run_status");
   if (terminal?.type !== "run_status") throw new Error("expected failed terminal status");

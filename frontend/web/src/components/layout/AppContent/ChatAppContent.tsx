@@ -9,7 +9,7 @@ import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
 import type { SessionSidebarSessionSource } from "../../panels/SessionSidebar";
-import { useSettingsContext } from "../../../contexts/SettingsContext";
+import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { useAgent } from "../../../hooks/useAgent";
 import { useApprovals } from "../../../hooks/useApprovals";
 import { useAuth } from "../../../hooks/useAuth";
@@ -50,7 +50,6 @@ import {
   buildEffectiveSkills,
   countEnabledSkills,
   resolveComposerSkillsAvailability,
-  resolveSettingsBooleanProjection,
 } from "./skillAvailability";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
@@ -62,10 +61,9 @@ import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistent
 import { agentProfileApi } from "../../../services/api/agentProfile";
 import { sessionApi } from "../../../services/api/session";
 import { uuid } from "../../../utils/uuid";
-import {
-  AGENT_PROFILE_CATEGORY_LABELS,
-  type AgentConversationIdentity,
-  type AgentProfilePublicProjection,
+import type {
+  AgentConversationIdentity,
+  AgentProfilePublicProjection,
 } from "../../../types/agentProfile";
 import {
   buildAgentMarketDetailPath,
@@ -335,40 +333,28 @@ export async function recoverAgentConversationIdentity(
   return identity;
 }
 
-/** Render only the public immutable Agent identity above canonical Chat. */
-export function AgentConversationIdentityBanner({
+/** Project the public immutable Agent identity into the compact Chat header. */
+export function AgentConversationHeaderIdentity({
   identity,
 }: {
   identity: AgentConversationIdentity;
 }) {
   return (
-    <section
-      data-agent-conversation-profile
-      className="border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3 text-[var(--theme-text)] sm:px-6"
-    >
-      <div className="mx-auto flex max-w-4xl items-center gap-3">
-        <AgentIdentityAvatar
-          agentId={identity.agent_id}
-          avatarRef={identity.avatar_ref}
-          avatarSeed={identity.avatar_seed}
-          name={identity.name}
-          size="sm"
-        />
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <strong className="text-sm font-semibold sm:text-base">{identity.name}</strong>
-            <span className="text-xs text-[var(--theme-text-secondary)]">
-              {AGENT_PROFILE_CATEGORY_LABELS[identity.category]}
-            </span>
-          </span>
-          {identity.description ? (
-            <span className="mt-1 block line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)] sm:text-sm">
-              {identity.description}
-            </span>
-          ) : null}
-        </span>
-      </div>
-    </section>
+    <>
+      <AgentIdentityAvatar
+        agentId={identity.agent_id}
+        avatarRef={identity.avatar_ref}
+        avatarSeed={identity.avatar_seed}
+        name={identity.name}
+        size="xs"
+      />
+      <strong
+        className="hidden max-w-64 truncate text-sm font-semibold text-[var(--theme-text)] sm:block"
+        title={identity.name}
+      >
+        {identity.name}
+      </strong>
+    </>
   );
 }
 
@@ -450,25 +436,21 @@ export function ChatAppContent({
     sessionId: null,
   });
   const agentConversationControlsLocked = !chatToolAccess.enabled;
-  const { enableSkills, settings, availableModels, defaultModel } =
-    useSettingsContext();
+  const { availableModels, defaultModel } = useModelCatalogContext();
   const { hasPermission, isAuthenticated } = useAuth();
-  const canReadSkills = hasPermission(Permission.SKILL_READ);
-  const enableSkillsProjection = resolveSettingsBooleanProjection(
-    settings,
-    "ENABLE_SKILLS",
-  );
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
-    canReadSkills,
     catalogEffectivePermissions: [],
     catalogPermissionsKnown: false,
-    enableSkillsSettingKnown: enableSkillsProjection.known,
-    enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
-  const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
-    useDragAndDrop();
+  const {
+    isPageDragging,
+    pageDragAttachments,
+    setPageDragAttachments,
+    clearPageDragAttachments,
+    uploadControls,
+  } = useDragAndDrop();
 
   const {
     approvals,
@@ -505,11 +487,8 @@ export function ChatAppContent({
   });
   const composerSkillsAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
-    canReadSkills,
     catalogEffectivePermissions: skillsEffectivePermissions,
     catalogPermissionsKnown: skillsEffectivePermissionsKnown,
-    enableSkillsSettingKnown: enableSkillsProjection.known,
-    enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
   const sessionConfigRef = useRef({
@@ -595,6 +574,7 @@ export function ChatAppContent({
       }
       setAgentWorkspaceError(null);
       clearMessages();
+      clearPageDragAttachments();
       // A task Skill is scoped to the composer that selected it. A route or
       // workspace identity change clears the session, so it must also clear the
       // local selector before a later submit can create an unbound conversation.
@@ -1324,6 +1304,14 @@ export function ChatAppContent({
       onOpenRunPlayback={handleOpenRunPlayback}
       showOutlineButton={shouldShowMessageOutline(visibleMessages)}
       onToggleOutline={handleToggleOutline}
+      chatIdentity={
+        agentConversationState.phase === "bound" &&
+        agentConversationState.identity ? (
+          <AgentConversationHeaderIdentity
+            identity={agentConversationState.identity}
+          />
+        ) : undefined
+      }
       sidebar={
         <SessionSidebar
           ref={sidebarRef}
@@ -1389,16 +1377,11 @@ export function ChatAppContent({
             正在校验会话身份…
           </div>
         ) : null}
-        {agentConversationState.phase === "bound" &&
-        agentConversationState.identity ? (
-          <AgentConversationIdentityBanner
-            identity={agentConversationState.identity}
-          />
-        ) : null}
         <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
             <ChatView
             messages={visibleMessages}
             sessionId={visibleSessionId}
+            conversationIdentityKey={conversationIdentityKey}
             currentRunId={visibleCurrentRunId}
             isLoading={isLoading}
             isLoadingHistory={isLoadingHistory}
@@ -1477,6 +1460,7 @@ export function ChatAppContent({
             }
             attachments={pageDragAttachments}
             onAttachmentsChange={setPageDragAttachments}
+            uploadControls={uploadControls}
             externalNavigationToken={externalNavigationToken}
             externalNavigationTargetFile={externalNavigationTargetFile}
             externalNavigationTargetRunId={externalNavigationTargetRunId}

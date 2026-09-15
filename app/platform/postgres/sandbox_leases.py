@@ -6,6 +6,8 @@ import json
 import uuid
 from typing import Any
 
+from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
+
 
 class SandboxLeaseReleaseScopeMismatchError(RuntimeError):
     """Raised when a release fence collides with another lease scope."""
@@ -356,6 +358,11 @@ async def record_sandbox_executor_terminal(
     terminal_result: dict[str, Any],
     claim_token: str | None = None,
 ) -> dict[str, Any]:
+    ensure_json_size(
+        terminal_result,
+        max_bytes=RUN_RESULT_MAX_BYTES,
+        code="executor_terminal_receipt_too_large",
+    )
     if executor_status not in {"completed", "failed", "cancelled"}:
         raise ValueError("sandbox_executor_terminal_status_invalid")
     normalized_result_status = str(terminal_result.get("status") or "").strip().lower()
@@ -388,11 +395,17 @@ async def record_sandbox_executor_terminal(
         )
     existing = current.get("executor_terminal_json")
     if existing is not None:
-        if existing == terminal_result and str(current.get("executor_status") or "") == executor_status:
+        if (
+            existing == terminal_result
+            and str(current.get("executor_status") or "") == executor_status
+            and (
+                claim_token is None
+                or str(current.get("executor_reconciliation_claim_token") or "")
+                == claim_token
+            )
+        ):
             return dict(current)
-        raise SandboxExecutorTerminalConflictError(
-            "sandbox_executor_terminal_conflict"
-        )
+        raise SandboxExecutorTerminalConflictError("sandbox_executor_terminal_conflict")
     cursor = await connection.execute(
         """
         update sandbox_leases
@@ -434,9 +447,7 @@ async def record_sandbox_executor_terminal(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise SandboxExecutorTerminalConflictError(
-            "sandbox_executor_terminal_conflict"
-        )
+        raise SandboxExecutorTerminalConflictError("sandbox_executor_terminal_conflict")
     return dict(row)
 
 
@@ -614,7 +625,16 @@ async def claim_sandbox_executor_reconciliations(
             and executor_terminal_json is not null
             and executor_reconciliation_context_json is not null
             and (
-              executor_reconciliation_status in ('pending', 'retry')
+              executor_reconciliation_status = 'pending'
+              or (
+                executor_reconciliation_status = 'retry'
+                and updated_at <= now() - make_interval(
+                  secs => least(
+                    30,
+                    greatest(1, executor_terminal_reconciliation_attempt_count)
+                  )
+                )
+              )
               or (
                 executor_reconciliation_status = 'claimed'
                 and executor_reconciliation_claimed_at < now() - make_interval(secs => %s)

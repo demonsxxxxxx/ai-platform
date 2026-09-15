@@ -77,6 +77,7 @@ export type {
   AgentProfileDraftRequest,
   AgentProfileMutationResponse,
   AgentProfilePublicProjection,
+  AgentProfileSkillReference,
   SelectedAgentProfileRequest,
 } from "./agentProfile";
 
@@ -150,19 +151,6 @@ export type {
   ToolsListResponse,
   ToolState,
 } from "./tool";
-
-// ============================================
-// Settings Types
-// ============================================
-export type {
-  SettingType,
-  SettingCategory,
-  SettingDependsOn,
-  SettingItem,
-  SettingsResponse,
-  SettingUpdate,
-  SettingResetResponse,
-} from "./settings";
 
 // ============================================
 // File Upload Types

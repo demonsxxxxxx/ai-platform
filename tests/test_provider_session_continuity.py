@@ -108,7 +108,7 @@ async def test_worker_context_skips_message_load_after_committed_provider_transc
     calls: list[str] = []
 
     async def snapshot_loader(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"id": "ctx-a", "included_message_ids": ["message-a"]}
+        return {"id": "ctx-a", "included_message_ids": ["message-a"], "included_file_ids": []}
 
     async def message_loader(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         calls.append("messages")
@@ -153,7 +153,7 @@ async def test_context_api_auto_provider_loader_strips_run_id_before_repository_
     monkeypatch.setattr("app.context.api.provider_session_has_main_transcript", provider_session_state)
 
     async def snapshot_loader(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"id": "ctx-a", "included_message_ids": ["message-a"]}
+        return {"id": "ctx-a", "included_message_ids": ["message-a"], "included_file_ids": []}
 
     async def message_loader(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         raise AssertionError("provider continuation should omit reconstructed messages")
@@ -202,7 +202,7 @@ async def test_context_api_keeps_platform_conversation_for_non_claude_identity(m
     monkeypatch.setattr("app.context.api.provider_session_has_main_transcript", provider_session_state)
 
     async def snapshot_loader(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"id": "ctx-a", "included_message_ids": ["message-a"]}
+        return {"id": "ctx-a", "included_message_ids": ["message-a"], "included_file_ids": []}
 
     async def message_loader(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         calls.append("messages")

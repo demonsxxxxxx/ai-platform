@@ -6,9 +6,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from app.execution.api import projected_public_answer_failure_reason
 from app.runtime.sandbox.contracts import ExecutorTaskDispatchReceipt, ExecutorTaskRequest
-from app.sandbox.api import normalize_sdk_runtime_diagnostics
+from app.sandbox.api import (
+    normalize_sdk_runtime_diagnostics,
+    runtime_diagnostics_rejection,
+)
 from app.settings import get_settings
 
 
@@ -91,15 +93,6 @@ def normalize_executor_reported_failure(
         normalized["message"] = safe_message
     if "sdk_error" in response:
         normalized["sdk_error"] = safe_code
-    raw_diagnostics = response.get("sdk_turn_diagnostics")
-    projection_failure_reason = projected_public_answer_failure_reason(
-        safe_code,
-        raw_diagnostics,
-    )
-    if projection_failure_reason is not None:
-        normalized["sdk_turn_diagnostics"] = {
-            "projection_failure_reason": projection_failure_reason
-        }
     runtime_diagnostics = normalize_sdk_runtime_diagnostics(
         response.get("runtime_diagnostics")
     )
@@ -126,7 +119,7 @@ def normalize_executor_reported_failure(
 
 
 class SandboxExecutorHttpError(RuntimeError):
-    """A bounded public projection of an executor HTTP failure."""
+    """A safe public error plus an optional bounded private diagnostic carrier."""
 
     def __init__(
         self,
@@ -134,6 +127,7 @@ class SandboxExecutorHttpError(RuntimeError):
         status_code: int,
         error_code: object = None,
         detail: object = None,
+        runtime_diagnostics: object = None,
     ) -> None:
         self.status_code = int(status_code)
         safe_error_code = _structured_executor_error_code(error_code)
@@ -150,11 +144,17 @@ class SandboxExecutorHttpError(RuntimeError):
             else executor_reported_failure_message(self.error_code)
         )
         self.public_message = f"{public_message} (HTTP {self.status_code})"
+        self.runtime_diagnostics = (
+            normalize_sdk_runtime_diagnostics(runtime_diagnostics)
+            if runtime_diagnostics is not None
+            else None
+        )
         super().__init__(self.public_message)
 
 
 def _executor_http_error(response: httpx.Response) -> SandboxExecutorHttpError:
     payload: dict[str, Any] = {}
+    runtime_diagnostics: object = None
     if len(response.content) <= _MAX_EXECUTOR_HTTP_ERROR_BODY_BYTES:
         try:
             candidate = response.json()
@@ -162,10 +162,22 @@ def _executor_http_error(response: httpx.Response) -> SandboxExecutorHttpError:
             candidate = None
         if isinstance(candidate, dict):
             payload = candidate
+            runtime_diagnostics = candidate.get("runtime_diagnostics")
+        elif response.content:
+            runtime_diagnostics = runtime_diagnostics_rejection(
+                reason="invalid_payload",
+                field="http_error_body",
+            )
+    else:
+        runtime_diagnostics = runtime_diagnostics_rejection(
+            reason="truncated",
+            field="http_error_body",
+        )
     return SandboxExecutorHttpError(
         status_code=response.status_code,
         error_code=payload.get("error_code"),
         detail=payload.get("detail"),
+        runtime_diagnostics=runtime_diagnostics,
     )
 
 

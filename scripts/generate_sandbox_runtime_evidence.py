@@ -2590,9 +2590,10 @@ def _opensandbox_provider_lifecycle_evidence(
             ),
         },
         "startup_io": {
-            "file_write_read_verified": captured.get("opensandbox_startup_io_probe_enabled") is True,
-            "command_execution_verified": captured.get("opensandbox_startup_io_probe_enabled") is True,
-            "source": "OpenSandboxContainerProvider.startup_io_probe",
+            # Lifecycle callbacks do not attest a file round trip or command probe.
+            "file_write_read_verified": False,
+            "command_execution_verified": False,
+            "source": "not_observed",
         },
         "resource_policy": {
             "resource_limits_requested": all(
@@ -2660,9 +2661,6 @@ def run_platform_runtime_probe(
         original_executor_image = settings.sandbox_executor_image
         original_workspace_root = settings.sandbox_workspace_root
         settings.sandbox_container_provider = sandbox_provider
-        captured["opensandbox_startup_io_probe_enabled"] = bool(
-            getattr(settings, "opensandbox_startup_io_probe_enabled", True)
-        )
         if sandbox_executor_image:
             settings.sandbox_executor_image = sandbox_executor_image
         settings.sandbox_workspace_root = workspace_root

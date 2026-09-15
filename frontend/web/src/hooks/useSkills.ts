@@ -107,6 +107,12 @@ export function resolveSkillOperationError(
   if (error instanceof ApiRequestError && error.status === 403) {
     return i18n.t("errors.noPermission");
   }
+  if (
+    error instanceof Error &&
+    error.message === "admin_skill_lifecycle_invalid"
+  ) {
+    return i18n.t("skills.adminCatalogInvalid");
+  }
   return i18n.t(fallbackKey);
 }
 
@@ -679,9 +685,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminUploadZip(skillName, file);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to upload admin skill",
-        );
+        setError(resolveSkillOperationError(err, "skills.adminReleaseDraftFailed"));
         return null;
       } finally {
         setIsUploading(false);
@@ -701,9 +705,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminReviewSkillVersion(skillName, version);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to review admin skill",
-        );
+        setError(resolveSkillOperationError(err, "skills.adminReleaseReviewFailed"));
         return null;
       } finally {
         setIsUploading(false);
@@ -723,9 +725,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminPromoteSkillVersion(skillName, version);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to promote admin skill",
-        );
+        setError(resolveSkillOperationError(err, "skills.adminReleasePromoteFailed"));
         return null;
       } finally {
         setIsUploading(false);
@@ -742,11 +742,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminListSkills();
       } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to refresh admin skill catalog",
-        );
+        setError(resolveSkillOperationError(err, "skills.loadFailed"));
         return null;
       }
     },
@@ -773,7 +769,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.previewZip(file);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to preview ZIP");
+        setError(resolveSkillOperationError(err, "skills.previewFailed"));
         return null;
       } finally {
         setIsLoading(false);
@@ -802,80 +798,13 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminPreviewZip(file);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to preview admin ZIP",
-        );
+        setError(resolveSkillOperationError(err, "skills.previewFailed"));
         return null;
       } finally {
         setIsLoading(false);
       }
     },
     [enabled],
-  );
-
-  // Preview skills from GitHub repository
-  const previewGitHubSkills = useCallback(
-    async (
-      repoUrl: string,
-      branch: string = "main",
-    ): Promise<{
-      repo_url: string;
-      branch: string;
-      skills: Array<{ name: string; path: string; description: string }>;
-    } | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        return await skillApi.previewGitHub(repoUrl, branch);
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to preview GitHub skills",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled],
-  );
-
-  // Install skills from GitHub repository
-  const installGitHubSkills = useCallback(
-    async (
-      repoUrl: string,
-      skillNames: string[],
-      branch: string = "main",
-    ): Promise<{
-      message: string;
-      installed: string[];
-      errors: string[];
-    } | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        const result = await skillApi.installGitHub(
-          repoUrl,
-          skillNames,
-          branch,
-        );
-        await fetchSkills();
-        return result;
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to install GitHub skills",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled, fetchSkills],
   );
 
   // Stats
@@ -924,8 +853,6 @@ export function useSkills(options?: {
     adminListSkills,
     previewZipSkills,
     adminPreviewZipSkills,
-    previewGitHubSkills,
-    installGitHubSkills,
     pendingSkillNames,
     isMutating,
     isUpdating,

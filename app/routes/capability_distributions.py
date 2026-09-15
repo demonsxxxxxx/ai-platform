@@ -26,6 +26,7 @@ from app.models import (
     CapabilityDistributionWriteResponse,
     DepartmentDirectoryResponse,
 )
+from app.mcp import api as mcp_api
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -99,7 +100,7 @@ async def _require_existing_capability(
         if await repositories.get_skill(conn, skill_id=capability_id) is None:
             raise HTTPException(status_code=404, detail="skill_not_found")
         return
-    names = await repositories.list_mcp_server_registry_names(conn, tenant_id=tenant_id)
+    names = await mcp_api.list_mcp_server_registry_names(conn, tenant_id=tenant_id)
     if capability_id not in {str(name) for name in names}:
         raise HTTPException(status_code=404, detail="mcp_server_not_found")
 
@@ -169,28 +170,45 @@ async def _write_distribution(
                 display_name=principal.display_name or principal.user_id,
             )
             if isinstance(request, CapabilityDistributionAuthorityUpdateRequest):
-                row = await repositories.upsert_capability_distribution_row(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    capability_kind=capability_kind,
-                    capability_id=capability_id,
-                    status=request.status,
-                    visible_to_user=request.visible_to_user,
-                    scope_mode=request.scope_mode,
-                    department_ids=department_ids,
-                    allowed_roles=request.allowed_roles,
-                    metadata_json=request.metadata,
-                    updated_by=principal.user_id,
+                writer = (
+                    mcp_api.upsert_mcp_server_distribution
+                    if capability_kind == "mcp_server"
+                    else repositories.upsert_capability_distribution_row
                 )
+                values = {
+                    "tenant_id": principal.tenant_id,
+                    "status": request.status,
+                    "visible_to_user": request.visible_to_user,
+                    "scope_mode": request.scope_mode,
+                    "department_ids": department_ids,
+                    "allowed_roles": request.allowed_roles,
+                    "metadata_json": request.metadata,
+                    "updated_by": principal.user_id,
+                }
+                if capability_kind == "mcp_server":
+                    values["server_name"] = capability_id
+                else:
+                    values["capability_kind"] = capability_kind
+                    values["capability_id"] = capability_id
+                row = await writer(conn, **values)
             else:
-                row = await repositories.toggle_capability_distribution_row(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    capability_kind=capability_kind,
-                    capability_id=capability_id,
-                    enabled=request.requested_enabled(),
-                    updated_by=principal.user_id,
-                )
+                if capability_kind == "mcp_server":
+                    row = await mcp_api.toggle_mcp_server_distribution(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        server_name=capability_id,
+                        enabled=request.requested_enabled(),
+                        updated_by=principal.user_id,
+                    )
+                else:
+                    row = await repositories.toggle_capability_distribution_row(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        capability_kind=capability_kind,
+                        capability_id=capability_id,
+                        enabled=request.requested_enabled(),
+                        updated_by=principal.user_id,
+                    )
             audit_id = await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,

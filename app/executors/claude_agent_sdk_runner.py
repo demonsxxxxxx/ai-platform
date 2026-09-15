@@ -23,9 +23,11 @@ from app.control_plane_contracts import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     normalize_thinking_effort,
     sanitize_public_payload,
-    sanitize_public_text,
 )
-from app.platform.public_payload import sanitize_public_reasoning_text
+from app.platform.public_payload import (
+    sanitize_public_answer_text,
+    sanitize_public_event_candidate,
+)
 from app.executors.claude.capability_policy import (
     CapabilityExecutionPlan,
     _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
@@ -41,13 +43,9 @@ from app.executors.claude.prompts import (
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
     translation_target_language as _prompt_translation_target_language,
-    with_selected_skill_invocation_requirement as _with_selected_skill_invocation_requirement,
 )
-from app.execution.api import (
-    ClaudeSdkAgentEventAdapter,
-    projected_public_answer_failure_reason,
-)
-from app.executors.claude_stream_projection import ClaudeStreamProjector
+from app.execution.api import ClaudeSdkAgentEventAdapter
+from app.executors.claude_stream_projection import AssistantAnswerTimeline, ClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
@@ -67,9 +65,11 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
     SDK_RUNTIME_DIAGNOSTIC_LIFECYCLE_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_LIFECYCLES,
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    exception_chain_from_error,
     normalize_sdk_runtime_diagnostics,
     runtime_diagnostic_text as _runtime_diagnostic_text,
     runtime_diagnostic_value as _runtime_diagnostic_value,
+    workspace_mutation_allowed,
 )
 from app.settings import get_settings
 from app.skills.execution_profiles import (
@@ -148,16 +148,13 @@ _SDK_BROKERED_BUILTIN_TOOLS = (
     "WebFetch",
     "WebSearch",
 )
-_SDK_SELECTED_SKILL_NOT_INVOKED = "claude_agent_sdk_selected_skill_not_invoked"
 _SDK_SELECTED_SKILL_HOOK_FAILED = "claude_agent_sdk_selected_skill_hook_failed"
 _SDK_SELECTED_SKILL_NOT_AUTHORIZED = "claude_agent_sdk_selected_skill_not_authorized"
 _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_CANCELLED = "claude_agent_sdk_cancelled"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
-_MAX_REQUIRED_ANSWER_TEXT_CHARS = 262_144
 _MAX_PUBLIC_DELTA_CHARS = 8_192
-_SDK_PUBLIC_PROJECTION_FAILED = "claude_agent_sdk_public_projection_failed"
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 _SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
@@ -178,6 +175,7 @@ _PUBLIC_DIAGNOSTIC_COUNTERS = (
     "tool_policy_denials",
     "tool_lifecycle_denials",
     "skill_invocations",
+    "public_projection_omissions",
 )
 _TURN_LIMIT_ERROR_PATTERN = re.compile(
     r"(?:reached\s+)?maximum\s+(?:number\s+of\s+)?turns|"
@@ -212,6 +210,7 @@ def _sdk_run_timeout_seconds(
 class ClaudeAgentSdkRunResult:
     used_sdk: bool
     message: str = ""
+    answer_receipt: dict[str, Any] | None = None
     session_id: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
@@ -280,20 +279,6 @@ def _diagnostic_terminal_class(
             "missing_terminal",
             _SDK_MISSING_STRUCTURED_TERMINAL,
             "retry_request",
-            True,
-        )
-    if error_code == _SDK_SELECTED_SKILL_NOT_INVOKED:
-        return (
-            "selected_skill_not_invoked",
-            _SDK_SELECTED_SKILL_NOT_INVOKED,
-            "retry_selected_skill",
-            True,
-        )
-    if error_code == _SDK_PUBLIC_PROJECTION_FAILED:
-        return (
-            "public_projection_failure",
-            _SDK_PUBLIC_PROJECTION_FAILED,
-            "retry_or_report_projection_failure",
             True,
         )
     if error_code in {
@@ -440,11 +425,7 @@ def project_sdk_turn_diagnostics(
     tool_policy_denials_detail = _public_tool_policy_denials(
         raw_counters.get("tool_policy_denials_detail")
     )
-    projection_failure_reason = projected_public_answer_failure_reason(
-        error_code,
-        raw,
-    )
-    projected = {
+    return {
         "schema_version": SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION,
         "terminal_class": terminal_class,
         "error_code": public_error_code,
@@ -456,9 +437,6 @@ def project_sdk_turn_diagnostics(
         "used_skills": used_skills,
         "tool_policy_denials_detail": tool_policy_denials_detail,
     }
-    if projection_failure_reason is not None:
-        projected["projection_failure_reason"] = projection_failure_reason
-    return projected
 
 
 def _canonical_sdk_error(
@@ -612,6 +590,7 @@ def build_sdk_env(*, cwd: Path | None = None) -> dict[str, str]:
         if value:
             env[key] = value
     if cwd is not None:
+        env["AI_PLATFORM_WORK_DIR"] = str(cwd)
         home = cwd / ".home"
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)
@@ -884,14 +863,7 @@ def _workspace_path_parameters_authorized(
         return True
 
     def writable_path_parts_authorized(relative: Path) -> bool:
-        lowered = tuple(part.lower() for part in relative.parts)
-        if len(lowered) >= 2 and lowered[0] == "output":
-            return True
-        return (
-            len(lowered) >= 3
-            and lowered[0] == "outputs"
-            and "delivery" in lowered[1:-1]
-        )
+        return workspace_mutation_allowed(PurePosixPath(relative.as_posix()))
 
     def path_authorized(raw: object, *, mutating: bool = False) -> bool:
         relatives = normalized_relatives(raw)
@@ -1021,11 +993,10 @@ async def run_claude_agent_sdk(
     execution_policy: str = "worker_local_legacy",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
     thinking_effort: str = "off",
-    require_selected_skill_invocation: bool = True,
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
     settings = get_settings()
-    max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128)))
+    max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 256)))
     diagnostic_counters = {
         "max_turns": max_turns,
         "turns_observed": 0,
@@ -1036,6 +1007,7 @@ async def run_claude_agent_sdk(
         "tool_policy_denials": 0,
         "tool_lifecycle_denials": 0,
         "skill_invocations": 0,
+        "public_projection_omissions": 0,
     }
     last_public_stage = "runtime"
     used_skill_names: list[str] = []
@@ -1047,6 +1019,8 @@ async def run_claude_agent_sdk(
     observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
     runtime_tool_calls: dict[tuple[str, str], dict[str, Any]] = {}
     read_only_lifecycle_denials_finalized = False
+    answer_stream_gate: PublicAnswerStreamGate | None = None
+    agent_event_adapter: ClaudeSdkAgentEventAdapter | None = None
 
     def finalize_read_only_lifecycle_denials() -> None:
         nonlocal read_only_lifecycle_denials_finalized
@@ -1058,17 +1032,20 @@ async def run_claude_agent_sdk(
         )
         read_only_lifecycle_denials_finalized = True
 
-    def turn_diagnostics(
-        error_code: str | None,
-        *,
-        projection_failure_reason: str | None = None,
-    ) -> dict[str, Any]:
+    def turn_diagnostics(error_code: str | None) -> dict[str, Any]:
         finalize_read_only_lifecycle_denials()
+        diagnostic_counters["public_projection_omissions"] = (
+            (answer_stream_gate.projection_omissions if answer_stream_gate else 0)
+            + (
+                agent_event_adapter.public_projection_omissions
+                if agent_event_adapter
+                else 0
+            )
+        )
         return project_sdk_turn_diagnostics(
             {
                 "counters": diagnostic_counters,
                 "last_public_stage": last_public_stage,
-                "projection_failure_reason": projection_failure_reason,
             },
             error_code=error_code,
             selected_skill_id=(
@@ -1092,6 +1069,7 @@ async def run_claude_agent_sdk(
     ) -> dict[str, Any]:
         finalize_read_only_lifecycle_denials()
         sdk: dict[str, Any] = {}
+        normalization_losses: list[dict[str, object]] = []
         for key, value in (
             ("errors", sdk_errors),
             ("result_subtype", result_subtype),
@@ -1105,13 +1083,15 @@ async def run_claude_agent_sdk(
             sdk.update(
                 {
                     "exception_type": type(exception).__name__,
-                    "exception_message": _runtime_diagnostic_text(exception),
-                    "exception_traceback": _runtime_diagnostic_text(
-                        "".join(
-                            traceback.format_exception(
-                                type(exception), exception, exception.__traceback__
-                            )
+                    "exception_message": str(exception),
+                    "exception_traceback": "".join(
+                        traceback.format_exception(
+                            type(exception), exception, exception.__traceback__
                         )
+                    ),
+                    "exception_chain": exception_chain_from_error(
+                        exception,
+                        losses=normalization_losses,
                     ),
                 }
             )
@@ -1162,6 +1142,7 @@ async def run_claude_agent_sdk(
                 "failure_source": failure_source,
                 "failure_stage": last_public_stage,
                 "sdk": sdk,
+                "normalization_losses": normalization_losses,
                 "tool_policy_denials": list(
                     diagnostic_counters.get("tool_policy_denials_detail", [])[
                         -_MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES:
@@ -1227,7 +1208,6 @@ async def run_claude_agent_sdk(
         TaskNotificationMessage = getattr(sdk, "TaskNotificationMessage", ())
         TaskUpdatedMessage = getattr(sdk, "TaskUpdatedMessage", ())
         MirrorErrorMessage = getattr(sdk, "MirrorErrorMessage", ())
-        ThinkingBlock = getattr(sdk, "ThinkingBlock", ())
         ToolPermissionContext = getattr(sdk, "ToolPermissionContext", ())
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
@@ -1492,16 +1472,9 @@ async def run_claude_agent_sdk(
         mcp_servers["ai-platform-context"] = context_retrieval_server
     capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         tool_policy_subjects,
-        required_skill_identity=(
-            selected_sdk_skill if require_selected_skill_invocation else None
-        ),
         available_skill_identities=allowed_skill_names,
         registered_mcp_servers=mcp_servers,
     )
-    required_capability_declarations = {
-        (declaration.capability_kind, declaration.canonical_identity): declaration
-        for declaration in capability_plan.required
-    }
     required_builtin_declarations: dict[
         tuple[str, str], RequiredCapabilityDeclaration
     ] = {}
@@ -1552,12 +1525,44 @@ async def run_claude_agent_sdk(
         if kind in {"skill", "mcp"}
     }
     private_capability_tokens.update(
-        str(config["url"])
-        for server_id, config in mcp_servers.items()
-        if server_id != "ai-platform-context"
-        and isinstance(config, dict)
-        and isinstance(config.get("url"), str)
-        and config["url"]
+        identity
+        for identity in authorized_subjects
+        if isinstance(identity, str) and identity.startswith("mcp__")
+    )
+    skill_subject = authorized_subjects.get("Skill")
+    if isinstance(skill_subject, dict):
+        private_capability_tokens.update(
+            name
+            for name in skill_subject.get("allowed_skill_names", [])
+            if isinstance(name, str)
+        )
+    private_capability_tokens.update(
+        str(subject["mcp_server_config"]["url"])
+        for subject in authorized_subjects.values()
+        if subject.get("mcp_server") != "ai-platform-context"
+        and isinstance(subject.get("mcp_server_config"), dict)
+        and isinstance(subject["mcp_server_config"].get("url"), str)
+        and subject["mcp_server_config"]["url"]
+    )
+    private_capability_tokens.update(
+        value
+        for subject in authorized_subjects.values()
+        if isinstance(subject.get("mcp_server_config"), dict)
+        and isinstance(subject["mcp_server_config"].get("headers"), dict)
+        for value in subject["mcp_server_config"]["headers"].values()
+        if isinstance(value, str) and value
+    )
+    private_capability_tokens.update(
+        value
+        for value in (
+            getattr(settings, "openai_api_key", ""),
+            getattr(settings, "anthropic_auth_token", ""),
+            getattr(settings, "anthropic_api_key", ""),
+            getattr(settings, "openai_base_url", ""),
+            getattr(settings, "anthropic_base_url", ""),
+            os.environ.get("AI_PLATFORM_NATIVE_TOOL_TOKEN", ""),
+        )
+        if isinstance(value, str) and value
     )
     private_replacement = "\u2588"
     private_replacements = {
@@ -1575,8 +1580,7 @@ async def run_claude_agent_sdk(
             private_replacements[identity] = public_replacement
     answer_stream_gate = PublicAnswerStreamGate(
         private_replacements=private_replacements,
-        sanitizer=sanitize_public_text,
-        max_sealed_chars=_MAX_REQUIRED_ANSWER_TEXT_CHARS,
+        sanitizer=sanitize_public_answer_text,
     )
 
     def replacement_for_private_token(token: str) -> str:
@@ -1585,15 +1589,13 @@ async def run_claude_agent_sdk(
     def register_dynamic_tool_call_id(value: object) -> None:
         call_id = canonical_tool_call_id(value)
         if call_id is not None:
+            replacement = replacement_for_private_token(call_id)
+            private_replacements[call_id] = replacement
             answer_stream_gate.register_private_replacements(
-                {call_id: replacement_for_private_token(call_id)}
+                {call_id: replacement}
             )
 
-    sdk_prompt = (
-        _with_selected_skill_invocation_requirement(prompt, selected_sdk_skill)
-        if require_selected_skill_invocation
-        else prompt
-    )
+    sdk_prompt = prompt
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
         sandbox_brokered=sandbox_brokered,
@@ -1606,14 +1608,14 @@ async def run_claude_agent_sdk(
             attempt_id=attempt_id,
             tool_policy_subjects=tool_policy_subjects,
             public_skill_metadata=public_skill_metadata,
-            sanitizer=sanitize_public_text,
-            payload_sanitizer=sanitize_public_payload,
-            reasoning_sanitizer=sanitize_public_reasoning_text,
+            sanitizer=sanitize_public_answer_text,
+            payload_sanitizer=sanitize_public_event_candidate,
         )
         if run_id and attempt_id and on_agent_event is not None
         else None
     )
 
+    agent_public_answer_chunks: list[str] = []
     agent_event_callback_failed = False
 
     async def publish_agent_candidates(candidates: tuple[Any, ...]) -> bool:
@@ -1741,9 +1743,8 @@ async def run_claude_agent_sdk(
         if lifecycle_phase in {
             "completed",
             "failed",
-        } and not answer_stream_gate.release_after_verified_capability(invocation_key):
-            answer_stream_gate.fail_closed()
-            return reject_capability_evidence()
+        }:
+            answer_stream_gate.release_after_verified_capability(invocation_key)
         claimed = skill_metadata is not None and claim_used_skill(canonical_identity)
         if claimed and on_skill_use:
             await on_skill_use(canonical_identity, skill_metadata)
@@ -1870,26 +1871,18 @@ async def run_claude_agent_sdk(
         if lifecycle in {
             "completed",
             "failed",
-        } and not answer_stream_gate.release_after_verified_capability(gate_key):
-            answer_stream_gate.fail_closed()
-            if lifecycle_required:
-                return reject_governed_lifecycle()
-            record_read_only_lifecycle_denial()
-            return False
+        }:
+            answer_stream_gate.release_after_verified_capability(gate_key)
         if lifecycle == "failed" and is_required_builtin:
             governed_builtin_lifecycle_rejected = True
             diagnostic_counters["tool_lifecycle_denials"] += 1
             return False
         return True
 
-    def selected_skill_hook_error() -> str | None:
-        if not require_selected_skill_invocation:
-            return None
-        if selected_sdk_skill is None or selected_sdk_skill in used_skill_names:
-            return None
-        if selected_sdk_skill in failed_skill_names:
+    def skill_hook_error() -> str | None:
+        if selected_sdk_skill is not None and selected_sdk_skill in failed_skill_names:
             return _SDK_SELECTED_SKILL_HOOK_FAILED
-        return _SDK_SELECTED_SKILL_NOT_INVOKED
+        return None
 
     declared_tool_identities = (
         set(authorized_subjects) | set(internal_context_subjects)
@@ -2291,6 +2284,47 @@ async def run_claude_agent_sdk(
 
         return handler
 
+    async def reconcile_sdk_permission_denial(denial: object) -> None:
+        """Close only a call that the SDK reports as denied after it started."""
+
+        if isinstance(denial, dict):
+            tool_name = denial.get("tool_name")
+            tool_call_id = denial.get("tool_use_id")
+        else:
+            tool_name = getattr(denial, "tool_name", None)
+            tool_call_id = getattr(denial, "tool_use_id", None)
+        identity = adapter_identity(tool_name)
+        call_id = canonical_tool_call_id(tool_call_id) or ""
+        if not call_id:
+            return
+        if identity in internal_context_subjects:
+            if governed_builtin_invocation_states.get(("MCP", call_id)) == "started":
+                await record_tool_lifecycle(
+                    tool_name="MCP", tool_call_id=call_id, lifecycle="failed"
+                )
+            return
+        if identity.startswith("mcp__") and identity in authorized_subjects:
+            if (
+                capability_invocation_states.get(("mcp", identity, call_id))
+                == "invocation_requested"
+            ):
+                await record_capability_evidence(
+                    capability_kind="mcp",
+                    canonical_identity=identity,
+                    tool_call_id=call_id,
+                    lifecycle_phase="failed",
+                )
+            return
+        if (
+            governed_builtin_invocation_states.get((str(tool_name or ""), call_id))
+            == "started"
+            or observed_read_only_invocation_states.get((str(tool_name or ""), call_id))
+            == "started"
+        ):
+            await record_tool_lifecycle(
+                tool_name=tool_name, tool_call_id=call_id, lifecycle="failed"
+            )
+
     def generic_tool_lifecycle_hook(lifecycle: str):
         async def handler(
             hook_input, tool_use_id=None, _context=None
@@ -2400,7 +2434,7 @@ async def run_claude_agent_sdk(
     thinking_options: dict[str, Any] = {}
     if thinking_effort != "off":
         thinking_options = {
-            "thinking": {"type": "adaptive", "display": "summarized"},
+            "thinking": {"type": "adaptive", "display": "omitted"},
             "effort": thinking_effort,
         }
     options = ClaudeAgentOptions(
@@ -2433,7 +2467,7 @@ async def run_claude_agent_sdk(
     terminal_result_message: object | None = None
     received_structured_terminal = False
     stream_projector = (
-        ClaudeStreamProjector(sanitizer=sanitize_public_payload)
+        ClaudeStreamProjector()
         if sandbox_partial_streaming
         else None
     )
@@ -2472,12 +2506,6 @@ async def run_claude_agent_sdk(
                 )
             ):
                 return "required_tool_completion_evidence_mismatch"
-        for key in required_capability_declarations:
-            matches = sum(group[:2] == key for group in groups)
-            if not matches:
-                return "required_tool_completion_evidence_missing"
-            if matches != 1:
-                return "required_tool_completion_evidence_mismatch"
         for key in required_builtin_declarations:
             identity = key[1]
             matching_states = {
@@ -2506,28 +2534,35 @@ async def run_claude_agent_sdk(
     async def publish_terminal_text(value: str, *, project_agent: bool = True) -> bool:
         if not value:
             return True
+        projected_value = value
         if project_agent and agent_event_adapter is not None:
+            accepted_chunks: list[str] = []
             for offset in range(0, len(value), 8_192):
-                acknowledged = await publish_agent_candidates(
-                    agent_event_adapter.accept_answer_text(
-                        value[offset : offset + 8_192],
-                        already_gated=True,
-                    )
+                chunk = value[offset : offset + 8_192]
+                candidates = agent_event_adapter.accept_answer_text(
+                    chunk,
+                    already_gated=True,
                 )
-                if not acknowledged:
+                if not candidates:
+                    continue
+                if not await publish_agent_candidates(candidates):
                     return False
-        if on_text is None:
-            return True
-        callback_result = on_text(value)
-        if isawaitable(callback_result):
-            await callback_result
+                accepted_chunks.append(chunk)
+            projected_value = "".join(accepted_chunks)
+            if not projected_value:
+                return True
+        if on_text is not None:
+            callback_result = on_text(projected_value)
+            if isawaitable(callback_result):
+                await callback_result
+        if project_agent and agent_event_adapter is not None:
+            agent_public_answer_chunks.append(projected_value)
         return True
 
     async def consume() -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, structured_result_text, terminal_result_message
-        projected_message_text = ""
-        last_assistant_text: str | None = None
+        answer_timeline = AssistantAnswerTimeline()
         async for message in query(
             prompt=_sdk_user_prompt_stream(
                 sdk_prompt,
@@ -2579,17 +2614,12 @@ async def run_claude_agent_sdk(
                 if stream_projector is None:
                     continue
                 for text in stream_projector.accept(raw_stream_event):
-                    projected_message_text += text
-                    for public_text in answer_stream_gate.accept(text):
+                    for public_text in answer_stream_gate.accept(answer_timeline.accept_delta(text)):
                         await publish_terminal_text(public_text)
-                if stream_projector.disabled:
-                    answer_stream_gate.fail_closed()
                 continue
             if isinstance(message, AssistantMessage):
                 if stream_projector is not None:
-                    stream_projector.close_unfinished()
-                    if stream_projector.disabled:
-                        answer_stream_gate.fail_closed()
+                    stream_projector.finish_message()
                 diagnostic_counters["assistant_messages"] += 1
                 assistant_message_identity = (
                     f"assistant_{diagnostic_counters['assistant_messages']}"
@@ -2598,19 +2628,7 @@ async def run_claude_agent_sdk(
                 for block_index, block in enumerate(message.content):
                     if type(block).__name__ == "ToolUseBlock":
                         register_dynamic_tool_call_id(getattr(block, "id", None))
-                    if (
-                        thinking_effort != "off"
-                        and agent_event_adapter is not None
-                        and isinstance(block, ThinkingBlock)
-                    ):
-                        await publish_agent_candidates(
-                            agent_event_adapter.accept_thinking_summary(
-                                block.thinking,
-                                block_index=block_index,
-                                message_identity=assistant_message_identity,
-                            )
-                        )
-                    elif agent_event_adapter is not None:
+                    if agent_event_adapter is not None:
                         await publish_agent_candidates(
                             agent_event_adapter.accept_content_block(
                                 block,
@@ -2629,20 +2647,8 @@ async def run_claude_agent_sdk(
                     and all(isinstance(text, str) for text in assistant_text_blocks)
                     else None
                 )
-                if isinstance(assistant_text, str):
-                    if not projected_message_text:
-                        missing_text = assistant_text
-                    elif assistant_text.startswith(projected_message_text):
-                        missing_text = assistant_text[len(projected_message_text) :]
-                    else:
-                        answer_stream_gate.fail_closed()
-                        missing_text = ""
-                    for public_text in answer_stream_gate.accept(missing_text):
-                        await publish_terminal_text(public_text)
-                    last_assistant_text = assistant_text
-                elif projected_message_text:
-                    last_assistant_text = projected_message_text
-                projected_message_text = ""
+                for public_text in answer_stream_gate.accept(answer_timeline.accept_assistant(assistant_text)):
+                    await publish_terminal_text(public_text)
             elif isinstance(message, ResultMessage):
                 terminal_result_message = message
                 diagnostic_counters["result_messages"] += 1
@@ -2654,6 +2660,8 @@ async def run_claude_agent_sdk(
                     diagnostic_counters["tool_admission_denials"] += len(
                         permission_denials
                     )
+                    for denial in permission_denials:
+                        await reconcile_sdk_permission_denial(denial)
                 result_session_id = message.session_id
                 usage = message.usage or message.model_usage or {}
                 sdk_terminal_reason = getattr(message, "terminal_reason", None)
@@ -2677,7 +2685,7 @@ async def run_claude_agent_sdk(
                         result_subtype=getattr(message, "subtype", ""),
                         stop_reason=getattr(message, "stop_reason", ""),
                         terminal_reason=resolved_terminal_reason,
-                        selected_skill_error=selected_skill_hook_error(),
+                        selected_skill_error=skill_hook_error(),
                         tool_admission_denials=diagnostic_counters[
                             "tool_admission_denials"
                         ],
@@ -2761,20 +2769,8 @@ async def run_claude_agent_sdk(
                         capability_evidence=list(capability_evidence),
                     )
                 received_structured_terminal = True
-                structured_result_text = str(message.result or "")
-                selected_body = (
-                    projected_message_text
-                    if projected_message_text
-                    else last_assistant_text
-                )
-                if selected_body is not None:
-                    if structured_result_text.startswith(selected_body):
-                        for public_text in answer_stream_gate.accept(
-                            structured_result_text[len(selected_body) :]
-                        ):
-                            await publish_terminal_text(public_text)
-                    else:
-                        answer_stream_gate.fail_closed()
+                answer_timeline.accept_result(str(message.result or ""))
+                structured_result_text = answer_timeline.text
                 stop_reason = getattr(message, "stop_reason", None)
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
@@ -2784,8 +2780,6 @@ async def run_claude_agent_sdk(
                 break
         if stream_projector is not None:
             stream_projector.close_unfinished()
-            if stream_projector.disabled:
-                answer_stream_gate.fail_closed()
         terminal_error = (
             _SDK_MISSING_STRUCTURED_TERMINAL
             if not received_structured_terminal
@@ -2801,53 +2795,56 @@ async def run_claude_agent_sdk(
         if terminal_error is None and capability_evidence_rejected:
             terminal_error = "required_tool_completion_evidence_mismatch"
         if terminal_error is None:
-            terminal_error = selected_skill_hook_error()
+            terminal_error = skill_hook_error()
         if terminal_error is None:
             terminal_error = capability_completion_error()
-        if terminal_error is None and answer_stream_gate.final_text_exceeds_bound(
-            structured_result_text
-        ):
-            terminal_error = _SDK_PUBLIC_PROJECTION_FAILED
         finished_answer = answer_stream_gate.finish(
-            final_text=structured_result_text,
-            release=terminal_error is None,
+            final_text=answer_timeline.text,
+            release=True,
         )
-        if terminal_error is None and answer_stream_gate.failed:
-            terminal_error = _SDK_PUBLIC_PROJECTION_FAILED
-        if terminal_error is None and isinstance(message, ResultMessage):
-            terminal_candidates: list[Any] = []
+        terminal_text_acknowledged = True
+        if not answer_stream_gate.failed and isinstance(
+            terminal_result_message, ResultMessage
+        ):
             for public_text in finished_answer.chunks:
-                for offset in range(0, len(public_text), _MAX_PUBLIC_DELTA_CHARS):
-                    terminal_candidates.extend(
-                        agent_event_adapter.accept_answer_text(
-                            public_text[offset : offset + _MAX_PUBLIC_DELTA_CHARS],
-                            already_gated=True,
-                        )
-                        if agent_event_adapter is not None
-                        else ()
-                    )
-            if agent_event_adapter is not None:
-                terminal_candidates.extend(
-                    agent_event_adapter.accept_result(
-                        message,
-                        final_content=finished_answer.final_text,
-                    )
-                )
-                if not await publish_agent_candidates(tuple(terminal_candidates)):
+                if not await publish_terminal_text(public_text):
+                    terminal_text_acknowledged = False
                     terminal_error = "agent_event_callback_not_acknowledged"
-            if terminal_error is None and on_text is not None:
-                for public_text in finished_answer.chunks:
-                    callback_result = on_text(public_text)
-                    if isawaitable(callback_result):
-                        await callback_result
+                    break
+        delivered_final_text = (
+            "".join(agent_public_answer_chunks)
+            if agent_event_adapter is not None
+            else finished_answer.final_text
+        )
+        if (
+            terminal_text_acknowledged
+            and not answer_stream_gate.failed
+            and isinstance(terminal_result_message, ResultMessage)
+            and agent_event_adapter is not None
+        ):
+            if not await publish_agent_candidates(
+                agent_event_adapter.accept_result(
+                    terminal_result_message,
+                    final_content=delivered_final_text,
+                )
+            ):
+                terminal_error = "agent_event_callback_not_acknowledged"
         if terminal_error is not None:
             seal_agent_candidates(terminal_error)
+        answer_receipt = (
+            agent_event_adapter.answer_receipt
+            if terminal_error is None and sandbox_brokered and agent_event_adapter is not None
+            else None
+        )
         public_structured_result_text = (
-            finished_answer.final_text if terminal_error is None else ""
+            ""
+            if terminal_error == "agent_event_callback_not_acknowledged"
+            else delivered_final_text if not answer_stream_gate.failed else ""
         )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
-            message=public_structured_result_text,
+            message="" if answer_receipt is not None else public_structured_result_text,
+            answer_receipt=answer_receipt,
             session_id=result_session_id,
             usage=usage,
             error=terminal_error,
@@ -2855,14 +2852,7 @@ async def run_claude_agent_sdk(
             received_structured_terminal=received_structured_terminal,
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
-            turn_diagnostics=turn_diagnostics(
-                terminal_error,
-                projection_failure_reason=(
-                    answer_stream_gate.failure_reason
-                    if terminal_error == _SDK_PUBLIC_PROJECTION_FAILED
-                    else None
-                ),
-            ),
+            turn_diagnostics=turn_diagnostics(terminal_error),
             capability_evidence=list(capability_evidence),
             runtime_diagnostics=(
                 runtime_diagnostics(
@@ -2944,7 +2934,7 @@ async def run_claude_agent_sdk(
         seal_agent_candidates("exception")
         error_code = _canonical_sdk_error(
             exc,
-            selected_skill_error=selected_skill_hook_error(),
+            selected_skill_error=skill_hook_error(),
             tool_admission_denials=diagnostic_counters["tool_admission_denials"],
         )
         return ClaudeAgentSdkRunResult(

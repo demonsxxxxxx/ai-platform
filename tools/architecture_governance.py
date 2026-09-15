@@ -1,8 +1,8 @@
 """Evaluate an exact Git range against the trusted backend architecture policy.
 
 The executable, policy schema, and normal policy are authority objects. Candidate
-filesystem contents cannot relax their own result. A narrowly bounded recovery
-path may replace only an invalid app-root inventory with the exact Git inventory.
+filesystem contents cannot relax their own result. Legacy root allowances may
+outlive deleted modules; they never authorize adding or restoring root code.
 """
 
 from __future__ import annotations
@@ -378,23 +378,7 @@ class ArchitectureEvaluator:
                 schema=schema,
                 base=base,
             )
-        try:
-            _validate_policy(policy, self._git, authority)
-        except ArchitectureError as exc:
-            if (
-                exc.code != "invalid_policy"
-                or str(exc) != "approved_root_modules must exactly inventory authority app-root Python modules"
-                or authority == head
-            ):
-                raise
-            policy = self._load_root_inventory_repair(
-                authority_policy=policy,
-                schema=schema,
-                authority=authority,
-                base=base,
-                head=head,
-                changes=changes,
-            )
+        _validate_policy(policy, self._git, authority)
 
         findings = self._evaluate_candidate(policy, base, head, changes)
         ordered = _sort_findings(findings)
@@ -442,86 +426,6 @@ class ArchitectureEvaluator:
                 "policy changes cannot repair an invalid base when authority_ref differs from base_ref",
             ) from exc
 
-    def _load_root_inventory_repair(
-        self,
-        *,
-        authority_policy: dict[str, Any],
-        schema: dict[str, Any],
-        authority: str,
-        base: str,
-        head: str,
-        changes: Sequence[_ChangedPath],
-    ) -> dict[str, Any]:
-        if authority != base:
-            raise ArchitectureError(
-                "invalid_policy_repair",
-                "root inventory repair requires authority_ref to equal base_ref",
-            )
-
-        policy_changes = [change for change in changes if change.path == POLICY_PATH]
-        exception_changes = [change for change in changes if change.path == EXCEPTION_PATH]
-        changed_paths = {
-            path
-            for change in changes
-            for path in (change.old_path, change.new_path)
-            if path is not None
-        }
-        if changed_paths - {POLICY_PATH, EXCEPTION_PATH}:
-            raise ArchitectureError(
-                "invalid_policy_repair",
-                "root inventory repair cannot change files outside the policy and stale exception",
-            )
-        if len(policy_changes) != 1 or policy_changes[0] != _ChangedPath("M", POLICY_PATH, POLICY_PATH):
-            raise ArchitectureError(
-                "invalid_policy_repair",
-                "root inventory repair must modify architecture-policy.json in place",
-            )
-        if exception_changes and exception_changes != [_ChangedPath("D", EXCEPTION_PATH, None)]:
-            raise ArchitectureError(
-                "invalid_policy_repair",
-                "root inventory repair may only delete the stale architecture exception",
-            )
-        if self._git.blob(head, EXCEPTION_PATH, required=False) is not None:
-            raise ArchitectureError(
-                "invalid_policy_repair",
-                "root inventory repair requires the candidate architecture exception to be absent",
-            )
-
-        candidate_policy = _load_json_object(
-            self._git.text(head, POLICY_PATH),
-            path=POLICY_PATH,
-            error_code="invalid_policy_repair",
-        )
-        _validate_json_schema_instance(candidate_policy, schema)
-        authority_contract = copy.deepcopy(authority_policy)
-        candidate_contract = copy.deepcopy(candidate_policy)
-        authority_contract.pop("approved_root_modules", None)
-        candidate_contract.pop("approved_root_modules", None)
-        if candidate_contract != authority_contract:
-            raise ArchitectureError(
-                "invalid_policy_repair",
-                "root inventory repair cannot change any other architecture policy field",
-            )
-
-        authority_roots = sorted(
-            path
-            for path in self._git.paths(authority, "app")
-            if len(PurePosixPath(path).parts) == 2 and PurePosixPath(path).suffix == ".py"
-        )
-        head_roots = sorted(
-            path
-            for path in self._git.paths(head, "app")
-            if len(PurePosixPath(path).parts) == 2 and PurePosixPath(path).suffix == ".py"
-        )
-        if authority_roots != head_roots or candidate_policy["approved_root_modules"] != authority_roots:
-            raise ArchitectureError(
-                "invalid_policy_repair",
-                "approved_root_modules must exactly match the unchanged authority and candidate Git trees",
-            )
-
-        _validate_policy(candidate_policy, self._git, head)
-        return candidate_policy
-
     def _discover_repository(self) -> None:
         result = self._runner.run(("git", "rev-parse", "--show-toplevel"), cwd=self._repo_root)
         if result.returncode != 0:
@@ -566,11 +470,14 @@ class ArchitectureEvaluator:
             old_path = change.old_path
             is_new_location = old_path is None or old_path != path
             parts = PurePosixPath(path).parts
-            if is_new_location and len(parts) == 2 and path not in approved_roots:
+            if is_new_location and len(parts) == 2 and (
+                path not in approved_roots
+                or self._git.blob(base, path, required=False) is None
+            ):
                 findings.append(
                     Finding(
                         "unapproved_app_root_module",
-                        "new app-root modules require an explicit architecture-policy owner",
+                        "new or restored app-root modules must move to an owning package",
                         path,
                     )
                 )
@@ -1067,10 +974,10 @@ def _validate_policy(policy: dict[str, Any], git: _GitObjects, authority: str) -
         for path in git.paths(authority, "app")
         if len(PurePosixPath(path).parts) == 2 and PurePosixPath(path).suffix == ".py"
     )
-    if approved != authority_root_modules:
+    if not set(authority_root_modules).issubset(approved):
         raise ArchitectureError(
             "invalid_policy",
-            "approved_root_modules must exactly inventory authority app-root Python modules",
+            "approved_root_modules must include every existing authority app-root Python module",
         )
     _unique_name_list(policy["forbidden_module_names"], "forbidden_module_names")
     _unique_name_list(policy["forbidden_delivery_tokens"], "forbidden_delivery_tokens")

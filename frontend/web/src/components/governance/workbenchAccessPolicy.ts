@@ -4,6 +4,7 @@ export type WorkbenchAccessKey =
   | "chat"
   | "agentMarket"
   | "agentBuilder"
+  | "aiApplication"
   | "apps"
   | "skills"
   | "mcp"
@@ -29,6 +30,7 @@ const PATH_ACCESS_KEYS: Array<[RegExp, WorkbenchAccessKey]> = [
   [/^\/chat(?:\/|$)/, "chat"],
   [/^\/agent-market(?:\/|$)/, "agentMarket"],
   [/^\/agent-builder(?:\/|$)/, "agentBuilder"],
+  [/^\/ai-apps(?:\/|$)/, "aiApplication"],
   [/^\/apps(?:\/|$)/, "apps"],
   [/^\/skills(?:\/|$)/, "skills"],
   [/^\/marketplace(?:\/|$)/, "skills"],

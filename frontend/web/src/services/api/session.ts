@@ -12,6 +12,7 @@ import type {
 } from "../../types";
 import {
   projectAgentConversationSession,
+  type AgentConversationIdentity,
   type AgentConversationSessionProjection,
 } from "../../types/agentProfile";
 import { API_BASE } from "./config";
@@ -30,6 +31,8 @@ export interface BackendSession {
   name?: string;
   metadata: Record<string, unknown>;
   unread_count?: number;
+  purpose?: "conversation" | "builder_test";
+  agent_conversation?: AgentConversationIdentity | null;
 }
 
 // Session list response type
@@ -126,6 +129,13 @@ export type ChatStreamResponse =
 export const CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION =
   "chat_submission_resolution.v2" as const;
 
+export type ChatSubmissionRunStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
 export interface DurableChatSubmissionResolution {
   protocol_version?: typeof CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION;
   submission_id: string;
@@ -138,6 +148,7 @@ export interface DurableChatSubmissionResolution {
   submission_disposition?: "rejected_before_persist";
   rejection_code?: string;
   outcome?: ChatStreamResponse;
+  run_status?: ChatSubmissionRunStatus | null;
 }
 
 /** A server-versioned, principal-scoped proof that no ledger row exists yet. */
@@ -392,6 +403,36 @@ export function buildAuthoritativeChatSessionUrl(sessionId: string): string {
   return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}`;
 }
 
+/** Build the canonical active-session list used by the global history sidebar. */
+export function buildAuthoritativeChatSessionListUrl(): string {
+  return `${API_BASE}/api/ai/chat/sessions`;
+}
+
+function projectAuthoritativeSession(
+  session: AgentConversationSessionProjection,
+): BackendSession {
+  return {
+    id: session.session_id,
+    agent_id: session.agent_id,
+    created_at: session.created_at ?? "",
+    updated_at: session.updated_at ?? session.created_at ?? "",
+    is_active: true,
+    name: session.title,
+    metadata: {},
+    purpose: session.purpose,
+    agent_conversation: session.agent_conversation,
+  };
+}
+
+export function projectAuthoritativeSessionList(value: unknown): BackendSession[] {
+  if (typeof value !== "object" || value === null || !Array.isArray((value as { sessions?: unknown }).sessions)) {
+    throw new Error("invalid_authoritative_session_list");
+  }
+  return (value as { sessions: unknown[] }).sessions.map((session) =>
+    projectAuthoritativeSession(projectAgentConversationSession(session)),
+  );
+}
+
 export const sessionApi = {
   /**
    * List all sessions with pagination
@@ -423,6 +464,15 @@ export const sessionApi = {
     }
   },
 
+  /** List active sessions with their disclosure-safe Agent identity projection. */
+  async listAuthoritative(): Promise<BackendSession[]> {
+    const response = await authFetch<unknown>(
+      buildAuthoritativeChatSessionListUrl(),
+      { cache: "no-store" },
+    );
+    return projectAuthoritativeSessionList(response);
+  },
+
   /** Recover server-owned Agent identity without changing the compatibility API. */
   async getAuthoritative(sessionId: string): Promise<AgentConversationSessionProjection> {
     const response = await authFetch<unknown>(
@@ -441,6 +491,7 @@ export const sessionApi = {
       event_types?: string[];
       run_id?: string;
       exclude_run_id?: string;
+      signal?: AbortSignal;
     },
   ): Promise<SessionEventsResponse & { run_id?: string }> {
     const searchParams = new URLSearchParams();
@@ -457,7 +508,7 @@ export const sessionApi = {
     const url = `${API_BASE}/api/sessions/${sessionId}/events${
       searchParams.toString() ? `?${searchParams}` : ""
     }`;
-    return authFetch<SessionEventsResponse & { run_id?: string }>(url);
+    return authFetch<SessionEventsResponse & { run_id?: string }>(url, { signal: options?.signal });
   },
 
   /**

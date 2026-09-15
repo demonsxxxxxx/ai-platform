@@ -113,7 +113,6 @@ _DENIED_HTTP_STATUSES = {401, 403, 404}
 class _ReadinessDefaultSettings:
     sandbox_container_provider = "fake"
     llm_gateway_provider = "openai_compatible"
-    model_gateway_request_concurrency_limit = 0
     memory_retention_worker_cleanup_enabled = True
     memory_retention_worker_cleanup_limit = 200
     multi_agent_dispatch_worker_enabled = False

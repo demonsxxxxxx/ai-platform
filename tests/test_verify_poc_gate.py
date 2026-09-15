@@ -372,7 +372,7 @@ def test_container_env_reads_only_poc_whitelisted_runtime_keys(monkeypatch):
                 "CLAUDE_AGENT_MODEL=deepseek-v4-flash\n"
                 "OPENAI_MODEL=deepseek-v4-flash\n"
                 "ANTHROPIC_MODEL=deepseek-v4-flash\n"
-                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer,baoyu-translate\n"
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer\n"
                 "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263\n"
                 "ANTHROPIC_AUTH_TOKEN=secret-token\n"
             ),
@@ -393,7 +393,7 @@ def test_container_env_reads_only_poc_whitelisted_runtime_keys(monkeypatch):
         "CLAUDE_AGENT_MODEL": "deepseek-v4-flash",
         "OPENAI_MODEL": "deepseek-v4-flash",
         "ANTHROPIC_MODEL": "deepseek-v4-flash",
-        "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+        "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer",
         "EXISTING_AUTH_BASE_URL": "http://10.56.0.25:7263",
     }
 
@@ -407,7 +407,7 @@ def test_runtime_env_values_maps_worker_sdk_switch_when_container_env_unavailabl
                 "CLAUDE_AGENT_MODEL=deepseek-v4-flash",
                 "OPENAI_MODEL=deepseek-v4-flash",
                 "ANTHROPIC_MODEL=deepseek-v4-flash",
-                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer,baoyu-translate",
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer",
             ]
         ),
         encoding="utf-8",
@@ -429,7 +429,7 @@ def test_runtime_env_values_does_not_promote_env_sdk_switch_over_live_worker_env
                 "CLAUDE_AGENT_MODEL=deepseek-v4-flash",
                 "OPENAI_MODEL=deepseek-v4-flash",
                 "ANTHROPIC_MODEL=deepseek-v4-flash",
-                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer,baoyu-translate",
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer",
             ]
         ),
         encoding="utf-8",
@@ -441,7 +441,7 @@ def test_runtime_env_values_does_not_promote_env_sdk_switch_over_live_worker_env
             "CLAUDE_AGENT_MODEL": "deepseek-v4-flash",
             "OPENAI_MODEL": "deepseek-v4-flash",
             "ANTHROPIC_MODEL": "deepseek-v4-flash",
-            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer",
         },
     )
     monkeypatch.setattr(verify_poc_gate, "container_runtime_env_available", lambda container: True)
@@ -463,7 +463,7 @@ def test_runtime_env_values_does_not_fallback_when_live_worker_env_is_readable_b
                 "CLAUDE_AGENT_MODEL=deepseek-v4-flash",
                 "OPENAI_MODEL=deepseek-v4-flash",
                 "ANTHROPIC_MODEL=deepseek-v4-flash",
-                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer,baoyu-translate",
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer",
             ]
         ),
         encoding="utf-8",
@@ -551,7 +551,7 @@ def test_runtime_env_values_prefers_live_container_over_env_file(tmp_path, monke
             "CLAUDE_AGENT_MODEL": "deepseek-v4-flash",
             "OPENAI_MODEL": "deepseek-v4-flash",
             "ANTHROPIC_MODEL": "deepseek-v4-flash",
-            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer",
             "EXISTING_AUTH_BASE_URL": "",
         },
     )
@@ -561,7 +561,7 @@ def test_runtime_env_values_prefers_live_container_over_env_file(tmp_path, monke
 
     assert values["CLAUDE_AGENT_MODEL"] == "deepseek-v4-flash"
     assert values["EXISTING_AUTH_BASE_URL"] == ""
-    assert values["CLAUDE_AGENT_SDK_SKILLS"] == "general-chat,qa-file-reviewer,baoyu-translate"
+    assert values["CLAUDE_AGENT_SDK_SKILLS"] == "general-chat,qa-file-reviewer"
 
 
 def test_runtime_env_values_uses_env_file_only_when_container_env_unavailable(tmp_path, monkeypatch):
@@ -585,7 +585,7 @@ def test_runtime_config_accepts_consistent_model_from_catalog():
             "ANTHROPIC_MODEL": "gpt-5.3-codex-spark",
             "DEFAULT_MODEL_ID": "gpt-5.3-codex-spark",
             "MODEL_CATALOG_JSON": '[{"id":"deepseek-v4-flash"},{"id":"gpt-5.3-codex-spark"}]',
-            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer",
         },
     )
 
@@ -604,7 +604,7 @@ def test_runtime_config_rejects_malformed_model_catalog_json():
             "ANTHROPIC_MODEL": "gpt-5.3-codex-spark",
             "DEFAULT_MODEL_ID": "gpt-5.3-codex-spark",
             "MODEL_CATALOG_JSON": "{not-json",
-            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer",
         },
     )
 
@@ -622,7 +622,7 @@ def test_runtime_config_rejects_catalog_missing_configured_model():
             "ANTHROPIC_MODEL": "gpt-5.3-codex-spark",
             "DEFAULT_MODEL_ID": "gpt-5.3-codex-spark",
             "MODEL_CATALOG_JSON": '[{"id":"deepseek-v4-flash"}]',
-            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer",
         },
     )
 
@@ -872,13 +872,7 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
             "tenant_id": "default",
             "skill_id": "qa-file-reviewer",
             "status": "succeeded",
-        },
-        {
-            "run_id": "run_translate_gate_1",
-            "tenant_id": "default",
-            "skill_id": "baoyu-translate",
-            "status": "succeeded",
-        },
+        }
     ]
 
     def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
@@ -887,9 +881,9 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
             raise AssertionError(sql)
         return [
             {
-                "row_count": 2,
-                "used_count": 2,
-                "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+                "row_count": 1,
+                "used_count": 1,
+                "used_skill_ids": ["qa-file-reviewer"],
                 "used_skills_sources": ["executor_hook"],
                 "pinned_snapshot_count": 2,
                 "missing_pinned_snapshots": [],
@@ -906,12 +900,11 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
         "verified": True,
         "real_task_statuses": {
             "qa-file-reviewer": "succeeded",
-            "baoyu-translate": "succeeded",
         },
         "run_skill_snapshots": {
-            "row_count": 2,
-            "used_count": 2,
-            "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+            "row_count": 1,
+            "used_count": 1,
+            "used_skill_ids": ["qa-file-reviewer"],
             "used_skills_source": "executor_hook",
             "pinned_snapshot_count": 2,
             "pinned_snapshot_source": "release_decision",
@@ -920,7 +913,6 @@ def test_governed_skill_runs_gate_summarizes_real_task_snapshot_pins(monkeypatch
         },
     }
     assert "run_review_gate_1" in queries[0]
-    assert "run_translate_gate_1" in queries[0]
     assert "r.input_json ? 'release_decision'" in queries[0]
 
 
@@ -992,16 +984,16 @@ def test_governed_skill_runs_gate_fails_closed_when_snapshot_version_does_not_ma
     assert gate.evidence["run_skill_snapshots"]["mismatched_pinned_snapshots"] == ["qa-file-reviewer"]
 
 
-def test_governed_skill_runs_gate_prefers_current_word_review_run_and_keeps_translate_history(monkeypatch):
+def test_governed_skill_runs_gate_prefers_current_word_review_run_and_keeps_other_current_run(monkeypatch):
     def fake_psql_rows(container: str, db_user: str, db_name: str, sql: str):
         assert "run_review_current" in sql
         assert "run_review_stale" not in sql
-        assert "run_translate_current" in sql
+        assert "run_other_current" in sql
         return [
             {
                 "row_count": 3,
                 "used_count": 2,
-                "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+                "used_skill_ids": ["qa-file-reviewer", "ragflow-knowledge-search"],
                 "used_skills_sources": ["platform_controlled_runner", "executor_hook"],
                 "pinned_snapshot_count": 2,
                 "missing_pinned_snapshots": [],
@@ -1031,9 +1023,9 @@ def test_governed_skill_runs_gate_prefers_current_word_review_run_and_keeps_tran
                 "fresh_smoke_run": False,
             },
             {
-                "run_id": "run_translate_current",
+                "run_id": "run_other_current",
                 "tenant_id": "default",
-                "skill_id": "baoyu-translate",
+                "skill_id": "ragflow-knowledge-search",
                 "status": "succeeded",
             },
         ],
@@ -1042,10 +1034,10 @@ def test_governed_skill_runs_gate_prefers_current_word_review_run_and_keeps_tran
     assert gate.ok is True
     assert gate.evidence["real_task_statuses"] == {
         "qa-file-reviewer": "succeeded",
-        "baoyu-translate": "succeeded",
+        "ragflow-knowledge-search": "succeeded",
     }
     assert gate.evidence["run_skill_snapshots"]["used_count"] == 2
-    assert gate.evidence["run_skill_snapshots"]["used_skill_ids"] == ["qa-file-reviewer", "baoyu-translate"]
+    assert gate.evidence["run_skill_snapshots"]["used_skill_ids"] == ["qa-file-reviewer", "ragflow-knowledge-search"]
     assert set(gate.evidence["run_skill_snapshots"]["used_skills_source"].split(",")) == {
         "executor_hook",
         "platform_controlled_runner",

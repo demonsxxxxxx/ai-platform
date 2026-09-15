@@ -167,17 +167,19 @@ jobs:
               tests/test_run_admission_terminalization.py
               tests/test_run_cancellation_use_case.py
               tests/test_run_control_routes.py
+              tests/test_run_diagnostics.py
               tests/test_run_persistence.py
               tests/test_run_projection.py
-              tests/test_sse_v3_contract_generation.py
               tests/test_sse_v4_contract_generation.py
               tests/test_streaming_contracts.py
+              tests/test_worker_attempt_lifecycle.py
           - shard: schema-migrations
             postgres_image: postgres:16-alpine
             postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
             redis_image: ""
             redis_url: ""
             test_files: >-
+              tests/test_run_diagnostics_postgres.py
               tests/test_schema_migrations.py
               tests/test_schema_migrations_postgres.py
               tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences
@@ -187,6 +189,8 @@ jobs:
             redis_image: redis:7.4-alpine
             redis_url: redis://127.0.0.1:6379/15
             test_files: >-
+              tests/test_streaming_callback_direct.py
+              tests/test_retire_legacy_sse_streams.py
               tests/test_streaming_v4_durable.py
               tests/test_streaming_v4_postgres_integration.py
               tests/test_streaming_v4_redis_integration.py
@@ -215,11 +219,9 @@ jobs:
             redis_url: ""
             test_files: >-
               tests/test_governance_readiness.py
-              tests/test_deploy_latest_entry.py
-              tests/test_latest_main_quickstart.py
+              tests/test_compose_package_deploy.py
               tests/test_production_bootstrap.py
               tests/test_release_authority.py
-              tests/test_sandbox_quickstart.py
               tests/test_s75_opensandbox_transition.py
     env:
       BACKEND_TEST_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}

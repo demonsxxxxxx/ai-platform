@@ -110,18 +110,8 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
         audits.append(kwargs)
         return "aud-terminal"
 
-    terminal_intents: list[tuple[str, str, str]] = []
-
-    async def ensure_terminal_intent(_conn, *, tenant_id, run_id, status):
-        terminal_intents.append((tenant_id, run_id, status))
-        return SimpleNamespace(terminal_event_id="evt-terminal")
-
     monkeypatch.setattr(repositories, "append_event", append_event)
     monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
-    monkeypatch.setattr(
-        "app.streaming.redis.ensure_run_terminal_intent",
-        ensure_terminal_intent,
-    )
     terminal_rows: list[tuple[str, str]] = []
 
     class EventPersistence:
@@ -167,7 +157,6 @@ async def test_retired_admission_terminalization_emits_one_hidden_fact_after_del
         v4_capabilities=v4_capabilities,
     )
     assert (len(events), len(audits)) == first_terminal_fact_counts
-    assert terminal_intents == [("tenant-a", "run-retired", "failed")]
     assert terminal_rows == [("tenant-a", "run-retired")]
 
     run_events = [event for event in events if event["event_type"] == "run_failed"]
@@ -225,6 +214,17 @@ async def test_enqueue_failure_prepares_authority_then_terminal_row_on_same_conn
             calls.append(("terminal_row", observed_conn))
             return "row-a"
 
+    class Diagnostics:
+        async def capture_failure_result(self, observed_conn, **kwargs):
+            assert observed_conn is conn
+            assert kwargs["attempt_id"] is None
+            assert kwargs["source"] == "run_admission"
+            assert kwargs["stage"] == "queue_enqueue"
+            assert kwargs["result_json"]["runtime_diagnostics"]["sdk"][
+                "exception_type"
+            ] == "RuntimeError"
+            calls.append(("diagnostics", observed_conn))
+
     monkeypatch.setattr(repositories, "mark_run_enqueue_failed", mark_enqueue_failed)
 
     progress = await terminalization.terminalize_enqueue_failure_with_v4(
@@ -237,12 +237,15 @@ async def test_enqueue_failure_prepares_authority_then_terminal_row_on_same_conn
         user_id="user-a",
         run_id="run-a",
         trace_id="trace-run-a",
+        diagnostic_error=RuntimeError("queue payload invalid"),
+        run_diagnostics=Diagnostics(),
     )
 
     assert progress.did_transition is True
     assert calls == [
         ("authority", conn),
         ("transition", conn),
+        ("diagnostics", conn),
         ("terminal_row", conn),
     ]
 

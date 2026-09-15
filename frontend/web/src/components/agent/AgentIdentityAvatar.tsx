@@ -14,12 +14,18 @@ export function AgentIdentityAvatar({
   avatarRef?: AgentProfileAvatarRef;
   avatarSeed?: string;
   name: string;
-  size?: "sm" | "md" | "lg";
+  size?: "xs" | "sm" | "md" | "lg";
 }) {
   const [source, setSource] = useState<string | null>(null);
   const seed = avatarSeed?.trim() || agentId;
   const dimensions =
-    size === "lg" ? "h-16 w-16" : size === "sm" ? "h-10 w-10" : "h-12 w-12";
+    size === "lg"
+      ? "h-16 w-16"
+      : size === "sm"
+        ? "h-10 w-10"
+        : size === "xs"
+          ? "h-7 w-7"
+          : "h-12 w-12";
 
   useEffect(() => {
     let active = true;

@@ -58,6 +58,7 @@ export function MCPPanel() {
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [editorServer, setEditorServer] = useState<MCPServerResponse | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [editorDetailsLoading, setEditorDetailsLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<MCPServerResponse | null>(null);
   const editorDialogRef = useRef<HTMLElement>(null);
   const editorPreviousFocusRef = useRef<HTMLElement | null>(null);
@@ -81,6 +82,7 @@ export function MCPPanel() {
     total,
     isLoading,
     error,
+    getServer,
     createServer,
     updateServer,
     deleteServer,
@@ -121,17 +123,27 @@ export function MCPPanel() {
   const lifecycleAvailability = mcpGovernance.lifecycleAvailability;
   const canManageMcpUi = canManageMcp && !mcpGovernance.governedUnavailable;
 
-  const openEditor = (server: MCPServerResponse | null) => {
+  const openEditor = async (server: MCPServerResponse | null) => {
     if (!canManageMcpUi) return;
     editorPreviousFocusRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    setEditorServer(server);
+    if (server) {
+      setEditorDetailsLoading(true);
+      const detailedServer = await getServer(server.name);
+      setEditorDetailsLoading(false);
+      if (!detailedServer) return;
+      setEditorServer(detailedServer);
+    } else {
+      setEditorServer(null);
+    }
     setEditorOpen(true);
   };
 
-  const openCreate = () => openEditor(null);
+  const openCreate = () => {
+    void openEditor(null);
+  };
 
   const closeEditor = () => {
     if (!editorLoadingRef.current) setEditorOpen(false);
@@ -418,7 +430,7 @@ export function MCPPanel() {
                           <button type="button" onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="btn-icon min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}>
                             {server.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
                           </button>
-                          <button type="button" onClick={() => openEditor(server)} className="btn-icon min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading}>
+                          <button type="button" onClick={() => void openEditor(server)} className="btn-icon min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading || editorDetailsLoading}>
                             <Edit3 size={18} />
                           </button>
                           <button type="button" onClick={() => setDeleteTarget(server)} className="btn-icon min-h-11 min-w-11 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger)]" aria-label={t("mcp.admin.deleteServer")} title={t("mcp.admin.deleteServer")} disabled={isLoading}>

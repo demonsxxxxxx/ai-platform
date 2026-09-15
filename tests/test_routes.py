@@ -61,7 +61,7 @@ EVENT_SCHEMA_FIELDS = {"schema_version": "ai-platform.event-envelope.v1"}
 _ORIGINAL_RESOLVE_AGENT_SKILL = repository_module.resolve_agent_skill
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
 _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES = repository_module.authorize_replay_run_capabilities
-_ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY = runs_module.reauthorize_pinned_run_for_replay
+_ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY = runs_module._agent_profile_authority.reauthorize_pinned_run_for_replay
 
 
 class _NoOpPendingAdmissions:
@@ -276,7 +276,7 @@ def allow_existing_run_route_tests_through_enqueue_authorization(monkeypatch):
     monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", allow, raising=False)
     monkeypatch.setattr(repository_module, "update_run_auth_snapshot", update_auth_snapshot, raising=False)
     monkeypatch.setattr(
-        runs_module,
+        runs_module._agent_profile_authority,
         "reauthorize_pinned_run_for_replay",
         allow_persisted_run_reauthorization,
     )
@@ -1665,6 +1665,21 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     async def fake_create_file(conn, **kwargs):
         assert kwargs["storage_key"].startswith("tenants/tenant-a/")
 
+    async def fake_get_file(conn, **kwargs):
+        return None
+
+    async def fake_get_upload_session(conn, **kwargs):
+        return {"state": "pending"} if kwargs.get("for_update") else None
+
+    async def fake_claim_direct_upload(conn, **kwargs):
+        return True
+
+    async def fake_complete_upload(conn, **kwargs):
+        return None
+
+    async def fake_cleanup_expired_uploads(storage):
+        return None
+
     async def fake_get_file_storage_usage(conn, **kwargs):
         assert kwargs == {
             "tenant_id": "tenant-a",
@@ -1696,8 +1711,29 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     monkeypatch.setattr("app.routes.files.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.routes.files.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.files.create_file", fake_create_file)
+    monkeypatch.setattr("app.routes.files.get_file", fake_get_file)
+    monkeypatch.setattr(
+        "app.routes.files.get_authorized_file_upload_session",
+        fake_get_upload_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.files.claim_direct_file_upload_session",
+        fake_claim_direct_upload,
+    )
+    monkeypatch.setattr(
+        "app.routes.files.complete_file_upload_session",
+        fake_complete_upload,
+    )
+    monkeypatch.setattr(
+        "app.routes.files._cleanup_expired_upload_sessions",
+        fake_cleanup_expired_uploads,
+    )
     monkeypatch.setattr("app.routes.files.get_file_storage_usage", fake_get_file_storage_usage)
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.routes.files._direct_upload_file_id",
+        lambda **_kwargs: "file_uploaded",
+    )
     monkeypatch.setattr("app.routes.files.new_id", lambda prefix: "file_uploaded")
 
     response = await upload_file(
@@ -2775,7 +2811,7 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
                     "private": raw_terms[0],
                 }
             },
-            "error_code": "claude_agent_sdk_public_projection_failed",
+            "error_code": "claude_agent_sdk_upstream_error",
             "error_message": raw_terms[3],
         }
 
@@ -2785,9 +2821,9 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
     )
     projection_failure = await get_run("run-a", principal=principal())
 
-    assert projection_failure.error_code == "claude_agent_sdk_public_projection_failed"
-    assert projection_failure.result["projection_failure_reason"] == "sanitizer_rejected"
-    assert "sanitizer_rejected" in projection_failure.error_message
+    assert projection_failure.error_code == "model_service_unavailable"
+    assert "projection_failure_reason" not in projection_failure.result
+    assert "sanitizer_rejected" not in projection_failure.error_message
     assert all(term not in projection_failure.model_dump_json() for term in raw_terms)
 
 
@@ -4481,7 +4517,7 @@ async def test_prepare_copied_agent_profile_reauthorizes_complete_skill_set(monk
     monkeypatch.setattr(repository_module, "update_run_auth_snapshot", no_write)
     monkeypatch.setattr(repository_module, "append_event", no_write)
     monkeypatch.setattr(repository_module, "update_run_input_execution_snapshot", no_write)
-    monkeypatch.setattr(runs_module, "reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr(runs_module._agent_profile_authority, "reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr(runs_module, "record_initial_context_snapshot", record_context)
 
     queue_payload = await runs_module.prepare_copied_run_for_queue(
@@ -4757,7 +4793,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES,
     )
     monkeypatch.setattr(
-        runs_module,
+        runs_module._agent_profile_authority,
         "reauthorize_pinned_run_for_replay",
         _ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY,
     )
@@ -4922,8 +4958,8 @@ async def test_create_run_rejects_file_skill_without_files(monkeypatch):
         await create_run(
             CreateRunRequest(
                 workspace_id="default",
-                agent_id="baoyu-translate",
-                capability_id="document_translation",
+                agent_id="qa-word-review",
+                capability_id="document_review",
                 file_ids=[],
             ),
             principal=principal(),
@@ -4999,8 +5035,8 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
         CreateRunRequest(
             workspace_id="default",
             session_id="ses-existing",
-            agent_id="baoyu-translate",
-            capability_id="document_translation",
+            agent_id="qa-word-review",
+            capability_id="document_review",
         ),
         principal=principal(),
     )
@@ -5946,6 +5982,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     assert calls["context"]["skill_id"] == "qa-file-reviewer"
     assert calls["context"]["input_payload"] == {"message": "继续审核", "copied_from_run_id": "run_source"}
     assert calls["context"]["message_ids"] == []
+    assert calls["context"]["include_session_history"] is True
     assert calls["context"]["file_ids"] == ["file_1"]
     assert calls["queue"]["context_snapshot_id"] == "ctx_copy"
     assert calls["queue"]["context_snapshot"]["source"] == "copy_run"

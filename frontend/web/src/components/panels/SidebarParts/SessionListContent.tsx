@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   Search,
@@ -12,13 +13,14 @@ import {
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
+import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import type { BackendSession } from "../../../services/api";
 import {
   formatUnreadCount,
   getUnreadCount,
   type UnreadBySession,
 } from "../../sidebar/unreadCounts";
-import { groupSessionsByTime } from "../sessionHelpers";
+import { groupSessionsByAgent, groupSessionsByTime } from "../sessionHelpers";
 import { SessionItem } from "../../sidebar/SessionItem";
 import { APP_NAME } from "../../../constants";
 import {
@@ -64,6 +66,7 @@ interface SessionListContentProps {
   };
   hideSessionDiscovery?: boolean;
   navigationOnly?: boolean;
+  showSessionHistory?: boolean;
 }
 
 export function SessionListContent({
@@ -86,6 +89,7 @@ export function SessionListContent({
   agentWorkspace,
   hideSessionDiscovery = false,
   navigationOnly = false,
+  showSessionHistory = false,
 }: SessionListContentProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -103,6 +107,58 @@ export function SessionListContent({
     unreadBySession,
   });
   const groupedSessions = groupSessionsByTime(sessions, t);
+  const groupedAgentSessions = useMemo(
+    () => groupSessionsByAgent(sessions),
+    [sessions],
+  );
+  const [expandedAgentGroups, setExpandedAgentGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const autoExpandedSessionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (agentWorkspace || !currentSessionId) {
+      autoExpandedSessionRef.current = null;
+      return;
+    }
+    if (autoExpandedSessionRef.current === currentSessionId) return;
+    const activeGroup = groupedAgentSessions.find((group) =>
+      group.sessions.some((session) => session.id === currentSessionId),
+    );
+    if (!activeGroup) return;
+    autoExpandedSessionRef.current = currentSessionId;
+    setExpandedAgentGroups((previous) =>
+      previous.has(activeGroup.key)
+        ? previous
+        : new Set(previous).add(activeGroup.key),
+    );
+  }, [agentWorkspace, currentSessionId, groupedAgentSessions]);
+
+  const toggleAgentGroup = (key: string) => {
+    setExpandedAgentGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const showSessionRegion = !navigationOnly || showSessionHistory;
+  const hasHistory = agentWorkspace
+    ? groupedSessions.length > 0
+    : groupedAgentSessions.length > 0;
+  const renderSession = (session: BackendSession) => {
+    if (!session.id) return null;
+    return (
+      <SessionItem
+        key={session.id}
+        session={session}
+        isActive={currentSessionId === session.id}
+        onSelect={() => sessionActions.onSelectSession(session.id)}
+        onDelete={() => sessionActions.onDeleteSession(session.id)}
+        onSessionUpdate={onUpdateSession}
+      />
+    );
+  };
   const taskNavItems: Array<{
     key: WorkbenchNavItem;
     icon: React.ComponentType<{ size?: number }>;
@@ -310,14 +366,14 @@ export function SessionListContent({
       </div>
 
       {/* Session list */}
-      {!navigationOnly ? <div
+      {showSessionRegion ? <div
         ref={onSetScrollEl}
         data-workbench-session-region
         data-sidebar-scroll
         className="flex-1 overflow-y-auto border-t border-[var(--theme-border)]/70 px-2 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <div className="flex flex-col gap-px">
-          {groupedSessions.length > 0 || isLoading ? (
+          {hasHistory || isLoading ? (
             <>
               <div
                 onClick={onToggleChatsCollapsed}
@@ -367,31 +423,56 @@ export function SessionListContent({
                       ))}
                     </div>
                   ) : (
-                    groupedSessions.map((group) => (
-                      <div key={group.label}>
-                        <div className="flex h-7 select-none items-center px-[9px] text-[13px] font-medium text-[var(--theme-text-tertiary)]">
-                          {group.label}
-                        </div>
-                        <div className="flex flex-col gap-px">
-                          {group.sessions
-                            .filter((session) => session.id)
-                            .map((session) => (
-                              <SessionItem
-                                key={session.id}
-                                session={session}
-                                isActive={currentSessionId === session.id}
-                                onSelect={() =>
-                                  sessionActions.onSelectSession(session.id)
-                                }
-                                onDelete={() =>
-                                  sessionActions.onDeleteSession(session.id)
-                                }
-                                onSessionUpdate={onUpdateSession}
-                              />
-                            ))}
-                        </div>
-                      </div>
-                    ))
+                    agentWorkspace
+                      ? groupedSessions.map((group) => (
+                          <div key={group.label}>
+                            <div className="flex h-7 select-none items-center px-[9px] text-[13px] font-medium text-[var(--theme-text-tertiary)]">
+                              {group.label}
+                            </div>
+                            <div className="flex flex-col gap-px">
+                              {group.sessions.map(renderSession)}
+                            </div>
+                          </div>
+                        ))
+                      : groupedAgentSessions.map((group) => {
+                          const isExpanded = expandedAgentGroups.has(group.key);
+                          return (
+                            <div key={group.key} data-agent-history-group>
+                              <button
+                                type="button"
+                                aria-expanded={isExpanded}
+                                onClick={() => toggleAgentGroup(group.key)}
+                                className="group flex h-10 w-full items-center gap-2 rounded-lg px-[9px] text-left transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
+                              >
+                                <AgentIdentityAvatar
+                                  agentId={group.identity?.agent_id ?? "assistant"}
+                                  avatarRef={group.identity?.avatar_ref}
+                                  avatarSeed={group.identity?.avatar_seed}
+                                  name={group.name}
+                                  size="sm"
+                                />
+                                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]">
+                                  {group.name}
+                                </span>
+                                <span className="shrink-0 text-[11px] text-[var(--theme-text-tertiary)]">
+                                  {group.sessions.length}
+                                </span>
+                                <ChevronDown
+                                  size={14}
+                                  aria-hidden="true"
+                                  className={`shrink-0 text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
+                                    isExpanded ? "" : "-rotate-90"
+                                  }`}
+                                />
+                              </button>
+                              {isExpanded ? (
+                                <div className="ml-3 border-l border-[var(--theme-border)]/70 pl-1">
+                                  {group.sessions.map(renderSession)}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })
                   )}
                   {hasMore && (
                     <div ref={loadMoreRef} className="flex justify-center py-2">

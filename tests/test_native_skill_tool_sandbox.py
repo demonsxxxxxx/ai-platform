@@ -822,11 +822,36 @@ def test_staged_skill_paths_are_immutable_to_sdk_mutating_tools(tmp_path):
             tool_input(f"output/{tool_name.lower()}.txt"),
             workspace_root=workspace,
         )
-        for non_output_path in ("draft.txt", "inputs/source.docx", "outputs/not-delivery.txt"):
+        for workspace_path in (
+            "draft.txt",
+            "working/facts.json",
+            "outputs/not-delivery.txt",
+            "artifacts/report.docx",
+            "tasks/facts.json",
+            "review/draft.md",
+        ):
+            assert claude_agent_sdk_runner._workspace_path_parameters_authorized(
+                subject,
+                tool_name,
+                tool_input(workspace_path),
+                workspace_root=workspace,
+            )
+        for protected_path in (
+            "CLAUDE.md",
+            "CLAUDE.local.md",
+            ".ai-platform-opensandbox-lease.json",
+            "inputs/source.docx",
+            ".ai-platform/state.json",
+            ".claude/settings.json",
+            ".claude-config/settings.json",
+            ".home/.profile",
+            ".pins/catalog.json",
+            ".tmp/runtime.txt",
+        ):
             assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
                 subject,
                 tool_name,
-                tool_input(non_output_path),
+                tool_input(protected_path),
                 workspace_root=workspace,
             )
 

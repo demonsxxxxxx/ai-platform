@@ -120,50 +120,6 @@ def test_v4_rejects_unknown_events_and_payload_fields():
     assert list(validator.iter_errors(unknown_event))
 
 
-def test_v4_projection_failure_reason_is_optional_and_allowlisted():
-    validator = _validator("PublicRunStreamEventV4")
-    payload = {
-        "terminal_event_id": "terminal-1",
-        "hydrate_required": True,
-        "projection_version": "ai-platform.chat-public-projection.v1",
-        "code": "claude_agent_sdk_public_projection_failed",
-        "default_message": "Public projection failed",
-        "detail": None,
-    }
-    assert list(validator.iter_errors(_v4_event("run.failed", payload))) == []
-    assert (
-        list(
-            validator.iter_errors(
-                _v4_event(
-                    "run.failed",
-                    {**payload, "projection_failure_reason": "answer_too_large"},
-                )
-            )
-        )
-        == []
-    )
-    assert list(
-        validator.iter_errors(
-            _v4_event(
-                "run.failed",
-                {
-                    **payload,
-                    "code": "failed",
-                    "projection_failure_reason": "answer_too_large",
-                },
-            )
-        )
-    )
-    assert list(
-        validator.iter_errors(
-            _v4_event(
-                "run.failed",
-                {**payload, "projection_failure_reason": "private SDK error"},
-            )
-        )
-    )
-
-
 def test_v4_enforces_message_identity_and_transport_controls():
     validator = _validator("PublicRunStreamEventV4")
     missing_message = _v4_event("message.started", {}, message_id=None)
@@ -220,40 +176,162 @@ def test_v4_internal_envelope_matches_event_variants_strictly():
     assert list(validator.iter_errors({**control, "replayable": True}))
 
 
-def test_v4_and_v3_public_contracts_reject_each_other():
-    v3_schema = {
-        "type": "object",
-        "properties": {
-            "schema": {"const": "ai-platform.public-run-stream-event.v3"},
-            "event_id": {"type": "string", "minLength": 1, "maxLength": 256},
-            "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
-            "stream_incarnation": {"type": "integer", "minimum": 1},
-            "emitted_at": {"type": "string", "format": "date-time", "maxLength": 64},
-            "event_type": {"const": "assistant_text_delta"},
-            "payload": {
-                "type": "object",
-                "properties": {"delta": {"type": "string", "minLength": 1, "maxLength": 8192}},
-                "required": ["delta"],
-                "additionalProperties": False,
-            },
+def test_schema_backend_and_sdk_share_valid_invalid_payload_matrix():
+    import pytest
+    from app.execution.application.claude_agent_events import ClaudeAgentEventCandidate
+    from app.platform.public_payload import sanitize_public_payload
+    from app.streaming.domain.public_events_v4 import (
+        V4ProjectionError,
+        validate_public_application_payload_v4,
+    )
+
+    valid_payloads = {
+        "message.delta": {"delta": "hello"},
+        "model.completed": {
+            "duration_ms": 0,
+            "turn_count": 0,
+            "stop_category": "completed",
         },
-        "required": ["schema", "event_id", "run_id", "stream_incarnation", "emitted_at", "event_type", "payload"],
-        "additionalProperties": False,
+        "tool.started": {
+            "operation_id": "operation-1",
+            "category": "read",
+            "display_name": "Read file",
+        },
+        "artifact.created": {
+            "artifact_id": "artifact-1",
+            "filename": "report.txt",
+            "media_type": "text/plain",
+            "size_bytes": 1,
+            "status": "created",
+        },
+        "run.failed": {
+            "terminal_event_id": "terminal-1",
+            "hydrate_required": True,
+            "projection_version": "ai-platform.chat-public-projection.v1",
+            "code": "run_failed",
+            "default_message": "Run failed",
+            "detail": None,
+        },
     }
-    v3_validator = Draft202012Validator(v3_schema)
-    v4_validator = _validator("PublicRunStreamEventV4")
-    v3_event = {
+    invalid_payloads = {
+        "message.delta": {"delta": "", "unexpected": True},
+        "model.completed": {
+            "duration_ms": 86400001,
+            "turn_count": 0,
+            "stop_category": "completed",
+        },
+        "tool.started": {
+            "operation_id": "private/path",
+            "category": "read",
+            "display_name": "Read file",
+        },
+        "artifact.created": {
+            "artifact_id": "artifact-1",
+            "filename": "report.txt",
+            "media_type": "text/plain",
+            "size_bytes": -1,
+            "status": "created",
+        },
+        "run.failed": {
+            "terminal_event_id": "terminal-1",
+            "hydrate_required": True,
+            "projection_version": "ai-platform.chat-public-projection.v1",
+            "code": "run_failed",
+            "default_message": "Run failed",
+            "detail": None,
+            "raw_sdk": "forbidden",
+        },
+    }
+
+    for index, (event_type, payload) in enumerate(valid_payloads.items()):
+        document = _v4_event(event_type, payload)
+        assert list(_validator("PublicRunStreamEventV4").iter_errors(document)) == []
+        assert validate_public_application_payload_v4(event_type, payload) == payload
+        candidate = ClaudeAgentEventCandidate(
+            run_id="run-1",
+            event_id=f"event-valid-{index}",
+            event_type=event_type,
+            message_id="msg-1",
+            causation_event_id=None,
+            payload=payload,
+            payload_sanitizer=sanitize_public_payload,
+        )
+        assert candidate.payload == payload
+
+    for index, (event_type, payload) in enumerate(invalid_payloads.items()):
+        document = _v4_event(event_type, payload)
+        assert list(_validator("PublicRunStreamEventV4").iter_errors(document))
+        with pytest.raises(V4ProjectionError):
+            validate_public_application_payload_v4(event_type, payload)
+        with pytest.raises(ValueError):
+            ClaudeAgentEventCandidate(
+                run_id="run-1",
+                event_id=f"event-invalid-{index}",
+                event_type=event_type,
+                message_id="msg-1",
+                causation_event_id=None,
+                payload=payload,
+                payload_sanitizer=sanitize_public_payload,
+            )
+
+
+def test_v4_rejects_retired_v3_frames():
+    validator = _validator("PublicRunStreamEventV4")
+    legacy = {
         "schema": "ai-platform.public-run-stream-event.v3",
-        "event_id": "event-1",
-        "run_id": "run-1",
-        "stream_incarnation": 1,
-        "emitted_at": "2026-08-17T00:00:00Z",
-        "event_type": "assistant_text_delta",
+        "event_id": "event-1", "run_id": "run-1", "stream_incarnation": 1,
+        "emitted_at": "2026-08-17T00:00:00Z", "event_type": "assistant_text_delta",
         "payload": {"delta": "legacy"},
     }
-    v4_event = _v4_event("message.delta", {"delta": "current"})
+    assert list(validator.iter_errors(legacy))
+    assert list(validator.iter_errors(_v4_event("message.delta", {"delta": "current"}))) == []
 
-    assert list(v3_validator.iter_errors(v3_event)) == []
-    assert list(v4_validator.iter_errors(v3_event))
-    assert list(v4_validator.iter_errors(v4_event)) == []
-    assert list(v3_validator.iter_errors(v4_event))
+
+def test_public_boundary_exposes_v4_without_duplicate_or_legacy_types():
+    from app.streaming.domain import protocol_v4
+    from app.streaming.events import (
+        INTERNAL_STREAM_EVENT_SCHEMA_V4,
+        PUBLIC_APPLICATION_EVENT_TYPES_V4,
+        PUBLIC_RUN_STREAM_SCHEMA_V4,
+        PUBLIC_STREAM_EVENT_TYPES_V4,
+        STREAM_DESIGN_ID_V4,
+        STREAM_PROJECTION_VERSION_V4,
+        PublicRunStreamEventV4,
+    )
+
+    import app.streaming.events as events
+
+    assert not hasattr(events, "PublicRunStreamEventV3")
+    assert PublicRunStreamEventV4 is protocol_v4.PublicRunStreamEventV4
+    assert PUBLIC_RUN_STREAM_SCHEMA_V4 == protocol_v4.PUBLIC_RUN_STREAM_SCHEMA
+    assert INTERNAL_STREAM_EVENT_SCHEMA_V4 == protocol_v4.INTERNAL_STREAM_EVENT_SCHEMA
+    assert STREAM_PROJECTION_VERSION_V4 == protocol_v4.STREAM_PROJECTION_VERSION
+    assert STREAM_DESIGN_ID_V4 == protocol_v4.STREAM_DESIGN_ID
+    assert PUBLIC_STREAM_EVENT_TYPES_V4 is protocol_v4.PUBLIC_STREAM_EVENT_TYPES
+    assert PUBLIC_APPLICATION_EVENT_TYPES_V4 == frozenset(
+        value
+        for value in protocol_v4.PUBLIC_STREAM_EVENT_TYPES
+        if not value.startswith("stream.")
+    )
+
+
+def test_stream_end_uses_the_run_fact_source_and_rejects_terminal_intents():
+    import pytest
+    from app.streaming.domain.public_events_v4 import V4ProjectionError, validate_internal_envelope_v4
+
+    end = _v4_internal_event("stream.end", {"terminal_event_id": "terminal-1"}, message_id=None, seq=None)
+    validator = _validator("InternalStreamEnvelopeV4")
+    assert list(validator.iter_errors(end)) == []
+    assert validate_internal_envelope_v4(end) == end
+    end["source"]["callback_sequence"] = 0
+    assert list(validator.iter_errors(end)) == []
+    assert validate_internal_envelope_v4(end) == end
+    for invalid in (True, -1, "1", 2**63):
+        end["source"]["callback_sequence"] = invalid
+        assert list(validator.iter_errors(end))
+        with pytest.raises(V4ProjectionError):
+            validate_internal_envelope_v4(end)
+    end["source"] = {"kind": "terminal_intent", "terminal_event_id": "terminal-1"}
+    assert list(validator.iter_errors(end))
+    with pytest.raises(V4ProjectionError, match="v4_source_invalid"):
+        validate_internal_envelope_v4(end)

@@ -5,6 +5,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import {
@@ -13,6 +14,7 @@ import {
   Building2,
   ChevronRight,
   Database,
+  FileCheck2,
   FileSearch,
   FlaskConical,
   Globe2,
@@ -38,6 +40,7 @@ import {
   filterLaunchpadGroups,
   getLaunchpadIconUrl,
   launchpadGroups,
+  resolveLaunchpadDestination,
   type LaunchpadEntry,
 } from "./catalog";
 import {
@@ -47,6 +50,7 @@ import {
 
 const categoryIcons: Record<string, LucideIcon> = {
   内网登录: Building2,
+  企业内部AI助手: Sparkles,
   AI: Sparkles,
   翻译: Languages,
   绘图: Palette,
@@ -73,6 +77,71 @@ const categoryTones = [
 const allEntries = launchpadGroups.flatMap((group) => group.entries);
 const entryIds = new Set(allEntries.map((entry) => entry.id));
 const entriesById = new Map(allEntries.map((entry) => [entry.id, entry]));
+const DOCUMENT_TRANSLATOR_ENTRY_ID = "AI:Word文档翻译";
+const DOCUMENT_TRANSLATOR_ORIGIN = "http://10.56.0.210:8000";
+const DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS = 10_000;
+const DOCUMENT_TRANSLATOR_NONCE = /^[A-Za-z0-9-]{16,128}$/;
+
+function openDocumentTranslator(href: string): void {
+  let destination: URL;
+  try {
+    destination = new URL(href);
+  } catch {
+    toast.error("文档翻译地址无效，请联系管理员。");
+    return;
+  }
+  if (destination.origin !== DOCUMENT_TRANSLATOR_ORIGIN) {
+    toast.error("文档翻译地址不受信任，请联系管理员。");
+    return;
+  }
+
+  let childWindow: Window | null = null;
+  let readyAccepted = false;
+  const cleanup = () => {
+    window.removeEventListener("message", handleMessage);
+    window.clearTimeout(timeoutId);
+  };
+  const fail = () => {
+    cleanup();
+    childWindow?.close();
+    toast.error("文档翻译登录交接失败，请重新登录后重试。");
+  };
+  const handleMessage = (event: MessageEvent) => {
+    if (event.origin !== DOCUMENT_TRANSLATOR_ORIGIN || event.source !== childWindow) return;
+    const data = event.data;
+    if (
+      readyAccepted ||
+      !data ||
+      typeof data !== "object" ||
+      Array.isArray(data) ||
+      (data as { type?: unknown }).type !== "doctrans:ready"
+    ) {
+      return;
+    }
+    const nonce = (data as { nonce?: unknown }).nonce;
+    if (typeof nonce !== "string" || !DOCUMENT_TRANSLATOR_NONCE.test(nonce)) return;
+    readyAccepted = true;
+    cleanup();
+
+    void authApi
+      .getCompanyCredentialForHandoff(
+        AbortSignal.timeout(DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS),
+      )
+      .then((credential) => {
+        if (!childWindow || childWindow.closed) throw new Error("document_translator_closed");
+        childWindow.postMessage(
+          { type: "doctrans:auth", nonce, token: credential },
+          DOCUMENT_TRANSLATOR_ORIGIN,
+        );
+      })
+      .catch(fail);
+  };
+
+  window.addEventListener("message", handleMessage);
+  const timeoutId = window.setTimeout(fail, DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS);
+  childWindow = window.open(destination.href, "_blank");
+  if (!childWindow) fail();
+}
 
 interface DirectorySectionProps {
   id: string;
@@ -82,6 +151,7 @@ interface DirectorySectionProps {
   tone: string;
   favoriteIds: ReadonlySet<string>;
   favoritesDisabled: boolean;
+  onOpen: (entry: LaunchpadEntry) => void;
   onToggleFavorite: (entryId: string) => void;
 }
 
@@ -93,6 +163,7 @@ function DirectorySection({
   tone,
   favoriteIds,
   favoritesDisabled,
+  onOpen,
   onToggleFavorite,
 }: DirectorySectionProps) {
   const { t } = useTranslation();
@@ -124,33 +195,30 @@ function DirectorySection({
         {entries.map((entry) => {
           const isFavorite = favoriteIds.has(entry.id);
           const isFeaturedPlatform = entry.id === "内网登录:灵犀平台";
-
-          return (
-            <div
-              key={entry.id}
-              data-launchpad-entry
-              className="group flex min-h-[68px] min-w-0 items-center overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] transition-[border-color,box-shadow] hover:border-[var(--section-tone)] hover:shadow-sm"
-            >
-              <a
-                href={entry.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={t("companyNavigation.openEntry", {
-                  name: entry.name,
-                })}
-                className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-ring)]"
+          const destination = resolveLaunchpadDestination(entry);
+          const unavailable = destination.kind === "unavailable";
+          const requiresDocumentTranslatorHandoff =
+            entry.id === DOCUMENT_TRANSLATOR_ENTRY_ID;
+          const EntryIcon =
+            entry.name === "Word文档翻译"
+              ? Languages
+              : entry.name === "Word文档审核"
+                ? FileCheck2
+                : Globe2;
+          const entryContent = (
+            <>
+              <span
+                className={`relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[var(--theme-border)] bg-white shadow-sm ${
+                  isFeaturedPlatform
+                    ? "motion-safe:animate-pulse shadow-[0_0_14px_rgba(139,92,246,0.42)]"
+                    : ""
+                }`}
               >
-                <span
-                  className={`relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[var(--theme-border)] bg-white shadow-sm ${
-                    isFeaturedPlatform
-                      ? "motion-safe:animate-pulse shadow-[0_0_14px_rgba(139,92,246,0.42)]"
-                      : ""
-                  }`}
-                >
-                  <Globe2
-                    aria-hidden="true"
-                    className="size-4 text-[var(--theme-text-secondary)]"
-                  />
+                <EntryIcon
+                  aria-hidden="true"
+                  className="size-4 text-[var(--theme-text-secondary)]"
+                />
+                {entry.icon ? (
                   <img
                     src={getLaunchpadIconUrl(entry.icon)}
                     alt=""
@@ -160,25 +228,60 @@ function DirectorySection({
                       event.currentTarget.hidden = true;
                     }}
                   />
-                </span>
+                ) : null}
+              </span>
 
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-semibold text-[var(--theme-text)] sm:text-sm">
-                    {entry.name}
-                  </span>
-                  <span
-                    className="mt-0.5 block truncate text-[11px] text-[var(--theme-text-secondary)] sm:text-xs"
-                    title={entry.description || undefined}
-                  >
-                    {entry.description || t("launchpad.visitWebsite")}
-                  </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-semibold text-[var(--theme-text)] sm:text-sm">
+                  {entry.name}
                 </span>
+                <span
+                  className="mt-0.5 block truncate text-[11px] text-[var(--theme-text-secondary)] sm:text-xs"
+                  title={entry.description || undefined}
+                >
+                  {entry.description || t("launchpad.visitWebsite")}
+                </span>
+              </span>
 
-                <ChevronRight
-                  aria-hidden="true"
-                  className="size-4 shrink-0 text-[var(--theme-text-tertiary)] transition-transform group-hover:translate-x-0.5"
-                />
-              </a>
+              <ChevronRight
+                aria-hidden="true"
+                className="size-4 shrink-0 text-[var(--theme-text-tertiary)] transition-transform group-hover:translate-x-0.5"
+              />
+            </>
+          );
+
+          return (
+            <div
+              key={entry.id}
+              data-launchpad-entry
+              className="group flex min-h-[68px] min-w-0 items-center overflow-hidden rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] transition-[border-color,box-shadow] hover:border-[var(--section-tone)] hover:shadow-sm"
+            >
+              {destination.kind === "url" && !requiresDocumentTranslatorHandoff ? (
+                <a
+                  href={destination.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={t("companyNavigation.openEntry", {
+                    name: entry.name,
+                  })}
+                  className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-ring)]"
+                >
+                  {entryContent}
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  disabled={unavailable}
+                  onClick={() => onOpen(entry)}
+                  title={unavailable ? destination.reason : undefined}
+                  aria-label={t("companyNavigation.openEntry", {
+                    name: entry.name,
+                  })}
+                  className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-ring)] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {entryContent}
+                </button>
+              )}
 
               <button
                 type="button"
@@ -214,6 +317,7 @@ function DirectorySection({
 export function LaunchpadPanel() {
   const { t } = useTranslation();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const currentUserIdRef = useRef(user?.id);
   currentUserIdRef.current = user?.id;
   const [query, setQuery] = useState("");
@@ -312,6 +416,20 @@ export function LaunchpadPanel() {
       if (currentUserIdRef.current === requestOwnerId) {
         setFavoritesSaving(false);
       }
+    }
+  };
+
+  const openEntry = (entry: LaunchpadEntry) => {
+    const destination = resolveLaunchpadDestination(entry);
+    if (destination.kind === "internal") {
+      navigate(destination.path);
+      return;
+    }
+    if (
+      entry.id === DOCUMENT_TRANSLATOR_ENTRY_ID &&
+      destination.kind === "url"
+    ) {
+      openDocumentTranslator(destination.href);
     }
   };
 
@@ -436,6 +554,7 @@ export function LaunchpadPanel() {
             tone="#d28a17"
             favoriteIds={favoriteIdSet}
             favoritesDisabled={favoritesDisabled}
+            onOpen={openEntry}
             onToggleFavorite={toggleFavorite}
           />
         ) : null}
@@ -463,6 +582,7 @@ export function LaunchpadPanel() {
                 tone={categoryTones[Math.max(sourceIndex, 0) % categoryTones.length]}
                 favoriteIds={favoriteIdSet}
                 favoritesDisabled={favoritesDisabled}
+                onOpen={openEntry}
                 onToggleFavorite={toggleFavorite}
               />
             );

@@ -15,6 +15,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SOURCE = REPO_ROOT / "tools" / "run_test_stage.py"
 
 
+@pytest.fixture
+def tmp_path(tmp_path_factory):
+    # These tests nest another runner worktree below the owned basetemp.
+    # Keep the fixture name short enough for Windows MAX_PATH installations.
+    return tmp_path_factory.mktemp("r")
+
+
 def _subprocess_environment(
     overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:

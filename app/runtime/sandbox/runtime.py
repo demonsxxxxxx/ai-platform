@@ -782,7 +782,6 @@ class SandboxRuntime:
                 "tool_policy_subjects": request.tool_policy_subjects,
                 "input_files": request.file_ids,
                 "materialized_file_names": request.materialized_file_names,
-                "require_selected_skill_invocation": request.require_selected_skill_invocation,
                 "provider_session_resume_required": request.provider_session_resume_required,
             }
             if request.model_token_limits is not None:
@@ -824,6 +823,7 @@ class SandboxRuntime:
             )
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
             if str(response.get("status") or "").lower() == "accepted":
+                accepted_result = build_runtime_result(response)
                 if lease_record_id is None and self._uses_default_lease_recorder:
                     raise RuntimeError("sandbox_executor_lease_receipt_required")
                 if self._uses_default_lease_recorder:
@@ -838,10 +838,13 @@ class SandboxRuntime:
                             run_id=request.run_id,
                             attempt_id=request.attempt_id,
                             lease_id=lease_record_id,
-                            reconciliation_context=request.reconciliation_context,
+                            reconciliation_context={
+                                **request.reconciliation_context,
+                                "dispatch_timings": accepted_result.timings,
+                            },
                             ttl_seconds=self.settings.sandbox_lease_ttl_seconds,
                         )
-                return build_runtime_result(response)
+                return accepted_result
             response = normalize_executor_reported_failure(
                 response,
                 expected_run_id=request.run_id,

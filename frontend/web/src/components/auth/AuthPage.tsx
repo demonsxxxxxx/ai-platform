@@ -2,7 +2,7 @@
  * 登录/注册页面组件
  */
 
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useRef, useCallback, Fragment } from "react";
 import { User, Mail, AlertCircle, AtSign } from "lucide-react";
 import { PasswordInput } from "./PasswordInput";
 import toast from "react-hot-toast";
@@ -60,6 +60,9 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAttemptingAD, setIsAttemptingAD] = useState(
+    (initialMode ?? "login") === "login",
+  );
   const [isRedirecting, setIsRedirecting] = useState(false);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
@@ -73,7 +76,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     setTurnstileKey((prev) => prev + 1);
   }, [theme]);
 
-  const { login, register, loginWithOAuth } = useAuth();
+  const { login, loginWithAD, register, loginWithOAuth, isAuthenticated, isLoading } = useAuth();
   const [oauthProviders, setOauthProviders] = useState<
     { id: string; name: string }[]
   >([]);
@@ -88,10 +91,13 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
   // Use ref to access current mode without adding it to deps
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const isAuthenticatedRef = useRef(isAuthenticated);
+  isAuthenticatedRef.current = isAuthenticated;
+  const authDiscoveryStartedRef = useRef(false);
   const redirectTimerRef = useRef<number | null>(null);
   const redirectFailsafeRef = useRef<number | null>(null);
 
-  const clearRedirectTimers = () => {
+  const clearRedirectTimers = useCallback(() => {
     if (redirectTimerRef.current !== null) {
       window.clearTimeout(redirectTimerRef.current);
       redirectTimerRef.current = null;
@@ -100,11 +106,11 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
       window.clearTimeout(redirectFailsafeRef.current);
       redirectFailsafeRef.current = null;
     }
-  };
+  }, []);
 
-  useEffect(() => clearRedirectTimers, []);
+  useEffect(() => clearRedirectTimers, [clearRedirectTimers]);
 
-  // 获取 OAuth 提供商列表和认证设置
+  // 保留现有 OAuth、注册和 Turnstile 兼容配置；AD 登录使用独立平台路由。
   useEffect(() => {
     let mounted = true;
     const fetchAuthData = async () => {
@@ -112,21 +118,17 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         const result = await authApi.getOAuthProviders();
         if (!mounted) return;
         setOauthProviders(result.providers);
-        // 设置 Turnstile 配置
-        if (result.turnstile) {
-          setTurnstileConfig(result.turnstile);
-        }
-        // 如果注册已关闭且当前是注册模式，切换回登录
+        if (result.turnstile) setTurnstileConfig(result.turnstile);
         if (!result.registration_enabled && modeRef.current === "register") {
           setMode("login");
           setEmail("");
           setConfirmPassword("");
         }
       } catch {
-        // 忽略错误，可能 OAuth 未配置
+        // 兼容配置不可用时使用页面安全默认值。
       }
     };
-    fetchAuthData();
+    void fetchAuthData();
     return () => {
       mounted = false;
     };
@@ -156,7 +158,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     }
   };
 
-  const beginSuccessRedirect = (redirectPath?: string | null) => {
+  const beginSuccessRedirect = useCallback((redirectPath?: string | null) => {
     const nextPath = resolvePostAuthRedirectPath(redirectPath);
     clearRedirectTimers();
     setIsRedirecting(true);
@@ -175,7 +177,44 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         setIsSubmitting(false);
       }
     }, AUTH_REDIRECT_ANIMATION_MS);
-  };
+  }, [clearRedirectTimers, onSuccess]);
+
+  // 读取正式 AD 配置，并在登录入口自动尝试一次 Windows 免密登录。
+  useEffect(() => {
+    if (isLoading || authDiscoveryStartedRef.current) return;
+    authDiscoveryStartedRef.current = true;
+    const controller = new AbortController();
+
+    const fetchAuthData = async () => {
+      if (isAuthenticated) {
+        setIsAttemptingAD(false);
+        return;
+      }
+      let startedRedirect = false;
+      try {
+        const result = await authApi.getADLoginConfig(controller.signal);
+        if (
+          !mountedRef.current ||
+          controller.signal.aborted ||
+          isAuthenticatedRef.current
+        ) {
+          return;
+        }
+        if (result.ad_login_url && modeRef.current === "login") {
+          const loginOutcome = await loginWithAD(result.ad_login_url);
+          if (!mountedRef.current || loginOutcome.status !== "completed") return;
+          startedRedirect = true;
+          beginSuccessRedirect(loginOutcome.value);
+        }
+      } catch {
+        // Windows 或 AD 配置不可用时保留账号密码登录。
+      } finally {
+        if (mountedRef.current && !startedRedirect) setIsAttemptingAD(false);
+      }
+    };
+    void fetchAuthData();
+    return () => controller.abort();
+  }, [beginSuccessRedirect, isAuthenticated, isLoading, loginWithAD]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -301,6 +340,14 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     }
   };
 
+  if (isAttemptingAD) {
+    return (
+      <div className="auth-shell flex min-h-screen items-center justify-center">
+        <Loading size="lg" className="justify-center" />
+      </div>
+    );
+  }
+
   if (isRedirecting) {
     return (
       <div className="auth-shell flex min-h-screen items-center justify-center">
@@ -362,7 +409,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
             {/* OAuth buttons */}
             {oauthProviders.length > 0 && (
               <div className="mb-4 sm:mb-5 lg:mb-6 2xl:mb-8">
-                <div className="flex items-center justify-center gap-2 sm:gap-3">
+                <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
                   {oauthProviders.map((provider) => (
                     <Fragment key={provider.id}>
                       <button

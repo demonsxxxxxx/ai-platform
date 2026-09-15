@@ -46,7 +46,6 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.error_taxonomy import summarize_error_categories
-from app.file_type_validation import profile_file_type_allowed
 from app.persistence import (
     RepositoryNotFoundError,
     artifacts,
@@ -56,15 +55,16 @@ from app.persistence import (
     retention,
 )
 import app.agent_apps.infrastructure.catalog_postgres as agent_catalog_persistence
-import app.agent_apps.infrastructure.postgres as agent_profile_persistence
 import app.context.infrastructure.postgres as memory_persistence
 import app.context.infrastructure.snapshot_postgres as context_snapshot_persistence
 import app.context.infrastructure.sources_postgres as context_sources_persistence
 import app.conversations.infrastructure.postgres as conversation_persistence
 import app.identity.infrastructure.postgres as identity_persistence
+import app.mcp.infrastructure.registry_postgres as mcp_registry_persistence
 import app.platform.postgres.errors as postgres_errors
 import app.runs.api as runs_api
 import app.runs.infrastructure.postgres as run_persistence
+import app.skills.infrastructure.legacy_workbench as legacy_workbench_persistence
 import app.skills.infrastructure.postgres as skill_persistence
 from app.platform.postgres.errors import RepositoryConflictError
 from app.persistence_limits import (
@@ -123,31 +123,6 @@ get_tenant_profile_validation_agent = (
     agent_catalog_persistence.get_tenant_profile_validation_agent
 )
 list_lambchat_agents = agent_catalog_persistence.list_lambchat_agents
-acquire_agent_profile_lifecycle_lock = (
-    agent_profile_persistence.acquire_agent_profile_lifecycle_lock
-)
-create_agent_profile_revision = agent_profile_persistence.create_agent_profile_revision
-ensure_agent_profile_identity = agent_profile_persistence.ensure_agent_profile_identity
-get_agent_profile_aggregate = agent_profile_persistence.get_agent_profile_aggregate
-get_agent_profile_revision = agent_profile_persistence.get_agent_profile_revision
-get_bound_published_agent_profile = (
-    agent_profile_persistence.get_bound_published_agent_profile
-)
-get_current_published_agent_profile = (
-    agent_profile_persistence.get_current_published_agent_profile
-)
-list_agent_profile_revision_history = (
-    agent_profile_persistence.list_agent_profile_revision_history
-)
-list_current_published_agent_profiles = (
-    agent_profile_persistence.list_current_published_agent_profiles
-)
-list_latest_agent_profile_revisions = (
-    agent_profile_persistence.list_latest_agent_profile_revisions
-)
-record_agent_profile_draft = agent_profile_persistence.record_agent_profile_draft
-record_agent_profile_publication = agent_profile_persistence.record_agent_profile_publication
-record_agent_profile_withdrawal = agent_profile_persistence.record_agent_profile_withdrawal
 append_message = conversation_persistence.append_message
 create_session = conversation_persistence.create_session
 ensure_workspace_belongs_to_tenant = (
@@ -230,6 +205,18 @@ canonical_builtin_tool_identities = skill_persistence.canonical_builtin_tool_ide
 get_skill_version = skill_persistence.get_skill_version
 run_skill_snapshot_source_json = skill_persistence.run_skill_snapshot_source_json
 validate_replay_skill_manifests = skill_persistence.validate_replay_skill_manifests
+_mcp_server_projection = mcp_registry_persistence._mcp_server_projection
+_json_dict_projection = mcp_registry_persistence._json_dict_projection
+_json_string_list_projection = mcp_registry_persistence._json_string_list_projection
+list_mcp_server_registry = mcp_registry_persistence.list_mcp_server_registry
+list_tenant_mcp_server_registry = mcp_registry_persistence.list_tenant_mcp_server_registry
+list_mcp_server_registry_names = mcp_registry_persistence.list_mcp_server_registry_names
+upsert_mcp_server_registry = mcp_registry_persistence.upsert_mcp_server_registry
+toggle_mcp_server_registry = mcp_registry_persistence.toggle_mcp_server_registry
+delete_mcp_server_registry = mcp_registry_persistence.delete_mcp_server_registry
+record_mcp_server_credential = mcp_registry_persistence.record_mcp_server_credential
+list_workbench_capabilities = legacy_workbench_persistence.list_workbench_capabilities
+list_workbench_skills = legacy_workbench_persistence.list_workbench_skills
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.
 chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
@@ -656,43 +643,6 @@ async def list_principal_lambchat_agents(
             )
         authorized_rows.append(projected)
     return authorized_rows
-
-
-async def list_workbench_skills(conn: AsyncConnection, *, tenant_id: str, include_disabled: bool = False) -> list[dict[str, Any]]:
-    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
-    cursor = await conn.execute(
-        """
-        select
-          skills.id as skill_id,
-          skills.name,
-          skills.version,
-          skills.description,
-          skills.input_modes,
-          skills.output_modes,
-          skills.executor_type,
-          skills.status as lifecycle_status,
-          coalesce(tenant_capability_distributions.status, 'disabled') as status,
-          coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user
-        from skills
-        left join tenant_capability_distributions
-          on tenant_capability_distributions.tenant_id = %s
-         and tenant_capability_distributions.capability_kind = 'skill'
-         and tenant_capability_distributions.capability_id = skills.id
-        where skills.id in ('qa-file-reviewer', 'baoyu-translate', 'ragflow-knowledge-search')
-          and (%s or (
-            skills.status = 'active'
-            and tenant_capability_distributions.status = 'active'
-          ))
-        order by case skills.id
-          when 'qa-file-reviewer' then 1
-          when 'baoyu-translate' then 2
-          when 'ragflow-knowledge-search' then 3
-          else 99
-        end
-        """,
-        (tenant_id, include_disabled),
-    )
-    return list(await cursor.fetchall())
 
 
 async def get_skill(conn: AsyncConnection, *, skill_id: str) -> dict[str, Any] | None:
@@ -1199,39 +1149,10 @@ async def _authorize_chat_mcp_tool_entry(
     return tool
 
 
-def _json_dict_projection(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
-def _json_string_list_projection(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item) for item in value if str(item)]
-    return []
 
 
-def _mcp_server_projection(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "tenant_id": str(row.get("tenant_id") or ""),
-        "name": str(row.get("name") or ""),
-        "transport": str(row.get("transport") or "streamable_http"),
-        "endpoint_redacted": str(row.get("endpoint_redacted") or ""),
-        "status": str(row.get("status") or "disabled"),
-        "is_system": bool(row.get("is_system")),
-        "allowed_roles": _json_string_list_projection(row.get("allowed_roles")),
-        "role_quotas": _json_dict_projection(row.get("role_quotas_json") or row.get("role_quotas")),
-        "department_ids": _json_string_list_projection(row.get("department_ids")),
-        "credential_state": str(row.get("credential_state") or "not_configured"),
-        "credential_metadata": _json_dict_projection(row.get("credential_metadata_json") or row.get("credential_metadata")),
-        "catalog_generation": int(row.get("catalog_generation") or 0),
-        "catalog_revision": int(row.get("catalog_revision") or 0),
-        "catalog_status": str(row.get("catalog_status") or "legacy"),
-        "catalog_unavailable_reason": str(row.get("catalog_unavailable_reason") or ""),
-        "catalog_discovered_count": int(row.get("catalog_discovered_count") or 0),
-        "catalog_selectable_count": int(row.get("catalog_selectable_count") or 0),
-        "catalog_last_synced_at": row.get("catalog_last_synced_at"),
-        "created_at": row.get("created_at"),
-        "updated_at": row.get("updated_at"),
-    }
 
 
 def _capability_distribution_string_list(value: Any) -> list[str]:
@@ -2397,375 +2318,18 @@ def require_replay_source_identity(
         raise _capability_not_authorized()
 
 
-async def list_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    department_id: str,
-    include_disabled: bool = True,
-) -> list[dict[str, Any]]:
-    """Return tenant-scoped MCP server lifecycle registry without secret material."""
-
-    cursor = await conn.execute(
-        """
-        select
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        from mcp_servers
-        where tenant_id = %s
-          and (cardinality(department_ids) = 0 or %s = any(department_ids))
-          and status <> 'deleted'
-          and (%s or status = 'active')
-        order by is_system desc, name asc
-        """,
-        (tenant_id, department_id, include_disabled),
-    )
-    return [_mcp_server_projection(dict(row)) for row in await cursor.fetchall()]
 
 
-async def list_tenant_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    include_disabled: bool = True,
-) -> list[dict[str, Any]]:
-    """Return the unfiltered tenant MCP registry for distribution resolution."""
-
-    cursor = await conn.execute(
-        """
-        select
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        from mcp_servers
-        where tenant_id = %s
-          and status <> 'deleted'
-          and (%s or status = 'active')
-        order by is_system desc, name asc
-        """,
-        (tenant_id, include_disabled),
-    )
-    return [_mcp_server_projection(dict(row)) for row in await cursor.fetchall()]
 
 
-async def list_mcp_server_registry_names(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-) -> list[str]:
-    """Return non-deleted tenant MCP server names for legacy fallback suppression."""
-
-    cursor = await conn.execute(
-        """
-        select name
-        from mcp_servers
-        where tenant_id = %s
-          and status <> 'deleted'
-        order by name asc
-        """,
-        (tenant_id,),
-    )
-    return [str(row.get("name") or "") for row in await cursor.fetchall() if row.get("name")]
 
 
-async def upsert_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    name: str,
-    transport: str,
-    enabled: bool,
-    is_system: bool,
-    endpoint_redacted: str,
-    allowed_roles: list[str],
-    role_quotas: dict[str, Any],
-    department_ids: list[str],
-    credential_state: str,
-    credential_metadata: dict[str, Any],
-    credential_fingerprint: str,
-    updated_by: str,
-) -> dict[str, Any]:
-    """Upsert a tenant-scoped MCP server registry row with redacted connection metadata."""
-
-    cursor = await conn.execute(
-        """
-        with scope_guard as (
-          select not exists (
-            select 1
-            from mcp_servers existing
-            where existing.tenant_id = %s
-              and existing.name = %s
-              and existing.is_system <> %s
-          ) as allowed
-        ),
-        upserted as (
-          insert into mcp_servers(
-            id, tenant_id, name, transport, endpoint_redacted, status, is_system,
-            allowed_roles, role_quotas_json, department_ids, credential_state,
-            credential_metadata_json, credential_fingerprint, catalog_generation,
-            catalog_status, catalog_unavailable_reason, updated_by, updated_at
-          )
-          select %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, %s, 1, %s, %s, %s, now()
-          from scope_guard
-          where allowed
-          on conflict (tenant_id, name) do update
-          set transport = excluded.transport,
-              endpoint_redacted = excluded.endpoint_redacted,
-              status = excluded.status,
-              allowed_roles = excluded.allowed_roles,
-              role_quotas_json = excluded.role_quotas_json,
-              department_ids = excluded.department_ids,
-              credential_state = excluded.credential_state,
-              credential_metadata_json = excluded.credential_metadata_json,
-              credential_fingerprint = excluded.credential_fingerprint,
-              catalog_generation = mcp_servers.catalog_generation + 1,
-              catalog_status = case when excluded.status = 'active' then 'refresh_required' else 'disabled' end,
-              catalog_unavailable_reason = case when excluded.status = 'active' then 'refresh_required' else 'disabled' end,
-              catalog_discovered_count = 0,
-              catalog_selectable_count = 0,
-              catalog_sync_lease_expires_at = null,
-              updated_by = excluded.updated_by,
-              updated_at = now()
-          where mcp_servers.is_system = excluded.is_system
-          returning *
-        )
-        select
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        from upserted
-        """,
-        (
-            tenant_id,
-            name,
-            is_system,
-            new_id("mcpsrv"),
-            tenant_id,
-            name,
-            transport,
-            endpoint_redacted,
-            "active" if enabled else "disabled",
-            is_system,
-            json.dumps(allowed_roles, ensure_ascii=False),
-            dumps_json(role_quotas),
-            department_ids,
-            credential_state,
-            dumps_json(credential_metadata),
-            credential_fingerprint,
-            "refresh_required" if enabled else "disabled",
-            "refresh_required" if enabled else "disabled",
-            updated_by,
-        ),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise RepositoryConflictError("mcp_server_scope_conflict")
-    return _mcp_server_projection(dict(row))
 
 
-async def toggle_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    name: str,
-    enabled: bool | None,
-    updated_by: str,
-) -> dict[str, Any]:
-    """Toggle or set a tenant-scoped MCP server status."""
-
-    cursor = await conn.execute(
-        """
-        update mcp_servers
-        set status = case
-              when %s::boolean is null then case when status = 'active' then 'disabled' else 'active' end
-              when %s::boolean then 'active'
-              else 'disabled'
-            end,
-            updated_by = %s,
-            catalog_generation = catalog_generation + 1,
-            catalog_status = case
-              when %s::boolean is null then case when status = 'active' then 'disabled' else 'refresh_required' end
-              when %s::boolean then 'refresh_required'
-              else 'disabled'
-            end,
-            catalog_unavailable_reason = case
-              when %s::boolean is null then case when status = 'active' then 'disabled' else 'refresh_required' end
-              when %s::boolean then 'refresh_required'
-              else 'disabled'
-            end,
-            catalog_discovered_count = 0,
-            catalog_selectable_count = 0,
-            catalog_sync_lease_expires_at = null,
-            updated_at = now()
-        where tenant_id = %s
-          and name = %s
-          and status <> 'deleted'
-        returning
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        """,
-        (enabled, enabled, updated_by, enabled, enabled, enabled, enabled, tenant_id, name),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise RepositoryNotFoundError("mcp_server_not_found")
-    return _mcp_server_projection(dict(row))
 
 
-async def delete_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    name: str,
-    updated_by: str,
-) -> dict[str, Any]:
-    """Soft-delete a tenant-scoped MCP server registry row."""
-
-    cursor = await conn.execute(
-        """
-        update mcp_servers
-        set status = 'deleted',
-            updated_by = %s,
-            catalog_generation = catalog_generation + 1,
-            catalog_status = 'deleted',
-            catalog_unavailable_reason = 'deleted',
-            catalog_discovered_count = 0,
-            catalog_selectable_count = 0,
-            catalog_sync_lease_expires_at = null,
-            updated_at = now()
-        where tenant_id = %s
-          and name = %s
-        returning
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        """,
-        (updated_by, tenant_id, name),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise RepositoryNotFoundError("mcp_server_not_found")
-    return _mcp_server_projection(dict(row))
 
 
-async def record_mcp_server_credential(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    server_name: str,
-    credential_fingerprint: str,
-    metadata: dict[str, Any],
-    updated_by: str,
-) -> None:
-    """Record credential fingerprint metadata without storing raw credential values."""
-
-    await conn.execute(
-        """
-        insert into mcp_server_credentials(
-          tenant_id, server_name, credential_fingerprint, metadata_json, updated_by, updated_at
-        )
-        values (%s, %s, %s, %s::jsonb, %s, now())
-        on conflict (tenant_id, server_name) do update
-        set credential_fingerprint = excluded.credential_fingerprint,
-            metadata_json = excluded.metadata_json,
-            updated_by = excluded.updated_by,
-            updated_at = now()
-        """,
-        (
-            tenant_id,
-            server_name,
-            credential_fingerprint,
-            dumps_json(metadata),
-            updated_by,
-        ),
-    )
 
 
 async def list_admin_tool_policies(
@@ -2955,98 +2519,6 @@ async def upsert_admin_tool_policy(
     if row is None:
         raise RepositoryNotFoundError("mcp_tool_not_found")
     return _tool_policy_projection(dict(row), tenant_id=tenant_id)
-
-
-async def list_workbench_capabilities(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    include_admin_fields: bool = False,
-) -> list[dict[str, Any]]:
-    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
-    cursor = await conn.execute(
-        """
-        select
-          case agents.id
-            when 'general-agent' then 'general_chat'
-            when 'qa-word-review' then 'document_review'
-            when 'baoyu-translate' then 'document_translation'
-            when 'sop-assistant' then 'knowledge_answer'
-            else agents.id
-          end as capability_id,
-          agents.name as label,
-          agents.description,
-          case
-            when agents.agent_type = 'chat' and agents.default_skill_id is null then 'active'
-            when skills.status <> 'active'
-              or coalesce(tenant_capability_distributions.status, 'disabled') <> 'active'
-              or coalesce(tenant_capability_distributions.visible_to_user, false) = false
-            then 'disabled'
-            when skills.id = 'ragflow-knowledge-search'
-             and (
-               coalesce(mcp_tools.status, 'disabled') <> 'active'
-               or coalesce(tool_policies.status, 'disabled') <> 'active'
-               or coalesce(mcp_tools.visible_to_user, false) = false
-               or coalesce(tool_policies.visible_to_user, false) = false
-             )
-            then 'disabled'
-            else 'active'
-          end as status,
-          case when agents.agent_type = 'chat' and agents.default_skill_id is null then '["chat"]'::jsonb else skills.input_modes end as input_modes,
-          case when agents.agent_type = 'chat' and agents.default_skill_id is null then '["answer"]'::jsonb else skills.output_modes end as output_modes,
-          agents.id as agent_id,
-          skills.id as skill_id,
-          skills.version as skill_version,
-          case when agents.agent_type = 'chat' and agents.default_skill_id is null then 'claude-agent-worker' else skills.executor_type end as executor_type,
-          case when skills.id = 'ragflow-knowledge-search' then mcp_tools.server_id else null end as mcp_server_id,
-          case when skills.id = 'ragflow-knowledge-search' then mcp_tools.id else null end as mcp_tool_id,
-          case
-            when skills.id <> 'ragflow-knowledge-search' then null
-            when mcp_tools.risk_level = 'high' or tool_policies.risk_level = 'high' then 'high'
-            when mcp_tools.risk_level = 'medium' or tool_policies.risk_level = 'medium' then 'medium'
-            else coalesce(mcp_tools.risk_level, 'low')
-          end as risk_level,
-          0 as recent_failures
-        from agents
-        left join skills on skills.id = agents.default_skill_id
-        left join tenant_capability_distributions
-          on tenant_capability_distributions.tenant_id = %s
-         and tenant_capability_distributions.capability_kind = 'skill'
-         and tenant_capability_distributions.capability_id = skills.id
-        left join mcp_tools
-          on mcp_tools.id = skills.id
-        left join tool_policies
-          on tool_policies.tenant_id = agents.tenant_id
-         and tool_policies.tool_id = mcp_tools.id
-        where agents.tenant_id = %s
-          and agents.id in ('general-agent', 'qa-word-review', 'baoyu-translate', 'sop-assistant')
-          and agents.status = 'active'
-        order by case agents.id
-          when 'general-agent' then 1
-          when 'qa-word-review' then 2
-          when 'baoyu-translate' then 3
-          when 'sop-assistant' then 4
-          else 99
-        end
-        """,
-        (tenant_id, tenant_id),
-    )
-    rows = list(await cursor.fetchall())
-    if include_admin_fields:
-        return rows
-    redacted = []
-    for row in rows:
-        item = dict(row)
-        item["agent_id"] = None
-        item["skill_id"] = None
-        item["skill_version"] = None
-        item["executor_type"] = None
-        item["mcp_server_id"] = None
-        item["mcp_tool_id"] = None
-        item["risk_level"] = None
-        item["recent_failures"] = None
-        redacted.append(item)
-    return redacted
 
 
 async def ensure_workspace(conn: AsyncConnection, *, tenant_id: str, workspace_id: str) -> None:
@@ -4441,10 +3913,6 @@ async def progress_run_tool_permission_terminalization(
         user_id=staged.get("user_id") if retired_admission_rejection else None,
         action="run.admission.rejected" if retired_admission_rejection else f"run.{target_status}",
         target_type="run", target_id=run_id, trace_id=staged.get("trace_id"), payload_json=audit_payload,
-    )
-    from app.streaming.redis import ensure_run_terminal_intent
-    await ensure_run_terminal_intent(
-        conn, tenant_id=tenant_id, run_id=run_id, status=target_status
     )
     return runs_api.RunTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
 
@@ -7794,8 +7262,6 @@ async def authorize_files_for_run(
     file_ids: list[str],
     reusable_file_ids: list[str] | None = None,
     input_modes: list[object] | None = None,
-    agent_profile_supported_input_types: list[str] | None = None,
-    agent_profile_supported_file_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Lock and validate run input files before any run creation side effect."""
 
@@ -7859,28 +7325,11 @@ async def authorize_files_for_run(
             if row["run_id"] and row["run_id"] != run_id:
                 raise RepositoryConflictError("file_already_bound")
         rows.append(dict(row))
-    if agent_profile_supported_input_types is not None:
-        if rows and "file" not in agent_profile_supported_input_types:
-            raise RepositoryConflictError("agent_profile_file_input_not_supported")
-        allowed_file_types = agent_profile_supported_file_types or []
-        if rows and not all(
-            profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
-            for row in rows
-        ):
-            raise RepositoryConflictError("agent_profile_file_type_not_supported")
     if input_modes is not None and has_file_input_mode(input_modes):
         compatible_ids = compatible_reusable_file_ids(rows, input_modes=input_modes)
         if len(compatible_ids) != len(rows):
             raise RepositoryConflictError("file_required_for_skill")
     return rows
-
-
-def _agent_profile_file_type_allowed(
-    row: dict[str, Any],
-    *,
-    allowed_file_types: list[str],
-) -> bool:
-    return profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
 
 
 async def bind_files_to_run(
@@ -8061,8 +7510,6 @@ async def complete_run(
         consumed_ids = {str(item.get("id") or "") for item in await consumed_cursor.fetchall()}
         if consumed_ids != set(valid_allow_for_run_ids):
             raise RepositoryConflictError("allow_for_run_consumption_mismatch")
-    from app.streaming.redis import ensure_run_terminal_intent
-    await ensure_run_terminal_intent(conn, tenant_id=tenant_id, run_id=run_id, status="succeeded")
     return True
 
 

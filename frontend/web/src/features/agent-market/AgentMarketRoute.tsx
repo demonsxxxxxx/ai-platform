@@ -21,6 +21,8 @@ import {
   buildAgentMarketDetailPath,
   buildAgentMarketWorkspacePath,
   filterPublishedMarketProfiles,
+  filterPublishedMarketProfilesByTags,
+  marketTagsForProfile,
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
@@ -60,9 +62,9 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
     authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
   }, []);
   const handleSelectSession = useCallback(
-    (_sessionId: string) => {
+    (sessionId: string) => {
       setMobileSidebarOpen(false);
-      navigate("/agent-market");
+      navigate(`/chat/${encodeURIComponent(sessionId)}`);
     },
     [navigate],
   );
@@ -88,6 +90,7 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={handleSetSidebarCollapsed}
           navigationOnly
+          showSessionHistory
         />
       }
     >
@@ -253,7 +256,18 @@ function ExpertMarketCard({
                 </div>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
-                <span>{profile.market_tag || "未分类"}</span>
+                {marketTagsForProfile(profile).length > 0 ? (
+                  marketTagsForProfile(profile).map((tag) => (
+                    <span
+                      className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1"
+                      key={tag}
+                    >
+                      {tag}
+                    </span>
+                  ))
+                ) : (
+                  <span>未分类</span>
+                )}
                 <span aria-hidden="true">·</span>
                 <span>企业已发布</span>
               </div>
@@ -261,22 +275,8 @@ function ExpertMarketCard({
           </div>
 
           <p className="mt-4 line-clamp-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-            {profile.capability_summary || profile.description || "已由管理员发布，可直接开始企业任务。"}
+            {profile.description || "已由管理员发布。"}
           </p>
-
-          {profile.recommended_tasks.length > 0 ? (
-            <div className="mt-4 flex flex-wrap gap-1.5" aria-label="推荐任务">
-              {profile.recommended_tasks.slice(0, 3).map((task) => (
-                <span
-                  className="max-w-full truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)]"
-                  key={task}
-                  title={task}
-                >
-                  {task}
-                </span>
-              ))}
-            </div>
-          ) : null}
 
           <div className="mt-5 flex items-center gap-3 border-t border-[var(--theme-border)] pt-3 text-xs">
             <span className="text-[var(--theme-text-secondary)]">已完成任务</span>
@@ -317,13 +317,13 @@ function ExpertMarketCard({
 function AgentMarketCatalog({
   catalog,
   refresh,
-  activeTag,
+  activeTags,
   activeTab,
   toggleFavorite,
 }: {
   catalog: CatalogState;
   refresh: () => void;
-  activeTag: string | null;
+  activeTags: readonly string[];
   activeTab: "tags" | "favorites";
   toggleFavorite: (profile: AgentProfilePublicProjection) => Promise<void>;
 }) {
@@ -342,8 +342,9 @@ function AgentMarketCatalog({
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const profile of catalog.value) {
-      const tag = profile.market_tag?.trim();
-      if (tag) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      for (const tag of marketTagsForProfile(profile)) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
     }
     return counts;
   }, [catalog.value]);
@@ -359,11 +360,13 @@ function AgentMarketCatalog({
   );
   const hotTags = marketTags.slice(0, 7);
   const hasActiveFilter =
-    searchQuery.trim().length > 0 || (activeTab === "tags" && activeTag !== null);
+    searchQuery.trim().length > 0 || (activeTab === "tags" && activeTags.length > 0);
   const visibleProfiles = useMemo(() => {
-    const filtered = filterPublishedMarketProfiles(catalog.value, searchQuery).filter((profile) =>
-      (activeTab !== "favorites" || profile.is_favorite) &&
-      (activeTab !== "tags" || activeTag === null || profile.market_tag === activeTag),
+    const filtered = filterPublishedMarketProfilesByTags(
+      filterPublishedMarketProfiles(catalog.value, searchQuery).filter((profile) =>
+        activeTab !== "favorites" || profile.is_favorite,
+      ),
+      activeTab === "tags" ? activeTags : [],
     );
     return [...filtered].sort((left, right) => {
       if (sort === "tasks") {
@@ -375,7 +378,7 @@ function AgentMarketCatalog({
       }
       return 0;
     });
-  }, [activeTab, activeTag, catalog.value, searchQuery, sort]);
+  }, [activeTab, activeTags, catalog.value, searchQuery, sort]);
 
   const pageCount = Math.max(1, Math.ceil(visibleProfiles.length / MARKET_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
@@ -401,9 +404,14 @@ function AgentMarketCatalog({
   const handleTag = useCallback(
     (tag: string | null) => {
       const next = new URLSearchParams(searchParams);
-      if (tag === null) next.delete("tag");
-      else {
-        next.set("tag", tag);
+      if (tag === null) {
+        next.delete("tag");
+      } else {
+        const selectedTags = new Set(next.getAll("tag").map((value) => value.trim()).filter(Boolean));
+        if (selectedTags.has(tag)) selectedTags.delete(tag);
+        else selectedTags.add(tag);
+        next.delete("tag");
+        for (const selectedTag of selectedTags) next.append("tag", selectedTag);
         next.delete("tab");
       }
       setPage(1);
@@ -473,21 +481,6 @@ function AgentMarketCatalog({
           <div className="relative min-w-0 flex-1">
             <div className="flex items-center gap-2 lg:absolute lg:right-0 lg:top-0">
               <button
-                data-agent-market-favorites
-                aria-label="查看我的收藏"
-                aria-pressed={activeTab === "favorites"}
-                className={`inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
-                  activeTab === "favorites"
-                    ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
-                    : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
-                }`}
-                onClick={() => handleTab(activeTab === "favorites" ? "tags" : "favorites")}
-                type="button"
-              >
-                <Star aria-hidden="true" fill={activeTab === "favorites" ? "currentColor" : "none"} size={15} />
-                我的收藏
-              </button>
-              <button
                 aria-label="刷新专家目录"
                 className="btn-secondary inline-flex items-center gap-2"
                 disabled={catalog.phase === "loading"}
@@ -526,7 +519,7 @@ function AgentMarketCatalog({
                   setSearchInput(query);
                   handleSearch(query);
                 }}
-                placeholder="搜索专家名称、能力或任务…"
+                placeholder="搜索专家名称、说明或标签…"
                 type="search"
                 value={searchInput}
               />
@@ -580,9 +573,9 @@ function AgentMarketCatalog({
                 role="group"
               >
                 <button
-                  aria-pressed={activeTab === "tags" && activeTag === null}
+                  aria-pressed={activeTab === "tags" && activeTags.length === 0}
                   className={`flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${
-                    activeTab === "tags" && activeTag === null
+                    activeTab === "tags" && activeTags.length === 0
                       ? "bg-[var(--theme-primary)] text-white"
                       : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
                   }`}
@@ -593,9 +586,9 @@ function AgentMarketCatalog({
                 </button>
                 {filteredMarketTags.map((tag) => (
                   <button
-                    aria-pressed={activeTab === "tags" && activeTag === tag}
+                    aria-pressed={activeTab === "tags" && activeTags.includes(tag)}
                     className={`flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${
-                      activeTab === "tags" && activeTag === tag
+                      activeTab === "tags" && activeTags.includes(tag)
                         ? "bg-[var(--theme-primary)] text-white"
                         : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
                     }`}
@@ -622,9 +615,9 @@ function AgentMarketCatalog({
               </div>
               <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
                 <button
-                  aria-pressed={activeTab === "tags" && activeTag === null}
+                  aria-pressed={activeTab === "tags" && activeTags.length === 0}
                   className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${
-                    activeTab === "tags" && activeTag === null
+                    activeTab === "tags" && activeTags.length === 0
                       ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
                       : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
                   }`}
@@ -635,9 +628,9 @@ function AgentMarketCatalog({
                 </button>
                 {hotTags.map((tag) => (
                   <button
-                    aria-pressed={activeTab === "tags" && activeTag === tag}
+                    aria-pressed={activeTab === "tags" && activeTags.includes(tag)}
                     className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${
-                      activeTab === "tags" && activeTag === tag
+                      activeTab === "tags" && activeTags.includes(tag)
                         ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
                         : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
                     }`}
@@ -655,6 +648,21 @@ function AgentMarketCatalog({
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <div aria-label="排序方式" className="flex flex-wrap items-center gap-2" data-agent-market-sort role="group">
                 <span className="text-xs text-[var(--theme-text-secondary)]">排序方式</span>
+                <button
+                  data-agent-market-favorites
+                  aria-label="查看我的收藏"
+                  aria-pressed={activeTab === "favorites"}
+                  className={`inline-flex min-h-8 items-center gap-1.5 rounded-md border px-3 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
+                    activeTab === "favorites"
+                      ? "border-[var(--theme-primary)] bg-[var(--theme-primary-light)] text-[var(--theme-primary)]"
+                      : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
+                  }`}
+                  onClick={() => handleTab(activeTab === "favorites" ? "tags" : "favorites")}
+                  type="button"
+                >
+                  <Star aria-hidden="true" fill={activeTab === "favorites" ? "currentColor" : "none"} size={14} />
+                  我的收藏
+                </button>
                 {([
                   ["default", "综合排序"],
                   ["tasks", "完成任务最多"],
@@ -817,20 +825,23 @@ function AgentMarketDetail({
             />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--theme-primary)]">
-                <span>{profile.market_tag || "未分类"}</span>
+                {marketTagsForProfile(profile).length > 0 ? (
+                  marketTagsForProfile(profile).map((tag) => (
+                    <span className="rounded-md bg-[var(--theme-primary-light)] px-2 py-1" key={tag}>
+                      {tag}
+                    </span>
+                  ))
+                ) : (
+                  <span>未分类</span>
+                )}
                 <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
                   企业已发布
                 </span>
               </div>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
-                {profile.capability_summary || profile.description}
+                {profile.description}
               </p>
-              {profile.description && profile.description !== profile.capability_summary ? (
-                <p className="mt-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                  {profile.description}
-                </p>
-              ) : null}
               {profile.published_at ? (
                 <p className="mt-4 text-xs text-[var(--theme-text-secondary)]">
                   企业发布时间 {profile.published_at.slice(0, 10)}
@@ -843,47 +854,16 @@ function AgentMarketDetail({
           </div>
         </section>
 
-        <section className="grid border-b border-[var(--theme-border)] py-7 sm:grid-cols-2 sm:gap-x-10">
-          {profile.recommended_tasks.length ? (
-            <div className="pb-6 sm:pb-7">
-              <h2 className="text-sm font-semibold">适合处理</h2>
-              <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                {profile.recommended_tasks.map((task) => (
-                  <li className="border-l-2 border-emerald-500 pl-3" key={task}>
-                    {task}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {profile.starter_prompts.length ? (
-            <div className="border-t border-[var(--theme-border)] py-6 sm:border-0 sm:py-0">
-              <h2 className="text-sm font-semibold">可以直接开始的任务</h2>
-              <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                {profile.starter_prompts.map((prompt) => (
-                  <li key={prompt}>{prompt}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          <div className="border-t border-[var(--theme-border)] py-6">
-            <h2 className="text-sm font-semibold">输入与输出</h2>
-            <dl className="mt-3 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 text-sm leading-6">
-              <dt className="text-[var(--theme-text-secondary)]">输入</dt>
-              <dd>文本，可按任务附加文件</dd>
-              <dt className="text-[var(--theme-text-secondary)]">文件</dt>
-              <dd>附件可选，不由专家限定格式</dd>
-              <dt className="text-[var(--theme-text-secondary)]">输出</dt>
-              <dd>{profile.expected_outputs.join("、") || "对话答复"}</dd>
-            </dl>
-          </div>
-          <div className="border-t border-[var(--theme-border)] py-6">
-            <h2 className="text-sm font-semibold">权限与数据访问</h2>
-            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--theme-text-secondary)]">
-              {profile.permissions_and_data_access_notice || "遵循企业当前授权策略。"}
-            </p>
-          </div>
-        </section>
+        {profile.starter_prompts.length ? (
+          <section className="border-b border-[var(--theme-border)] py-7">
+            <h2 className="text-sm font-semibold">可以直接开始的问题</h2>
+            <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+              {profile.starter_prompts.map((prompt) => (
+                <li key={prompt}>{prompt}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <div className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center sm:justify-end">
           <button
@@ -908,8 +888,8 @@ export function AgentMarketRoute() {
   const [searchParams] = useSearchParams();
   const { agentId, revision } = useParams<{ agentId?: string; revision?: string }>();
   const isDetailRoute = agentId !== undefined || revision !== undefined;
-  const requestedTag = searchParams.get("tag")?.trim();
-  const activeTag = requestedTag || null;
+  const requestedTags = searchParams.getAll("tag").map((tag) => tag.trim()).filter(Boolean);
+  const activeTags = [...new Set(requestedTags)];
   const activeTab = searchParams.get("tab") === "favorites" ? "favorites" : "tags";
   const catalogKey = "catalog";
   const {
@@ -942,7 +922,7 @@ export function AgentMarketRoute() {
       <AgentMarketShell>
         <AgentMarketCatalog
           activeTab={activeTab}
-          activeTag={activeTag}
+          activeTags={activeTags}
           catalog={catalog}
           refresh={refreshCatalog}
           toggleFavorite={toggleFavorite}

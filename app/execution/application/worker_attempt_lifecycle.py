@@ -61,6 +61,7 @@ class WorkerAttemptLifecyclePorts:
     request_attempt_cancel: AsyncPort
     terminalize_attempt: AsyncPort
     conflict_error: Callable[[str], Exception]
+    record_result_diagnostics: AsyncPort | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,9 +160,7 @@ class WorkerAttemptLifecycle:
             str(attempt.get("owner_kind") or "") != "queue_worker"
             or not worker_owner_id
         ):
-            raise self.ports.conflict_error(
-                "run_attempt_reconciliation_owner_invalid"
-            )
+            raise self.ports.conflict_error("run_attempt_reconciliation_owner_invalid")
         return replace(
             self,
             queue_attempt_id=queue_attempt_id,
@@ -306,6 +305,17 @@ class WorkerAttemptLifecycle:
         if observed is not None:
             return observed.completed
         attempt = await self._current_attempt(conn)
+        if self.ports.record_result_diagnostics is not None:
+            result_json = await self.ports.record_result_diagnostics(
+                conn,
+                tenant_id=self.tenant_id,
+                run_id=self.run_id,
+                attempt_id=str(attempt["id"]) if attempt is not None else None,
+                source="worker_executor",
+                stage="terminalization",
+                error_code="executor_diagnostics",
+                result_json=result_json,
+            )
         completed = await self.ports.complete_run(
             conn,
             capabilities=capabilities,
@@ -340,6 +350,17 @@ class WorkerAttemptLifecycle:
         if observed is not None:
             return observed
         attempt = await self._current_attempt(conn)
+        if self.ports.record_result_diagnostics is not None:
+            result_json = await self.ports.record_result_diagnostics(
+                conn,
+                tenant_id=self.tenant_id,
+                run_id=self.run_id,
+                attempt_id=str(attempt["id"]) if attempt is not None else None,
+                source="worker_executor",
+                stage="terminalization",
+                error_code=error_code,
+                result_json=result_json,
+            )
         progress = await self.ports.fail_run(
             conn,
             capabilities=capabilities,
@@ -499,32 +520,20 @@ async def fail_run_and_reconcile_worker_child(
     error_code: str,
     error_message: str,
     capabilities: Any,
-    fail_run: AsyncPort,
     reconcile_child: AsyncPort,
-    attempt_lifecycle: WorkerAttemptLifecycle | None = None,
+    attempt_lifecycle: WorkerAttemptLifecycle,
     result_json: dict[str, Any] | None = None,
     is_multi_agent_child: bool | None = None,
 ) -> tuple[bool, Any | None]:
     """Fail one Run and project a child terminal fact when this is a child."""
 
-    if attempt_lifecycle is not None:
-        terminal_written = await attempt_lifecycle.fail(
-            conn,
-            capabilities=capabilities,
-            error_code=error_code,
-            error_message=error_message,
-            result_json=result_json,
-        )
-    else:
-        terminal_written = await fail_run(
-            conn,
-            capabilities=capabilities,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            error_code=error_code,
-            error_message=error_message,
-            result_json=result_json,
-        )
+    terminal_written = await attempt_lifecycle.fail(
+        conn,
+        capabilities=capabilities,
+        error_code=error_code,
+        error_message=error_message,
+        result_json=result_json,
+    )
     if not terminal_written:
         return False, None
     if tenant_id == payload.tenant_id and run_id == payload.run_id:

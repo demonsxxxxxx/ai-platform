@@ -59,6 +59,36 @@ test("admin ZIP release replaces the one selected Skill", () => {
   );
 });
 
+test("existing Skill update only selects the matching ZIP package", () => {
+  assert.deepEqual(
+    initialZipSkillSelection(
+      [existingSkill, newSkill],
+      true,
+      "existing-skill",
+    ),
+    ["existing-skill"],
+  );
+  assert.deepEqual(
+    initialZipSkillSelection([newSkill], true, "existing-skill"),
+    [],
+  );
+  assert.equal(
+    canSelectZipSkill(existingSkill, true, "existing-skill"),
+    true,
+  );
+  assert.equal(canSelectZipSkill(newSkill, true, "existing-skill"), false);
+  assert.deepEqual(
+    toggleZipSkillSelection(
+      ["existing-skill"],
+      "new-skill",
+      [existingSkill, newSkill],
+      true,
+      "existing-skill",
+    ),
+    ["existing-skill"],
+  );
+});
+
 test("normal ZIP import still selects existing catalog skills only", () => {
   assert.deepEqual(
     initialZipSkillSelection([existingSkill, newSkill], false),

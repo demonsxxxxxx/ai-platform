@@ -8,7 +8,12 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import AdminRunDetailResponse, AdminRunListResponse, RunControlResponse
 from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
-from app.runs.api import RunCancellationUseCase, admin_runtime_diagnostics_from_run
+from app.runs.api import (
+    AdminRunDiagnosticsResponse,
+    RunCancellationUseCase,
+    RunDiagnosticsService,
+    assemble_admin_model_output,
+)
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     release_stopped_sandbox_leases_for_cancel,
@@ -18,7 +23,7 @@ from app.runtime.sandbox.container_provider import create_container_provider
 from app.streaming.api import (
     V4PublicationTransportUnavailable,
     admit_v4_stream,
-    publish_pending_run_terminal,
+    publish_run_event,
 )
 from app.control_plane_contracts import sanitize_public_text
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
@@ -33,6 +38,13 @@ def _require_run_cancellation_use_case(request: Request) -> RunCancellationUseCa
     if type(use_case) is not RunCancellationUseCase:
         raise RuntimeError("run_cancellation_use_case_unavailable")
     return use_case
+
+
+def _require_run_diagnostics_service(request: Request) -> RunDiagnosticsService:
+    service = getattr(request.app.state, "run_diagnostics_service", None)
+    if not isinstance(service, RunDiagnosticsService):
+        raise RuntimeError("run_diagnostics_service_unavailable")
+    return service
 
 
 QUEUE_VISIBLE_STATUSES = {"queued", "running"}
@@ -147,6 +159,7 @@ async def admin_run_cancel(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     runtime = request.app.state.run_stream_runtime
+    attempt_lifecycle = request.app.state.run_attempt_lifecycle
     cancellation = await _require_run_cancellation_use_case(request).request_admin_cancel(
         tenant_id=principal.tenant_id,
         admin_user_id=principal.user_id,
@@ -177,12 +190,14 @@ async def admin_run_cancel(
                 run_id=run_id,
                 progress=initial_progress,
                 transaction_factory=transaction,
+                attempt_lifecycle=attempt_lifecycle,
             )
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             capabilities=runtime.worker_capabilities,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
             attempt_id=cancellation.attempt_id if cancellation is not None else None,
         )
         if progress is not None and progress.is_terminal():
@@ -197,10 +212,11 @@ async def admin_run_cancel(
             run_id=run_id,
             progress=progress,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
         )
     if cancellation is not None and cancellation.attempt_id:
         try:
-            await publish_pending_run_terminal(
+            await publish_run_event(
                 runtime.worker_capabilities,
                 tenant_id=principal.tenant_id,
                 run_id=cancellation.run_id,
@@ -295,22 +311,41 @@ async def admin_run_detail(
     try:
         async with transaction() as conn:
             detail = await repositories.get_admin_run_detail(conn, tenant_id=principal.tenant_id, run_id=run_id)
-            raw_run = (
-                await repositories.get_run(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id,
-                )
-                if detail is not None and detail["run"]["status"] == "failed"
-                else None
-            )
-            runtime_diagnostics = admin_runtime_diagnostics_from_run(raw_run)
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     detail = dict(detail)
-    if runtime_diagnostics:
-        detail["run"]["result"]["runtime_diagnostics"] = runtime_diagnostics
+    detail["run"] = dict(detail["run"])
+    detail["run"]["model_output"] = assemble_admin_model_output(
+        detail.get("events", []),
+        sanitize_text=sanitize_public_text,
+    )
     detail["run"] = await attach_live_queue_context(detail["run"], tenant_id=principal.tenant_id)
     return AdminRunDetailResponse.model_validate(detail)
+
+
+@router.get(
+    "/admin/runs/{run_id}/diagnostics",
+    response_model=AdminRunDiagnosticsResponse,
+)
+async def admin_run_diagnostics(
+    run_id: str,
+    request: Request,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    try:
+        run_id = assert_safe_id(run_id, "run_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with transaction() as conn:
+        diagnostics = await _require_run_diagnostics_service(request).read_admin(
+            conn,
+            tenant_id=principal.tenant_id,
+            run_id=run_id,
+        )
+    if diagnostics is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    return diagnostics

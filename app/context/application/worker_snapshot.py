@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -9,6 +10,8 @@ from app.context.domain.conversation import (
     empty_executor_conversation_context,
 )
 from app.context.domain.provider_sessions import PROVIDER_SESSION_RESUME_CONTEXT_KEY
+
+_SAFE_SNAPSHOT_MEMBER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 SnapshotLoader = Callable[..., Awaitable[dict[str, Any] | None]]
 MessageLoader = Callable[..., Awaitable[list[dict[str, Any]]]]
@@ -39,10 +42,23 @@ async def materialize_worker_context_snapshot(
         return None
 
     raw_message_ids = scoped_snapshot.get("included_message_ids")
-    if not isinstance(raw_message_ids, list):
+    raw_file_ids = scoped_snapshot.get("included_file_ids")
+    if not isinstance(raw_message_ids, list) or not isinstance(raw_file_ids, list):
         return None
-    selected_message_ids = [str(message_id or "").strip() for message_id in raw_message_ids]
-
+    if (
+        any(
+            not isinstance(member_id, str)
+            or not _SAFE_SNAPSHOT_MEMBER_ID.fullmatch(member_id)
+            for member_id in (*raw_message_ids, *raw_file_ids)
+        )
+    ):
+        return None
+    selected_message_ids = list(raw_message_ids)
+    selected_file_ids = list(raw_file_ids)
+    if len(selected_message_ids) != len(set(selected_message_ids)) or len(
+        selected_file_ids
+    ) != len(set(selected_file_ids)):
+        return None
     has_provider_transcript = False
     if provider_transcript_loader is not None and identity.get("engine") == "claude":
         provider_state = await provider_transcript_loader(
@@ -95,4 +111,5 @@ async def materialize_worker_context_snapshot(
             **conversation_context,
             PROVIDER_SESSION_RESUME_CONTEXT_KEY: has_provider_transcript,
         },
+        "file_ids": selected_file_ids,
     }

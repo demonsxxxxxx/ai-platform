@@ -1,7 +1,10 @@
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from app.runtime.sandbox.contracts import (
+    AssistantAnswerReceipt,
     ContainerStatus,
     ContainerLease,
     ExecutorCallbackEvent,
@@ -10,6 +13,7 @@ from app.runtime.sandbox.contracts import (
     ModelTokenLimits,
     SandboxRuntimeRequest,
     WorkspaceLease,
+    executor_terminal_receipt_payload,
     normalize_executor_terminal_status,
 )
 from app.runtime.kernel_contracts import RunContext
@@ -69,11 +73,210 @@ def test_terminal_callback_rejects_empty_success_result():
         )
 
 
-def test_terminal_callback_rejects_unstructured_failure_result():
-    with pytest.raises(ValidationError, match="structured error fields"):
+def test_terminal_callback_accepts_empty_success_with_a_receipt():
+    receipt = {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": "msg_answer_a",
+        "delta_count": 1,
+        "text_length": 5,
+        "last_delta_event_id": "evt4_delta_a",
+    }
+
+    result = ExecutorTerminalResult.model_validate(
+        {"status": "completed", "run_id": "run-a", "answer_receipt": receipt}
+    )
+
+    assert result.message == ""
+    assert result.answer_receipt == AssistantAnswerReceipt.model_validate(receipt)
+
+
+def test_terminal_callback_rejects_message_and_receipt_together():
+    with pytest.raises(ValidationError, match="either a message or answer receipt"):
         ExecutorTerminalResult.model_validate(
-            {"status": "failed", "run_id": "run-a"}
+            {
+                "status": "completed",
+                "run_id": "run-a",
+                "message": "inline answer",
+                "answer_receipt": {
+                    "schema_version": "ai-platform.assistant-answer-receipt.v1",
+                    "message_id": "msg_answer_a",
+                    "delta_count": 1,
+                    "text_length": 5,
+                    "last_delta_event_id": "evt4_delta_a",
+                },
+            }
         )
+
+
+@pytest.mark.parametrize("message", [" ", "\n"])
+def test_terminal_callback_rejects_whitespace_message_with_receipt(message):
+    with pytest.raises(ValidationError, match="either a message or answer receipt"):
+        ExecutorTerminalResult.model_validate(
+            {
+                "status": "completed",
+                "run_id": "run-a",
+                "message": message,
+                "answer_receipt": {
+                    "schema_version": "ai-platform.assistant-answer-receipt.v1",
+                    "message_id": "msg_answer_a",
+                    "delta_count": 1,
+                    "text_length": 5,
+                    "last_delta_event_id": "evt4_delta_a",
+                },
+            }
+        )
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_terminal_callback_rejects_receipt_for_unsuccessful_status(status):
+    with pytest.raises(ValidationError, match="must not contain an answer receipt"):
+        ExecutorTerminalResult.model_validate(
+            {
+                "status": status,
+                "run_id": "run-a",
+                "answer_receipt": {
+                    "schema_version": "ai-platform.assistant-answer-receipt.v1",
+                    "message_id": "msg_answer_a",
+                    "delta_count": 1,
+                    "text_length": 5,
+                    "last_delta_event_id": "evt4_delta_a",
+                },
+                "error_code": "executor_failed",
+                "error_message": "Execution failed",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "receipt_change",
+    [
+        {"schema_version": "ai-platform.answer-receipt.v1"},
+        {"unexpected": "field"},
+        {"delta_count": 0},
+        {"text_length": 0},
+        {"message_id": "../private"},
+        {"last_delta_event_id": "C:\\private\\event"},
+        {"delta_count": True},
+    ],
+)
+def test_terminal_callback_rejects_malformed_answer_receipts(receipt_change):
+    receipt = {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": "msg_answer_a",
+        "delta_count": 1,
+        "text_length": 5,
+        "last_delta_event_id": "evt4_delta_a",
+    }
+    receipt.update(receipt_change)
+
+    with pytest.raises(ValidationError):
+        ExecutorTerminalResult.model_validate(
+            {"status": "completed", "run_id": "run-a", "answer_receipt": receipt}
+        )
+
+
+def test_terminal_callback_round_trips_outer_metadata_but_rejects_unknown_receipt_fields():
+    result = ExecutorTerminalResult.model_validate(
+        {
+            "status": "completed",
+            "run_id": "run-a",
+            "message": "answer",
+            "executor_model_latency_ms": 123,
+            "unexpected": True,
+        }
+    )
+
+    serialized = result.model_dump(mode="json")
+    assert serialized["executor_model_latency_ms"] == 123
+    assert serialized["unexpected"] is True
+    assert ExecutorTerminalResult.model_validate(serialized).model_dump(mode="json") == serialized
+
+    with pytest.raises(ValidationError, match="extra"):
+        ExecutorTerminalResult.model_validate(
+            {
+                "status": "completed",
+                "run_id": "run-a",
+                "answer_receipt": {
+                    "schema_version": "ai-platform.assistant-answer-receipt.v1",
+                    "message_id": "msg_answer_a",
+                    "delta_count": 1,
+                    "text_length": 5,
+                    "last_delta_event_id": "evt4_delta_a",
+                    "unexpected": True,
+                },
+            }
+        )
+
+
+def test_terminal_receipt_drops_private_and_unknown_fields_and_enforces_total_budget():
+    result = ExecutorTerminalResult.model_validate(
+        {
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "executor_failed",
+            "error_message": "Executor failed",
+            "runtime_diagnostics": {"tool_input": {"token": "private"}},
+            "unexpected": {"prompt": "private"},
+            "sdk_turn_diagnostics": {
+                "runtime_diagnostics": {"tool_input": {"token": "private"}},
+                "status": "failed",
+            },
+            "executor_model_latency_ms": 123,
+        }
+    )
+
+    receipt = executor_terminal_receipt_payload(result)
+
+    assert receipt["executor_model_latency_ms"] == 123
+    assert "runtime_diagnostics" not in receipt
+    assert "runtime_diagnostics" not in str(receipt["sdk_turn_diagnostics"])
+    assert "unexpected" not in receipt
+
+    oversized = ExecutorTerminalResult.model_validate(
+        {
+            "status": "completed",
+            "run_id": "run-a",
+            "message": "x" * 200_000,
+            "sdk_usage": {"bounded_but_collectively_oversized": "y" * 100_000},
+        }
+    )
+    with pytest.raises(ValueError, match="executor_terminal_receipt_too_large"):
+        executor_terminal_receipt_payload(oversized)
+
+
+def test_terminal_callback_serializes_large_answer_as_a_bounded_receipt():
+    answer = "x" * 262_145
+    payload = {
+        "status": "completed",
+        "run_id": "run-a",
+        "answer_receipt": {
+            "schema_version": "ai-platform.assistant-answer-receipt.v1",
+            "message_id": "msg_answer_a",
+            "delta_count": 33,
+            "text_length": len(answer),
+            "last_delta_event_id": "evt4_delta_a",
+        },
+    }
+
+    callback = ExecutorCallbackEvent.model_validate(
+        {
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+            "callback_token_id": "cbt_run_a",
+            "status": "completed",
+            "progress": 100,
+            "terminal_result": payload,
+        }
+    )
+    serialized = json.dumps(callback.model_dump(mode="json"), ensure_ascii=False)
+
+    assert len(serialized) < 4_096
+    assert answer not in serialized
+    assert callback.terminal_result is not None
+    assert callback.terminal_result.message == ""
+    assert callback.terminal_result.answer_receipt is not None
+    assert callback.terminal_result.answer_receipt.text_length == len(answer)
 
 
 def test_terminal_callback_accepts_structured_failure_result():

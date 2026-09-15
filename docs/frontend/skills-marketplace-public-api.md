@@ -45,6 +45,16 @@ Backed routes:
 
 No public `/api/skills/{skill_name}/publish` route is backed. Global Skill release remains exclusively under the Admin review, materialization, promote, and rollback lifecycle at `/api/ai/admin/skills/*`.
 
+Admin ZIP uploads retain the content hash as the immutable release and execution
+identity. The admin catalog separately projects a human-readable upload version:
+the first uploaded package is `1.0.0`, and each later package for the same Skill
+increments the patch component. Legacy uploaded packages receive the same
+creation-order projection without rewriting their immutable records. The admin
+catalog also exposes `latest_uploaded_at` from the immutable latest uploaded
+version's creation timestamp (or `null` for built-in-only Skills). The management
+list uses it for update time before falling back to the public runtime timestamp;
+reusing identical package content does not create a new timestamp.
+
 `POST /api/skills/batch/delete` and `POST /api/skills/batch/toggle` map to tenant skill availability and audit each affected skill. Batch delete disables tenant availability; it does not delete global built-in Skill packages or admin release records.
 
 PUT `/api/skills/{skill_name}/files/{file_path}` stores a tenant/user-scoped UTF-8 text file overlay after `skill:write` passes. The overlay is audited, size-limited by backend configuration, and appears only in that user's public Skills projection. Binary/base64 asset overlays remain out of scope until the import storage slice is backed.
@@ -110,6 +120,14 @@ authority for immutable version upload, review, promote, rollout policy, and
 rollback. Marketplace routes remain projections and tenant-distribution
 controls; they cannot create an active version or redirect a release policy.
 
+`GET /api/ai/admin/skills` and its detail route expose the current management
+catalog only. Every returned aggregate has `lifecycle_status: "active"`;
+distribution and version lifecycle remain separate fields. Retired global rows
+stay in PostgreSQL for historical Run, Session, snapshot, and audit references,
+while the management catalog excludes them. Built-in synchronization is bounded
+to Skills classified as public workbench capabilities or internal dependencies,
+so historical synthetic identities such as `general-chat` cannot be republished.
+
 ## MCP Routes
 
 Backed read and server lifecycle routes:
@@ -148,12 +166,19 @@ returned in API responses or written to audit payloads.
 
 Company login stores one encrypted MCP JWT per `tenant_id + user_id` in Redis;
 the JWT's own `exp` is its lifetime and a later login replaces the earlier
-value. The browser never receives or stores this JWT. At MCP execution time the
-Worker reuses the existing Capability Distribution and Tool Policy plan, reads
-the current JWT and encrypted Server target, then registers the Server with the
-Agent SDK using static headers plus `JWT-Authorization`. The SDK calls the MCP
-Server directly. There is no separate MCP Broker capability or host Relay, and
-runtime connection material is removed from reconciliation persistence.
+value. Ordinary MCP flows never return this JWT to the browser. The document
+translator is the only exception: `POST /api/ai/auth/company-credential-handoff`
+returns the current user's JWT to an authenticated same-origin page with
+`Cache-Control: private, no-store`; the page keeps it only in memory and sends
+it to the fixed translator origin after validating the child window and its
+nonce. It is never placed in a URL or AI Platform browser storage. The
+translator stores the received JWT in its own tab-scoped `sessionStorage` for
+its API calls. At MCP execution time the Worker reuses the existing Capability
+Distribution and Tool Policy plan, reads the current JWT and encrypted Server
+target, then registers the Server with the Agent SDK using static headers plus
+`JWT-Authorization`. The SDK calls the MCP Server directly. There is no
+separate MCP Broker capability or host Relay, and runtime connection material
+is removed from reconciliation persistence.
 
 Explicitly fail-closed follow-up routes:
 

@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import base64
 import io
 from pathlib import Path
@@ -48,6 +49,26 @@ def skill_admin_headers():
         "X-AI-Tenant-ID": "default",
         "X-AI-Permissions": "skill:admin",
     }
+
+
+@pytest.fixture(autouse=True)
+def stub_uploaded_skill_display_version_persistence(monkeypatch):
+    async def lock_skill(conn, *, skill_id):
+        assert conn is not None
+        assert skill_id
+
+    async def list_versions(conn, *, skill_ids):
+        assert conn is not None
+        return []
+
+    monkeypatch.setattr(
+        "app.routes.admin_skills.lock_skill_for_version_upload",
+        lock_skill,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_skills.list_uploaded_skill_display_version_rows",
+        list_versions,
+    )
 
 
 def skill_package_zip(
@@ -168,6 +189,32 @@ def test_admin_skill_detail_requires_admin(monkeypatch):
     assert response.json()["detail"] == "not_ai_admin"
 
 
+def test_admin_skill_detail_hides_retired_aggregate(monkeypatch):
+    async def fake_detail(conn, *, tenant_id, skill_id):
+        assert isinstance(conn, OpaqueConnection)
+        assert tenant_id == "default"
+        assert skill_id == "baoyu-translate"
+        return {
+            "skill": {
+                "skill_id": "baoyu-translate",
+                "name": "baoyu-translate",
+                "lifecycle_status": "inactive",
+            },
+            "versions": [],
+            "recent_snapshots": [],
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_admin_skill_detail", fake_detail)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/skills/baoyu-translate", headers=admin_headers())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "skill_not_found"
+
+
 def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(monkeypatch):
     async def fake_list_summaries(conn, *, tenant_id):
         assert isinstance(conn, OpaqueConnection)
@@ -177,19 +224,47 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "skill_id": "native-review",
                 "name": "native-review",
                 "description": "Review local files.",
-                "lifecycle_status": "released",
+                "lifecycle_status": "active",
                 "distribution_status": "active",
                 "visible_to_user": True,
-                "latest_version": "hash-current",
-                "latest_version_status": "released",
-                "current_version": "hash-current",
+                "latest_version": "hash-uploaded-draft",
+                "latest_version_status": "draft",
+                "current_version": "hash-builtin-current",
                 "rollout_percent": 100,
+            },
+            {
+                "skill_id": "baoyu-translate",
+                "name": "baoyu-translate",
+                "description": "Retired translator.",
+                "lifecycle_status": "inactive",
+                "distribution_status": "disabled",
+                "visible_to_user": False,
+                "latest_version": "hash-retired",
+                "latest_version_status": "released",
+                "current_version": None,
+                "rollout_percent": None,
+            },
+        ]
+
+    async def fake_display_versions(conn, *, skill_ids):
+        assert isinstance(conn, OpaqueConnection)
+        assert skill_ids == ["native-review", "baoyu-translate"]
+        return [
+            {
+                "skill_id": "native-review",
+                "version": "hash-uploaded-draft",
+                "display_version": None,
+                "created_at": datetime(2026, 9, 15, 2, 30, tzinfo=timezone.utc),
             }
         ]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_admin_skill_summaries", fake_list_summaries)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.list_uploaded_skill_display_version_rows",
+        fake_display_versions,
+    )
     client = TestClient(create_app())
 
     denied = client.get("/api/ai/admin/skills", headers=user_headers())
@@ -204,13 +279,16 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "skill_id": "native-review",
                 "name": "native-review",
                 "description": "Review local files.",
-                "lifecycle_status": "released",
+                "lifecycle_status": "active",
                 "distribution_status": "active",
                 "visible_to_user": True,
-                "latest_version": "hash-current",
-                "latest_version_status": "released",
-                "current_version": "hash-current",
+                "latest_version": "hash-uploaded-draft",
+                "latest_version_status": "draft",
+                "current_version": "hash-builtin-current",
                 "rollout_percent": 100,
+                "latest_display_version": "1.0.0",
+                "current_display_version": None,
+                "latest_uploaded_at": "2026-09-15T02:30:00+00:00",
             }
         ]
     }
@@ -224,7 +302,11 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
         assert tenant_id == "default"
         assert skill_id == "qa-file-reviewer"
         return {
-            "skill": {"skill_id": "qa-file-reviewer", "name": "QA File Reviewer"},
+            "skill": {
+                "skill_id": "qa-file-reviewer",
+                "name": "QA File Reviewer",
+                "lifecycle_status": "active",
+            },
             "release_policy": {
                 "skill_id": "qa-file-reviewer",
                 "channel": "stable",
@@ -253,7 +335,7 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
 
     async def fake_list_skill_ids(conn):
         assert isinstance(conn, OpaqueConnection)
-        return ["baoyu-translate", "minimax-docx", "qa-file-reviewer"]
+        return ["minimax-docx", "qa-file-reviewer"]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
@@ -291,7 +373,11 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
 
 def test_admin_skill_detail_response_rejects_extra_dependency_policy_fields():
     payload = {
-        "skill": {"skill_id": "qa-file-reviewer", "name": "QA File Reviewer"},
+        "skill": {
+            "skill_id": "qa-file-reviewer",
+            "name": "QA File Reviewer",
+            "lifecycle_status": "active",
+        },
         "dependency_policy": {
             "skill_id": "qa-file-reviewer",
             "public": True,
@@ -371,17 +457,17 @@ def test_dependency_policy_allows_persisted_ctd_stability_reference_dependency()
 
 
 def test_dependency_policy_reports_persisted_public_dependency_without_allowing_it():
-    available = {"baoyu-translate", "minimax-docx", "qa-file-reviewer"}
+    available = {"ragflow-knowledge-search", "minimax-docx", "qa-file-reviewer"}
     policy = skill_dependency_policy(
         "qa-file-reviewer",
         available,
-        ["baoyu-translate"],
+        ["ragflow-knowledge-search"],
     )
 
-    assert policy["dependency_ids"] == ["baoyu-translate"]
+    assert policy["dependency_ids"] == ["ragflow-knowledge-search"]
     assert policy["dependency_details"] == [
         {
-            "skill_id": "baoyu-translate",
+            "skill_id": "ragflow-knowledge-search",
             "status": "blocked",
             "reason": "skill_dependency_not_internal",
             "public": True,
@@ -389,14 +475,18 @@ def test_dependency_policy_reports_persisted_public_dependency_without_allowing_
             "available": True,
         }
     ]
-    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal: baoyu-translate"):
-        validate_skill_dependency_ids("qa-file-reviewer", ["baoyu-translate"], available)
+    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal: ragflow-knowledge-search"):
+        validate_skill_dependency_ids("qa-file-reviewer", ["ragflow-knowledge-search"], available)
 
 
 def test_admin_skill_detail_does_not_infer_dependency_without_persisted_version(monkeypatch):
     async def fake_detail(conn, *, tenant_id, skill_id):
         return {
-            "skill": {"skill_id": skill_id, "name": "QA File Reviewer"},
+            "skill": {
+                "skill_id": skill_id,
+                "name": "QA File Reviewer",
+                "lifecycle_status": "active",
+            },
             "versions": [],
             "recent_snapshots": [],
         }
@@ -427,6 +517,7 @@ def test_admin_sync_builtin_skills_records_registry_versions_without_inferred_de
     minimax_dir = skills_root / "minimax-docx"
     qa_dir = skills_root / "qa-file-reviewer"
     ragflow_dir = skills_root / "ragflow-knowledge-search"
+    legacy_general_chat_dir = skills_root / "general-chat"
     minimax_dir.mkdir(parents=True)
     qa_dir.mkdir(parents=True)
     ragflow_dir.mkdir(parents=True)
@@ -458,6 +549,18 @@ def test_admin_sync_builtin_skills_records_registry_versions_without_inferred_de
 
         def list_builtin_skills(self):
             return [
+                FakeBuiltinSkill(
+                    name="general-chat",
+                    description="Legacy synthetic chat Skill",
+                    path=legacy_general_chat_dir,
+                    version="hash-general-chat",
+                    source={
+                        "kind": "builtin",
+                        "asset_dir": "general-chat",
+                        "version": "hash-general-chat",
+                    },
+                    entry={"kind": "filesystem", "path": str(legacy_general_chat_dir)},
+                ),
                 FakeBuiltinSkill(
                     name="minimax-docx",
                     description="Word document generation",
@@ -572,20 +675,14 @@ def test_admin_sync_builtin_skills_preserves_existing_immutable_dependency_manif
     skills_root = tmp_path / "skills"
     qa_dir = skills_root / "qa-file-reviewer"
     minimax_dir = skills_root / "minimax-docx"
-    translate_dir = skills_root / "baoyu-translate"
     qa_dir.mkdir(parents=True)
     minimax_dir.mkdir(parents=True)
-    translate_dir.mkdir(parents=True)
     (qa_dir / "SKILL.md").write_text(
         "---\nname: qa-file-reviewer\ndescription: QA review\n---\n\n# qa-file-reviewer\n",
         encoding="utf-8",
     )
     (minimax_dir / "SKILL.md").write_text(
         "---\nname: minimax-docx\ndescription: Word document generation\n---\n\n# minimax-docx\n",
-        encoding="utf-8",
-    )
-    (translate_dir / "SKILL.md").write_text(
-        "---\nname: baoyu-translate\ndescription: Translate documents\n---\n\n# baoyu-translate\n",
         encoding="utf-8",
     )
 
@@ -711,6 +808,17 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
         assert isinstance(conn, OpaqueConnection)
         return None
 
+    async def fake_display_versions(conn, *, skill_ids):
+        assert isinstance(conn, OpaqueConnection)
+        assert skill_ids == ["qa-file-reviewer"]
+        return [
+            {
+                "skill_id": "qa-file-reviewer",
+                "version": "previous-upload-hash",
+                "display_version": "1.0.0",
+            }
+        ]
+
     async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
         assert isinstance(conn, OpaqueConnection)
         assert tenant_id == "default"
@@ -739,6 +847,10 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.list_uploaded_skill_display_version_rows",
+        fake_display_versions,
+    )
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
@@ -760,6 +872,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert uploaded["skill_id"] == "qa-file-reviewer"
     assert uploaded["version"] == uploaded["content_hash"]
     assert uploaded["source"]["kind"] == "uploaded"
+    assert uploaded["source"]["display_version"] == "1.0.1"
     assert uploaded["source"]["package_sha256"] == "zip-sha256"
     assert uploaded["source"]["size_bytes"] == len(package_content)
     assert uploaded["source"]["package_contract"]["schema_version"] == "ai-platform.skill-package-contract.v1"
@@ -808,6 +921,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert audit["target_id"] == "qa-file-reviewer"
     assert audit["payload_json"]["skill_id"] == "qa-file-reviewer"
     assert audit["payload_json"]["version"] == uploaded["content_hash"]
+    assert audit["payload_json"]["display_version"] == "1.0.1"
     assert audit["payload_json"]["storage_key"] == expected_key
     assert audit["payload_json"]["package_sha256"] == "zip-sha256"
 
@@ -897,6 +1011,7 @@ def test_skill_admin_upload_new_skill_package_creates_draft_without_release_or_v
     assert uploaded["description"] == "Summarize research briefs."
     assert uploaded["status"] == "draft"
     assert uploaded["source"]["kind"] == "uploaded"
+    assert uploaded["source"]["display_version"] == "1.0.0"
     assert uploaded["source"]["storage_key"] == (
         f"skills/new-research-skill/versions/{uploaded['content_hash']}/package.zip"
     )

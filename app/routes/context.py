@@ -642,7 +642,7 @@ async def create_memory_record(
                     payload_json=sanitize_public_payload(
                         {
                             "workspace_id": request.workspace_id,
-                            "agent_id": public_agent_id_for_projection(effective_agent_id) or effective_agent_id,
+                            "agent_id": public_agent_id_for_projection(effective_agent_id),
                             "session_id": request.session_id,
                             "record_type": request.record_type,
                             "reason": "memory_policy_disabled",

@@ -1,12 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
+const PROJECT_ROOT = path.resolve(__dirname, "../..");
+const PROJECT_ENV = loadEnv(
+  process.env.NODE_ENV || "development",
+  PROJECT_ROOT,
+  "",
+);
 const ICONS_DIR = path.resolve(__dirname, "public/icons");
 const AI_PLATFORM_API_TARGET =
-  process.env.VITE_AI_PLATFORM_API_TARGET || "http://127.0.0.1:8020";
+  PROJECT_ENV.VITE_AI_PLATFORM_API_TARGET ||
+  process.env.VITE_AI_PLATFORM_API_TARGET ||
+  "http://127.0.0.1:8020";
 
 function getStaticIconContentType(filePath: string): string {
   if (filePath.endsWith(".svg")) return "image/svg+xml";

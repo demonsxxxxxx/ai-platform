@@ -1,7 +1,10 @@
 import hashlib
 import json
 import re
-from typing import Any
+import traceback
+from collections import deque
+from collections.abc import Callable
+from typing import Any, Protocol, runtime_checkable
 
 
 SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-runtime-diagnostics.v1"
@@ -11,8 +14,37 @@ SDK_RUNTIME_DIAGNOSTIC_VALUE_MAX_BYTES = 4_096
 SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES = 128
 SDK_RUNTIME_DIAGNOSTIC_LIFECYCLE_LIMIT = 128
 SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT = 8
+SDK_RUNTIME_DIAGNOSTIC_FAILURE_LIMIT = 8
+SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_LIMIT = 8
+SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_SCAN_LIMIT = 64
+SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_MAX_BYTES = 16 * 1024
+SDK_RUNTIME_DIAGNOSTIC_LOSS_LIMIT = 32
+
+
+@runtime_checkable
+class SandboxExecutorHttpFailure(Protocol):
+    error_code: str
+    public_message: str
+    runtime_diagnostics: dict[str, Any] | None
+
+
+@runtime_checkable
+class SandboxRuntimeFailure(Protocol):
+    error_code: str
+
 
 _STRUCTURED_VALUE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_LOSS_FIELD_PATTERN = re.compile(r"[a-z][a-z0-9_.\[\]]{0,127}")
+_LOSS_REASONS = frozenset(
+    {
+        "invalid_field",
+        "invalid_payload",
+        "truncated",
+        "cycle",
+        "unknown_fields_dropped",
+        "unsupported_schema",
+    }
+)
 _SDK_VALUE_FIELDS = frozenset(
     {
         "errors",
@@ -24,6 +56,70 @@ _SDK_VALUE_FIELDS = frozenset(
 )
 
 
+def exception_chain_from_error(
+    value: BaseException,
+    *,
+    include_nested_text: bool = True,
+    losses: list[dict[str, object]] | None = None,
+) -> list[dict[str, str]]:
+    """Extract the standard Python cause/context chain with a bounded walk."""
+
+    seen: set[int] = set()
+    outer: tuple[BaseException, str | None] | None = None
+    inner: deque[tuple[BaseException, str | None]] = deque(
+        maxlen=SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_LIMIT
+    )
+    current: BaseException | None = value
+    walked = 0
+    while (
+        current is not None
+        and id(current) not in seen
+        and walked < SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_SCAN_LIMIT
+    ):
+        seen.add(id(current))
+        cause = current.__cause__
+        if cause is not None:
+            relation = "cause"
+            next_error = cause
+        elif not current.__suppress_context__ and current.__context__ is not None:
+            relation = "context"
+            next_error = current.__context__
+        else:
+            relation = None
+            next_error = None
+        if outer is None:
+            outer = (current, relation)
+        else:
+            inner.append((current, relation))
+        current = next_error
+        walked += 1
+    if losses is not None and current is not None and id(current) in seen:
+        losses.append({"field": "sdk.exception_chain", "reason": "cycle"})
+
+    selected = ([outer] if outer is not None else []) + list(inner)
+    chain: list[dict[str, str]] = []
+    for error, relation in selected:
+        node = {"type": type(error).__name__}
+        if error is value or include_nested_text:
+            node.update(
+                {
+                    "message": str(error),
+                    "traceback": "".join(
+                        traceback.format_exception(
+                            type(error),
+                            error,
+                            error.__traceback__,
+                            chain=False,
+                        )
+                    ),
+                }
+            )
+        if relation is not None:
+            node["relation"] = relation
+        chain.append(node)
+    return chain
+
+
 def _valid_unicode_text(value: object) -> str:
     return str(value or "").encode("utf-8", errors="replace").decode("utf-8")
 
@@ -33,6 +129,7 @@ def _json_bytes(value: object) -> bytes:
         value,
         ensure_ascii=False,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -54,13 +151,46 @@ def runtime_diagnostic_text(
     return text[:low]
 
 
+def _bounded_text(
+    value: object,
+    *,
+    max_bytes: int,
+    preserve_tail: bool,
+) -> tuple[str, tuple[int, int] | None]:
+    text = _valid_unicode_text(value)
+    original_bytes = len(_json_bytes(text))
+    if original_bytes <= max_bytes:
+        return text, None
+    if not preserve_tail:
+        bounded = runtime_diagnostic_text(text, max_bytes=max_bytes)
+        return bounded, (original_bytes, len(_json_bytes(bounded)))
+
+    marker = "\n... [truncated] ...\n"
+    low, high = 0, len(text)
+    bounded = runtime_diagnostic_text(text, max_bytes=max_bytes)
+    while low <= high:
+        keep = (low + high) // 2
+        head, tail = (keep + 1) // 2, keep // 2
+        candidate = text[:head] + marker + (text[-tail:] if tail else "")
+        if len(_json_bytes(candidate)) <= max_bytes:
+            bounded = candidate
+            low = keep + 1
+        else:
+            high = keep - 1
+    return bounded, (original_bytes, len(_json_bytes(bounded)))
+
+
 def runtime_diagnostic_value(value: object) -> object:
-    serialized = json.dumps(
-        value,
-        ensure_ascii=False,
-        default=str,
-        separators=(",", ":"),
-    )
+    try:
+        serialized = json.dumps(
+            value,
+            ensure_ascii=False,
+            default=str,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return None
     encoded = serialized.encode("utf-8", errors="replace")
     if len(encoded) <= SDK_RUNTIME_DIAGNOSTIC_VALUE_MAX_BYTES:
         return json.loads(encoded.decode("utf-8"))
@@ -71,246 +201,672 @@ def runtime_diagnostic_value(value: object) -> object:
     }
 
 
+def _append_loss(
+    losses: list[dict[str, object]],
+    *,
+    field: str,
+    reason: str,
+    **measurements: object,
+) -> None:
+    if not _LOSS_FIELD_PATTERN.fullmatch(field) or reason not in _LOSS_REASONS:
+        return
+    loss: dict[str, object] = {"field": field, "reason": reason}
+    for key in (
+        "original_bytes",
+        "retained_bytes",
+        "original",
+        "retained",
+        "count",
+    ):
+        raw = measurements.get(key)
+        if type(raw) is int and raw >= 0:
+            loss[key] = min(raw, 1_000_000_000)
+    if loss not in losses:
+        losses.append(loss)
+        del losses[:-SDK_RUNTIME_DIAGNOSTIC_LOSS_LIMIT]
+
+
+def _normalize_losses(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    losses: list[dict[str, object]] = []
+    for raw in value[-SDK_RUNTIME_DIAGNOSTIC_LOSS_LIMIT:]:
+        if isinstance(raw, dict):
+            _append_loss(
+                losses,
+                field=raw.get("field") if isinstance(raw.get("field"), str) else "",
+                reason=raw.get("reason") if isinstance(raw.get("reason"), str) else "",
+                original_bytes=raw.get("original_bytes"),
+                retained_bytes=raw.get("retained_bytes"),
+                original=raw.get("original"),
+                retained=raw.get("retained"),
+                count=raw.get("count"),
+            )
+    return losses
+
+
+def runtime_diagnostics_rejection(
+    *,
+    reason: str,
+    field: str = "runtime_diagnostics",
+) -> dict[str, Any]:
+    """Return a bounded private record explaining why diagnostics were rejected."""
+
+    losses: list[dict[str, object]] = []
+    _append_loss(
+        losses,
+        field=field,
+        reason=reason if reason in _LOSS_REASONS else "invalid_payload",
+    )
+    observation = {
+        "error_code": "runtime_diagnostics_rejected",
+        "failure_source": "diagnostic_normalizer",
+        "failure_stage": "diagnostic_validation",
+    }
+    return {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        **observation,
+        "sdk": {},
+        "failure_observations": [observation],
+        "tool_lifecycles": [],
+        "tool_calls": [],
+        "tool_policy_denials": [],
+        "normalization_losses": losses,
+    }
+
+
 def _structured_value(value: object) -> str:
     text = value if isinstance(value, str) else ""
     return text if _STRUCTURED_VALUE_PATTERN.fullmatch(text) else ""
 
 
-def _normalize_sdk(value: object) -> dict[str, object]:
+def _text_field(
+    value: object,
+    *,
+    field: str,
+    losses: list[dict[str, object]],
+    max_bytes: int = SDK_RUNTIME_DIAGNOSTIC_TEXT_MAX_BYTES,
+    preserve_tail: bool = False,
+) -> str:
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        _append_loss(losses, field=field, reason="invalid_field")
+        return ""
+    text, truncation = _bounded_text(
+        value,
+        max_bytes=max_bytes,
+        preserve_tail=preserve_tail,
+    )
+    if truncation:
+        _append_loss(
+            losses,
+            field=field,
+            reason="truncated",
+            original_bytes=truncation[0],
+            retained_bytes=truncation[1],
+        )
+    return text
+
+
+def _value_field(
+    value: object,
+    *,
+    field: str,
+    losses: list[dict[str, object]],
+) -> object:
+    projected = runtime_diagnostic_value(value)
+    if projected is None and value is not None:
+        _append_loss(losses, field=field, reason="invalid_field")
+        return None
+    if isinstance(projected, dict) and projected.get("truncated") is True:
+        _append_loss(
+            losses,
+            field=field,
+            reason="truncated",
+            original_bytes=projected.get("size_bytes"),
+        )
+    return projected
+
+
+def _normalize_exception_chain(
+    value: object,
+    *,
+    losses: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        _append_loss(losses, field="sdk.exception_chain", reason="invalid_field")
+        return []
+    raw_items = value
+    selected = raw_items
+    if len(raw_items) > SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_LIMIT:
+        selected = [
+            raw_items[0],
+            *raw_items[-(SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_LIMIT - 1) :],
+        ]
+    normalized: list[dict[str, str]] = []
+    for index, raw in enumerate(selected):
+        if not isinstance(raw, dict):
+            _append_loss(
+                losses,
+                field=f"sdk.exception_chain[{index}]",
+                reason="invalid_field",
+            )
+            continue
+        exception_type = _text_field(
+            raw.get("type"),
+            field=f"sdk.exception_chain[{index}].type",
+            losses=losses,
+            max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
+        )
+        if not exception_type:
+            _append_loss(
+                losses,
+                field=f"sdk.exception_chain[{index}]",
+                reason="invalid_field",
+            )
+            continue
+        node = {"type": exception_type}
+        for key, max_bytes in (("message", 1_024), ("traceback", 2_048)):
+            text = _text_field(
+                raw.get(key),
+                field=f"sdk.exception_chain[{index}].{key}",
+                losses=losses,
+                max_bytes=max_bytes,
+                preserve_tail=True,
+            )
+            if text:
+                node[key] = text
+        relation = raw.get("relation")
+        if relation in {"cause", "context"}:
+            node["relation"] = relation
+        elif relation is not None:
+            _append_loss(
+                losses,
+                field=f"sdk.exception_chain[{index}].relation",
+                reason="invalid_field",
+            )
+        normalized.append(node)
+
+    original_count = len(raw_items)
+    truncated = original_count > len(normalized)
+    while len(normalized) > 1 and len(_json_bytes(normalized)) > (
+        SDK_RUNTIME_DIAGNOSTIC_EXCEPTION_CHAIN_MAX_BYTES
+    ):
+        del normalized[1]
+        truncated = True
+    if truncated:
+        _append_loss(
+            losses,
+            field="sdk.exception_chain",
+            reason="truncated",
+            original=original_count,
+            retained=len(normalized),
+        )
+    return normalized
+
+
+def _normalize_sdk(
+    value: object,
+    *,
+    losses: list[dict[str, object]],
+) -> dict[str, object]:
     if not isinstance(value, dict):
+        if value not in (None, {}):
+            _append_loss(losses, field="sdk", reason="invalid_field")
         return {}
     normalized = {
-        key: runtime_diagnostic_value(raw)
-        for key, raw in value.items()
-        if key in _SDK_VALUE_FIELDS and raw not in (None, "", [])
+        key: _value_field(value[key], field=f"sdk.{key}", losses=losses)
+        for key in _SDK_VALUE_FIELDS
+        if value.get(key) not in (None, "", [])
     }
-    exception_type = runtime_diagnostic_text(
-        value.get("exception_type"),
-        max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
-    )
-    if exception_type:
-        normalized["exception_type"] = exception_type
-    for key in ("exception_message", "exception_traceback"):
-        text = runtime_diagnostic_text(value.get(key))
+    for key, max_bytes, preserve_tail in (
+        ("exception_type", SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES, False),
+        ("exception_message", SDK_RUNTIME_DIAGNOSTIC_TEXT_MAX_BYTES, True),
+        ("exception_traceback", SDK_RUNTIME_DIAGNOSTIC_TEXT_MAX_BYTES, True),
+    ):
+        text = _text_field(
+            value.get(key),
+            field=f"sdk.{key}",
+            losses=losses,
+            max_bytes=max_bytes,
+            preserve_tail=preserve_tail,
+        )
         if text:
             normalized[key] = text
+    if "exception_chain" in value:
+        normalized["exception_chain"] = _normalize_exception_chain(
+            value.get("exception_chain"),
+            losses=losses,
+        )
+    known = _SDK_VALUE_FIELDS | {
+        "exception_chain",
+        "exception_type",
+        "exception_message",
+        "exception_traceback",
+    }
+    if unknown_count := len(set(value) - known):
+        _append_loss(
+            losses,
+            field="sdk",
+            reason="unknown_fields_dropped",
+            count=unknown_count,
+        )
     return normalized
 
 
-def _normalize_tool_lifecycle(value: object) -> dict[str, object] | None:
-    if not isinstance(value, dict):
-        return None
-    tool_name = runtime_diagnostic_text(
-        value.get("tool_name"),
+def _tool_identity(
+    value: dict[str, object],
+    *,
+    key: str,
+    field: str,
+    losses: list[dict[str, object]],
+) -> str:
+    return _text_field(
+        value.get(key),
+        field=f"{field}.{key}",
+        losses=losses,
         max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
     )
-    invocation_id = runtime_diagnostic_text(
-        value.get("invocation_id"),
-        max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
+
+
+def _normalize_tool_item(
+    value: object,
+    *,
+    kind: str,
+    losses: list[dict[str, object]],
+    field: str,
+) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        _append_loss(losses, field=field, reason="invalid_field")
+        return None
+    tool_name = _tool_identity(value, key="tool_name", field=field, losses=losses)
+    invocation_id = _tool_identity(
+        value,
+        key="invocation_id",
+        field=field,
+        losses=losses,
     )
     state = _structured_value(value.get("state"))
-    if not tool_name or not invocation_id or not state:
+    if not tool_name or (kind != "denial" and not invocation_id):
+        _append_loss(losses, field=field, reason="invalid_field")
         return None
-    normalized: dict[str, object] = {
-        "tool_name": tool_name,
-        "invocation_id": invocation_id,
-        "state": state,
-    }
-    capability_kind = _structured_value(value.get("capability_kind"))
-    if capability_kind:
-        normalized["capability_kind"] = capability_kind
-    return normalized
+    if kind == "lifecycle" and not state:
+        _append_loss(losses, field=field, reason="invalid_field")
+        return None
 
-
-def _normalize_tool_call(value: object) -> dict[str, object] | None:
-    if not isinstance(value, dict):
-        return None
-    tool_name = runtime_diagnostic_text(
-        value.get("tool_name"),
-        max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
-    )
-    invocation_id = runtime_diagnostic_text(
-        value.get("invocation_id"),
-        max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
-    )
-    if not tool_name or not invocation_id:
-        return None
-    normalized: dict[str, object] = {
-        "tool_name": tool_name,
-        "invocation_id": invocation_id,
-    }
-    for key in ("state", "last_stage"):
-        structured = _structured_value(value.get(key))
-        if structured:
-            normalized[key] = structured
-    for key in ("tool_input", "failure"):
-        if key in value and value[key] is not None:
-            normalized[key] = runtime_diagnostic_value(value[key])
-    return normalized
-
-
-def _normalize_policy_denial(value: object) -> dict[str, object] | None:
-    if not isinstance(value, dict):
-        return None
-    tool_name = runtime_diagnostic_text(
-        value.get("tool_name"),
-        max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
-    )
-    if not tool_name:
-        return None
     normalized: dict[str, object] = {"tool_name": tool_name}
-    invocation_id = runtime_diagnostic_text(
-        value.get("invocation_id"),
-        max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
-    )
     if invocation_id:
         normalized["invocation_id"] = invocation_id
-    reason = runtime_diagnostic_text(value.get("reason"), max_bytes=1_024)
-    if reason:
-        normalized["reason"] = reason
-    if "tool_input" in value and value["tool_input"] is not None:
-        normalized["tool_input"] = runtime_diagnostic_value(value["tool_input"])
+    if kind == "lifecycle":
+        normalized["state"] = state
+        if capability_kind := _structured_value(value.get("capability_kind")):
+            normalized["capability_kind"] = capability_kind
+    elif kind == "call":
+        for key in ("state", "last_stage"):
+            if structured := _structured_value(value.get(key)):
+                normalized[key] = structured
+        for key in ("tool_input", "failure"):
+            if key in value and value[key] is not None:
+                normalized[key] = _value_field(
+                    value[key],
+                    field=f"{field}.{key}",
+                    losses=losses,
+                )
+    else:
+        reason = _text_field(
+            value.get("reason"),
+            field=f"{field}.reason",
+            losses=losses,
+            max_bytes=1_024,
+            preserve_tail=True,
+        )
+        if reason:
+            normalized["reason"] = reason
+        if "tool_input" in value and value["tool_input"] is not None:
+            normalized["tool_input"] = _value_field(
+                value["tool_input"],
+                field=f"{field}.tool_input",
+                losses=losses,
+            )
     return normalized
+
+
+def _normalize_failure_observation(
+    value: object,
+    *,
+    losses: list[dict[str, object]],
+    field: str,
+) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        _append_loss(losses, field=field, reason="invalid_field")
+        return None
+    error_code = _structured_value(value.get("error_code"))
+    if not error_code:
+        _append_loss(losses, field=field, reason="invalid_field")
+        return None
+    normalized: dict[str, object] = {
+        "error_code": error_code,
+        "failure_source": _text_field(
+            value.get("failure_source"),
+            field=f"{field}.failure_source",
+            losses=losses,
+            max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
+        ),
+        "failure_stage": _text_field(
+            value.get("failure_stage"),
+            field=f"{field}.failure_stage",
+            losses=losses,
+            max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
+        ),
+    }
+    exception = value.get("exception")
+    if isinstance(exception, dict):
+        sdk_exception = _normalize_sdk(
+            {
+                "exception_type": exception.get("type"),
+                "exception_message": exception.get("message"),
+                "exception_traceback": exception.get("traceback"),
+            },
+            losses=losses,
+        )
+        projected = {
+            target: sdk_exception[source]
+            for target, source in (
+                ("type", "exception_type"),
+                ("message", "exception_message"),
+                ("traceback", "exception_traceback"),
+            )
+            if source in sdk_exception
+        }
+        if projected:
+            normalized["exception"] = projected
+    elif exception is not None:
+        _append_loss(losses, field=f"{field}.exception", reason="invalid_field")
+    return normalized
+
+
+def _failure_identity(value: object) -> tuple[object, object, object] | None:
+    if not isinstance(value, dict):
+        return None
+    return (
+        value.get("error_code"),
+        value.get("failure_source"),
+        value.get("failure_stage"),
+    )
 
 
 def _fit_runtime_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
-    original_counts = {
-        key: len(payload[key])
-        for key in ("tool_lifecycles", "tool_calls", "tool_policy_denials")
-    }
+    count_keys = (
+        "failure_observations",
+        "tool_lifecycles",
+        "tool_calls",
+        "tool_policy_denials",
+    )
+    original_counts = {key: len(payload[key]) for key in count_keys}
 
     def encoded_size() -> int:
         return len(_json_bytes(payload))
 
     target_bytes = SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES - 2_048
-    # ponytail: bounded lists make repeated encoding cheap; stream sizing only if limits grow.
     for key in ("tool_lifecycles", "tool_calls", "tool_policy_denials"):
         while encoded_size() > target_bytes and len(payload[key]) > 1:
             del payload[key][0]
-    retained_counts = {key: len(payload[key]) for key in original_counts}
-    if retained_counts != original_counts:
-        truncated = dict(payload.get("truncated") or {})
-        for key in original_counts:
-            if retained_counts[key] != original_counts[key]:
-                existing = truncated.get(key)
-                truncated[key] = {
-                    "original": (
-                        existing.get("original", original_counts[key])
-                        if isinstance(existing, dict)
-                        else original_counts[key]
-                    ),
-                    "retained": retained_counts[key],
-                }
-        payload["truncated"] = truncated
-    if encoded_size() > SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES:
-        payload = {
-            key: value
-            for key, value in payload.items()
-            if key
-            not in {
-                "sdk",
-                "tool_lifecycles",
-                "tool_calls",
-                "tool_policy_denials",
-                "truncated",
-            }
-        }
-        payload.update(
-            {
-                "sdk": {},
-                "tool_lifecycles": [],
-                "tool_calls": [],
-                "tool_policy_denials": [],
-                "truncated": {
-                    key: {"original": count, "retained": 0}
-                    for key, count in original_counts.items()
-                    if count
-                },
-            }
+    while encoded_size() > target_bytes and len(payload["failure_observations"]) > 1:
+        del payload["failure_observations"][1]
+
+    retained_counts = {key: len(payload[key]) for key in count_keys}
+    for key in count_keys:
+        if retained_counts[key] == original_counts[key]:
+            continue
+        _append_loss(
+            payload["normalization_losses"],
+            field=key,
+            reason="truncated",
+            original=original_counts[key],
+            retained=retained_counts[key],
         )
-    if len(_json_bytes(payload)) > SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES:
-        return {
-            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
-            "error_code": payload["error_code"],
-        }
-    return payload
+
+    if encoded_size() > SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES:
+        sdk_bytes = len(_json_bytes(payload.get("sdk") or {}))
+        payload["sdk"] = {}
+        for key in ("tool_lifecycles", "tool_calls", "tool_policy_denials"):
+            original = len(payload[key])
+            payload[key] = []
+            if original:
+                _append_loss(
+                    payload["normalization_losses"],
+                    field=key,
+                    reason="truncated",
+                    original=original_counts[key],
+                    retained=0,
+                )
+        if sdk_bytes > 2:
+            _append_loss(
+                payload["normalization_losses"],
+                field="sdk",
+                reason="truncated",
+                original_bytes=sdk_bytes,
+                retained_bytes=2,
+            )
+    if encoded_size() <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES:
+        return payload
+
+    minimal = {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": payload["error_code"],
+        "failure_source": payload.get("failure_source", ""),
+        "failure_stage": payload.get("failure_stage", ""),
+        "sdk": {},
+        "failure_observations": payload.get("failure_observations", [])[:1],
+        "tool_lifecycles": [],
+        "tool_calls": [],
+        "tool_policy_denials": [],
+        "normalization_losses": payload.get("normalization_losses", [])[
+            -SDK_RUNTIME_DIAGNOSTIC_LOSS_LIMIT:
+        ],
+    }
+    _append_loss(
+        minimal["normalization_losses"],
+        field="runtime_diagnostics",
+        reason="truncated",
+    )
+    return minimal
+
+
+def _project_list(
+    value: object,
+    *,
+    key: str,
+    limit: int,
+    projector: Callable[..., dict[str, object] | None],
+    losses: list[dict[str, object]],
+    previous_truncated: dict[str, object],
+) -> list[dict[str, object]]:
+    items = value if isinstance(value, list) else []
+    projected = []
+    for index, raw in enumerate(items[-limit:]):
+        item = projector(raw, losses=losses, field=f"{key}[{index}]")
+        if item is not None:
+            projected.append(item)
+    prior = previous_truncated.get(key)
+    previous_original = (
+        min(prior.get("original"), 1_000_000)
+        if isinstance(prior, dict)
+        and type(prior.get("original")) is int
+        and prior["original"] >= 0
+        else 0
+    )
+    original = max(len(items), previous_original)
+    if original <= len(projected):
+        return projected
+    _append_loss(
+        losses,
+        field=key,
+        reason="truncated",
+        original=original,
+        retained=len(projected),
+    )
+    return projected
 
 
 def normalize_sdk_runtime_diagnostics(value: object) -> dict[str, Any]:
     """Validate and bound private SDK diagnostics at every sandbox boundary."""
 
+    if value is None:
+        return {}
     if not isinstance(value, dict):
-        return {}
+        return runtime_diagnostics_rejection(reason="invalid_payload")
     if value.get("schema_version") != SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION:
-        return {}
+        return runtime_diagnostics_rejection(
+            reason="unsupported_schema",
+            field="schema_version",
+        )
     error_code = _structured_value(value.get("error_code"))
     if not error_code:
-        return {}
-    normalized: dict[str, Any] = {
-        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
-        "error_code": error_code,
-        "failure_source": runtime_diagnostic_text(
-            value.get("failure_source"),
-            max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
-        ),
-        "failure_stage": runtime_diagnostic_text(
-            value.get("failure_stage"),
-            max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
-        ),
-        "sdk": _normalize_sdk(value.get("sdk")),
-    }
-    for key in ("runner_error_code",):
-        structured = _structured_value(value.get(key))
-        if structured:
-            normalized[key] = structured
-    runner_failure_source = runtime_diagnostic_text(
-        value.get("runner_failure_source"),
+        return runtime_diagnostics_rejection(
+            reason="invalid_field",
+            field="error_code",
+        )
+
+    losses = _normalize_losses(value.get("normalization_losses"))
+    failure_source = _text_field(
+        value.get("failure_source"),
+        field="failure_source",
+        losses=losses,
         max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
     )
-    if runner_failure_source:
-        normalized["runner_failure_source"] = runner_failure_source
-
-    list_specs = (
-        (
-            "tool_lifecycles",
-            SDK_RUNTIME_DIAGNOSTIC_LIFECYCLE_LIMIT,
-            _normalize_tool_lifecycle,
-        ),
-        ("tool_calls", SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT, _normalize_tool_call),
-        (
-            "tool_policy_denials",
-            SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT,
-            _normalize_policy_denial,
-        ),
+    failure_stage = _text_field(
+        value.get("failure_stage"),
+        field="failure_stage",
+        losses=losses,
+        max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
     )
-    truncated: dict[str, dict[str, int]] = {}
+    sdk = _normalize_sdk(value.get("sdk"), losses=losses)
+
+    legacy_code = _structured_value(value.get("runner_error_code"))
+    legacy_source = _text_field(
+        value.get("runner_failure_source"),
+        field="failure_source",
+        losses=losses,
+        max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
+    )
+    current_observation = {
+        "error_code": error_code,
+        "failure_source": failure_source,
+        "failure_stage": failure_stage,
+    }
+    root_observation = (
+        {
+            "error_code": legacy_code,
+            "failure_source": legacy_source,
+            "failure_stage": "",
+        }
+        if legacy_code
+        else current_observation
+    )
+
+    observations: list[dict[str, object]] = []
+    raw_observations = value.get("failure_observations")
+    if isinstance(raw_observations, list):
+        selected_observations = raw_observations
+        if len(raw_observations) > SDK_RUNTIME_DIAGNOSTIC_FAILURE_LIMIT:
+            selected_observations = [
+                raw_observations[0],
+                *raw_observations[-(SDK_RUNTIME_DIAGNOSTIC_FAILURE_LIMIT - 1) :],
+            ]
+            _append_loss(
+                losses,
+                field="failure_observations",
+                reason="truncated",
+                original=len(raw_observations),
+                retained=SDK_RUNTIME_DIAGNOSTIC_FAILURE_LIMIT,
+            )
+        for index, raw in enumerate(selected_observations):
+            item = _normalize_failure_observation(
+                raw,
+                losses=losses,
+                field=f"failure_observations[{index}]",
+            )
+            if item is not None and item not in observations:
+                observations.append(item)
+    elif raw_observations is not None:
+        _append_loss(losses, field="failure_observations", reason="invalid_field")
+    if not observations or _failure_identity(observations[0]) != _failure_identity(
+        root_observation
+    ):
+        observations.insert(0, root_observation)
+    if legacy_code and current_observation not in observations:
+        observations.append(current_observation)
+    if len(observations) > SDK_RUNTIME_DIAGNOSTIC_FAILURE_LIMIT:
+        original = len(observations)
+        observations = [
+            observations[0],
+            observations[1],
+            *observations[-(SDK_RUNTIME_DIAGNOSTIC_FAILURE_LIMIT - 2) :],
+        ]
+        _append_loss(
+            losses,
+            field="failure_observations",
+            reason="truncated",
+            original=original,
+            retained=len(observations),
+        )
+
+    normalized: dict[str, Any] = {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": legacy_code or error_code,
+        "failure_source": legacy_source if legacy_code else failure_source,
+        "failure_stage": "" if legacy_code else failure_stage,
+        "sdk": sdk,
+        "failure_observations": observations,
+    }
     previous_truncated = value.get("truncated")
     previous_truncated = (
         previous_truncated if isinstance(previous_truncated, dict) else {}
     )
-    for key, limit, normalize_item in list_specs:
-        raw_items = value.get(key)
-        items = raw_items if isinstance(raw_items, list) else []
-        projected = [
-            item
-            for raw_item in items[-limit:]
-            if (item := normalize_item(raw_item)) is not None
-        ]
-        normalized[key] = projected
-        previous_count = previous_truncated.get(key)
-        previous_original = (
-            min(previous_count.get("original"), 1_000_000)
-            if isinstance(previous_count, dict)
-            and type(previous_count.get("original")) is int
-            and previous_count["original"] >= 0
-            else 0
+    for key, limit, kind in (
+        ("tool_lifecycles", SDK_RUNTIME_DIAGNOSTIC_LIFECYCLE_LIMIT, "lifecycle"),
+        ("tool_calls", SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT, "call"),
+        ("tool_policy_denials", SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT, "denial"),
+    ):
+        normalized[key] = _project_list(
+            value.get(key),
+            key=key,
+            limit=limit,
+            projector=lambda raw, *, losses, field, kind=kind: _normalize_tool_item(
+                raw,
+                kind=kind,
+                losses=losses,
+                field=field,
+            ),
+            losses=losses,
+            previous_truncated=previous_truncated,
         )
-        original_count = max(len(items), previous_original)
-        if original_count > len(projected):
-            truncated[key] = {
-                "original": original_count,
-                "retained": len(projected),
-            }
-    if truncated:
-        normalized["truncated"] = truncated
+
+    known_fields = {
+        "schema_version",
+        "error_code",
+        "failure_source",
+        "failure_stage",
+        "sdk",
+        "failure_observations",
+        "tool_lifecycles",
+        "tool_calls",
+        "tool_policy_denials",
+        "truncated",
+        "normalization_losses",
+        "runner_error_code",
+        "runner_failure_source",
+    }
+    if unknown_count := len(set(value) - known_fields):
+        _append_loss(
+            losses,
+            field="runtime_diagnostics",
+            reason="unknown_fields_dropped",
+            count=unknown_count,
+        )
+    normalized["normalization_losses"] = losses
     return _fit_runtime_diagnostics(normalized)

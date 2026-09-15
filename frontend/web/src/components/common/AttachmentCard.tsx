@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { X, Loader2 } from "lucide-react";
+import { X, Loader2, Clock3 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import clsx from "clsx";
 import type { MessageAttachment } from "../../types";
@@ -69,6 +69,8 @@ export const AttachmentCard = memo(function AttachmentCard({
     useSafeAttachmentImageSrc(attachment.url, attachment.mimeType) ?? undefined;
   const isImage = Boolean(imageSrc);
   const isCompact = size === "compact";
+  const isQueued = attachment.uploadStatus === "queued";
+  const isRetrying = attachment.uploadStatus === "retrying";
   const removeButtonClass =
     "shrink-0 flex size-6 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] opacity-100 transition-colors duration-150 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-300";
 
@@ -107,7 +109,11 @@ export const AttachmentCard = memo(function AttachmentCard({
           )}
         >
           {isUploading ? (
-            <Loader2 size={18} className={clsx(iconColor, "animate-spin")} />
+            isQueued ? (
+              <Clock3 size={18} className={iconColor} />
+            ) : (
+              <Loader2 size={18} className={clsx(iconColor, "animate-spin")} />
+            )
           ) : isImage ? (
             <img
               src={imageSrc}
@@ -126,9 +132,28 @@ export const AttachmentCard = memo(function AttachmentCard({
           </span>
           <span className="mt-0.5 text-xs text-[var(--theme-text-secondary)]">
             {isUploading
-              ? `${attachment.uploadProgress ?? 0}%`
+              ? isQueued
+                ? t("fileUpload.waiting")
+                : isRetrying
+                  ? t("fileUpload.waitingForCapacity")
+                  : `${attachment.uploadProgress ?? 0}%`
               : formatFileSize(attachment.size)}
           </span>
+          {isUploading && !isQueued && !isRetrying && (
+            <div
+              className="mt-1 h-1 w-full overflow-hidden rounded-full bg-[var(--theme-border)]"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={attachment.uploadProgress ?? 0}
+              aria-label={`${attachment.name} ${attachment.uploadProgress ?? 0}%`}
+            >
+              <div
+                className="h-full rounded-full bg-[var(--theme-primary)] transition-[width] duration-150"
+                style={{ width: `${attachment.uploadProgress ?? 0}%` }}
+              />
+            </div>
+          )}
         </div>
 
         {/* 删除/取消按钮 */}
@@ -192,7 +217,11 @@ export const AttachmentCard = memo(function AttachmentCard({
         )}
       >
         {isUploading ? (
-          <Loader2 size={18} className={clsx(iconColor, "animate-spin")} />
+          attachment.uploadStatus === "queued" ? (
+            <Clock3 size={18} className={iconColor} />
+          ) : (
+            <Loader2 size={18} className={clsx(iconColor, "animate-spin")} />
+          )
         ) : isImage ? (
           <>
             <img
@@ -222,7 +251,11 @@ export const AttachmentCard = memo(function AttachmentCard({
           <span className="capitalize truncate">{label}</span>
           <span className="shrink-0 ml-2">
             {isUploading
-              ? t("fileUpload.uploading")
+              ? isQueued
+                ? t("fileUpload.waiting")
+                : isRetrying
+                  ? t("fileUpload.waitingForCapacity")
+                  : t("fileUpload.uploading")
               : formatFileSize(attachment.size)}
           </span>
         </div>

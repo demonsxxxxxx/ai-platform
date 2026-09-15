@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 from app.files.application.upload_sessions import (
     FileUploadPersistence,
@@ -11,6 +12,33 @@ from app.files.application.upload_sessions import (
 )
 
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+
+
+def direct_upload_storage_key(
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    session_id: str | None,
+    file_id: str,
+    upload_id: str,
+) -> str:
+    return (
+        f"tenants/{tenant_id}/workspaces/{workspace_id}/"
+        f"sessions/{session_id or 'unbound'}/files/{file_id}/"
+        f"generations/{quote(upload_id, safe='')}/content"
+    )
+
+
+def is_direct_file_upload_session(row: Mapping[str, object]) -> bool:
+    upload_id = str(row.get("upload_id") or "")
+    expected_key = direct_upload_storage_key(
+        tenant_id=str(row.get("tenant_id") or ""),
+        workspace_id=str(row.get("workspace_id") or ""),
+        session_id=str(row["session_id"]) if row.get("session_id") is not None else None,
+        file_id=str(row.get("file_id") or ""),
+        upload_id=upload_id,
+    )
+    return upload_id.startswith("direct_") and str(row.get("storage_key") or "") == expected_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,12 +124,16 @@ async def create_file_upload_session(conn: Any, **kwargs: Any) -> None:
     await file_upload_persistence().create_file_upload_session(conn, **kwargs)
 
 
+async def activate_file_upload_session(conn: Any, **kwargs: Any) -> bool:
+    return await file_upload_persistence().activate_file_upload_session(conn, **kwargs)
+
+
+async def claim_direct_file_upload_session(conn: Any, **kwargs: Any) -> bool:
+    return await file_upload_persistence().claim_direct_file_upload_session(conn, **kwargs)
+
+
 async def get_authorized_file_upload_session(conn: Any, **kwargs: Any) -> dict[str, Any] | None:
     return await file_upload_persistence().get_authorized_file_upload_session(conn, **kwargs)
-
-
-async def claim_file_upload_session(conn: Any, **kwargs: Any) -> bool:
-    return await file_upload_persistence().claim_file_upload_session(conn, **kwargs)
 
 
 async def complete_file_upload_session(conn: Any, **kwargs: Any) -> None:
@@ -131,14 +163,17 @@ __all__ = [
     "MultipartUploadCreateRequest",
     "MultipartUploadPart",
     "abort_file_upload_session",
-    "claim_file_upload_session",
+    "activate_file_upload_session",
+    "claim_direct_file_upload_session",
     "complete_file_upload_session",
     "configure_file_upload_persistence",
     "create_file_upload_session",
     "delete_expired_file_upload_session",
+    "direct_upload_storage_key",
     "expire_file_upload_sessions",
     "get_authorized_file_upload_session",
     "get_file_storage_usage",
+    "is_direct_file_upload_session",
     "parse_multipart_upload_complete_request",
     "parse_multipart_upload_create_request",
     "retry_expired_file_upload_session",

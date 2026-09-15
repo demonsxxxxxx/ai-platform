@@ -24,15 +24,6 @@ def _bool_setting(settings: object, name: str) -> bool:
     return bool(value)
 
 
-def _positive_int_setting(settings: object, name: str) -> int | None:
-    value = getattr(settings, name, 0)
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
 def _enum_setting(settings: object, name: str, *, default: str, allowed_values: set[str]) -> str:
     value = str(getattr(settings, name, default) or default).strip().lower()
     return value if value in allowed_values else "unknown"
@@ -83,18 +74,11 @@ def build_observability_readiness(
     )
     trace_audit_export_readiness = build_trace_audit_export_readiness()
     model_gateway_backpressure_policy = _model_gateway_backpressure_policy()
-    model_gateway_request_concurrency_limit = _positive_int_setting(
-        resolved_settings,
+    model_gateway_capacity_gaps = [
         "model_gateway_request_concurrency_limit",
-    )
-    model_gateway_capacity_gaps = ["model_gateway_request_concurrency_limit"]
-    if model_gateway_request_concurrency_limit is not None:
-        model_gateway_capacity_gaps.extend(
-            [
-                "model_gateway_request_concurrency_limit_enforcement",
-                "model_gateway_capacity_load_test_evidence",
-            ]
-        )
+        "model_gateway_request_concurrency_limit_enforcement",
+        "model_gateway_capacity_load_test_evidence",
+    ]
     domains = {
         "runtime_metrics": _domain(
             implemented=[
@@ -209,7 +193,7 @@ def build_observability_readiness(
                 default="openai_compatible",
                 allowed_values=_MODEL_GATEWAY_PROVIDER_VALUES,
             ),
-            "model_gateway_request_concurrency_limit": model_gateway_request_concurrency_limit,
+            "model_gateway_request_concurrency_limit": None,
             "sandbox_provider": _enum_setting(
                 resolved_settings,
                 "sandbox_container_provider",
@@ -316,7 +300,7 @@ def _render_model_gateway_backpressure_policy(policy: dict[str, Any]) -> str:
         "\nEvidence:\n\n"
         f"- model gateway backpressure policy `{policy.get('schema_version')}` status "
         f"`{policy.get('status')}`\n"
-        f"- config signal `{policy.get('config_signal')}`\n"
+        f"- config signal `{policy.get('config_signal') or 'unavailable'}`\n"
         f"- required load-test gate `{policy.get('required_load_test_gate')}`\n"
         f"- enforcement status `{policy.get('enforcement_status')}`\n"
         f"- does not raise defaults `{policy.get('does_not_raise_defaults')}`\n"

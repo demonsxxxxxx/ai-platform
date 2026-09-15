@@ -110,18 +110,22 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_admission_terminalization.py",
         "tests/test_run_cancellation_use_case.py",
         "tests/test_run_control_routes.py",
+        "tests/test_run_diagnostics.py",
         "tests/test_run_persistence.py",
         "tests/test_run_projection.py",
-        "tests/test_sse_v3_contract_generation.py",
         "tests/test_sse_v4_contract_generation.py",
         "tests/test_streaming_contracts.py",
+        "tests/test_worker_attempt_lifecycle.py",
     ),
     "schema-migrations": (
+        "tests/test_run_diagnostics_postgres.py",
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
         "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
     ),
     "v4-durable-streaming": (
+        "tests/test_streaming_callback_direct.py",
+        "tests/test_retire_legacy_sse_streams.py",
         "tests/test_streaming_v4_durable.py",
         "tests/test_streaming_v4_postgres_integration.py",
         "tests/test_streaming_v4_redis_integration.py",
@@ -142,11 +146,9 @@ BACKEND_TEST_SHARDS = {
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
-        "tests/test_deploy_latest_entry.py",
-        "tests/test_latest_main_quickstart.py",
+        "tests/test_compose_package_deploy.py",
         "tests/test_production_bootstrap.py",
         "tests/test_release_authority.py",
-        "tests/test_sandbox_quickstart.py",
         "tests/test_s75_opensandbox_transition.py",
     ),
 }
@@ -189,11 +191,9 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "tests/test_packaging_publish_workflow.py" in workflow
     assert "tests/test_release_image_manifest.py" in workflow
     assert "tests/test_governance_readiness.py" in workflow
-    assert "tests/test_deploy_latest_entry.py" in workflow
-    assert "tests/test_latest_main_quickstart.py" in workflow
+    assert "tests/test_compose_package_deploy.py" in workflow
     assert "tests/test_production_bootstrap.py" in workflow
     assert "tests/test_release_authority.py" in workflow
-    assert "tests/test_sandbox_quickstart.py" in workflow
     assert "tests/test_s75_opensandbox_transition.py" in workflow
     assert "tests/test_contract.py" in workflow
     assert "tests/test_worker_main.py" in workflow
@@ -269,7 +269,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 81
+    assert len(all_selectors) == len(set(all_selectors)) == 83
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

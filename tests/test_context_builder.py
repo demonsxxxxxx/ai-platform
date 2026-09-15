@@ -422,9 +422,9 @@ def test_initial_context_summary_adds_attachment_signal_for_file_context():
 def test_initial_context_summary_routes_document_skill_to_document_worker():
     summary = initial_context_summary(
         source="chat_stream",
-        agent_id="baoyu-translate",
-        skill_id="baoyu-translate",
-        input_payload={"message": "Translate this DOCX and return a Word document."},
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "Review this DOCX and return a Word document."},
         message_ids=["msg-a"],
         file_ids=["file-a"],
     )

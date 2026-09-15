@@ -380,15 +380,36 @@ function sseEventResponse(event: string, data: Record<string, unknown>) {
   });
 }
 
-function sseFramesResponse(
-  frames: Array<{ event: string; data: Record<string, unknown> }>,
+function protocolInvalidSseResponse(
+  kind: "json" | "event-id" | "envelope",
+  runId: string,
 ) {
-  return new Response(
-    frames
-      .map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-      .join(""),
-    { headers: { "content-type": "text/event-stream" } },
-  );
+  const envelope = {
+    schema: "ai-platform.public-run-stream-control.v4",
+    event_id: `stream-open-${runId}`,
+    run_id: runId,
+    message_id: null,
+    seq: null,
+    event_type: "stream.open",
+    stream_incarnation: 1,
+    replayable: true,
+    trace_ref: null,
+    causation_event_id: null,
+    emitted_at: "2026-08-21T00:00:00Z",
+    payload: { design_id: STREAM_DESIGN_ID },
+  };
+  const body =
+    kind === "json"
+      ? `id: ${runId}:1:1-0\nevent: stream.open\ndata: {\n\n`
+      : kind === "event-id"
+        ? `event: stream.open\ndata: ${JSON.stringify(envelope)}\n\n`
+        : `id: ${runId}:1:1-0\nevent: stream.open\ndata: ${JSON.stringify({
+            ...envelope,
+            schema: "invalid.public-run-stream.v4",
+          })}\n\n`;
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream" },
+  });
 }
 
 function controlledNonClosingSseResponse(body: string) {
@@ -865,7 +886,7 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
           run_id: "run-first",
           trace_id: "trace-first",
           status: "queued",
-          intent_decision: { agent_id: "document-translation" },
+          intent_decision: { agent_id: "general-agent" },
         }
       : {
           session_id: "session-routed",
@@ -894,7 +915,7 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
     assert.equal(submissions[0]?.[1], undefined);
     assert.equal(submissions[1]?.[1], "session-routed");
     assert.equal(submissions[0]?.[8], "general-agent");
-    assert.equal(submissions[1]?.[8], "document-translation");
+    assert.equal(submissions[1]?.[8], "general-agent");
     assert.equal(harness.hook.sessionId, "session-routed");
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(sseCalls, 2);
@@ -1081,7 +1102,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
   sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-restored",
-    agent_id: "document-translation",
+    agent_id: "general-agent",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     is_active: true,
@@ -1090,7 +1111,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
   sessionApi.getAuthoritative = async () => ({
     session_id: "session-restored",
     workspace_id: "workspace-test",
-    agent_id: "document-translation",
+    agent_id: "general-agent",
     title: "Restored session",
     purpose: "conversation",
     agent_conversation: null,
@@ -1115,7 +1136,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
     });
 
     assert.equal(submissions.length, 1);
-    assert.equal(submissions[0]?.[8], "document-translation");
+    assert.equal(submissions[0]?.[8], "general-agent");
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
@@ -3245,7 +3266,7 @@ async function assertStaleSubmitCannotOverwriteNewSession({
       run_id: "run-old",
       trace_id: "trace-old",
       status: "queued",
-      intent_decision: { agent_id: "document-translation" },
+      intent_decision: { agent_id: "general-agent" },
     });
     await harness.act(async () => {
       await staleSubmit;
@@ -3371,7 +3392,7 @@ test("useAgent clear invalidates delayed history get, events, and status continu
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-test",
-    agent_id: "document-translation",
+    agent_id: "general-agent",
     title: "Test session",
     purpose: "conversation",
     agent_conversation: null,
@@ -3399,7 +3420,7 @@ test("useAgent clear invalidates delayed history get, events, and status continu
     });
     resolveSession({
       id: "session-delayed",
-      agent_id: "document-translation",
+      agent_id: "general-agent",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
       is_active: true,
@@ -3866,7 +3887,7 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
         timestamp: "2026-08-21T00:00:01Z",
         data: {
           projection_version: "ai-platform.chat-public-projection.v1",
-          projection_kind: "assistant_final",
+          projection_kind: "assistant_delta",
           event_id: "run-final-success:answer",
           sequence: 2,
           run_id: "run-final-success",
@@ -4027,10 +4048,7 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
   dom.window.fetch = async () =>
-    sseFramesResponse([
-      { event: "error", data: { error: "Executor failed" } },
-      { event: "done", data: { status: "failed" } },
-    ]);
+    completedPublicRunResponse("run-public-fallback-failed", "failed");
   sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "公开失败回退会话",
@@ -4045,7 +4063,7 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
   sessionApi.getStatus = (async () => ({
     session_id: "session-public-fallback-failed",
     run_id: "run-public-fallback-failed",
-    status: "error",
+    status: "failed",
     raw_status: "failed",
   })) as typeof sessionApi.getStatus;
   sessionApi.getEvents = (async (_sessionId, options) => ({
@@ -4233,6 +4251,86 @@ test("useAgent fails closed once for a non-retryable SSE authentication error", 
     sessionApi.getStatus = originalGetStatus;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
+  }
+});
+
+test("useAgent fails closed for each protocol-invalid SSE frame", async () => {
+  const cases = [
+    { kind: "json" as const, label: "invalid JSON" },
+    { kind: "event-id" as const, label: "missing event id" },
+    { kind: "envelope" as const, label: "invalid V4 envelope" },
+  ];
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalFetch = dom.window.fetch;
+
+  try {
+    for (const { kind, label } of cases) {
+      const harness = await loadReactHarness();
+      const sessionId = `session-protocol-invalid-${kind}`;
+      const runId = `run-protocol-invalid-${kind}`;
+      let statusCalls = 0;
+      let sseCalls = 0;
+      dom.window.localStorage.removeItem("ai_platform_session_present");
+      dom.window.fetch = async () => {
+        sseCalls += 1;
+        return protocolInvalidSseResponse(kind, runId);
+      };
+      sessionApi.markRead = async () => {};
+      sessionApi.generateTitle = async () => ({
+        title: label,
+        session_id: sessionId,
+      });
+      sessionApi.submitChat = (async () => ({
+        session_id: sessionId,
+        run_id: runId,
+        trace_id: `trace-${kind}`,
+        status: "queued",
+      })) as typeof sessionApi.submitChat;
+      sessionApi.getStatus = (async () => {
+        statusCalls += 1;
+        return {
+          session_id: sessionId,
+          run_id: runId,
+          status: "running",
+        };
+      }) as typeof sessionApi.getStatus;
+
+      try {
+        await harness.act(async () => {
+          await harness.hook.sendMessage(label);
+        });
+        await settle(harness.act);
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        await settle(harness.act);
+
+        const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+        assert.equal(statusCalls, 0, `${label} must not reconcile status`);
+        assert.equal(sseCalls, 1, `${label} must not reconnect`);
+        assert.equal(harness.hook.currentRunId, null);
+        assert.equal(harness.hook.isLoading, false);
+        assert.equal(harness.hook.connectionStatus, "disconnected");
+        assert.equal(
+          parts.filter(
+            (part) =>
+              part.type === "run_status" &&
+              part.event_id === `terminal-status-unavailable:${runId}`,
+          ).length,
+          1,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getStatus = originalGetStatus;
+    dom.window.fetch = originalFetch;
   }
 });
 
@@ -4674,7 +4772,7 @@ test("useAgent releases the active state for succeeded and cancelled terminals",
               timestamp: "2026-08-21T00:00:01Z",
               data: {
                 projection_version: "ai-platform.chat-public-projection.v1",
-                projection_kind: "assistant_final",
+                projection_kind: "assistant_delta",
                 event_id: `${terminal.runId}:answer`,
                 run_id: terminal.runId,
                 content: "终态任务已完成",
@@ -6243,7 +6341,6 @@ test("useAgent presents a safe local card when terminal history hydration fails"
           part.event_id ===
             "terminal-result-unavailable:run-terminal-hydrate-failure",
       );
-    assert.equal(eventQueries, 2);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(cards.length, 1);
@@ -6419,7 +6516,110 @@ test("useAgent rehydrates durable partial text and one fixed failure card", asyn
   }
 });
 
-test("useAgent fails closed after initial reload status retries are exhausted", async () => {
+test("useAgent restores the v4 message owner while replay catches up with history", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const runId = "run-history-replay-owner";
+  let stream: ReturnType<typeof controlledPublicRunLifecycle> | null = null;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-history-replay-owner",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: runId,
+    events: [
+      {
+        id: `${runId}:user`,
+        run_id: runId,
+        event_type: "user:message",
+        timestamp: "2026-08-21T00:00:00Z",
+        data: { message_id: `${runId}:user`, content: "恢复进行中的回复" },
+      },
+      {
+        id: `preceding-${runId}-0`,
+        run_id: runId,
+        sequence: 1,
+        event_type: "message.started",
+        timestamp: "2026-08-21T00:00:00.001Z",
+        data: { event_id: `preceding-${runId}-0` },
+      },
+      {
+        id: `preceding-${runId}-1`,
+        run_id: runId,
+        sequence: 2,
+        event_type: "message:chunk",
+        timestamp: "2026-08-21T00:00:00.002Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: `preceding-${runId}-1`,
+          message_id: `message-${runId}`,
+          sequence: 2,
+          run_id: runId,
+          content: "已恢复正文",
+        },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-history-replay-owner",
+    run_id: runId,
+    status: "running",
+  })) as typeof sessionApi.getStatus;
+  dom.window.fetch = async () => {
+    stream = controlledPublicRunLifecycle(runId, "cancelled", [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "已恢复正文" } },
+    ]);
+    return stream.response;
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-history-replay-owner");
+    });
+    await settle(harness.act);
+
+    assert.equal(harness.hook.currentRunId, runId);
+    assert.equal(harness.hook.connectionStatus, "connected");
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === runId,
+      )?.content,
+      "已恢复正文",
+    );
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .some(
+          (part) =>
+            part.type === "run_status" &&
+            part.event_id === `terminal-status-unavailable:${runId}`,
+        ),
+      false,
+    );
+    assert.ok(stream);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent keeps transient status failure recoverable and fails closed on status authentication", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -6429,6 +6629,8 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
   const originalFetch = dom.window.fetch;
   let statusCalls = 0;
   let sseCalls = 0;
+  let statusMode: "unavailable" | "running" | "unauthorized" = "unavailable";
+  let resumedStream: ReturnType<typeof controlledPublicRunLifecycle> | null = null;
   sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-initial-status-unavailable",
@@ -6452,15 +6654,21 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
   });
   sessionApi.getStatus = (async () => {
     statusCalls += 1;
+    if (statusMode === "unauthorized") {
+      throw new ApiRequestError("authentication rejected", 401, "unauthorized");
+    }
     return {
       session_id: "session-initial-status-unavailable",
       run_id: "run-initial-status-unavailable",
-      status: "error",
+      status: statusMode === "running" ? "running" : "error",
     };
   }) as typeof sessionApi.getStatus;
   dom.window.fetch = async () => {
     sseCalls += 1;
-    return completedSseResponse();
+    resumedStream = controlledPublicRunLifecycle(
+      "run-initial-status-unavailable",
+    );
+    return resumedStream.response;
   };
 
   try {
@@ -6470,27 +6678,67 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
     await settle(harness.act);
 
     const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+    const assistant = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" &&
+        message.runId === "run-initial-status-unavailable",
+    );
     assert.equal(statusCalls, 3);
     assert.equal(sseCalls, 0);
-    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(
+      harness.hook.currentRunId,
+      "run-initial-status-unavailable",
+    );
+    assert.equal(assistant?.isStreaming, true);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(
-      parts.filter(
-        (part) =>
-          part.type === "run_status" &&
-          part.event_id ===
-            "terminal-status-unavailable:run-initial-status-unavailable",
-      ).length,
-      1,
-    );
     assert.equal(
       parts.some(
         (part) =>
           part.type === "run_status" &&
-          part.event_id === "terminal-failure:run-initial-status-unavailable",
+          part.event_id ===
+            "terminal-status-unavailable:run-initial-status-unavailable",
       ),
       false,
+    );
+
+    statusMode = "running";
+    await harness.act(async () => {
+      await harness.hook.reconnectSSE();
+    });
+    await harness.act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2_100));
+    });
+    await settle(harness.act);
+
+    assert.equal(statusCalls, 4);
+    assert.equal(sseCalls, 1);
+    assert.equal(
+      harness.hook.currentRunId,
+      "run-initial-status-unavailable",
+    );
+    assert.equal(harness.hook.connectionStatus, "connected");
+    assert.ok(resumedStream);
+
+    statusMode = "unauthorized";
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-initial-status-unavailable");
+    });
+    await settle(harness.act);
+
+    assert.equal(statusCalls, 5);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .some(
+          (part) =>
+            part.type === "run_status" &&
+            part.event_id ===
+              "terminal-status-unavailable:run-initial-status-unavailable",
+        ),
+      true,
     );
   } finally {
     sessionApi.get = originalGet;

@@ -439,6 +439,26 @@
     },
     {
       "source_path": "app/repositories.py",
+      "target_module": "app.mcp.infrastructure.registry_postgres",
+      "module_alias": "mcp_registry_persistence",
+      "symbols": [
+        "_json_dict_projection",
+        "_json_string_list_projection",
+        "_mcp_server_projection",
+        "delete_mcp_server_registry",
+        "list_mcp_server_registry",
+        "list_mcp_server_registry_names",
+        "list_tenant_mcp_server_registry",
+        "record_mcp_server_credential",
+        "toggle_mcp_server_registry",
+        "upsert_mcp_server_registry"
+      ],
+      "owner": "mcp",
+      "reason": "The frozen global repository may expose its existing tenant MCP registry projection and credential lifecycle symbols only as exact identity aliases while their PostgreSQL implementation moves to the MCP registry adapter.",
+      "removal_condition": "After supported callers import the MCP API or registry application boundary, inventory external imports and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
       "target_module": "app.platform.postgres.errors",
       "module_alias": "postgres_errors",
       "symbols": [
@@ -466,6 +486,18 @@
       "owner": "runs",
       "reason": "The frozen global repository may expose these existing run identity, admission-lock, active-child, and terminal-intent persistence primitives only as exact identity aliases while their PostgreSQL implementation moves to the Runs adapter.",
       "removal_condition": "After the Runs persistence move, migrate supported internal callers to the Runs API, inventory external imports, and remove this bridge in an authority-only change before deleting the repositories aliases."
+    },
+    {
+      "source_path": "app/repositories.py",
+      "target_module": "app.skills.infrastructure.legacy_workbench",
+      "module_alias": "legacy_workbench_persistence",
+      "symbols": [
+        "list_workbench_capabilities",
+        "list_workbench_skills"
+      ],
+      "owner": "skills",
+      "reason": "The frozen global repository may replace the obsolete hardcoded Workbench Skill and capability catalog implementations with exact identity aliases while their retirement behavior moves to the Skills adapter.",
+      "removal_condition": "After repository-wide import inventory proves no supported caller uses either legacy Workbench catalog symbol, remove this bridge in an authority-only change before deleting the aliases from repositories.py."
     },
     {
       "source_path": "app/repositories.py",

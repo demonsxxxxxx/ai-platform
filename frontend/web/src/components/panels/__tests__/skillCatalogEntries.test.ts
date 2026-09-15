@@ -33,6 +33,8 @@ function adminSkill(
   name: string,
   overrides: Partial<AdminSkillCatalogItem> = {},
 ): AdminSkillCatalogItem {
+  const currentVersion =
+    overrides.currentVersion === undefined ? "sha-1" : overrides.currentVersion;
   return {
     skillId,
     name,
@@ -42,11 +44,28 @@ function adminSkill(
     visibleToUser: true,
     latestVersion: "sha-1",
     latestVersionStatus: "released",
-    currentVersion: "sha-1",
+    currentVersion,
+    latestDisplayVersion: "1.0.0",
+    currentDisplayVersion: currentVersion ? "1.0.0" : null,
+    latestUploadedAt: null,
     rolloutPercent: 100,
     ...overrides,
   };
 }
+
+test("latest uploaded version time wins over a stale runtime timestamp", () => {
+  const [entry] = buildSkillCatalogEntries(
+    [{ ...runtimeSkill("review"), updated_at: "2026-08-25T04:08:00Z" }],
+    [adminSkill("review", "review", {
+      latestVersion: "sha-2",
+      latestDisplayVersion: "1.0.2",
+      latestUploadedAt: "2026-09-15T02:30:00+00:00",
+    })],
+  );
+
+  assert.equal(entry?.updatedAt, "2026-09-15T02:30:00+00:00");
+  assert.equal(buildSkillCatalogEntries([runtimeSkill("other")], [])[0]?.updatedAt, null);
+});
 
 test("catalog entries keep opaque skill ids while preserving runtime action names", () => {
   const entries = buildSkillCatalogEntries(
@@ -59,6 +78,19 @@ test("catalog entries keep opaque skill ids while preserving runtime action name
   assert.equal(entries[0]?.actionName, "qa-file-reviewer");
   assert.equal(entries[0]?.adminSkill?.skillId, "skill-opaque-42");
   assert.equal(entries[0]?.runtimeSkill?.name, "qa-file-reviewer");
+});
+
+test("catalog entries use an uploaded draft label when the current built-in has none", () => {
+  const [entry] = buildSkillCatalogEntries([], [
+    adminSkill("review", "Review", {
+      latestVersion: "sha-uploaded-draft",
+      latestVersionStatus: "draft",
+      latestDisplayVersion: "1.0.0",
+      currentDisplayVersion: null,
+    }),
+  ]);
+
+  assert.equal(entry?.version, "1.0.0");
 });
 
 test("runtime delete results resolve to opaque catalog ids", () => {
@@ -121,9 +153,9 @@ test("admin draft records remain visible in the canonical list", () => {
 
 test("legacy admin rows defer user availability to the authorized runtime projection", () => {
   const [entry] = buildSkillCatalogEntries(
-    [runtimeSkill("baoyu-translate")],
+    [runtimeSkill("legacy-skill")],
     [
-      adminSkill("baoyu-translate", "baoyu-translate", {
+      adminSkill("retired-skill", "legacy-skill", {
         latestVersionStatus: "active",
         currentVersion: null,
         rolloutPercent: null,

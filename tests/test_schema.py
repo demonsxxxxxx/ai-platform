@@ -39,21 +39,19 @@ def test_schema_declares_agent_profile_aggregate_and_immutable_withdrawal_histor
     assert "fk_agent_profiles_current_publication" in schema
 
 
-def test_schema_enforces_agent_skill_set_shape_and_legacy_shadow_identity():
+def test_schema_enforces_one_canonical_agent_profile_shape():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
-    assert "raise exception 'agent_profile_skill_set_invalid'" in schema
-    assert "new.skill_set->0->>'skill_id' is distinct from new.skill_id" in schema
-    assert "new.skill_set->0->>'expected_version' is distinct from new.skill_version" in schema
-    assert "having count(*) > 1" in schema
+    assert "check (jsonb_typeof(skill_set) = 'array' and jsonb_array_length(skill_set) > 0)" in schema
+    assert "check (btrim(avatar_seed) <> '')" in schema
     assert "published_hash text" in schema
-    assert "published_status text" in schema
-    assert "unique (tenant_id, agent_id, revision, content_hash, revision_status)" in schema
+    assert "unique (tenant_id, agent_id, revision, content_hash)" in schema
     assert "withdrawn_from_revision bigint" in schema
-    first_repair = schema.index("update agent_profile_revisions\nset skill_set")
-    second_repair = schema.index("update agent_profile_revisions\nset skill_set", first_repair + 1)
-    assert "where legacy_compatibility_write\n  and (" in schema[first_repair:second_repair]
-    assert "where legacy_compatibility_write\n  and (" in schema[second_repair:]
+    assert "create trigger trg_agent_profile_legacy" not in schema
+    assert "create trigger trg_agent_profile_aa_name_only" not in schema
+    assert "create trigger trg_agent_profile_zz_name_only" not in schema
+    assert "legacy_compatibility_write boolean" not in schema
+    assert "published_status text" not in schema
 
 
 def test_schema_declares_capability_distribution_authority_constraints():
@@ -123,18 +121,36 @@ def test_schema_declares_principal_department_auth_snapshot():
 def test_schema_seeds_first_agent_apps():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
-    assert "qa-file-reviewer" in schema
-    assert "'minimax-docx', 'Minimax DOCX'" in schema
-    assert "baoyu-translate" in schema
-    assert "ragflow-knowledge-search" in schema
+    skill_seed = schema[schema.index("insert into skills"):schema.index("insert into skill_versions")]
+    agent_start = schema.index("insert into agents")
+    agent_seed = schema[agent_start:schema.index("on conflict (id) do update set", agent_start)]
+
+    assert "qa-file-reviewer" in skill_seed
+    assert "'minimax-docx', 'Minimax DOCX'" in skill_seed
+    assert "baoyu-translate" not in skill_seed
+    assert "ragflow-knowledge-search" in skill_seed
     assert "ragflow_search" in schema
     assert "tenant_workbench_skills" in schema
-    assert "'translate', 'default'" in schema
-    assert "'document-review', 'default'" in schema
-    assert "qa-word-review" in schema
-    assert "sop-assistant" in schema
-    assert "Legacy alias for qa-word-review" in schema
-    assert "'qa-word-review', 'default', '文档审核', 'file'" in schema
+    assert "update agents\nset status = 'inactive'\nwhere id in ('translate', 'baoyu-translate')" in schema
+    assert "or default_skill_id = 'baoyu-translate'" in schema
+    assert (
+        "current_revision.skill_set @> '[{\"skill_id\": \"baoyu-translate\"}]'::jsonb"
+        in schema
+    )
+    assert "default_skill_id = null" not in schema[schema.index("update agents"):schema.index("update tenant_workbench_skills")]
+    assert "update skills\nset status = 'inactive'\nwhere id = 'baoyu-translate';" in schema
+    assert "update tenant_capability_distributions" in schema
+    assert "where capability_kind = 'skill' and capability_id = 'baoyu-translate';" in schema
+    assert "where skill_id = 'general-chat';" in schema
+    assert "where capability_kind = 'skill' and capability_id = 'general-chat';" in schema
+    assert "update skills\nset status = 'inactive'\nwhere id = 'general-chat';" in schema
+    assert "'translate', 'default'" not in agent_seed
+    assert "'baoyu-translate', 'default'" not in agent_seed
+    assert "'document-review', 'default'" in agent_seed
+    assert "qa-word-review" in agent_seed
+    assert "sop-assistant" in agent_seed
+    assert "Legacy alias for qa-word-review" in agent_seed
+    assert "'qa-word-review', 'default', '文档审核', 'file'" in agent_seed
 
 
 def test_schema_enables_read_only_ragflow_mcp_tool_poc():
@@ -188,6 +204,13 @@ def test_schema_declares_file_lifecycle_and_typed_object_deletion_targets():
 
     assert "alter table files add column if not exists lifecycle_state" in schema
     assert "chk_files_lifecycle_state" in schema
+    assert "alter table artifacts alter column run_id drop not null" in schema
+    assert "chk_artifacts_lifecycle_state" in schema
+    assert "chk_artifacts_run_owner" in schema
+    assert "provisional_reconciliation_cleanup" in schema
+    assert "nullif(manifest_json ->> 'expected_run_id', '') is not null" in schema
+    assert "retention_artifact_cleanup" in schema
+    assert "nullif(manifest_json ->> 'deletion_owner_run_id', '') is not null" in schema
     assert "target_type text not null default 'artifact'" in schema
     assert "file_id text references files(id)" in schema
     assert "lease_generation bigint not null default 0" in schema
@@ -593,7 +616,7 @@ def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependenc
     assert "'qa-file-reviewer', '0.1.0'" in schema
     assert "'minimax-docx', '0.1.0'" in schema
     assert "'general-chat', '0.1.0'" not in schema
-    assert "'baoyu-translate', '0.1.0'" in schema
+    assert "'baoyu-translate', '0.1.0'" not in schema
     assert "'ragflow-knowledge-search', '0.1.0'" in schema
     assert "on conflict (skill_id, version) do nothing" in skill_version_seed
     assert "do update set" not in skill_version_seed.split("insert into tenant_workbench_skills", 1)[0]

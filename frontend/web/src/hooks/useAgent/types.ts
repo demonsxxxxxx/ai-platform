@@ -97,8 +97,7 @@ export const CHAT_PUBLIC_PROGRESS_EVENT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 export type AssistantTextProjectionKind =
-  | "assistant_delta"
-  | "assistant_final";
+  | "assistant_delta";
 
 // Event types from backend
 export type EventType =
@@ -150,7 +149,6 @@ export interface EventData {
   content?: string;
   detail_kind?: string;
   detail_code?: string;
-  projection_failure_reason?: string;
   thinking_id?: string;
   error?: string;
   type?: string;
@@ -265,8 +263,7 @@ export function isAssistantTextProjection(
 } {
   return (
     data.projection_version === CHAT_PUBLIC_PROJECTION_VERSION &&
-    (data.projection_kind === "assistant_delta" ||
-      data.projection_kind === "assistant_final") &&
+    data.projection_kind === "assistant_delta" &&
     typeof data.content === "string"
   );
 }
@@ -553,7 +550,6 @@ export interface HistoryEventData {
   content?: string;
   detail_kind?: string;
   detail_code?: string;
-  projection_failure_reason?: string;
   tool?: string;
   tool_call_id?: string;
   args?: Record<string, unknown>;

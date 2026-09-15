@@ -20,7 +20,8 @@ def test_public_skill_display_label_accepts_catalog_names_and_rejects_private_sh
 def test_public_agent_projection_maps_known_internal_agent_ids():
     assert public_agent_id_for_projection("qa-word-review", "qa-file-reviewer") == "document-review"
     assert public_agent_id_for_projection("sop-assistant", "ragflow-knowledge-search") == "knowledge-answer"
-    assert public_agent_id_for_projection("baoyu-translate", "baoyu-translate") == "document-translation"
+    assert public_agent_id_for_projection("baoyu-translate", "baoyu-translate") is None
+    assert public_agent_id_for_projection("translate") is None
     assert public_agent_id_for_projection("general-agent", "general-chat") == "general-agent"
 
 
