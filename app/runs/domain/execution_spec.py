@@ -425,10 +425,10 @@ class ExecutionSpec:
     def compile(cls, payload: Mapping[str, Any]) -> "ExecutionSpec":
         normalized = _normalize_execution_spec(payload)
         canonical_json = _canonical_json_bytes(normalized)
-        return cls(
-            canonical_json=canonical_json,
-            spec_sha256=hashlib.sha256(canonical_json).hexdigest(),
-        )
+        spec = object.__new__(cls)
+        object.__setattr__(spec, "canonical_json", canonical_json)
+        object.__setattr__(spec, "spec_sha256", hashlib.sha256(canonical_json).hexdigest())
+        return spec
 
     @classmethod
     def from_canonical_json(
