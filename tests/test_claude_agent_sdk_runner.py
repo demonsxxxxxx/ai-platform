@@ -4,6 +4,8 @@ import types
 
 import pytest
 
+from tests.support.claude_mcp import install_mcp_sessions
+
 from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     _sdk_run_timeout_seconds,
@@ -22,6 +24,11 @@ from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
 )
+
+
+@pytest.fixture(autouse=True)
+def synthetic_mcp_sessions(monkeypatch):
+    install_mcp_sessions(monkeypatch)
 
 
 def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():

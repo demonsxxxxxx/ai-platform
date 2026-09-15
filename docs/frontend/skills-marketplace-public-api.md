@@ -185,6 +185,8 @@ target, then registers the Server with the Agent SDK using static headers plus
 separate MCP Broker capability or host Relay, and runtime connection material
 is removed from reconciliation persistence.
 
+The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selected-tool exposure, SDK alias mapping, HTTP/SSE transport limits, and runnable acceptance. Command/stdin (`sandbox`) configuration writes are rejected until a governed process adapter exists; existing rows remain readable but do not authorize command execution. Ordinary directory responses with `unavailable_reason` display unavailable state rather than an empty successful catalog.
+
 Explicitly fail-closed follow-up routes:
 
 - `POST /api/mcp/import`
