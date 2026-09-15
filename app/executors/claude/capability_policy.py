@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.skills.execution_profiles import SANDBOX_FULL_LOCAL
 from app.tool_policy import evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
@@ -334,7 +333,7 @@ def _parameters_match_subject(
     tool_input: object,
 ) -> bool:
     if (
-        subject.get("execution_strategy") == SANDBOX_FULL_LOCAL
+        subject.get("execution_strategy") == "sandbox_full_local"
         and subject.get("parameter_validation") == "sdk"
         and subject.get("identity") == tool_name
         and tool_name in _SANDBOX_LOCAL_TOOL_IDENTITIES
