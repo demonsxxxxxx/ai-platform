@@ -194,8 +194,8 @@ async def attach_mcp_server_configs(
     )
     if not server_ids:
         return run_payload
-    jwt = await get_mcp_principal_jwt_store().get(principal)
     configs: dict[str, dict[str, Any]] = {}
+    targets: dict[str, dict[str, Any]] = {}
     for server_id in server_ids:
         row = await mcp_postgres.get_mcp_server_runtime_target(
             conn,
@@ -204,6 +204,15 @@ async def attach_mcp_server_configs(
         )
         if row is None:
             raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
+        transport = str(row.get("transport") or "").casefold()
+        if transport not in {"sse", "streamable_http"}:
+            raise McpRuntimeContextError(
+                "mcp_server_unsupported_transport", status_code=503
+            )
+        targets[server_id] = row
+    jwt = await get_mcp_principal_jwt_store().get(principal)
+    for server_id, row in targets.items():
+        transport = str(row.get("transport") or "").casefold()
         endpoint, static_headers = open_mcp_server_credentials(
             tenant_id=principal.tenant_id,
             server_id=server_id,
@@ -212,7 +221,7 @@ async def attach_mcp_server_configs(
         if not endpoint:
             raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
         configs[server_id] = {
-            "type": "sse" if str(row.get("transport") or "").lower() == "sse" else "http",
+            "type": "sse" if transport == "sse" else "http",
             "url": endpoint,
             "headers": {
                 **static_headers,

@@ -1280,6 +1280,9 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
     monkeypatch, answer
 ):
     import claude_agent_sdk as sdk
+    from tests.support.claude_mcp import install_mcp_sessions
+
+    install_mcp_sessions(monkeypatch)
 
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings",

@@ -12,8 +12,6 @@ export interface MCPServerBase {
   enabled: boolean;
   url?: string;
   headers?: Record<string, string>;
-  command?: string;
-  env_keys?: string[];
 }
 
 // MCP Server Response (from API)
@@ -46,12 +44,10 @@ export interface MCPServersResponse {
 // MCP Server Create Request
 export interface MCPServerCreate {
   name: string;
-  transport: MCPTransport;
+  transport: Exclude<MCPTransport, "sandbox">;
   enabled?: boolean;
   url?: string;
   headers?: Record<string, string>;
-  command?: string;
-  env_keys?: string[];
   allowed_roles?: string[];
   role_quotas?: Record<string, MCPRoleQuota>;
   department_ids?: string[];
@@ -59,12 +55,10 @@ export interface MCPServerCreate {
 
 // MCP Server Update Request
 export interface MCPServerUpdate {
-  transport?: MCPTransport;
+  transport?: Exclude<MCPTransport, "sandbox">;
   enabled?: boolean;
   url?: string;
   headers?: Record<string, string>;
-  command?: string;
-  env_keys?: string[];
   allowed_roles?: string[];
   role_quotas?: Record<string, MCPRoleQuota>;
   department_ids?: string[];

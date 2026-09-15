@@ -38,7 +38,7 @@ export function buildOrdinaryMcpServerSetKey(serverNames: string[]): string {
 // eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
 export async function collectOrdinaryMcpTools(
   serverNames: string[],
-  discoverTools: (serverName: string) => Promise<MCPToolInfo[]>,
+  discoverTools: (serverName: string) => Promise<{ tools: MCPToolInfo[]; unavailable_reason?: string | null }>,
   shouldContinue: () => boolean = () => true,
 ): Promise<OrdinaryMcpToolDiscoveryResult> {
   const uniqueServerNames = Array.from(new Set(serverNames)).filter(Boolean);
@@ -58,7 +58,12 @@ export async function collectOrdinaryMcpTools(
         const serverName = uniqueServerNames[nextIndex];
         nextIndex += 1;
         try {
-          toolsByServer[serverName] = await discoverTools(serverName);
+          const response = await discoverTools(serverName);
+          if (response.unavailable_reason) {
+            unavailable = true;
+          } else {
+            toolsByServer[serverName] = response.tools;
+          }
         } catch {
           unavailable = true;
         }
@@ -146,10 +151,7 @@ export function OrdinaryMcpCatalog({
     };
     if (serverNames.length === 0) return invalidateGeneration;
 
-    void collectOrdinaryMcpTools(serverNames, async (serverName) => {
-      const response = await mcpApi.discoverTools(serverName);
-      return response.tools;
-    }, isCurrentGeneration)
+    void collectOrdinaryMcpTools(serverNames, mcpApi.discoverTools, isCurrentGeneration)
       .then((result) => {
         if (discoveryGenerationRef.current !== generation) return;
         setToolDiscovery((current) =>

@@ -888,12 +888,11 @@ async function runCase(port, role, viewport, mode = "listing") {
           canaries,
           hasUrlField: Boolean(dialog.querySelector('input[type="url"]')),
           hasCommandField: Boolean(dialog.querySelector('input[placeholder*="npx"]')),
+          hasMigrationHint: dialog.innerText.includes("命令传输尚不受支持"),
         };
       })()`, `${scenario}:edit_redaction_values`);
-      const expectedField =
-        mode === "sandbox-edit"
-          ? editEvidence?.hasCommandField
-          : editEvidence?.hasUrlField;
+      const expectedField = editEvidence?.hasUrlField && !editEvidence?.hasCommandField
+        && (mode !== "sandbox-edit" || editEvidence?.hasMigrationHint);
       if (!editEvidence || !expectedField || editEvidence.canaries.length > 0) {
         throw new Error(`edit_redaction_failed:${JSON.stringify(editEvidence)}`);
       }

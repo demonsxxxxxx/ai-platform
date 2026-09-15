@@ -14,6 +14,8 @@ import pytest
 from docx import Document
 from openpyxl import Workbook
 
+from tests.support.claude_mcp import install_mcp_sessions
+
 import app.executors.claude_agent_sdk_runner as sdk_runner
 import app.worker as worker_module
 from app.context.file_content import ContextFileContentError
@@ -75,6 +77,7 @@ def _materialized_xlsx_bytes() -> bytes:
 
 @pytest.mark.asyncio
 async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_subjects(monkeypatch, tmp_path):
+    install_mcp_sessions(monkeypatch)
     captured, lifecycle_facts = {}, []
 
     class TextBlock:
@@ -116,6 +119,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             self.message = message
 
     async def query(prompt, options):
+        captured["mcp_servers"] = options.mcp_servers
         captured["pre_invocation_skill_write"] = await options.kwargs["can_use_tool"](
             "Write",
             {"file_path": ".claude/skills/qa-file-reviewer/SKILL.md", "content": "tampered"},
@@ -241,16 +245,12 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "Skill(qa-file-reviewer)",
         "mcp__corp-search__query",
     ]
-    assert captured["mcp_servers"] == {
-        "corp-search": {
-            "type": "http",
-            "url": "https://mcp.example.test/v1",
-            "headers": {
-                "X-Static-Header": "configured",
-                "JWT-Authorization": "Bearer runtime-jwt",
-            },
-        }
-    }
+    assert set(captured["mcp_servers"]) == {"corp-search"}
+    server_config = captured["mcp_servers"]["corp-search"]
+    assert server_config["type"] == "sdk"
+    assert server_config["name"] == "corp-search"
+    assert server_config["instance"].name == "corp-search"
+    assert server_config["instance"].instructions is None
     assert "on_tool_permission" not in captured
     assert captured["pre_invocation_skill_write"].behavior == "deny"
     assert captured["pre_invocation_output_write"].behavior == "allow"
@@ -2393,7 +2393,7 @@ def test_external_mcp_availability_requires_real_sandbox_without_client_executio
             skill_id="general-chat",
             input={
                 "message": "search with the selected tool",
-                "mcp_tool_ids": ["tenant-search"],
+                "mcp_tool_ids": ["tenant-server::search"],
                 "_runtime_tool_policy_subjects": [
                     {
                         "identity": "mcp__tenant-server__search",
@@ -2486,7 +2486,7 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
         skill_id="general-chat",
         input={
             "message": "answer or search as needed",
-            "mcp_tool_ids": ["tenant-search"],
+            "mcp_tool_ids": ["tenant-server::search"],
             "_runtime_tool_policy_subjects": [_mcp_subject()],
         },
     )
@@ -2494,7 +2494,7 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
     result = await adapter.submit_run(current_payload, event_sink=event_sink)
 
     assert result.status == "succeeded"
-    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-search"]
+    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-server::search"]
     assert [event for event in events if event["payload"].get("tool_category") == "mcp"] == []
 
 
@@ -2687,7 +2687,7 @@ async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatc
         skill_id="general-chat",
         input={
             "message": "search with the selected tool",
-            "mcp_tool_ids": ["tenant-search"],
+            "mcp_tool_ids": ["tenant-server::search"],
             "_runtime_tool_policy_subjects": [
                 {
                     "identity": "mcp__tenant-server__search",
