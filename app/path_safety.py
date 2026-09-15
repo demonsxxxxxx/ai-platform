@@ -1,6 +1,16 @@
 from pathlib import Path
 
 
+MAX_FILESYSTEM_COMPONENT_UTF8_BYTES = 255
+
+
+def filesystem_component_fits(value: str) -> bool:
+    try:
+        return len(value.encode("utf-8")) <= MAX_FILESYSTEM_COMPONENT_UTF8_BYTES
+    except UnicodeEncodeError:
+        return False
+
+
 def ensure_path_inside(root: str | Path, path: str | Path, message: str) -> None:
     root_path = Path(root)
     target_path = Path(path)

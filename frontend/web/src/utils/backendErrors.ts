@@ -31,6 +31,9 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   queue_payload_invalid: "backendErrors.queuePayloadInvalid",
   chat_submission_internal_error: "backendErrors.chatSubmissionInternalError",
   skill_package_path_escape: "backendErrors.skillPackageUnsafe",
+  skill_package_path_too_long: "backendErrors.skillPackagePathTooLong",
+  skill_package_filename_encoding_ambiguous:
+    "backendErrors.skillPackageFilenameEncodingAmbiguous",
   skill_package_mixed_root: "backendErrors.skillPackageUnsafe",
   skill_package_duplicate_path: "backendErrors.skillPackageUnsafe",
   skill_package_invalid_utf8: "backendErrors.skillPackageInvalidText",
