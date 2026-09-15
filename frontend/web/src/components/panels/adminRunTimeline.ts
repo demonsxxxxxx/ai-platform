@@ -17,10 +17,25 @@ export interface AdminRunTimelineItem {
   count: number;
 }
 
+export interface AdminRunEventDiagnostic {
+  id: string;
+  sequence: number | null;
+  type: string;
+  messageId: string | null;
+  streamIncarnation: number | null;
+  deltaLength: number | null;
+  textLength: number | null;
+  deltaCount: number | null;
+  severity: string | null;
+  errorCode: string | null;
+  created_at: string | null;
+}
+
 export interface AdminRunMonitorView {
   currentStatus: string;
   currentAction: string;
   recentActivity: AdminRunTimelineItem[];
+  eventDiagnostics: AdminRunEventDiagnostic[];
   modelOutput: string;
   rawEventCount: number;
 }
@@ -169,6 +184,57 @@ function failureDetail(
 
 function eventType(event: AdminRunEvent): string {
   return event.type ?? "event";
+}
+
+function diagnosticNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function diagnosticMetadata(event: AdminRunEvent): Record<string, unknown> | null {
+  const value = event.payload?.__stream_v4;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function diagnosticString(
+  event: AdminRunEvent,
+  key: string,
+  metadata: Record<string, unknown> | null,
+): string | null {
+  const value = metadata?.[key] ?? event.payload?.[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function buildAdminRunEventDiagnostics(
+  events: AdminRunEvent[],
+): AdminRunEventDiagnostic[] {
+  return events
+    .map((event, index) => {
+      const type = eventType(event);
+      if (!MODEL_OUTPUT_TYPES.has(type) && !TERMINAL_TYPES.has(type)) return null;
+      const metadata = diagnosticMetadata(event);
+      const delta = event.payload?.delta;
+      const content = event.payload?.content;
+      return {
+        id: event.event_id ?? `event-${index}`,
+        sequence: typeof event.sequence === "number" ? event.sequence : null,
+        type,
+        messageId: diagnosticString(event, "message_id", metadata),
+        streamIncarnation: diagnosticNumber(
+          metadata?.stream_incarnation ?? event.payload?.stream_incarnation,
+        ),
+        deltaLength: typeof delta === "string" ? Array.from(delta).length : null,
+        textLength:
+          diagnosticNumber(event.payload?.text_length) ??
+          (typeof content === "string" ? Array.from(content).length : null),
+        deltaCount: diagnosticNumber(event.payload?.delta_count),
+        severity: event.severity ?? null,
+        errorCode: event.error_code ?? null,
+        created_at: event.created_at ?? null,
+      };
+    })
+    .filter((item): item is AdminRunEventDiagnostic => item !== null);
 }
 
 function displayName(event: AdminRunEvent): string | null {
@@ -412,6 +478,7 @@ export function buildAdminRunMonitorView(
     currentStatus: run.status,
     currentAction,
     recentActivity: timeline.slice(-MAX_RECENT_ACTIVITY),
+    eventDiagnostics: buildAdminRunEventDiagnostics(events),
     modelOutput,
     rawEventCount: events.length,
   };
