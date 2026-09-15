@@ -63,6 +63,7 @@ export interface AdminSkillCatalogItem {
   currentVersion: string | null;
   latestDisplayVersion: string | null;
   currentDisplayVersion: string | null;
+  latestUploadedAt: string | null;
   rolloutPercent: number | null;
 }
 
@@ -261,6 +262,9 @@ export function normalizeAdminSkillCatalogResponse(
       !isNullableNonBlankString(item.current_version) ||
       !isNullableNonBlankString(latestDisplayVersion) ||
       !isNullableNonBlankString(currentDisplayVersion) ||
+      (item.latest_uploaded_at !== null &&
+        (typeof item.latest_uploaded_at !== "string" ||
+          !Number.isFinite(Date.parse(item.latest_uploaded_at)))) ||
       (item.rollout_percent !== null &&
         (!isNonNegativeInteger(item.rollout_percent) || item.rollout_percent > 100)) ||
       (item.latest_version === null) !== (item.latest_version_status === null)
@@ -279,6 +283,7 @@ export function normalizeAdminSkillCatalogResponse(
       currentVersion: item.current_version,
       latestDisplayVersion,
       currentDisplayVersion,
+      latestUploadedAt: item.latest_uploaded_at,
       rolloutPercent: item.rollout_percent,
     };
   });

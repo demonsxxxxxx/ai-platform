@@ -47,10 +47,25 @@ function adminSkill(
     currentVersion,
     latestDisplayVersion: "1.0.0",
     currentDisplayVersion: currentVersion ? "1.0.0" : null,
+    latestUploadedAt: null,
     rolloutPercent: 100,
     ...overrides,
   };
 }
+
+test("latest uploaded version time wins over a stale runtime timestamp", () => {
+  const [entry] = buildSkillCatalogEntries(
+    [{ ...runtimeSkill("review"), updated_at: "2026-08-25T04:08:00Z" }],
+    [adminSkill("review", "review", {
+      latestVersion: "sha-2",
+      latestDisplayVersion: "1.0.2",
+      latestUploadedAt: "2026-09-15T02:30:00+00:00",
+    })],
+  );
+
+  assert.equal(entry?.updatedAt, "2026-09-15T02:30:00+00:00");
+  assert.equal(buildSkillCatalogEntries([runtimeSkill("other")], [])[0]?.updatedAt, null);
+});
 
 test("catalog entries keep opaque skill ids while preserving runtime action names", () => {
   const entries = buildSkillCatalogEntries(

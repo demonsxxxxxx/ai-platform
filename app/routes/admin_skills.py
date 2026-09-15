@@ -282,6 +282,11 @@ async def admin_list_skills(
             skill_ids=[str(item.get("skill_id") or "") for item in items],
         )
     display_versions = resolve_uploaded_skill_display_versions(display_rows)
+    uploaded_dates = {
+        (str(row["skill_id"]), str(row["version"])): row["created_at"].isoformat()
+        for row in display_rows
+        if row.get("created_at") is not None
+    }
     for item in items:
         skill_id = str(item.get("skill_id") or "")
         latest_version = item.get("latest_version")
@@ -291,6 +296,9 @@ async def admin_list_skills(
         )
         item["current_display_version"] = display_versions.get(
             (skill_id, str(current_version or ""))
+        )
+        item["latest_uploaded_at"] = uploaded_dates.get(
+            (skill_id, str(latest_version or ""))
         )
     items = [item for item in items if item.get("lifecycle_status") == "active"]
     return AdminSkillListResponse(items=items)

@@ -103,7 +103,7 @@ function createEntry(
     runtimeEnabled: runtimeSkill?.enabled ?? null,
     catalogStatus: statusFor(adminSkill, runtimeSkill),
     tags: runtimeSkill?.tags ?? [],
-    updatedAt: runtimeSkill?.updated_at ?? null,
+    updatedAt: adminSkill?.latestUploadedAt ?? runtimeSkill?.updated_at ?? null,
     publishedCatalogName: runtimeSkill?.published_marketplace_name ?? null,
   };
 }

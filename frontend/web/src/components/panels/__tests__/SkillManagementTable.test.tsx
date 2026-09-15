@@ -53,6 +53,15 @@ test("Skill workbench prioritizes governed ZIP upload and catalog status", () =>
   assert.doesNotMatch(list, /<SkillCard/);
 });
 
+test("master list lets the overflow menu escape and opens the final row upwards", () => {
+  const css = readFileSync(
+    join(process.cwd(), "src/styles/skill-management-table.css"),
+    "utf8",
+  );
+  assert.match(css, /\.skill-management-table--master\s*\{\s*overflow: visible;/);
+  assert.match(css, /\.skill-management-table__row:last-child:not\(:first-child\) \.skill-management-table__action-menu-panel\s*\{\s*top: auto;\s*bottom:/);
+});
+
 test("management rows expose a focused update action, governed overflow actions, and a read-only state", () => {
   const source = readFileSync(
     join(process.cwd(), "src/components/panels/SkillsPanel/SkillManagementTable.tsx"),

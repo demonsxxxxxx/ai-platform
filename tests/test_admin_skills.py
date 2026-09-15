@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import base64
 import io
 from pathlib import Path
@@ -253,6 +254,7 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "skill_id": "native-review",
                 "version": "hash-uploaded-draft",
                 "display_version": None,
+                "created_at": datetime(2026, 9, 15, 2, 30, tzinfo=timezone.utc),
             }
         ]
 
@@ -286,6 +288,7 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "rollout_percent": 100,
                 "latest_display_version": "1.0.0",
                 "current_display_version": None,
+                "latest_uploaded_at": "2026-09-15T02:30:00+00:00",
             }
         ]
     }
