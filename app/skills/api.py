@@ -23,6 +23,7 @@ class AdminSkillSummaryResponse(TypedDict):
     rollout_percent: int | None
     latest_display_version: str | None
     current_display_version: str | None
+    latest_uploaded_at: str | None
 
 
 class AdminSkillListResponse(TypedDict):

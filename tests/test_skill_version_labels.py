@@ -55,6 +55,7 @@ async def test_display_version_adapter_locks_skill_before_ordered_history_read()
         ("review",),
     )
     assert "skill_id = any(%s)" in conn.calls[1][0]
+    assert "version, created_at," in conn.calls[1][0]
     assert "order by skill_id asc, created_at asc, version asc" in conn.calls[1][0]
     assert conn.calls[1][1] == (["review"],)
     assert rows[0]["version"] == "hash-a"

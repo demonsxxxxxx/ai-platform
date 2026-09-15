@@ -64,6 +64,7 @@ test("admin catalog normalizer exposes active skills and draft versions without 
         current_version: "sha-123",
         latest_display_version: "1.0.1",
         current_display_version: "1.0.0",
+        latest_uploaded_at: "2026-09-15T02:30:00+00:00",
         rollout_percent: 100,
         source: { storage_key: "private/skill.zip" },
       },
@@ -82,10 +83,31 @@ test("admin catalog normalizer exposes active skills and draft versions without 
       currentVersion: "sha-123",
       latestDisplayVersion: "1.0.1",
       currentDisplayVersion: "1.0.0",
+      latestUploadedAt: "2026-09-15T02:30:00+00:00",
       rolloutPercent: 100,
     },
   ]);
   assert.doesNotMatch(JSON.stringify(catalog), /source|storage|package/i);
+  assert.throws(
+    () => normalizeAdminSkillCatalogResponse({
+      items: [{
+        skill_id: "research",
+        name: "research",
+        description: "Research workflow",
+        lifecycle_status: "active",
+        distribution_status: "disabled",
+        visible_to_user: false,
+        latest_version: "sha-456",
+        latest_version_status: "draft",
+        current_version: "sha-123",
+        latest_display_version: "1.0.1",
+        current_display_version: "1.0.0",
+        latest_uploaded_at: "invalid-date",
+        rollout_percent: 100,
+      }],
+    }),
+    /admin_skill_lifecycle_invalid/,
+  );
 });
 
 test("admin lifecycle normalizers drop raw source, storage, and package fields", () => {

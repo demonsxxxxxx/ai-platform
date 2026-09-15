@@ -307,6 +307,7 @@ async def list_uploaded_skill_display_version_rows(
         select
           skill_id,
           version,
+          created_at,
           source_json->>'display_version' as display_version
         from skill_versions
         where skill_id = any(%s)

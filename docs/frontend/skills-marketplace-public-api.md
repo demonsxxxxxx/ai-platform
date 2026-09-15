@@ -49,7 +49,11 @@ Admin ZIP uploads retain the content hash as the immutable release and execution
 identity. The admin catalog separately projects a human-readable upload version:
 the first uploaded package is `1.0.0`, and each later package for the same Skill
 increments the patch component. Legacy uploaded packages receive the same
-creation-order projection without rewriting their immutable records.
+creation-order projection without rewriting their immutable records. The admin
+catalog also exposes `latest_uploaded_at` from the immutable latest uploaded
+version's creation timestamp (or `null` for built-in-only Skills). The management
+list uses it for update time before falling back to the public runtime timestamp;
+reusing identical package content does not create a new timestamp.
 
 `POST /api/skills/batch/delete` and `POST /api/skills/batch/toggle` map to tenant skill availability and audit each affected skill. Batch delete disables tenant availability; it does not delete global built-in Skill packages or admin release records.
 
