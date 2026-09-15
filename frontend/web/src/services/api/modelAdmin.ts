@@ -20,6 +20,8 @@ export interface AdminModelEntry {
   order: number;
   last_seen_revision: number;
   last_seen_at: string;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
 }
 
 export interface AdminModelState {
@@ -50,7 +52,13 @@ export const modelAdminApi = {
 
   patch(
     modelId: string,
-    patch: { display_name?: string; enabled?: boolean; is_default?: boolean },
+    patch: {
+      display_name?: string;
+      enabled?: boolean;
+      is_default?: boolean;
+      max_input_tokens?: number;
+      max_output_tokens?: number;
+    },
   ): Promise<AdminModelEntry> {
     return authFetch<AdminModelEntry>(
       `${API_BASE}/api/ai/admin/models/${encodeURIComponent(modelId)}`,

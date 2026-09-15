@@ -1156,7 +1156,8 @@ async def load_run_model_snapshot(
 
     cursor = await conn.execute(
         """
-        select model_id, model_value, model_gateway_revision
+        select model_id, model_value, model_gateway_revision,
+               max_input_tokens, max_output_tokens
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -1177,6 +1178,8 @@ async def bind_run_model(
     model_id: str,
     model_value: str,
     connection_revision: int | None,
+    max_input_tokens: int | None = None,
+    max_output_tokens: int | None = None,
 ) -> None:
     """Persist an Execution-admitted model snapshot on a new queued Run."""
 
@@ -1188,21 +1191,41 @@ async def bind_run_model(
         or connection_revision < 1
     ):
         raise ValueError("run_model_binding_invalid")
+    if (max_input_tokens is None) != (max_output_tokens is None):
+        raise ValueError("run_model_capacity_pair_invalid")
+    if any(
+        value is not None
+        and (not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 10_000_000)
+        for value in (max_input_tokens, max_output_tokens)
+    ):
+        raise ValueError("run_model_capacity_invalid")
     cursor = await conn.execute(
         """
         update runs
         set model_id = %s,
             model_value = %s,
-            model_gateway_revision = %s
+            model_gateway_revision = %s,
+            max_input_tokens = %s,
+            max_output_tokens = %s
         where tenant_id = %s
           and id = %s
           and status = 'queued'
           and model_id is null
           and model_value is null
           and model_gateway_revision is null
+          and max_input_tokens is null
+          and max_output_tokens is null
         returning id
         """,
-        (model_id, model_value, connection_revision, tenant_id, run_id),
+        (
+            model_id,
+            model_value,
+            connection_revision,
+            max_input_tokens,
+            max_output_tokens,
+            tenant_id,
+            run_id,
+        ),
     )
     if await cursor.fetchone() is None:
         raise ValueError("run_model_binding_invalid")
@@ -1221,7 +1244,8 @@ async def inherit_run_model(
         raise ValueError("run_model_inheritance_invalid")
     source_cursor = await conn.execute(
         """
-        select model_id, model_value, model_gateway_revision, input_json
+        select model_id, model_value, model_gateway_revision,
+               max_input_tokens, max_output_tokens, input_json
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -1233,7 +1257,8 @@ async def inherit_run_model(
         raise ValueError("run_model_source_missing")
     child_cursor = await conn.execute(
         """
-        select status, copied_from_run_id, model_id, model_value, model_gateway_revision
+        select status, copied_from_run_id, model_id, model_value,
+               model_gateway_revision, max_input_tokens, max_output_tokens
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -1251,6 +1276,16 @@ async def inherit_run_model(
     source_model_id = source.get("model_id")
     source_model_value = source.get("model_value")
     source_revision = source.get("model_gateway_revision")
+    source_max_input_tokens = source.get("max_input_tokens")
+    source_max_output_tokens = source.get("max_output_tokens")
+    if (source_max_input_tokens is None) != (source_max_output_tokens is None):
+        raise ValueError("run_model_source_partial")
+    if any(
+        value is not None
+        and (not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 10_000_000)
+        for value in (source_max_input_tokens, source_max_output_tokens)
+    ):
+        raise ValueError("run_model_source_partial")
     if source_model_id is None and source_model_value is None and source_revision is None:
         source_model_id, source_model_value = legacy_queue_model_snapshot(
             source.get("input_json")
@@ -1276,21 +1311,31 @@ async def inherit_run_model(
             child.get("model_id"),
             child.get("model_value"),
             child.get("model_gateway_revision"),
+            child.get("max_input_tokens"),
+            child.get("max_output_tokens"),
         )
     ):
         raise ValueError("run_model_child_partial")
     update_cursor = await conn.execute(
         """
         update runs
-        set model_id = %s, model_value = %s, model_gateway_revision = %s
+        set model_id = %s,
+            model_value = %s,
+            model_gateway_revision = %s,
+            max_input_tokens = %s,
+            max_output_tokens = %s
         where tenant_id = %s and id = %s and status = 'queued'
-          and model_id is null and model_value is null and model_gateway_revision is null
+          and model_id is null and model_value is null
+          and model_gateway_revision is null
+          and max_input_tokens is null and max_output_tokens is null
         returning id
         """,
         (
             source_model_id,
             source_model_value,
             source_revision,
+            source_max_input_tokens,
+            source_max_output_tokens,
             tenant_id,
             child_run_id,
         ),

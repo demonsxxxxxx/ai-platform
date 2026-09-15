@@ -785,6 +785,8 @@ class SandboxRuntime:
                 "require_selected_skill_invocation": request.require_selected_skill_invocation,
                 "provider_session_resume_required": request.provider_session_resume_required,
             }
+            if request.model_token_limits is not None:
+                task_config["model_token_limits"] = request.model_token_limits.model_dump()
             if request.context_manifest:
                 task_config["context_manifest"] = dict(request.context_manifest)
             if request.context_retrieval_scope is not None:

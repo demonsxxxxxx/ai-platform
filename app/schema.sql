@@ -619,6 +619,8 @@ create table if not exists model_catalog_entries (
   upstream_available boolean not null default true,
   is_default boolean not null default false,
   display_order integer not null default 0,
+  max_input_tokens bigint,
+  max_output_tokens bigint,
   first_seen_revision bigint not null references model_gateway_revisions(revision),
   last_seen_revision bigint not null references model_gateway_revisions(revision),
   first_seen_at timestamptz not null default now(),
@@ -629,7 +631,12 @@ create table if not exists model_catalog_entries (
     and upstream_model_id = btrim(upstream_model_id)
   ),
   constraint chk_model_catalog_display_name check (length(display_name) between 1 and 160),
-  constraint chk_model_catalog_default_enabled check (not is_default or enabled)
+  constraint chk_model_catalog_default_enabled check (not is_default or enabled),
+  constraint chk_model_catalog_token_limits check (
+    (max_input_tokens is null and max_output_tokens is null)
+    or (max_input_tokens is not null and max_output_tokens is not null
+        and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
+  )
 );
 create unique index if not exists uq_model_catalog_default
   on model_catalog_entries(is_default) where is_default = true;
@@ -657,6 +664,8 @@ create table if not exists runs (
   model_id text,
   model_value text,
   model_gateway_revision bigint,
+  max_input_tokens bigint,
+  max_output_tokens bigint,
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
   context_snapshot_id text,
@@ -689,6 +698,11 @@ create table if not exists runs (
   constraint chk_runs_execution_skill_identity check (
     (execution_kind = 'harness_chat' and skill_id is null)
     or (execution_kind = 'skill' and skill_id is not null)
+  ),
+  constraint chk_runs_model_token_limits check (
+    (max_input_tokens is null and max_output_tokens is null)
+    or (max_input_tokens is not null and max_output_tokens is not null
+        and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
   )
 );
 
@@ -1005,6 +1019,26 @@ alter table runs add column if not exists admitted_agent_profile_hash text;
 alter table runs add column if not exists model_id text;
 alter table runs add column if not exists model_value text;
 alter table runs add column if not exists model_gateway_revision bigint;
+alter table runs add column if not exists max_input_tokens bigint;
+alter table runs add column if not exists max_output_tokens bigint;
+alter table model_catalog_entries add column if not exists max_input_tokens bigint;
+alter table model_catalog_entries add column if not exists max_output_tokens bigint;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'chk_runs_model_token_limits') then
+    alter table runs add constraint chk_runs_model_token_limits check (
+      (max_input_tokens is null and max_output_tokens is null)
+      or (max_input_tokens is not null and max_output_tokens is not null
+          and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
+    );
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'model_catalog_entries'::regclass and conname = 'chk_model_catalog_token_limits') then
+    alter table model_catalog_entries add constraint chk_model_catalog_token_limits check (
+      (max_input_tokens is null and max_output_tokens is null)
+      or (max_input_tokens is not null and max_output_tokens is not null
+          and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
+    );
+  end if;
+end $$;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists revision_status text;

@@ -14,6 +14,7 @@ from app.control_plane_contracts import (
 from app.executors.base import project_execution_spec_to_run_payload
 from app.runs.api import (
     EXECUTION_SPEC_SCHEMA_VERSION,
+    EXECUTION_SPEC_SCHEMA_VERSION_V2,
     ExecutionSpec,
     ExecutionSpecError,
     compile_execution_spec_for_dispatch,
@@ -290,6 +291,51 @@ def test_dispatch_projection_preserves_legacy_run_payload_and_keeps_attempt_sepa
     assert run_payload.schema_version == RUN_PAYLOAD_SCHEMA_VERSION
     assert run_payload.file_ids == ["file-a"]
     assert run_payload.input == payload["input"]
+
+
+def test_v2_dispatch_binds_budget_to_locked_run_not_queue_body():
+    payload = _spec_payload()
+    queue = SimpleNamespace(
+        **{**payload, "schema_version": payload["run_payload_schema_version"]}
+    )
+    identity = {
+        key: payload[key]
+        for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id",
+            "run_id", "agent_id", "execution_kind", "skill_id",
+        )
+    }
+    locked_model = {
+        "model_id": "model-a",
+        "model_value": "model-a",
+        "model_gateway_revision": 7,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
+    }
+    def dispatch(snapshot):
+        return compile_execution_spec_for_dispatch(
+            run_identity=identity,
+            queue_payload=queue,
+            trace_id=payload["trace_id"],
+            context_snapshot_id=payload["context_snapshot_id"],
+            context_snapshot=payload["context_snapshot"],
+            context_pack=payload["context_pack"],
+            run_model_snapshot=snapshot,
+        )
+
+    spec = dispatch(locked_model)
+    assert spec.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V2
+    assert spec.to_mapping()["model_max_input_tokens"] == 32000
+    assert spec.to_mapping()["model_max_output_tokens"] == 2048
+    assert project_execution_spec_to_run_payload(spec, attempt_id="attempt-a").model_max_input_tokens == 32000
+    assert ExecutionSpec.from_canonical_json(spec.canonical_json) == spec
+    for corrupt in (
+        {**locked_model, "max_output_tokens": None},
+        {**locked_model, "max_input_tokens": True},
+        {**locked_model, "model_value": "other"},
+    ):
+        with pytest.raises(ExecutionSpecError, match="execution_spec_model_snapshot"):
+            dispatch(corrupt)
 
 
 def test_dispatch_compiler_rejects_queue_skill_identity_drift():

@@ -21,6 +21,45 @@ _ALLOWED_RUNTIME_PATHS = {
     "openai": frozenset({"v1/chat/completions", "v1/responses"}),
     "anthropic": frozenset({"v1/messages", "v1/messages/count_tokens"}),
 }
+_ANTHROPIC_BETA_ALLOWLIST = {
+    "v1/messages": frozenset({
+        "claude-code-20250219",
+        "interleaved-thinking-2025-05-14",
+        "thinking-token-count-2026-05-13",
+        "context-management-2025-06-27",
+        "prompt-caching-scope-2026-01-05",
+        "mid-conversation-system-2026-04-07",
+        "effort-2025-11-24",
+    }),
+    "v1/messages/count_tokens": frozenset({
+        "claude-code-20250219",
+        "interleaved-thinking-2025-05-14",
+        "context-management-2025-06-27",
+        "token-counting-2024-11-01",
+    }),
+}
+
+
+def _runtime_proxy_headers(
+    provider: str, upstream_path: str, headers: Mapping[str, str]
+) -> dict[str, str]:
+    outbound = {str(name).lower(): str(value) for name, value in headers.items()}
+    if provider != "anthropic":
+        return outbound
+    version = outbound.get("anthropic-version")
+    if version != "2023-06-01":
+        raise PermissionError("model_proxy_anthropic_version_not_allowed")
+    betas = outbound.get("anthropic-beta", "")
+    if betas:
+        values = [item.strip() for item in betas.split(",")]
+        if (
+            len(values) > 16
+            or any(not item for item in values)
+            or any(item not in _ANTHROPIC_BETA_ALLOWLIST[upstream_path] for item in values)
+        ):
+            raise PermissionError("model_proxy_anthropic_beta_not_allowed")
+        outbound["anthropic-beta"] = ",".join(sorted(set(values)))
+    return outbound
 
 
 class TransactionFactory(Protocol):
@@ -218,7 +257,7 @@ class ModelControlPlaneService:
         *,
         provider: str,
         upstream_path: str,
-        query_present: bool,
+        query: str,
         body: bytes,
         headers: Mapping[str, str],
         run_id: str,
@@ -242,8 +281,9 @@ class ModelControlPlaneService:
             raise PermissionError("model_proxy_capability_invalid")
         if upstream_path not in _ALLOWED_RUNTIME_PATHS.get(provider, frozenset()):
             raise PermissionError("model_proxy_path_not_allowed")
-        if query_present:
+        if query and (provider != "anthropic" or query != "beta=true"):
             raise PermissionError("model_proxy_query_not_allowed")
+        outbound_headers = _runtime_proxy_headers(provider, upstream_path, headers)
         try:
             payload = json.loads(body)
             model_value = payload.get("model") if isinstance(payload, dict) else None
@@ -272,7 +312,8 @@ class ModelControlPlaneService:
             path=f"/{upstream_path}",
             provider=provider,
             body=body,
-            headers=headers,
+            headers=outbound_headers,
+            query=query,
         )
         return RuntimeProxyResponse(
             status=upstream.status,

@@ -12,6 +12,8 @@ class RunModelSelection:
     model_id: str
     model_value: str
     connection_revision: int | None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
 
 
 class LegacyModelResolver(Protocol):

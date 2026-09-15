@@ -161,6 +161,9 @@ test("Model admin control gates non-admins and refreshes mounted mutations witho
     if (patch.is_default === true) {
       return { ...current, label: "Default GPT-5", enabled: true, is_default: true };
     }
+    if (patch.max_input_tokens && patch.max_output_tokens) {
+      return { ...current, max_input_tokens: patch.max_input_tokens, max_output_tokens: patch.max_output_tokens };
+    }
     return current;
   };
 
@@ -268,6 +271,24 @@ test("Model admin control gates non-admins and refreshes mounted mutations witho
     assert.deepEqual(calls.patch[1], {
       modelId: "mdl_gpt",
       patch: { is_default: true },
+    });
+
+    await React.act(async () => {
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 输入 token 上限"), "32000");
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 输出 token 上限"), "2048");
+    });
+    const capacitySave = container
+      .querySelectorAll("button")
+      .find((button) => button.getAttribute("aria-label") === "保存 openai/gpt-5 token 上限");
+    assert.ok(capacitySave);
+    await React.act(async () => {
+      capacitySave.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    await waitFor(React, () => calls.patch.length === 3, "capacity save should patch the model");
+    assert.deepEqual(calls.patch[2], {
+      modelId: "mdl_gpt",
+      patch: { max_input_tokens: 32000, max_output_tokens: 2048 },
     });
   } finally {
     await React.act(async () => {

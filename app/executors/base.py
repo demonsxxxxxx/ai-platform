@@ -212,6 +212,9 @@ class RunPayload:
     context_pack: dict[str, Any] = field(default_factory=dict)
     model_id: str = ""
     model_value: str = ""
+    model_gateway_revision: int | None = None
+    model_max_input_tokens: int | None = None
+    model_max_output_tokens: int | None = None
     agent_profile: dict[str, Any] = field(default_factory=dict)
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 

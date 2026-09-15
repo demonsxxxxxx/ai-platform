@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from app.execution.application.model_control_plane import configured_model_control_plane
 
@@ -30,6 +30,8 @@ class ModelCatalogEntryPatch(BaseModel):
     display_name: str | None = Field(default=None, max_length=160)
     enabled: bool | None = None
     is_default: bool | None = None
+    max_input_tokens: StrictInt | None = Field(default=None, gt=0, le=10_000_000)
+    max_output_tokens: StrictInt | None = Field(default=None, gt=0, le=10_000_000)
 
 
 def _require_admin(principal: Any, *, is_admin: AdminPredicate) -> None:
@@ -48,6 +50,9 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "model_connection_api_key_required",
         "model_display_name_invalid",
         "model_default_must_be_available",
+        "max_input_tokens_invalid",
+        "max_output_tokens_invalid",
+        "model_capacity_pair_required",
     }:
         return HTTPException(status_code=422, detail=code)
     if code in {"model_connection_authentication_failed"}:
@@ -145,6 +150,8 @@ async def patch_model_catalog_entry(
             display_name=payload.display_name,
             enabled=payload.enabled,
             is_default=payload.is_default,
+            max_input_tokens=payload.max_input_tokens,
+            max_output_tokens=payload.max_output_tokens,
         )
         if model is None:
             raise HTTPException(status_code=404, detail="model_not_found")
@@ -184,10 +191,18 @@ async def proxy_model_request(
         body_buffer.extend(chunk)
     body = bytes(body_buffer)
     try:
+        raw_query = request.scope.get("query_string", b"")
+        try:
+            query = raw_query.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise PermissionError("model_proxy_query_not_allowed") from exc
+        for header_name in ("anthropic-version", "anthropic-beta"):
+            if len(request.headers.getlist(header_name)) > 1:
+                raise PermissionError("model_proxy_header_duplicate")
         upstream = await configured_model_control_plane().proxy(
             provider=provider,
             upstream_path=upstream_path,
-            query_present=bool(request.url.query),
+            query=query,
             body=body,
             headers=request.headers,
             run_id=x_ai_platform_run_id,

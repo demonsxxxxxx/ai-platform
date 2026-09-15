@@ -6,6 +6,7 @@ from typing import Any, Mapping, Protocol
 
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION,
+    EXECUTION_SPEC_SCHEMA_VERSION_V2,
     ExecutionSpec,
     ExecutionSpecError,
     compile_execution_spec,
@@ -28,6 +29,26 @@ class AuthorizedQueuePayload(Protocol):
     agent_profile: dict[str, Any] | None
 
 
+def _v2_model_snapshot(snapshot: Mapping[str, Any] | None) -> dict[str, int] | None:
+    if not isinstance(snapshot, Mapping):
+        return None
+    values = {
+        "model_gateway_revision": snapshot.get("model_gateway_revision"),
+        "model_max_input_tokens": snapshot.get("max_input_tokens"),
+        "model_max_output_tokens": snapshot.get("max_output_tokens"),
+    }
+    if any(value is None for value in values.values()):
+        if any(value is not None for value in values.values()):
+            raise ExecutionSpecError("execution_spec_model_snapshot_invalid")
+        return None
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 1
+        for value in values.values()
+    ):
+        raise ExecutionSpecError("execution_spec_model_snapshot_invalid")
+    return values
+
+
 def compile_execution_spec_for_dispatch(
     *,
     run_identity: Mapping[str, Any],
@@ -36,6 +57,7 @@ def compile_execution_spec_for_dispatch(
     context_snapshot_id: str,
     context_snapshot: dict[str, Any],
     context_pack: dict[str, Any],
+    run_model_snapshot: Mapping[str, Any] | None = None,
 ) -> ExecutionSpec:
     """Compile worker-authorized fields through the single Runs-owned codec."""
 
@@ -44,30 +66,41 @@ def compile_execution_spec_for_dispatch(
     if queue_skill_id != identity_skill_id:
         raise ExecutionSpecError("execution_spec_skill_identity_mismatch")
 
-    return compile_execution_spec(
-        {
-            "schema_version": EXECUTION_SPEC_SCHEMA_VERSION,
-            "run_payload_schema_version": queue_payload.schema_version,
-            "tenant_id": run_identity["tenant_id"],
-            "workspace_id": run_identity["workspace_id"],
-            "user_id": run_identity["user_id"],
-            "session_id": run_identity["session_id"],
-            "run_id": run_identity["run_id"],
-            "agent_id": run_identity["agent_id"],
-            "execution_kind": run_identity["execution_kind"],
-            "skill_id": identity_skill_id,
-            "file_ids": queue_payload.file_ids,
-            "input": queue_payload.input,
-            "executor_type": queue_payload.executor_type,
-            "trace_id": trace_id,
-            "skill_version": queue_payload.skill_version or "",
-            "release_decision": queue_payload.release_decision,
-            "skill_manifests": queue_payload.skill_manifests,
-            "context_snapshot_id": context_snapshot_id,
-            "context_snapshot": context_snapshot,
-            "context_pack": context_pack,
-            "model_id": queue_payload.model_id or "",
-            "model_value": queue_payload.model_value or "",
-            "agent_profile": queue_payload.agent_profile or {},
-        }
-    )
+    model_snapshot = _v2_model_snapshot(run_model_snapshot)
+    if model_snapshot is not None and (
+        run_model_snapshot.get("model_id") != queue_payload.model_id
+        or run_model_snapshot.get("model_value") != queue_payload.model_value
+    ):
+        raise ExecutionSpecError("execution_spec_model_snapshot_mismatch")
+    spec_payload: dict[str, Any] = {
+        "schema_version": (
+            EXECUTION_SPEC_SCHEMA_VERSION_V2
+            if model_snapshot is not None
+            else EXECUTION_SPEC_SCHEMA_VERSION
+        ),
+        "run_payload_schema_version": queue_payload.schema_version,
+        "tenant_id": run_identity["tenant_id"],
+        "workspace_id": run_identity["workspace_id"],
+        "user_id": run_identity["user_id"],
+        "session_id": run_identity["session_id"],
+        "run_id": run_identity["run_id"],
+        "agent_id": run_identity["agent_id"],
+        "execution_kind": run_identity["execution_kind"],
+        "skill_id": identity_skill_id,
+        "file_ids": queue_payload.file_ids,
+        "input": queue_payload.input,
+        "executor_type": queue_payload.executor_type,
+        "trace_id": trace_id,
+        "skill_version": queue_payload.skill_version or "",
+        "release_decision": queue_payload.release_decision,
+        "skill_manifests": queue_payload.skill_manifests,
+        "context_snapshot_id": context_snapshot_id,
+        "context_snapshot": context_snapshot,
+        "context_pack": context_pack,
+        "model_id": queue_payload.model_id or "",
+        "model_value": queue_payload.model_value or "",
+        "agent_profile": queue_payload.agent_profile or {},
+    }
+    if model_snapshot is not None:
+        spec_payload.update(model_snapshot)
+    return compile_execution_spec(spec_payload)

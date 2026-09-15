@@ -11,11 +11,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "模型配置操作失败";
 }
 
+function validTokenLimit(value: string): boolean {
+  const parsed = Number(value);
+  return /^\d+$/.test(value) && Number.isInteger(parsed) && parsed >= 1 && parsed <= 10_000_000;
+}
+
 export function ModelAdminControl({ canManage = true }: { canManage?: boolean }) {
   const [state, setState] = useState<AdminModelState | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [credential, setCredential] = useState("");
   const [labels, setLabels] = useState<Record<string, string>>({});
+  const [limits, setLimits] = useState<Record<string, { input: string; output: string }>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,6 +29,10 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
     setState(next);
     setBaseUrl(next.connection.base_url || "");
     setLabels(Object.fromEntries(next.models.map((model) => [model.id, model.label])));
+    setLimits(Object.fromEntries(next.models.map((model) => [model.id, {
+      input: model.max_input_tokens?.toString() ?? "",
+      output: model.max_output_tokens?.toString() ?? "",
+    }])));
   };
 
   useEffect(() => {
@@ -72,7 +82,13 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
 
   const patchModel = async (
     model: AdminModelEntry,
-    patch: { display_name?: string; enabled?: boolean; is_default?: boolean },
+    patch: {
+      display_name?: string;
+      enabled?: boolean;
+      is_default?: boolean;
+      max_input_tokens?: number;
+      max_output_tokens?: number;
+    },
   ) => {
     setBusy(model.id);
     setError(null);
@@ -93,6 +109,10 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
           : current,
       );
       setLabels((current) => ({ ...current, [updated.id]: updated.label }));
+      setLimits((current) => ({ ...current, [updated.id]: {
+        input: updated.max_input_tokens?.toString() ?? "",
+        output: updated.max_output_tokens?.toString() ?? "",
+      } }));
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -169,12 +189,13 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
 
       {state?.models.length ? (
         <div className="mt-6 overflow-x-auto border-t border-[var(--theme-border)]">
-          <table className="w-full min-w-[760px] text-left text-sm">
+          <table className="w-full min-w-[980px] text-left text-sm">
             <thead className="text-[var(--theme-text-secondary)]">
               <tr>
                 <th className="py-3 pr-3 font-medium">启用</th>
                 <th className="py-3 pr-3 font-medium">显示名称</th>
                 <th className="py-3 pr-3 font-medium">上游模型 ID</th>
+                <th className="py-3 pr-3 font-medium">输入 / 输出 token 上限</th>
                 <th className="py-3 pr-3 font-medium">状态</th>
                 <th className="py-3 font-medium">默认</th>
               </tr>
@@ -211,6 +232,50 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
                     </div>
                   </td>
                   <td className="break-all py-3 pr-3 font-mono text-xs">{model.value}</td>
+                  <td className="py-3 pr-3">
+                    <div className="flex items-center gap-2">
+                      <input
+                        aria-label={`${model.value} 输入 token 上限`}
+                        className="h-9 w-24 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-2"
+                        min={1}
+                        max={10000000}
+                        onChange={(event) => setLimits((current) => ({ ...current, [model.id]: {
+                          input: event.target.value,
+                          output: current[model.id]?.output ?? "",
+                        } }))}
+                        type="number"
+                        value={limits[model.id]?.input ?? ""}
+                      />
+                      <span aria-hidden="true">/</span>
+                      <input
+                        aria-label={`${model.value} 输出 token 上限`}
+                        className="h-9 w-24 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-2"
+                        min={1}
+                        max={10000000}
+                        onChange={(event) => setLimits((current) => ({ ...current, [model.id]: {
+                          input: current[model.id]?.input ?? "",
+                          output: event.target.value,
+                        } }))}
+                        type="number"
+                        value={limits[model.id]?.output ?? ""}
+                      />
+                      <button
+                        aria-label={`保存 ${model.value} token 上限`}
+                        className="btn-ghost p-2"
+                        disabled={busy !== null || !validTokenLimit(limits[model.id]?.input ?? "")
+                          || !validTokenLimit(limits[model.id]?.output ?? "")
+                          || (Number(limits[model.id]?.input) === model.max_input_tokens
+                            && Number(limits[model.id]?.output) === model.max_output_tokens)}
+                        onClick={() => void patchModel(model, {
+                          max_input_tokens: Number(limits[model.id]?.input),
+                          max_output_tokens: Number(limits[model.id]?.output),
+                        })}
+                        type="button"
+                      >
+                        <Save size={15} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </td>
                   <td className="py-3 pr-3">{model.available ? "已发现" : "上游缺失"}</td>
                   <td className="py-3">
                     <input

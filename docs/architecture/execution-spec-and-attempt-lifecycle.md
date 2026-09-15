@@ -99,6 +99,19 @@ reauthorization/context preparation have completed and immediately before the
 first executor dispatch. Reauthorization may remove capability but MUST NOT add
 an Agent, Skill, file, model, tool, or policy not present in the admitted facts.
 
+### 2.3 Model-capacity expansion
+
+The codec accepts historical `ai-platform.execution-spec.v1` canonical bytes and
+an exact-field `ai-platform.execution-spec.v2` mapping with the Run-frozen
+`model_gateway_revision`, `model_max_input_tokens`, and
+`model_max_output_tokens`. The dispatcher can compile v2 only from an
+independently locked Runs-owned model snapshot matching its model identity, not
+from Redis queue fields. v2 is not yet the production writer: worker dispatch
+continues to compile v1 until the model proxy enforces provider token counts
+and Context selects a single native-resume or bootstrap mode. The sandbox
+transport accepts a strict paired `model_token_limits` projection, but that
+projection is advisory without the same Run/Attempt-bound proxy gate.
+
 ## 3. Durable attempt state machine
 
 `RunAttempt` is the sole durable execution-attempt authority. Its minimum state

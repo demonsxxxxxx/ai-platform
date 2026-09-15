@@ -21,6 +21,7 @@ async def prepare_worker_execution_spec(
     project_run_payload: Callable[..., Any],
     mcp_attacher: Callable[..., Awaitable[Any]],
     principal: Any,
+    run_model_snapshot: dict[str, Any] | None = None,
 ) -> tuple[ExecutionSpec | None, Any | None, dict[str, Any] | None]:
     """Prepare one immutable spec without rereading mutable context on replay."""
 
@@ -52,6 +53,7 @@ async def prepare_worker_execution_spec(
             **context_pack_builder(context_ref["context_snapshot"]),
             "conversation_context": context_ref["conversation_context"],
         },
+        run_model_snapshot=run_model_snapshot,
     )
     run_payload = project_run_payload(
         execution_spec,

@@ -404,7 +404,7 @@ async def test_prior_schema_ledgers_advance_to_current_schema(
 
 
 @pytest.mark.asyncio
-async def test_agent_avatar_schema_ledger_is_upgraded_to_claude_provider_schema():
+async def test_agent_avatar_schema_ledger_is_upgraded_to_model_budget_expand():
     state = SharedMigrationState()
     state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] = "legacy-checksum"
 
@@ -415,7 +415,7 @@ async def test_agent_avatar_schema_ledger_is_upgraded_to_claude_provider_schema(
 
     assert result["status"] == "applied"
     assert state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] == "legacy-checksum"
-    assert state.ledger[schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION] == (
+    assert state.ledger[schema_migrations.MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION] == (
         schema_migrations.schema_checksum()
     )
 
@@ -466,11 +466,12 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.04.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.15.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION
+        == schema_migrations.MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION
     )
+    assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
     assert (
         schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION
         == "2026.09.03.1"
@@ -647,8 +648,13 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("last_seen_at", "timestamptz"),
     ):
         assert ("model_catalog_entries", *column, True) in schema_migrations.CRITICAL_COLUMNS
+    for column in ("max_input_tokens", "max_output_tokens"):
+        assert ("model_catalog_entries", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
+        assert ("runs", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
     for constraint in (
         ("runs", "fk_runs_model_gateway_revision"),
+        ("runs", "chk_runs_model_token_limits"),
+        ("model_catalog_entries", "chk_model_catalog_token_limits"),
         ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
         ("model_gateway_revisions", "chk_model_gateway_base_url"),
         ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),

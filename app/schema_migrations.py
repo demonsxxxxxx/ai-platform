@@ -30,7 +30,8 @@ AGENT_AVATAR_STYLE_SCHEMA_VERSION = "2026.09.01.2"
 USER_PROFILE_METADATA_SCHEMA_VERSION = "2026.09.02.1"
 FILE_UPLOAD_SESSION_SCHEMA_VERSION = "2026.09.03.1"
 CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION = "2026.09.04.1"
-TARGET_SCHEMA_VERSION = CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION
+MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION = "2026.09.15.1"
+TARGET_SCHEMA_VERSION = MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # Keeping this ledger stable preserves readiness for the saved rollback binary.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION
@@ -80,6 +81,8 @@ CRITICAL_COLUMNS = (
     ("runs", "model_id", "text", False),
     ("runs", "model_value", "text", False),
     ("runs", "model_gateway_revision", "int8", False),
+    ("runs", "max_input_tokens", "int8", False),
+    ("runs", "max_output_tokens", "int8", False),
     ("model_gateway_revisions", "revision", "int8", True),
     ("model_gateway_revisions", "base_url", "text", True),
     ("model_gateway_revisions", "api_key_ciphertext", "bytea", True),
@@ -95,6 +98,8 @@ CRITICAL_COLUMNS = (
     ("model_catalog_entries", "upstream_available", "bool", True),
     ("model_catalog_entries", "is_default", "bool", True),
     ("model_catalog_entries", "display_order", "int4", True),
+    ("model_catalog_entries", "max_input_tokens", "int8", False),
+    ("model_catalog_entries", "max_output_tokens", "int8", False),
     ("model_catalog_entries", "first_seen_revision", "int8", True),
     ("model_catalog_entries", "last_seen_revision", "int8", True),
     ("model_catalog_entries", "first_seen_at", "timestamptz", True),
@@ -238,6 +243,7 @@ CRITICAL_COLUMNS = (
 CRITICAL_CONSTRAINTS = (
     ("users", "chk_users_metadata_json_object"),
     ("runs", "fk_runs_model_gateway_revision"),
+    ("runs", "chk_runs_model_token_limits"),
     ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
     ("model_gateway_revisions", "chk_model_gateway_base_url"),
     ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),
@@ -247,6 +253,7 @@ CRITICAL_CONSTRAINTS = (
     ("model_catalog_entries", "chk_model_catalog_upstream_id"),
     ("model_catalog_entries", "chk_model_catalog_display_name"),
     ("model_catalog_entries", "chk_model_catalog_default_enabled"),
+    ("model_catalog_entries", "chk_model_catalog_token_limits"),
     ("sessions", "chk_sessions_title_source"),
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
@@ -329,6 +336,24 @@ CRITICAL_TRIGGERS = (
     ),
 )
 MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "runs",
+        "chk_runs_model_token_limits",
+        "c",
+        "CHECK ((max_input_tokens IS NULL AND max_output_tokens IS NULL) OR "
+        "(max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
+        "max_output_tokens >= 1 AND max_output_tokens <= 10000000))",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_token_limits",
+        "c",
+        "CHECK ((max_input_tokens IS NULL AND max_output_tokens IS NULL) OR "
+        "(max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
+        "max_output_tokens >= 1 AND max_output_tokens <= 10000000))",
+    ),
     (
         "runs",
         "fk_runs_model_gateway_revision",

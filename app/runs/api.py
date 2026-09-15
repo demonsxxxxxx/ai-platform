@@ -53,6 +53,12 @@ from app.runs.domain.attempt_lifecycle import (
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION as EXECUTION_SPEC_SCHEMA_VERSION,
 )
+from app.runs.domain.execution_spec import (
+    EXECUTION_SPEC_SCHEMA_VERSION_V1 as EXECUTION_SPEC_SCHEMA_VERSION_V1,
+)
+from app.runs.domain.execution_spec import (
+    EXECUTION_SPEC_SCHEMA_VERSION_V2 as EXECUTION_SPEC_SCHEMA_VERSION_V2,
+)
 from app.runs.domain.execution_spec import ExecutionSpec as ExecutionSpec
 from app.runs.domain.execution_spec import ExecutionSpecError as ExecutionSpecError
 from app.runs.domain.execution_spec import (

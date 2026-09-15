@@ -8,13 +8,18 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.execution.api import RunModelSelection
 from app.execution.application import model_selection
-from app.execution.application.model_control_plane import ModelControlPlaneService
+from app.execution.application.model_control_plane import (
+    ModelControlPlaneService,
+    _runtime_proxy_headers,
+)
+from app.execution.domain.model_catalog import normalize_model_token_limits
 from app.execution.infrastructure import model_legacy_catalog, model_upstream as client
 from app.execution.infrastructure.model_management import (
     activate_connection_and_sync,
@@ -66,6 +71,28 @@ def _attempt_capability_verifier(secret: str):
     return verify
 
 
+def test_catalog_capacity_pair_and_anthropic_proxy_contract():
+    assert normalize_model_token_limits(32000, 2048) == (32000, 2048)
+    for pair in ((32000, None), (True, 2048), (0, 2048), (10_000_001, 2048)):
+        with pytest.raises(ValueError):
+            normalize_model_token_limits(*pair)
+
+    headers = {
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "interleaved-thinking-2025-05-14,claude-code-20250219,claude-code-20250219",
+    }
+    normalized = _runtime_proxy_headers("anthropic", "v1/messages", headers)
+    assert normalized["anthropic-beta"] == "claude-code-20250219,interleaved-thinking-2025-05-14"
+    for invalid in (
+        {"anthropic-version": "2024-01-01"},
+        {"anthropic-version": "2023-06-01", "anthropic-beta": "unknown-beta"},
+        {"anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219,"},
+        {"anthropic-version": "2023-06-01", "anthropic-beta": "effort-2025-11-24"},
+    ):
+        with pytest.raises(PermissionError):
+            _runtime_proxy_headers("anthropic", "v1/messages/count_tokens", invalid)
+
+
 def test_model_transport_maps_missing_write_only_key_to_validation_error() -> None:
     error = model_routes._translate_control_plane_error(
         ValueError("model_connection_api_key_required")
@@ -73,6 +100,12 @@ def test_model_transport_maps_missing_write_only_key_to_validation_error() -> No
 
     assert error.status_code == 422
     assert error.detail == "model_connection_api_key_required"
+    for code in ("model_capacity_pair_required", "max_input_tokens_invalid", "max_output_tokens_invalid"):
+        mapped = model_routes._translate_control_plane_error(ValueError(code))
+        assert (mapped.status_code, mapped.detail) == (422, code)
+    for budget in (True, 0, 10_000_001, "32000"):
+        with pytest.raises(ValidationError):
+            model_routes.ModelCatalogEntryPatch(max_input_tokens=budget)
 
 
 def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) -> None:
@@ -340,6 +373,8 @@ async def test_load_run_model_snapshot_locks_exact_run_for_dispatch() -> None:
                 "model_id": "model-public",
                 "model_value": "openai/gpt-5",
                 "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
             }
         ]
     )
@@ -357,6 +392,8 @@ async def test_load_run_model_snapshot_locks_exact_run_for_dispatch() -> None:
         "model_id": "model-public",
         "model_value": "openai/gpt-5",
         "model_gateway_revision": 7,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
     }
 
 
@@ -371,6 +408,8 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         model_id="model-public",
         model_value="openai/gpt-5",
         connection_revision=7,
+        max_input_tokens=32000,
+        max_output_tokens=2048,
     )
 
     sql, params = conn.calls[0]
@@ -381,6 +420,8 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         "model-public",
         "openai/gpt-5",
         7,
+        32000,
+        2048,
         "tenant-a",
         "run-child",
     )
@@ -403,9 +444,27 @@ async def test_bind_run_model_accepts_legacy_snapshot_without_gateway_revision()
         "legacy-default",
         "legacy-default",
         None,
+        None,
+        None,
         "tenant-a",
         "run-child",
     )
+
+
+@pytest.mark.asyncio
+async def test_bind_run_model_rejects_invalid_revision_before_write() -> None:
+    for revision in (True, 0, -1, "7"):
+        conn = _RunModelMutationConnection([{"id": "run-child"}])
+        with pytest.raises(ValueError, match="run_model_binding_invalid"):
+            await bind_run_model(
+                conn,
+                tenant_id="tenant-a",
+                run_id="run-child",
+                model_id="model-public",
+                model_value="openai/gpt-5",
+                connection_revision=revision,
+            )
+        assert not conn.calls
 
 
 @pytest.mark.asyncio
@@ -431,6 +490,8 @@ async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child(
                 "model_id": "model-public",
                 "model_value": "openai/gpt-5",
                 "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
             },
             {
                 "status": "queued",
@@ -458,6 +519,8 @@ async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child(
         "model-public",
         "openai/gpt-5",
         7,
+        32000,
+        2048,
         "tenant-a",
         "run-child",
     )
@@ -501,6 +564,8 @@ async def test_inherit_run_model_modernizes_legacy_descendants(operation: str) -
     assert conn.calls[2][1] == (
         "legacy-default",
         "openai/gpt-5",
+        None,
+        None,
         None,
         "tenant-a",
         child_run_id,
@@ -1016,6 +1081,91 @@ def test_runtime_proxy_rejects_redirect_without_following(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_proxy_transport_rejects_duplicate_anthropic_headers_before_service(monkeypatch) -> None:
+    class ForbiddenService:
+        async def proxy(self, **_kwargs):
+            raise AssertionError("duplicate header reached model service")
+
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: ForbiddenService())
+    for duplicate in (b"anthropic-version", b"anthropic-beta"):
+        async def receive():
+            return {"type": "http.request", "body": b'{}', "more_body": False}
+
+        request = Request(
+            {
+                "type": "http", "method": "POST", "path": "/api/ai/internal/model-proxy/anthropic/v1/messages",
+                "query_string": b"beta=true", "headers": [(duplicate, b"value"), (duplicate, b"value")],
+                "server": ("api", 8020),
+            }, receive,
+        )
+        with pytest.raises(HTTPException) as rejected:
+            await model_routes.proxy_model_request(
+                "anthropic", "v1/messages", request,
+                x_ai_platform_run_id="run-a", x_ai_platform_attempt_id="attempt-a",
+                x_ai_platform_internal_token="synthetic-internal",
+                x_ai_platform_model_authorization="", x_ai_platform_model_api_key="",
+            )
+        assert (rejected.value.status_code, rejected.value.detail) == (403, "model_proxy_header_duplicate")
+
+
+@pytest.mark.asyncio
+async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
+    captured = {}
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def connection(_conn, **_kwargs):
+        return SimpleNamespace(base_url="https://gateway.example", api_key="synthetic-key")
+
+    class FakeStream:
+        status = 200
+        content_type = "application/json"
+
+        def body(self):
+            return iter([b"{}"])
+
+    def open_stream(**kwargs):
+        captured.update(kwargs)
+        return FakeStream()
+
+    service = ModelControlPlaneService(
+        transaction_factory=fake_transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_proxy_internal_token="synthetic-internal",
+            model_connection_encryption_key="synthetic-encryption",
+            model_connection_allowed_internal_hosts="",
+        ),
+        repository=SimpleNamespace(run_connection=connection),
+        legacy_catalog=SimpleNamespace(),
+        security=SimpleNamespace(),
+        upstream=SimpleNamespace(open_stream=open_stream),
+        attempt_capability_verifier=lambda **_kwargs: True,
+    )
+    fields = {
+        "body": b'{"model":"model-a"}', "run_id": "run-a", "attempt_id": "attempt-a",
+        "internal_token": "synthetic-internal", "model_proxy_capability": "synthetic-capability",
+    }
+    await service.proxy(
+        provider="anthropic", upstream_path="v1/messages", query="beta=true",
+        headers={"anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219"},
+        **fields,
+    )
+    assert captured["query"] == "beta=true"
+    assert captured["headers"]["anthropic-beta"] == "claude-code-20250219"
+    assert captured["path"] == "/v1/messages"
+    for invalid_query in ("Beta=true", "beta=true&beta=true", "beta%3Dtrue"):
+        captured.clear()
+        with pytest.raises(PermissionError, match="model_proxy_query_not_allowed"):
+            await service.proxy(
+                provider="anthropic", upstream_path="v1/messages", query=invalid_query,
+                headers={"anthropic-version": "2023-06-01"}, **fields,
+            )
+        assert captured == {}
+
+
+@pytest.mark.asyncio
 async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response(monkeypatch) -> None:
     captured = {}
 
@@ -1157,7 +1307,7 @@ async def test_internal_runtime_proxy_rejects_invalid_capability_before_database
         await service.proxy(
             provider="openai",
             upstream_path="v1/chat/completions",
-            query_present=False,
+            query="",
             body=b'{"model":"openai/gpt-5"}',
             headers={},
             run_id="run-123",

@@ -191,6 +191,15 @@ class ContextRetrievalScope(BaseModel):
         return assert_safe_principal_user_id(value)
 
 
+class ModelTokenLimits(BaseModel):
+    """Run-frozen model budget accepted by the sandbox transport."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    max_input_tokens: int = Field(gt=0, le=10_000_000)
+    max_output_tokens: int = Field(gt=0, le=10_000_000)
+
+
 class SandboxRuntimeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -211,6 +220,7 @@ class SandboxRuntimeRequest(BaseModel):
     sandbox_mode: SandboxMode
     browser_enabled: bool = False
     model: str
+    model_token_limits: ModelTokenLimits | None = None
     thinking_effort: str = "off"
     model_gateway: Literal["new-api"] = "new-api"
     permissions: list[str] = Field(default_factory=list)
@@ -417,6 +427,11 @@ class ExecutorTaskRequest(BaseModel):
     def validate_config(cls, value: dict[str, Any]):
         if "thinking_effort" in value:
             normalize_thinking_effort(value["thinking_effort"])
+        if "model_token_limits" in value:
+            try:
+                ModelTokenLimits.model_validate(value["model_token_limits"])
+            except Exception as exc:
+                raise ValueError("model_token_limits_invalid") from exc
         return value
 
     @field_validator("sdk_session_id")

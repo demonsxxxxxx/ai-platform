@@ -19,11 +19,18 @@ validated `run_id` and `attempt_id`:
 - `/anthropic/<run_id>/<attempt_id>/v1/messages`
 - `/anthropic/<run_id>/<attempt_id>/v1/messages/count_tokens`
 
-Nginx accepts only `POST`, rejects query strings, strips sandbox authorization
-and API-key headers, injects `MODEL_PROXY_INTERNAL_TOKEN`, and adds the Run and
-Attempt headers. The existing `model_control_plane.py` then validates the
-binding, decrypts the pinned model connection, and forwards the request. The
+Nginx accepts only `POST`, rejects all OpenAI query strings, and accepts only
+empty or exact `beta=true` on the two Anthropic paths. It strips sandbox
+authorization and API-key headers, injects `MODEL_PROXY_INTERNAL_TOKEN`, and
+adds the Run and Attempt headers. The existing `model_control_plane.py` then
+validates the binding, decrypts the pinned model connection, and forwards the
+request. Anthropic version and beta headers are restricted to the installed
+CLI's fixed per-path allowlist; other upstream headers remain filtered. The
 proxy does not implement OpenSandbox lifecycle or capability admission.
+
+Model capacity expansion is not yet a runtime hard-budget gate: exact provider
+input counting and the Attempt-frozen conversation mode must be implemented
+before ExecutionSpec v2 becomes the new dispatch writer.
 
 Callbacks use the same stateless egress origin and are forwarded to the
 existing `/api/ai/runtime/callbacks/*` routes. Callback-token validation remains

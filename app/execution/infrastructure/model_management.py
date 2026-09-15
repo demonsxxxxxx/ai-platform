@@ -28,6 +28,8 @@ class ActiveConnection:
     base_url: str
     api_key: str
     key_fingerprint: str
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
 
 
 async def get_connection_projection(conn: AsyncConnection) -> dict[str, Any]:
@@ -80,7 +82,8 @@ async def get_run_connection(
 ) -> ActiveConnection | None:
     cursor = await conn.execute(
         """
-        select revision, base_url, api_key_ciphertext, key_fingerprint
+        select revision, base_url, api_key_ciphertext, key_fingerprint,
+               runs.max_input_tokens, runs.max_output_tokens
         from runs
         join model_gateway_revisions
           on model_gateway_revisions.revision = runs.model_gateway_revision
@@ -192,7 +195,8 @@ async def list_admin_models(conn: AsyncConnection) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
         select model_id, upstream_model_id, display_name, provider, enabled,
-               upstream_available, is_default, display_order, last_seen_revision, last_seen_at
+               upstream_available, is_default, display_order, last_seen_revision,
+               last_seen_at, max_input_tokens, max_output_tokens
         from model_catalog_entries
         order by display_order, model_id
         """
@@ -208,7 +212,8 @@ async def list_public_models(conn: AsyncConnection) -> dict[str, Any] | None:
         return None
     cursor = await conn.execute(
         """
-        select model_id, upstream_model_id, display_name, provider, is_default
+        select model_id, upstream_model_id, display_name, provider, is_default,
+               max_input_tokens, max_output_tokens
         from model_catalog_entries
         where enabled = true and upstream_available = true
         order by is_default desc, display_order, model_id
@@ -224,6 +229,8 @@ async def update_catalog_entry(
     display_name: str | None,
     enabled: bool | None,
     is_default: bool | None,
+    max_input_tokens: int | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         "select * from model_catalog_entries where model_id = %s for update",
@@ -237,16 +244,29 @@ async def update_catalog_entry(
         display_name=display_name,
         enabled=enabled,
         is_default=is_default,
+        max_input_tokens=max_input_tokens,
+        max_output_tokens=max_output_tokens,
     )
     if patch.is_default:
         await conn.execute("update model_catalog_entries set is_default = false where is_default = true")
     await conn.execute(
         """
         update model_catalog_entries
-        set display_name = %s, enabled = %s, is_default = %s
+        set display_name = %s,
+            enabled = %s,
+            is_default = %s,
+            max_input_tokens = %s,
+            max_output_tokens = %s
         where model_id = %s
         """,
-        (patch.display_name, patch.enabled, patch.is_default, model_id),
+        (
+            patch.display_name,
+            patch.enabled,
+            patch.is_default,
+            patch.max_input_tokens,
+            patch.max_output_tokens,
+            model_id,
+        ),
     )
     cursor = await conn.execute("select * from model_catalog_entries where model_id = %s", (model_id,))
     return admin_model_projection(await cursor.fetchone())
@@ -270,7 +290,9 @@ async def resolve_run_model(
         )
         select active_gateway.revision as connection_revision,
                catalog.model_id,
-               catalog.upstream_model_id
+               catalog.upstream_model_id,
+               catalog.max_input_tokens,
+               catalog.max_output_tokens
         from active_gateway
         left join model_catalog_entries catalog
           on catalog.enabled = true
@@ -294,6 +316,16 @@ async def resolve_run_model(
         model_id=str(row["model_id"]),
         model_value=str(row["upstream_model_id"]),
         connection_revision=int(row["connection_revision"]),
+        max_input_tokens=(
+            int(row["max_input_tokens"])
+            if row.get("max_input_tokens") is not None
+            else None
+        ),
+        max_output_tokens=(
+            int(row["max_output_tokens"])
+            if row.get("max_output_tokens") is not None
+            else None
+        ),
     )
 
 
@@ -338,4 +370,14 @@ def _connection_from_row(row: dict[str, Any], *, encryption_key: str) -> ActiveC
             encoded_key=encryption_key,
         ),
         key_fingerprint=str(row["key_fingerprint"]),
+        max_input_tokens=(
+            int(row["max_input_tokens"])
+            if row.get("max_input_tokens") is not None
+            else None
+        ),
+        max_output_tokens=(
+            int(row["max_output_tokens"])
+            if row.get("max_output_tokens") is not None
+            else None
+        ),
     )

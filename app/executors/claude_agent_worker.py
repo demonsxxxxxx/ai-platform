@@ -69,7 +69,11 @@ from app.runtime.sandbox.container_provider import (
     FakeContainerProvider,
     OpenSandboxContainerProvider,
 )
-from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
+from app.runtime.sandbox.contracts import (
+    ContextRetrievalScope,
+    ModelTokenLimits,
+    SandboxRuntimeRequest,
+)
 from app.runtime.sandbox.runtime import SandboxRuntime
 from app.sandbox.api import normalize_sdk_runtime_diagnostics
 from app.settings import get_settings
@@ -1347,6 +1351,15 @@ class ClaudeAgentWorkerAdapter:
             ),
             sandbox_mode=_payload_sandbox_mode(payload),
             browser_enabled=bool(payload.input.get("browser_enabled")),
+            model_token_limits=(
+                ModelTokenLimits(
+                    max_input_tokens=payload.model_max_input_tokens,
+                    max_output_tokens=payload.model_max_output_tokens,
+                )
+                if payload.model_max_input_tokens is not None
+                and payload.model_max_output_tokens is not None
+                else None
+            ),
             **run_controls.executor_model_controls(payload, getattr(settings, "claude_agent_model", ""), "model"),
             resource_limits=_payload_resource_limits(payload),
             queue_wait_ms=_payload_queue_wait_ms(payload),
