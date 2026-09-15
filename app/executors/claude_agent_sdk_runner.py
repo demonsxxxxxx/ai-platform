@@ -1856,7 +1856,7 @@ async def run_claude_agent_sdk(
             subject_tool_name = (
                 identity.rsplit("__", 1)[-1]
                 if identity in internal_context_subjects
-                else str(tool_name or "")
+                else identity
             )
             parameters_authorized = bool(subject) and _parameters_match_subject(
                 subject,
