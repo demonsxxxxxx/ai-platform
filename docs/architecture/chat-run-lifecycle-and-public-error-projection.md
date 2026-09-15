@@ -110,7 +110,7 @@ fallback. Frontend display ignores arbitrary backend message text for these
 status cards. Distinguish execution-service unavailability from explicit model
 upstream failure according to the owning code mapping.
 
-Public-answer projection remains fail-closed for secrets, concrete Skill implementation/source details, and structured executor or storage fields. Ordinary paths in natural-language answer and thinking text are allowed as user-visible project context. A rejected public projection is not a model or Run execution failure: the executor preserves its authoritative terminal status and omits the unsafe answer from ordinary-user projections. Historical records with the retired projection-failure code are presented as the generic fixed `run_failed` terminal state.
+Public-answer projection remains fail-closed for secrets, concrete Skill implementation/source details, structured executor or storage fields, and model Thinking content. Ordinary paths in intentional answer text are allowed as user-visible project context; pre-release thinking events may retain status compatibility but their body is not rendered. A rejected public projection is not a model or Run execution failure: the executor preserves its authoritative terminal status and omits the unsafe answer from ordinary-user projections. Historical records with the retired projection-failure code are presented as the generic fixed `run_failed` terminal state.
 
 ## Change Contract: executor terminal protocol evidence
 

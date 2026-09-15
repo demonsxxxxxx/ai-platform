@@ -331,12 +331,10 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
 // Utility
 // ==========================================
 
-// Thinking Block - public summarized thinking, collapsed inline by default.
+// Thinking status only. Model reasoning content is intentionally not rendered.
 export function ThinkingBlock({
-  content,
   isStreaming,
 }: {
-  content: string;
   isStreaming?: boolean;
 }) {
   const { t } = useTranslation();
@@ -358,16 +356,9 @@ export function ThinkingBlock({
         }
         variant="thinking"
         animatedDots={isStreaming}
-        expandable={!!content}
-        defaultExpanded={isStreaming}
+        expandable={false}
         formatLabel={false}
-      >
-        {content && (
-          <div className="ml-4 mt-1 max-w-2xl border-l-2 border-stone-300/70 py-1 pl-3 text-sm text-[var(--theme-text-secondary)] dark:border-stone-600/70 [&_.markdown-preview]:thinking-content">
-            <MarkdownContent content={content} isStreaming={isStreaming} />
-          </div>
-        )}
-      </CollapsiblePill>
+      />
     </div>
   );
 }

@@ -125,7 +125,7 @@ test("external message conversion keeps stable ids and redacts unvalidated reaso
   ]);
 });
 
-test("external message conversion preserves model-provided public reasoning", () => {
+test("external message conversion hides model reasoning content", () => {
   const converted = toAssistantUiMessage({
     id: "message-public-thinking",
     role: "assistant",
@@ -156,17 +156,17 @@ test("external message conversion preserves model-provided public reasoning", ()
   assert.deepEqual(converted.content, [
     {
       type: "reasoning",
-      text: "Analyzing the request",
+      text: "思考中",
       status: { type: "running" },
     },
     {
       type: "reasoning",
-      text: "Analysis step completed",
+      text: "已思考",
       status: { type: "complete" },
     },
     {
       type: "reasoning",
-      text: "Compare the public evidence before answering.",
+      text: "已思考",
       status: { type: "complete" },
     },
   ]);

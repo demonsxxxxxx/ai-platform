@@ -31,7 +31,6 @@ def _adapter():
         attempt_id="attempt-1",
         sanitizer=sanitize_public_answer_text,
         payload_sanitizer=sanitize_public_event_candidate,
-        reasoning_sanitizer=sanitize_public_reasoning_text,
         authorized_capabilities={
             "Read": ("read", "Read file"),
             "WebSearch": ("search", "Web search"),
@@ -218,7 +217,6 @@ def test_answer_candidate_failure_does_not_advance_receipt_state():
         attempt_id="attempt-1",
         sanitizer=sanitize_public_answer_text,
         payload_sanitizer=fail_one_delta,
-        reasoning_sanitizer=sanitize_public_reasoning_text,
     )
 
     assert adapter.accept_answer_text("omitted", already_gated=True) == ()
@@ -253,7 +251,6 @@ def test_result_completion_candidate_failure_does_not_create_answer_receipt():
         attempt_id="attempt-1",
         sanitizer=sanitize_public_answer_text,
         payload_sanitizer=fail_completion,
-        reasoning_sanitizer=sanitize_public_reasoning_text,
     )
     accepted = adapter.accept_answer_text("kept", already_gated=True)
 
@@ -315,27 +312,11 @@ def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
 
 
 
-def test_thinking_summary_and_tool_hooks_exclude_sdk_signature_and_tool_payload():
+def test_tool_hooks_exclude_sdk_tool_payload():
     adapter = _adapter()
 
     class ToolUseBlock:
         pass
-
-    thinking_events = adapter.accept_thinking_summary(
-        "Check the public evidence before choosing the next action.",
-        block_index=0,
-        message_identity="message-a",
-    )
-    assert len(thinking_events) == 1
-    thinking = thinking_events[0]
-    assert thinking.as_agent_event_fields()["type"] == (
-        CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
-    )
-    assert thinking.summary == (
-        "Check the public evidence before choosing the next action."
-    )
-    assert thinking.message_id
-    assert "signature" not in repr(thinking.as_agent_event_fields())
 
     block = ToolUseBlock()
     block.id = "sdk-tool-1"
@@ -617,37 +598,6 @@ def test_candidate_validation_enforces_delta_bounds_and_completion_receipt_shape
         )
 
 
-def test_thinking_identity_is_scoped_by_message_and_block():
-    adapter = _adapter()
-
-    first = adapter.accept_thinking_summary(
-        "Compare the available evidence.",
-        block_index=0,
-        message_identity="message-a",
-    )
-    second = adapter.accept_thinking_summary(
-        "Compare the available evidence.",
-        block_index=0,
-        message_identity="message-a",
-    )
-    third = adapter.accept_thinking_summary(
-        "Compare the available evidence.",
-        block_index=0,
-        message_identity="message-b",
-    )
-    assert len(first) == 1
-    assert second == ()
-    assert len(third) == 1
-    assert first[0].event_id != third[0].event_id
-    assert first[0].message_id == third[0].message_id
-    reconstructed = _adapter().accept_thinking_summary(
-        "Compare the available evidence.",
-        block_index=0,
-        message_identity="message-a",
-    )
-    assert reconstructed[0].event_id == first[0].event_id
-
-
 def test_content_block_does_not_trust_a_nominal_thinking_block_class():
     adapter = _adapter()
 
@@ -682,31 +632,6 @@ def test_generic_agent_event_rejects_public_thinking_lifecycle(event_type, paylo
             message_id="message-1",
             payload=payload,
         )
-
-
-def test_thinking_is_sanitized_as_one_summary_before_callback_publication():
-    adapter = _adapter()
-
-    private = adapter.accept_thinking_summary(
-        "Review /tmp/private-runtime-output before answering.",
-        block_index=0,
-        message_identity="message-private",
-    )
-    assert len(private) == 1
-    assert private[0].summary == (
-        "Review /tmp/private-runtime-output before answering."
-    )
-    assert "/tmp/" in repr(private[0].as_agent_event_fields())
-
-    public_summary = "evidence " * 1_200
-    events = adapter.accept_thinking_summary(
-        public_summary,
-        block_index=1,
-        message_identity="message-public",
-    )
-    assert len(events) == 1
-    assert events[0].summary == public_summary
-    assert len(events[0].summary) > 8_192
 
 
 @pytest.mark.parametrize(
@@ -845,7 +770,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         del prompt
         assert options.thinking == {
             "type": "adaptive",
-            "display": "summarized",
+            "display": "omitted",
         }
         assert options.effort == "high"
         yield sdk.StreamEvent(
@@ -936,7 +861,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
     assert candidate_types == [
         "message.started",
         "message.delta",
-        CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
         "policy.checking",
         "policy.allowed",
         "tool.started",
@@ -956,12 +880,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
     assert deltas == ["safe ", "answer"]
     _assert_sandbox_answer_receipt(result, candidates, "safe answer")
     assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
-    summaries = [
-        candidate.summary
-        for candidate in candidates
-        if not isinstance(candidate, ClaudeAgentEventCandidate)
-    ]
-    assert summaries == ["Verify the public evidence before answering."]
+    assert all(isinstance(candidate, ClaudeAgentEventCandidate) for candidate in candidates)
     serialized = [
         candidate.as_dict()
         if isinstance(candidate, ClaudeAgentEventCandidate)
