@@ -304,6 +304,18 @@ def test_probe_and_callback_canonical_failure_results_are_identical():
     }
 
 
+@pytest.mark.parametrize("reference", ["ragflow-knowledge-search", "gateway::" + "x" * 384, "server.name::ProjectInfo.get_sequences"])
+def test_sandbox_preserves_valid_mcp_references(reference):
+    request = SandboxRuntimeRequest.model_validate(request_payload(mcp_tool_ids=[reference]))
+    assert request.mcp_tool_ids == [reference]
+
+
+@pytest.mark.parametrize("reference", ["gateway", "gateway::", "gateway::../tool", "gateway::" + "x" * 385])
+def test_sandbox_rejects_malformed_mcp_references(reference):
+    with pytest.raises(ValueError):
+        SandboxRuntimeRequest.model_validate(request_payload(mcp_tool_ids=[reference]))
+
+
 def test_sandbox_runtime_request_requires_platform_identity():
     req = SandboxRuntimeRequest.model_validate(request_payload())
 

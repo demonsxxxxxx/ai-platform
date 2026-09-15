@@ -1094,7 +1094,6 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
             "enabled": True,
             "url": "https://mcp.example/sse?token=plain-secret",
             "headers": {"Authorization": "Bearer plain-secret"},
-            "env_keys": ["MCP_SECRET"],
             "allowed_roles": [" QA-Operator ", "qa-operator"],
             "department_ids": [" QA ", "qa"],
         },
@@ -1386,8 +1385,6 @@ def test_mcp_lifecycle_audit_and_repository_payloads_never_include_raw_credentia
             "transport": "streamable_http",
             "url": "https://mcp.example/sse?api_key=raw-secret",
             "headers": {"X-Api-Key": "raw-secret"},
-            "command": "run --token raw-secret",
-            "env_keys": ["RAW_SECRET"],
         },
         headers=headers(roles="admin"),
     )
@@ -1402,6 +1399,22 @@ def test_mcp_lifecycle_audit_and_repository_payloads_never_include_raw_credentia
     assert "raw-secret" not in serialized_calls
     assert "run --token" not in serialized_calls
     assert "X-Api-Key" not in serialized_calls
+
+
+@pytest.mark.parametrize("unsupported", [
+    {"transport": "sandbox", "command": "run --token synthetic-secret"},
+    {"transport": "streamable_http", "command": "run --token synthetic-secret"},
+    {"transport": "streamable_http", "env_keys": ["SYNTHETIC_SECRET"]},
+])
+def test_mcp_rejects_unimplemented_command_configuration_without_writes(monkeypatch, unsupported):
+    calls = install_mcp_route_fakes(monkeypatch)
+    response = TestClient(create_app()).post(
+        "/api/admin/mcp/", json={"name": "unsupported", **unsupported},
+        headers=headers(roles="admin"),
+    )
+    assert response.status_code == 422
+    assert "synthetic-secret" not in response.text
+    assert not any(name in {"upsert_server", "record_credential"} for name, _ in calls)
 
 
 def test_mcp_directory_filters_servers_by_principal_department(monkeypatch):

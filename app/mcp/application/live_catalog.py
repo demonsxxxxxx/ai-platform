@@ -42,9 +42,11 @@ class LiveMcpCatalogService:
         *,
         target_resolver: Callable[[str, str], Awaitable[Any]],
         discovery: Any,
+        sse_discovery: Any = None,
     ) -> None:
         self._target_resolver = target_resolver
         self._discovery = discovery
+        self._sse_discovery = sse_discovery
 
     async def list_server_tools(
         self,
@@ -57,7 +59,11 @@ class LiveMcpCatalogService:
         del user_id  # JWT ownership is enforced by the caller's principal store.
         try:
             target = await self._target_resolver(tenant_id, server_id)
-            definitions = await self._discovery.discover_definitions(
+            transport = getattr(target, "transport", "streamable_http")
+            if transport not in {"streamable_http", "http", "sse"}:
+                return LiveMcpServerResult(server_id, (), "unsupported_transport")
+            discovery = self._sse_discovery if transport == "sse" else self._discovery
+            definitions = await discovery.discover_definitions(
                 target.endpoint,
                 static_headers=target.static_headers,
                 jwt_authorization=f"Bearer {jwt}",

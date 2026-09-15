@@ -14,6 +14,8 @@ import pytest
 from docx import Document
 from openpyxl import Workbook
 
+from tests.support.claude_mcp import install_mcp_sessions
+
 import app.executors.claude_agent_sdk_runner as sdk_runner
 import app.worker as worker_module
 from app.context.file_content import ContextFileContentError
@@ -55,6 +57,7 @@ from app.runtime.sandbox.container_provider import (
 )
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    SDK_RUNTIME_PATH_DIAGNOSTICS_SCHEMA_VERSION,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.pinning import build_skill_manifest_pins
@@ -74,6 +77,7 @@ def _materialized_xlsx_bytes() -> bytes:
 
 @pytest.mark.asyncio
 async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_subjects(monkeypatch, tmp_path):
+    install_mcp_sessions(monkeypatch)
     captured, lifecycle_facts = {}, []
 
     class TextBlock:
@@ -115,6 +119,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             self.message = message
 
     async def query(prompt, options):
+        captured["mcp_servers"] = options.mcp_servers
         captured["pre_invocation_skill_write"] = await options.kwargs["can_use_tool"](
             "Write",
             {"file_path": ".claude/skills/qa-file-reviewer/SKILL.md", "content": "tampered"},
@@ -240,16 +245,12 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "Skill(qa-file-reviewer)",
         "mcp__corp-search__query",
     ]
-    assert captured["mcp_servers"] == {
-        "corp-search": {
-            "type": "http",
-            "url": "https://mcp.example.test/v1",
-            "headers": {
-                "X-Static-Header": "configured",
-                "JWT-Authorization": "Bearer runtime-jwt",
-            },
-        }
-    }
+    assert set(captured["mcp_servers"]) == {"corp-search"}
+    server_config = captured["mcp_servers"]["corp-search"]
+    assert server_config["type"] == "sdk"
+    assert server_config["name"] == "corp-search"
+    assert server_config["instance"].name == "corp-search"
+    assert server_config["instance"].instructions is None
     assert "on_tool_permission" not in captured
     assert captured["pre_invocation_skill_write"].behavior == "deny"
     assert captured["pre_invocation_output_write"].behavior == "allow"
@@ -970,6 +971,7 @@ def test_collect_workspace_artifacts_scans_platform_workspace_and_excludes_inter
     (workspace / "inputs" / "source.docx").write_bytes(b"input")
     (workspace / ".claude" / "skills").mkdir(parents=True)
     (workspace / ".claude" / "skills" / "SKILL.md").write_text("internal", encoding="utf-8")
+    (workspace / ".ai-platform-opensandbox-lease.json").write_text("internal", encoding="utf-8")
     (workspace / "outputs" / "job" / "_debug").mkdir(parents=True)
     (workspace / "outputs" / "job" / "_debug" / "trace.txt").write_text("debug", encoding="utf-8")
     stored = []
@@ -2372,7 +2374,7 @@ def test_external_mcp_availability_requires_real_sandbox_without_client_executio
             skill_id="general-chat",
             input={
                 "message": "search with the selected tool",
-                "mcp_tool_ids": ["tenant-search"],
+                "mcp_tool_ids": ["tenant-server::search"],
                 "_runtime_tool_policy_subjects": [
                     {
                         "identity": "mcp__tenant-server__search",
@@ -2465,7 +2467,7 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
         skill_id="general-chat",
         input={
             "message": "answer or search as needed",
-            "mcp_tool_ids": ["tenant-search"],
+            "mcp_tool_ids": ["tenant-server::search"],
             "_runtime_tool_policy_subjects": [_mcp_subject()],
         },
     )
@@ -2473,7 +2475,7 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
     result = await adapter.submit_run(current_payload, event_sink=event_sink)
 
     assert result.status == "succeeded"
-    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-search"]
+    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-server::search"]
     assert [event for event in events if event["payload"].get("tool_category") == "mcp"] == []
 
 
@@ -2666,7 +2668,7 @@ async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatc
         skill_id="general-chat",
         input={
             "message": "search with the selected tool",
-            "mcp_tool_ids": ["tenant-search"],
+            "mcp_tool_ids": ["tenant-server::search"],
             "_runtime_tool_policy_subjects": [
                 {
                     "identity": "mcp__tenant-server__search",
@@ -3184,6 +3186,54 @@ def test_sandbox_runtime_preserves_private_runtime_diagnostics(tmp_path):
     assert result.status == "failed"
     assert result.result["runtime_diagnostics"] == runtime_diagnostics
     assert result.executor_payload["runtime_diagnostics"] == runtime_diagnostics
+
+
+def test_sandbox_runtime_preserves_path_diagnostics_on_success(tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="write the requested result",
+    )
+    path_diagnostics = {
+        "schema_version": SDK_RUNTIME_PATH_DIAGNOSTICS_SCHEMA_VERSION,
+        "workspace_path": str(tmp_path),
+        "tool_calls": [
+            {
+                "tool_name": "Write",
+                "invocation_id": "write-call-1",
+                "path_parameter": "file_path",
+                "path": "report.docx",
+                "last_stage": "admission_denied",
+                "reason": "tool_parameters_not_authorized",
+            }
+        ],
+    }
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat"),
+        prepared,
+        types.SimpleNamespace(
+            status="completed",
+            provider="docker",
+            executor_response={
+                "status": "completed",
+                "message": "completed without an artifact",
+                "sdk_used": True,
+                "runtime_path_diagnostics": path_diagnostics,
+                TOOL_INVOCATION_EVIDENCE_KEY: [],
+            },
+            timings={},
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert result.executor_payload["runtime_path_diagnostics"] == path_diagnostics
+    assert "runtime_path_diagnostics" not in result.result
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from inspect import isawaitable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from app.bootstrap.claude_mcp import prepare_claude_mcp
 from app.context_manifest import available_context_retrieval_tools, truncate_utf8_text
 from app.context.retrieval import (
     ContextRetrievalAuthority,
@@ -65,7 +66,9 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
     SDK_RUNTIME_DIAGNOSTIC_LIFECYCLE_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_LIFECYCLES,
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    SDK_RUNTIME_PATH_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
+    normalize_sdk_runtime_path_diagnostics,
     runtime_diagnostic_text as _runtime_diagnostic_text,
     runtime_diagnostic_value as _runtime_diagnostic_value,
 )
@@ -220,6 +223,7 @@ class ClaudeAgentSdkRunResult:
     used_skills_source: str = ""
     turn_diagnostics: dict[str, Any] = field(default_factory=dict)
     runtime_diagnostics: dict[str, Any] = field(default_factory=dict)
+    runtime_path_diagnostics: dict[str, Any] = field(default_factory=dict)
     capability_evidence: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -791,6 +795,12 @@ _WORKSPACE_MUTATING_PATH_PARAMETER = {
     "Edit": "file_path",
     "NotebookEdit": "notebook_path",
 }
+_TOOL_PATH_PARAMETER = {
+    **_WORKSPACE_PATH_PARAMETER,
+    **_WORKSPACE_MUTATING_PATH_PARAMETER,
+    "Glob": "path",
+    "Grep": "path",
+}
 _WORKSPACE_INTERNAL_ROOTS = frozenset(
     {".ai-platform", ".claude-config", ".home", ".pins", ".tmp"}
 )
@@ -1000,6 +1010,7 @@ async def run_claude_agent_sdk(
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
     observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
     runtime_tool_calls: dict[tuple[str, str], dict[str, Any]] = {}
+    runtime_path_calls: dict[tuple[str, str], dict[str, str]] = {}
     read_only_lifecycle_denials_finalized = False
 
     def finalize_read_only_lifecycle_denials() -> None:
@@ -1125,6 +1136,15 @@ async def run_claude_agent_sdk(
             }
         )
 
+    def runtime_path_diagnostics() -> dict[str, Any]:
+        return normalize_sdk_runtime_path_diagnostics(
+            {
+                "schema_version": SDK_RUNTIME_PATH_DIAGNOSTICS_SCHEMA_VERSION,
+                "workspace_path": str(cwd),
+                "tool_calls": list(runtime_path_calls.values()),
+            }
+        )
+
     def record_runtime_tool_stage(
         *,
         tool_name: object,
@@ -1149,6 +1169,24 @@ async def run_claude_agent_sdk(
             },
         )
         entry["last_stage"] = stage
+        path_entry = runtime_path_calls.get((name, call_id))
+        path_parameter = _TOOL_PATH_PARAMETER.get(name)
+        if path_parameter is not None and isinstance(tool_input, dict):
+            raw_path = tool_input.get(path_parameter)
+            if isinstance(raw_path, str) and raw_path:
+                path_entry = runtime_path_calls.setdefault(
+                    (name, call_id),
+                    {
+                        "tool_name": name,
+                        "invocation_id": call_id,
+                        "path_parameter": path_parameter,
+                        "path": raw_path,
+                    },
+                )
+        if path_entry is not None:
+            path_entry["last_stage"] = stage
+            if failure is not None and stage == "admission_denied":
+                path_entry["reason"] = str(failure)
         if tool_input is not None:
             entry["tool_input"] = _runtime_diagnostic_value(tool_input)
         if failure is not None:
@@ -1163,6 +1201,7 @@ async def run_claude_agent_sdk(
             runtime_diagnostics=runtime_diagnostics(
                 error_code, failure_source="sdk_disabled"
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
         )
     try:
         import claude_agent_sdk as sdk
@@ -1210,6 +1249,7 @@ async def run_claude_agent_sdk(
                 failure_source="sdk_configuration",
                 sdk_errors="invalid_configured_skill_name",
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
         )
     selected_sdk_skill = (
         skill_id
@@ -1222,7 +1262,17 @@ async def run_claude_agent_sdk(
     )
     failed_skill_names: list[str] = []
     sandbox_brokered = execution_policy == "sandbox_brokered"
-    authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
+    try:
+        authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
+    except ValueError as exc:
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True, error=_SDK_TOOL_ADMISSION_FAILED,
+            turn_diagnostics=turn_diagnostics(_SDK_TOOL_ADMISSION_FAILED),
+            runtime_diagnostics=runtime_diagnostics(
+                _SDK_TOOL_ADMISSION_FAILED, failure_source="mcp_server_configuration", exception=exc,
+            ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
+        )
     if (
         sandbox_brokered
         and set(SANDBOX_LOCAL_TOOL_IDENTITIES).intersection(authorized_subjects)
@@ -1238,6 +1288,7 @@ async def run_claude_agent_sdk(
                 failure_source="sdk_configuration",
                 sdk_errors="tool_lifecycle_hooks_unavailable",
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
         )
     requested_internal_context_tools = [
         identity.removeprefix(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX)
@@ -1302,6 +1353,7 @@ async def run_claude_agent_sdk(
                 failure_source="sdk_configuration",
                 sdk_errors="selected_skill_not_authorized",
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
         )
     context_retrieval_registration_error: str | None = None
     context_retrieval_registration_exception: BaseException | None = None
@@ -1335,6 +1387,7 @@ async def run_claude_agent_sdk(
                 failure_source="context_retrieval_registration",
                 exception=context_retrieval_registration_exception,
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
         )
     if context_retrieval_server is None:
         internal_context_tools: set[str] = set()
@@ -1372,6 +1425,8 @@ async def run_claude_agent_sdk(
         mcp_servers = (
             _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
         )
+        mcp_registration = prepare_claude_mcp(authorized_subjects if sandbox_brokered else {}, mcp_servers)
+        allowed_tools = [mcp_registration.sdk_names.get(name, name) for name in allowed_tools]
     except ValueError as exc:
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
@@ -1382,6 +1437,7 @@ async def run_claude_agent_sdk(
                 failure_source="mcp_server_configuration",
                 exception=exc,
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
         )
     if context_retrieval_server is not None and (
         not sandbox_brokered or internal_context_subjects
@@ -1418,6 +1474,7 @@ async def run_claude_agent_sdk(
                 failure_source="required_tool_contract",
                 exception=exc,
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
         )
     sandbox_local_lifecycle_names = {
         identity
@@ -1441,6 +1498,19 @@ async def run_claude_agent_sdk(
         for kind, identity in capability_plan.available
         if kind in {"skill", "mcp"}
     }
+    private_capability_tokens.update(mcp_registration.aliases)
+    private_capability_tokens.update(
+        identity
+        for identity in authorized_subjects
+        if isinstance(identity, str) and identity.startswith("mcp__")
+    )
+    skill_subject = authorized_subjects.get("Skill")
+    if isinstance(skill_subject, dict):
+        private_capability_tokens.update(
+            name
+            for name in skill_subject.get("allowed_skill_names", [])
+            if isinstance(name, str)
+        )
     private_capability_tokens.update(
         str(subject["mcp_server_config"]["url"])
         for subject in authorized_subjects.values()
@@ -1448,6 +1518,26 @@ async def run_claude_agent_sdk(
         and isinstance(subject.get("mcp_server_config"), dict)
         and isinstance(subject["mcp_server_config"].get("url"), str)
         and subject["mcp_server_config"]["url"]
+    )
+    private_capability_tokens.update(
+        value
+        for subject in authorized_subjects.values()
+        if isinstance(subject.get("mcp_server_config"), dict)
+        and isinstance(subject["mcp_server_config"].get("headers"), dict)
+        for value in subject["mcp_server_config"]["headers"].values()
+        if isinstance(value, str) and value
+    )
+    private_capability_tokens.update(
+        value
+        for value in (
+            getattr(settings, "openai_api_key", ""),
+            getattr(settings, "anthropic_auth_token", ""),
+            getattr(settings, "anthropic_api_key", ""),
+            getattr(settings, "openai_base_url", ""),
+            getattr(settings, "anthropic_base_url", ""),
+            os.environ.get("AI_PLATFORM_NATIVE_TOOL_TOKEN", ""),
+        )
+        if isinstance(value, str) and value
     )
     private_replacement = "\u2588"
     private_replacements = {
@@ -1471,11 +1561,19 @@ async def run_claude_agent_sdk(
     def replacement_for_private_token(token: str) -> str:
         return private_replacements.get(token, private_replacement)
 
+    def sanitize_sdk_reasoning_text(value: object) -> str:
+        text = "" if value is None else str(value)
+        for token in sorted(private_replacements, key=lambda item: (-len(item), item)):
+            text = text.replace(token, private_replacements[token])
+        return sanitize_public_reasoning_text(text)
+
     def register_dynamic_tool_call_id(value: object) -> None:
         call_id = canonical_tool_call_id(value)
         if call_id is not None:
+            replacement = replacement_for_private_token(call_id)
+            private_replacements[call_id] = replacement
             answer_stream_gate.register_private_replacements(
-                {call_id: replacement_for_private_token(call_id)}
+                {call_id: replacement}
             )
 
     sdk_prompt = prompt
@@ -1493,7 +1591,8 @@ async def run_claude_agent_sdk(
             public_skill_metadata=public_skill_metadata,
             sanitizer=sanitize_public_answer_text,
             payload_sanitizer=sanitize_public_payload,
-            reasoning_sanitizer=sanitize_public_reasoning_text,
+            reasoning_sanitizer=sanitize_sdk_reasoning_text,
+            tool_identity_resolver=mcp_registration.canonical_identity,
         )
         if run_id and attempt_id and on_agent_event is not None
         else None
@@ -1787,7 +1886,7 @@ async def run_claude_agent_sdk(
         contextual_identity = f"mcp__ai-platform-context__{value}"
         if contextual_identity in declared_tool_identities:
             return contextual_identity
-        return value
+        return mcp_registration.canonical_identity(value)
 
     def policy_for_tool(tool_name: object, tool_input: object):
         identity = adapter_identity(tool_name)
@@ -1803,7 +1902,7 @@ async def run_claude_agent_sdk(
             subject_tool_name = (
                 identity.rsplit("__", 1)[-1]
                 if identity in internal_context_subjects
-                else str(tool_name or "")
+                else identity
             )
             parameters_authorized = bool(subject) and _parameters_match_subject(
                 subject,
@@ -1826,7 +1925,10 @@ async def run_claude_agent_sdk(
                 parameters_authorized = _native_tool_proxy_input(tool_input) is not None
             registered = bool(subject) and (
                 not identity.startswith("mcp__")
-                or str(subject.get("mcp_server") or "") in mcp_servers
+                or mcp_registration.server_aliases.get(
+                    str(subject.get("mcp_server") or ""),
+                    str(subject.get("mcp_server") or ""),
+                ) in mcp_servers
             )
             return evaluate_tool_policy(
                 tool={
@@ -2256,6 +2358,7 @@ async def run_claude_agent_sdk(
                 failure_source="project_setting_scrub",
                 exception=exc,
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
         )
 
     hooks = None
@@ -2329,6 +2432,7 @@ async def run_claude_agent_sdk(
         system_prompt=sdk_system_prompt,
         tools=sdk_tools,
         mcp_servers=mcp_servers,
+        strict_mcp_config=True,
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
@@ -2434,17 +2538,12 @@ async def run_claude_agent_sdk(
             await callback_result
         return True
 
-    async def consume() -> ClaudeAgentSdkRunResult:
+    async def consume(messages) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, structured_result_text, terminal_result_message
         answer_timeline = AssistantAnswerTimeline()
-        async for message in query(
-            prompt=_sdk_user_prompt_stream(
-                sdk_prompt,
-                session_id=session_id,
-            ),
-            options=options,
-        ):
+        async for message in messages:
+            mcp_registration.check_message(message)
             if agent_event_adapter is not None and isinstance(
                 message,
                 (
@@ -2579,6 +2678,7 @@ async def run_claude_agent_sdk(
                             terminal_reason=resolved_terminal_reason,
                             permission_denials=permission_denials,
                         ),
+                        runtime_path_diagnostics=runtime_path_diagnostics(),
                         capability_evidence=list(capability_evidence),
                     )
                 abnormal_terminal_error = (
@@ -2619,6 +2719,7 @@ async def run_claude_agent_sdk(
                             terminal_reason=resolved_terminal_reason,
                             permission_denials=permission_denials,
                         ),
+                        runtime_path_diagnostics=runtime_path_diagnostics(),
                         capability_evidence=list(capability_evidence),
                     )
                 received_structured_terminal = True
@@ -2662,7 +2763,7 @@ async def run_claude_agent_sdk(
                     terminal_text_acknowledged = False
                     terminal_error = "agent_event_callback_not_acknowledged"
                     break
-            if terminal_text_acknowledged and agent_event_adapter is not None:
+            if terminal_text_acknowledged and terminal_error is None and agent_event_adapter is not None:
                 if not await publish_agent_candidates(
                     agent_event_adapter.accept_result(
                         terminal_result_message,
@@ -2713,6 +2814,7 @@ async def run_claude_agent_sdk(
                 if terminal_error is not None
                 else {}
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
         )
 
     consume_cancellation: asyncio.CancelledError | None = None
@@ -2720,7 +2822,10 @@ async def run_claude_agent_sdk(
     async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
         nonlocal consume_cancellation
         try:
-            return await consume()
+            async with mcp_registration.query(
+                query, prompt=_sdk_user_prompt_stream(sdk_prompt, session_id=session_id), options=options,
+            ) as messages:
+                return await consume(messages)
         except asyncio.CancelledError as exc:
             consume_cancellation = exc
             raise
@@ -2769,6 +2874,7 @@ async def run_claude_agent_sdk(
                 failure_source="sdk_timeout",
                 terminal_reason=terminal_reason,
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
             capability_evidence=list(capability_evidence),
         )
     except Exception as exc:  # noqa: BLE001
@@ -2793,5 +2899,6 @@ async def run_claude_agent_sdk(
                 terminal_reason=terminal_reason,
                 exception=exc,
             ),
+            runtime_path_diagnostics=runtime_path_diagnostics(),
             capability_evidence=list(capability_evidence),
         )

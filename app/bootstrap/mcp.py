@@ -14,6 +14,7 @@ from app.db import transaction
 from app.mcp.api import configure_mcp_runtime_services
 from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.infrastructure import catalog as mcp_catalog
+from app.mcp.infrastructure.client import SseMcpToolDiscoveryAdapter
 from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.redis_client import get_redis_client
@@ -25,6 +26,7 @@ from app.tool_policy import evaluate_tool_policy
 class _LiveMcpTarget:
     endpoint: str
     static_headers: dict[str, str]
+    transport: str
 
 
 class _McpRuntimeServices:
@@ -37,6 +39,7 @@ class _McpRuntimeServices:
         self.live_catalog = LiveMcpCatalogService(
             target_resolver=self._resolve_live_target,
             discovery=mcp_catalog.StreamableHttpMcpToolDiscoveryAdapter(),
+            sse_discovery=SseMcpToolDiscoveryAdapter(),
         )
 
     @staticmethod
@@ -62,7 +65,9 @@ class _McpRuntimeServices:
                 "mcp_server_not_available",
                 status_code=503,
             )
-        return _LiveMcpTarget(endpoint=endpoint, static_headers=static_headers)
+        return _LiveMcpTarget(
+            endpoint=endpoint, static_headers=static_headers, transport=str(row.get("transport") or ""),
+        )
 
     @staticmethod
     def seal_server_credentials(**kwargs: Any) -> str:

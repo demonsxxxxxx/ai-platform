@@ -249,11 +249,21 @@ class ClaudeAgentEventCandidate:
             "causation_event_id": self.causation_event_id,
             "payload": self.payload,
         }
-        if payload_sanitizer(public_candidate) != _without_none_public_values(public_candidate):
+        identity_candidate = {**public_candidate, "payload": {}}
+        if payload_sanitizer(identity_candidate) != _without_none_public_values(identity_candidate):
             raise ValueError("public event candidate contains private text")
         if self.event_type not in _APPLICATION_EVENT_TYPES:
             raise ValueError("unsupported Claude application event")
         _validate_payload(self.event_type, self.payload)
+        if self.event_type not in {"message.delta", "thinking.delta"}:
+            if payload_sanitizer(public_candidate) != _without_none_public_values(public_candidate):
+                raise ValueError("public event candidate contains private text")
+        else:
+            structured_payload = {
+                key: value for key, value in self.payload.items() if key != "delta"
+            }
+            if payload_sanitizer(structured_payload) != _without_none_public_values(structured_payload):
+                raise ValueError("public event candidate contains private text")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -285,16 +295,13 @@ class ClaudeSdkThinkingSummaryCandidate:
     event_id: str
     message_id: str
     summary: str
-    sanitizer: InitVar[Callable[[object], str]]
 
-    def __post_init__(self, sanitizer: Callable[[object], str]) -> None:
+    def __post_init__(self) -> None:
         _assert_run_id(self.run_id)
         _assert_event_id(self.event_id)
         _assert_safe_ref(self.message_id, "message_id")
         if not self.summary or len(self.summary) > _MAX_TEXT:
             raise ValueError("invalid summarized thinking bound")
-        if sanitizer(self.summary) != self.summary:
-            raise ValueError("summarized thinking is not sanitized")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -487,6 +494,7 @@ class ClaudeSdkAgentEventAdapter:
         sanitizer: Callable[[object], object],
         payload_sanitizer: Callable[[object], object],
         reasoning_sanitizer: Callable[[object], str] | None = None,
+        tool_identity_resolver: Callable[[object], str] = str,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         _assert_run_id(run_id)
@@ -494,6 +502,7 @@ class ClaudeSdkAgentEventAdapter:
         self.run_id = run_id
         self.attempt_id = attempt_id
         self._clock = clock
+        self._tool_identity_resolver = tool_identity_resolver
         self._sanitizer = sanitizer
         self._reasoning_sanitizer = reasoning_sanitizer or sanitizer
         self._payload_sanitizer = payload_sanitizer
@@ -597,15 +606,12 @@ class ClaudeSdkAgentEventAdapter:
         identity: str,
         causation_identity: str | None = None,
         message_id: str | None = None,
+        commit: bool = True,
     ) -> ClaudeAgentEventCandidate:
         event_id = _opaque("evt", self.run_id, event_type, identity)
         if event_id in self._seen_events:
             raise KeyError("duplicate semantic event")
-        self._seen_events.add(event_id)
-        if causation_identity:
-            causation = self._accepted_event_ids.get(causation_identity)
-        else:
-            causation = None
+        causation = self._accepted_event_ids.get(causation_identity) if causation_identity else None
         candidate = ClaudeAgentEventCandidate(
             run_id=self.run_id,
             event_id=event_id,
@@ -615,37 +621,75 @@ class ClaudeSdkAgentEventAdapter:
             payload=payload,
             payload_sanitizer=self._payload_sanitizer,
         )
-        self._accepted_event_ids[identity] = candidate.event_id
+        if commit:
+            self._commit_candidate(identity, candidate)
         return candidate
+
+    def _commit_candidate(
+        self, identity: str, candidate: ClaudeAgentEventCandidate
+    ) -> None:
+        self._commit_candidates(((identity, candidate),))
+
+    def _commit_candidates(
+        self, candidates: list[tuple[str, ClaudeAgentEventCandidate]]
+        | tuple[tuple[str, ClaudeAgentEventCandidate], ...],
+    ) -> None:
+        event_ids = [candidate.event_id for _, candidate in candidates]
+        if len(event_ids) != len(set(event_ids)) or any(
+            event_id in self._seen_events for event_id in event_ids
+        ):
+            raise KeyError("duplicate semantic event")
+        self._seen_events.update(event_ids)
+        self._accepted_event_ids.update(
+            {identity: candidate.event_id for identity, candidate in candidates}
+        )
 
     def accept_answer_text(self, value: object, *, already_gated: bool = False) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed or not isinstance(value, str) or not value:
             return ()
-        sanitized = self._sanitizer(value)
-        if not isinstance(sanitized, str) or sanitized != value:
-            return ()
-        if not already_gated and _safe_text(
-            value,
-            maximum=len(value),
-            sanitizer=self._sanitizer,
-        ) is None:
-            return ()
+        if not already_gated:
+            sanitized = self._sanitizer(value)
+            if not isinstance(sanitized, str) or sanitized != value:
+                return ()
+            if _safe_text(
+                value,
+                maximum=len(value),
+                sanitizer=self._sanitizer,
+            ) is None:
+                return ()
         events: list[ClaudeAgentEventCandidate] = []
+        pending_commits: list[tuple[str, ClaudeAgentEventCandidate]] = []
         if not self._answer_started:
-            self._answer_started = True
-            events.append(self._candidate("message.started", {}, identity="message"))
+            pending_commits.append(
+                ("message", self._candidate("message.started", {}, identity="message", commit=False))
+            )
+        delta_count = self._answer_delta_count
+        text_length = self._answer_text_length
         for offset in range(0, len(value), _MAX_DELTA):
             chunk = value[offset : offset + _MAX_DELTA]
-            self._answer_delta_count += 1
-            self._answer_text_length += len(chunk)
-            identity = f"delta:{self._answer_delta_count}"
-            candidate = self._candidate("message.delta", {"delta": chunk}, identity=identity)
-            events.append(candidate)
-            self._last_delta_identity = identity
-            self._last_delta_event_id = candidate.event_id
+            delta_count += 1
+            text_length += len(chunk)
+            identity = f"delta:{delta_count}"
+            candidate = self._candidate(
+                "message.delta",
+                {"delta": chunk},
+                identity=identity,
+                commit=False,
+            )
+            pending_commits.append((identity, candidate))
+        self._commit_candidates(pending_commits)
+        events.extend(candidate for _, candidate in pending_commits)
+        self._answer_started = True
+        self._answer_delta_count = delta_count
+        self._answer_text_length = text_length
+        last_delta = pending_commits[-1][1]
+        self._last_delta_identity = pending_commits[-1][0]
+        self._last_delta_event_id = last_delta.event_id
         return tuple(events)
 
-    def complete_answer(self, value: object) -> tuple[ClaudeAgentEventCandidate, ...]:
+    def complete_answer(
+        self, value: object, *, commit: bool = True
+    ) -> tuple[ClaudeAgentEventCandidate, ...]:
         del value
         if self._sealed or not self._answer_started:
             return ()
@@ -657,8 +701,10 @@ class ClaudeSdkAgentEventAdapter:
             },
             identity="message.completed",
             causation_identity=self._last_delta_identity,
+            commit=commit,
         )
-        self._answer_completed = True
+        if commit:
+            self._answer_completed = True
         return (completed,)
 
     def accept_thinking_summary(
@@ -673,7 +719,10 @@ class ClaudeSdkAgentEventAdapter:
         key = (message_identity, block_index)
         if key in self._thinking_indices:
             return ()
-        sanitized = self._reasoning_sanitizer(value)
+        try:
+            sanitized = self._reasoning_sanitizer(value)
+        except Exception:  # noqa: BLE001
+            return ()
         if not isinstance(sanitized, str) or not sanitized or len(sanitized) > _MAX_TEXT:
             return ()
         identity = f"thinking:{message_identity!s}:{block_index!s}"
@@ -685,17 +734,15 @@ class ClaudeSdkAgentEventAdapter:
         )
         if event_id in self._seen_events:
             return ()
+        candidate = ClaudeSdkThinkingSummaryCandidate(
+            run_id=self.run_id,
+            event_id=event_id,
+            message_id=self._message_id,
+            summary=sanitized,
+        )
         self._thinking_indices.add(key)
         self._seen_events.add(event_id)
-        return (
-            ClaudeSdkThinkingSummaryCandidate(
-                run_id=self.run_id,
-                event_id=event_id,
-                message_id=self._message_id,
-                summary=sanitized,
-                sanitizer=self._reasoning_sanitizer,
-            ),
-        )
+        return (candidate,)
 
     def accept_content_block(
         self,
@@ -722,7 +769,7 @@ class ClaudeSdkAgentEventAdapter:
         return ()
 
     def _resolve_tool(self, name: str, tool_input: Mapping[str, object] | None = None) -> tuple[str, str, str] | None:
-        identity = name
+        identity = self._tool_identity_resolver(name)
         if name == "Skill" and isinstance(tool_input, Mapping):
             selected = tool_input.get("skill")
             if isinstance(selected, str):
@@ -952,15 +999,26 @@ class ClaudeSdkAgentEventAdapter:
         duration = _bounded_int(getattr(result, "duration_ms", 0), maximum=_MAX_DURATION)
         turns = _bounded_int(getattr(result, "num_turns", 0), maximum=_MAX_TURNS)
         events: list[ClaudeAgentEventCandidate] = []
+        pending_commits: list[tuple[str, ClaudeAgentEventCandidate]] = []
         if self._answer_started:
-            events.extend(self.complete_answer(final_content))
-        events.append(
-            self._candidate(
+            completed = self.complete_answer(final_content, commit=False)
+            if completed:
+                pending_commits.append(("message.completed", completed[0]))
+        pending_commits.append(
+            (
                 "model.completed",
-                {"duration_ms": duration, "turn_count": turns, "stop_category": _stop_category(result)},
-                identity="model.completed",
+                self._candidate(
+                    "model.completed",
+                    {"duration_ms": duration, "turn_count": turns, "stop_category": _stop_category(result)},
+                    identity="model.completed",
+                    commit=False,
+                ),
             )
         )
+        self._commit_candidates(pending_commits)
+        if self._answer_started:
+            self._answer_completed = True
+        events.extend(candidate for _, candidate in pending_commits)
         return tuple(events)
 
     def accept_artifact_reference(self, reference: Mapping[str, object]) -> tuple[ClaudeAgentEventCandidate, ...]:

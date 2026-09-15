@@ -4,6 +4,8 @@ import types
 
 import pytest
 
+from tests.support.claude_mcp import install_mcp_sessions
+
 from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     _sdk_run_timeout_seconds,
@@ -18,6 +20,11 @@ from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
 )
+
+
+@pytest.fixture(autouse=True)
+def synthetic_mcp_sessions(monkeypatch):
+    install_mcp_sessions(monkeypatch)
 
 
 def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
@@ -1103,8 +1110,8 @@ async def test_failed_answer_projection_keeps_skill_and_bash_receipts(
     ] == [("qa-review", "invocation_requested"), ("qa-review", "completed")]
     assert result.used_skills == ["qa-review"]
     assert result.error is None
-    assert result.message == ""
-    assert deltas == []
+    assert result.message == oversized_text
+    assert "".join(deltas) == oversized_text
     assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
 
 
@@ -2172,6 +2179,60 @@ async def test_sdk_records_public_tool_policy_denial_detail(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_sdk_keeps_denied_write_path_diagnostics_on_success(monkeypatch, tmp_path):
+    captured = {}
+    hook_input = {
+        "tool_name": "Write",
+        "tool_use_id": "write-call-1",
+        "tool_input": {
+            "file_path": "report.docx",
+            "content": "private document body" * 1_000,
+        },
+    }
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [("hook", ("PreToolUse", hook_input, hook_input["tool_use_id"]))],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="write the requested document",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+            [], sandbox_provider="opensandbox"
+        ),
+        on_tool_lifecycle=_acknowledge_capability_evidence,
+    )
+
+    assert result.error is None
+    assert result.runtime_diagnostics == {}
+    assert result.runtime_path_diagnostics == {
+        "schema_version": "ai-platform.sdk-runtime-path-diagnostics.v1",
+        "workspace_path": str(tmp_path),
+        "tool_calls": [
+            {
+                "tool_name": "Write",
+                "invocation_id": "write-call-1",
+                "path_parameter": "file_path",
+                "path": "report.docx",
+                "last_stage": "admission_denied",
+                "reason": "tool_parameters_not_authorized",
+            }
+        ],
+    }
+    assert "private document body" not in str(result.runtime_path_diagnostics)
+
+
+@pytest.mark.asyncio
 async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks(
     monkeypatch,
     tmp_path,
@@ -2356,7 +2417,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
         on_capability_evidence=None if outcome == "missing" else acknowledge,
     )
 
-    if outcome in {"overflow", "stale", "duplicate"}:
+    if outcome in {"stale", "duplicate"}:
         assert sealed_probe == []
     else:
         assert sealed_probe
@@ -2388,7 +2449,12 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             if outcome == "overflow"
             else "required_tool_completion_evidence_mismatch"
         )
-        if outcome in {"overflow", "stale", "duplicate"}:
+        if outcome == "overflow":
+            assert result.error is None
+            assert result.message == text
+            assert "".join(deltas) == text
+            assert "".join(sealed_probe) == text
+        elif outcome in {"stale", "duplicate"}:
             assert (result.error, result.message, deltas) == (expected, "", [])
         else:
             assert result.error == expected
@@ -3848,7 +3914,7 @@ async def test_sdk_keeps_successful_terminal_body_after_stream_failure(
 
     assert captured["include_partial_messages"] is True
     assert result.error is None
-    assert result.message == "safe partial must \n\nterminal final"
+    assert result.message == "safe partial must finish\n\nterminal final"
     assert "".join(deltas) == result.message
 
 
@@ -3906,9 +3972,74 @@ async def test_stream_failure_before_publication_recovers_terminal_body(
     )
 
     assert captured["include_partial_messages"] is True
-    assert "".join(deltas) == "terminal fallback"
+    expected = (
+        "short\n\nterminal fallback"
+        if len(events) > 1
+        else "terminal fallback"
+    )
+    assert "".join(deltas) == expected
     assert result.error is None
-    assert result.message == "terminal fallback"
+    assert result.message == expected
+
+
+@pytest.mark.asyncio
+async def test_sdk_thinking_replaces_exact_private_values_but_preserves_paths(
+    monkeypatch, tmp_path
+):
+    captured, candidates = {}, []
+    subject = _subject()
+    subject["mcp_server_config"]["headers"] = {
+        "X-Static-Key": "static-header-secret",
+        "Authorization": "Bearer static-jwt-token",
+    }
+    settings = _settings()
+    settings.anthropic_auth_token = "anthropic-config-secret"
+    settings.openai_api_key = "openai-config-secret"
+    settings.anthropic_base_url = "https://private-provider.example/v1"
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", "native-tool-secret")
+    private_values = (
+        subject["identity"],
+        subject["mcp_server_config"]["url"],
+        *subject["mcp_server_config"]["headers"].values(),
+        settings.anthropic_auth_token,
+        settings.openai_api_key,
+        settings.anthropic_base_url,
+        "native-tool-secret",
+    )
+    thinking = (
+        "Review C:/agent-workspaces/run-1/output/result.txt for "
+        + " and ".join(private_values)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[], thinking_text=thinking),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", lambda: settings
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="worker_local_legacy",
+        thinking_effort="high",
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-thinking-private",
+        attempt_id="attempt-thinking-private",
+        tool_policy_subjects=[subject],
+    )
+
+    assert result.error is None
+    thinking_candidates = [
+        candidate for candidate in candidates if hasattr(candidate, "summary")
+    ]
+    assert len(thinking_candidates) == 1
+    summary = thinking_candidates[0].summary
+    assert "C:/agent-workspaces/run-1/output/result.txt" in summary
+    for private_value in private_values:
+        assert private_value not in summary
 
 
 @pytest.mark.asyncio

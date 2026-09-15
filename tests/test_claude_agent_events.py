@@ -60,7 +60,7 @@ def _assert_sandbox_answer_receipt(result, candidates, answer):
     assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in delta_candidates)
 
 
-def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
+def test_v4_callback_bridge_preserves_safe_text_and_rejects_private_fields():
     safe = AgentEvent(
         type="message.delta",
         payload={"delta": "safe answer"},
@@ -88,6 +88,15 @@ def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
     assert agent_event_to_executor_event(safe)["event_type"] == "message.delta"
     assert agent_event_to_executor_event(private)["event_type"] == "message.delta"
     assert agent_event_to_executor_event(private_envelope)["event_type"] == "executor_private_event"
+    structured_private = AgentEvent(
+        type="message.delta",
+        payload={"delta": "safe path C:/output.txt", "path": "agent-workspaces"},
+        event_id="event-structured-private",
+        run_id="run-1187",
+        message_id="message-1",
+    )
+
+    assert agent_event_to_executor_event(structured_private)["event_type"] == "executor_private_event"
 
 
 def test_v4_callback_bridge_rejects_private_envelope_message_identity():
@@ -129,17 +138,18 @@ def test_v4_callback_bridge_rejects_admin_only_event_even_when_schema_valid():
     assert agent_event_to_executor_event(admin_only)["event_type"] == "executor_private_event"
 
 
-def test_v4_candidate_rejects_private_nested_public_strings():
-    with pytest.raises(ValueError, match="private text"):
-        ClaudeAgentEventCandidate(
-            run_id="run-1187",
-            event_id="event-4",
-            event_type="message.delta",
-            message_id="message-1",
-            causation_event_id=None,
-            payload={"delta": "agent-workspaces/private nested text"},
-            payload_sanitizer=sanitize_public_payload,
-        )
+def test_v4_candidate_allows_private_path_like_answer_body_after_structural_validation():
+    candidate = ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="event-4",
+        event_type="message.delta",
+        message_id="message-1",
+        causation_event_id=None,
+        payload={"delta": "agent-workspaces/private nested text"},
+        payload_sanitizer=sanitize_public_payload,
+    )
+
+    assert candidate.payload["delta"] == "agent-workspaces/private nested text"
 
 
 def test_answer_candidates_are_gated_and_have_one_stable_message_identity():
@@ -157,6 +167,43 @@ def test_answer_candidates_are_gated_and_have_one_stable_message_identity():
     assert all("attempt-1" not in str(event.as_dict()["payload"]) for event in events)
     assert events[-1].payload == {"delta_count": 1, "text_length": len("safe answer")}
     assert events[-1].causation_event_id == events[1].event_id
+
+
+def test_answer_candidate_state_commits_only_after_candidate_validation():
+    adapter = _adapter()
+    adapter._payload_sanitizer = lambda _value: None
+
+    with pytest.raises(ValueError, match="private text"):
+        adapter.accept_answer_text("safe answer", already_gated=True)
+
+    assert adapter._answer_started is False
+    assert adapter._answer_delta_count == 0
+    assert adapter._answer_text_length == 0
+    assert adapter.answer_receipt is None
+    assert adapter._seen_events == set()
+
+
+def test_answer_completion_batch_commits_only_after_model_event_validation():
+    adapter = _adapter()
+    adapter.accept_answer_text("safe answer", already_gated=True)
+
+    def reject_model(candidate):
+        if isinstance(candidate, dict) and candidate.get("event_type") == "model.completed":
+            return None
+        return sanitize_public_payload(candidate)
+
+    adapter._payload_sanitizer = reject_model
+    result = SimpleNamespace(duration_ms=10, num_turns=1, is_error=False, stop_reason="end_turn")
+
+    with pytest.raises(ValueError, match="private text"):
+        adapter.accept_result(result, final_content="safe answer")
+
+    assert adapter._answer_completed is False
+    assert adapter.answer_receipt is None
+    assert all(
+        identity != "message.completed"
+        for identity in adapter._accepted_event_ids
+    )
 
 
 def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
@@ -602,7 +649,7 @@ def test_thinking_is_sanitized_as_one_summary_before_callback_publication():
         ),
     ],
 )
-def test_thinking_sanitizer_redacts_complete_windows_paths(
+def test_thinking_sanitizer_preserves_complete_windows_paths(
     private_path,
     private_fragment,
 ):
@@ -1243,6 +1290,9 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
     monkeypatch, answer
 ):
     import claude_agent_sdk as sdk
+    from tests.support.claude_mcp import install_mcp_sessions
+
+    install_mcp_sessions(monkeypatch)
 
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings",

@@ -56,6 +56,11 @@ Marketplace file previews continue to read released Skill snapshots and do not i
 `POST /api/skills/upload/preview` accepts a multipart ZIP package in field
 `file`, validates the package `SKILL.md`, and returns package metadata without
 persistence. It only supports one Skill package per ZIP in this backend slice.
+Preview and actual upload use the same package parser: decoded file and directory
+name components must fit within 255 UTF-8 bytes; non-ASCII ZIP names without
+a UTF-8 flag or a verified Unicode Path (0x7075) extra field are rejected rather than
+guessed or silently renamed. ASCII names need no encoding flag. The admin
+Skill package preview and upload follow the same package-shape validation.
 
 `POST /api/skills/upload` accepts the same package shape for an existing public
 Skill and persists the package files as tenant/user-scoped public Skill file
@@ -149,11 +154,22 @@ returned in API responses or written to audit payloads.
 Company login stores one encrypted MCP JWT per `tenant_id + user_id` in Redis;
 the JWT's own `exp` is its lifetime and a later login replaces the earlier
 value. The browser never receives or stores this JWT. At MCP execution time the
-Worker reuses the existing Capability Distribution and Tool Policy plan, reads
-the current JWT and encrypted Server target, then registers the Server with the
-Agent SDK using static headers plus `JWT-Authorization`. The SDK calls the MCP
-Server directly. There is no separate MCP Broker capability or host Relay, and
-runtime connection material is removed from reconciliation persistence.
+Worker reuses the existing Capability Distribution and Tool Policy plan and
+reads the current JWT and encrypted Server target. The Executor's Claude
+adapter connects to those Servers using static headers plus `JWT-Authorization`,
+then exposes only the selected tools through the SDK's in-process MCP support.
+The adapter maps SDK aliases to canonical identities and forwards the original
+remote names and schemas. It adds no separate MCP Broker capability or host
+Relay; runtime connection material is removed from reconciliation persistence.
+The [MCP execution contract](../architecture/mcp-tool-execution.md) owns name
+mapping, selected-tool exposure, transport limits and runnable acceptance.
+
+Server configuration supports Streamable HTTP and legacy SSE. Command/stdin
+(`sandbox`) configuration writes are rejected until a governed process adapter
+exists. Existing rows remain readable and can be explicitly migrated to a
+network transport; they do not authorize command execution. Ordinary directory
+responses with `unavailable_reason` must display unavailable state, not an empty
+successful catalog.
 
 Explicitly fail-closed follow-up routes:
 

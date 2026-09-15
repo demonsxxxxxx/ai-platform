@@ -7,10 +7,8 @@ import type {
   MCPServerResponse,
   MCPServerCreate,
   MCPRoleQuota,
-  MCPTransport,
 } from "../../types";
 import { EnterpriseSelect } from "../common/EnterpriseSelect";
-import { EnvKeysSelector } from "./EnvKeysSelector";
 import { validateMcpStaticHeaderNames } from "./mcpHeaderValidation";
 import { RoleSelector } from "./RoleSelector";
 
@@ -78,7 +76,6 @@ export function MCPServerForm({
     Permission.MCP_ADMIN,
     Permission.MCP_WRITE_SSE,
     Permission.MCP_WRITE_HTTP,
-    Permission.MCP_WRITE_SANDBOX,
   ],
   isSystemServer = false,
 }: MCPServerFormProps) {
@@ -86,46 +83,37 @@ export function MCPServerForm({
   const isEditing = !!server;
 
   const allTransports: {
-    value: MCPTransport;
+    value: MCPServerCreate["transport"];
     label: string;
     permission: Permission;
   }[] = [
     {
-      value: "sse" as MCPTransport,
+      value: "sse",
       label: t("mcp.form.transportSse"),
       permission: Permission.MCP_WRITE_SSE,
     },
     {
-      value: "streamable_http" as MCPTransport,
+      value: "streamable_http",
       label: t("mcp.form.transportHttp"),
       permission: Permission.MCP_WRITE_HTTP,
-    },
-    {
-      value: "sandbox" as MCPTransport,
-      label: t("mcp.form.transportSandbox"),
-      permission: Permission.MCP_WRITE_SANDBOX,
     },
   ];
   const availableTransports = allTransports.filter((tr) =>
     allowedTransports.includes(tr.permission),
   );
 
-  const defaultTransport = availableTransports[0]?.value ?? "sse";
+  const defaultTransport = availableTransports[0]?.value ?? "streamable_http";
 
   const [name, setName] = useState(server?.name ?? "");
-  const [transport, setTransport] = useState<MCPTransport>(
-    server?.transport ?? defaultTransport,
+  const [transport, setTransport] = useState<MCPServerCreate["transport"]>(
+    server?.transport === "sandbox" ? defaultTransport : server?.transport ?? defaultTransport,
   );
-  const isSandbox = transport === "sandbox";
   const [enabled, setEnabled] = useState(server?.enabled ?? true);
 
   // HTTP fields
   const [url, setUrl] = useState("");
   const [headers, setHeaders] = useState<KeyValuePair[]>([]);
 
-  // Sandbox fields
-  const [command, setCommand] = useState("");
-  const [envKeys, setEnvKeys] = useState<string[]>([]);
   const [allowedRoles, setAllowedRoles] = useState<string[]>(
     server?.allowed_roles ?? [],
   );
@@ -142,29 +130,25 @@ export function MCPServerForm({
   useEffect(() => {
     if (server) {
       setName(server.name);
-      setTransport(server.transport);
+      setTransport(server.transport === "sandbox" ? defaultTransport : server.transport);
       setEnabled(server.enabled);
       setUrl("");
       setHeaders([]);
-      setCommand("");
-      setEnvKeys([]);
       setAllowedRoles(server.allowed_roles ?? []);
       setAllowedDepartmentsInput(server.allowed_departments?.join(", ") ?? "");
       setRoleQuotas(toQuotaDrafts(server.role_quotas ?? {}));
     } else {
       setName("");
-      setTransport("sse");
+      setTransport(defaultTransport);
       setEnabled(true);
       setUrl("");
       setHeaders([]);
-      setCommand("");
-      setEnvKeys([]);
       setAllowedRoles([]);
       setAllowedDepartmentsInput("");
       setRoleQuotas({});
     }
     setErrors({});
-  }, [server]);
+  }, [server, defaultTransport]);
 
   const handleAllowedRolesChange = (roles: string[]) => {
     setAllowedRoles(roles);
@@ -202,20 +186,14 @@ export function MCPServerForm({
       newErrors.name = t("mcp.form.validation.nameRequired");
     }
 
-    if (isSandbox) {
-      if (!command.trim()) {
-        newErrors.command = t("mcp.form.validation.commandRequired");
-      }
-    } else {
-      if (!url.trim()) {
-        newErrors.url = t("mcp.form.validation.urlRequired");
-      }
-      const headerError = validateMcpStaticHeaderNames(headers);
-      if (headerError === "mcp_header_conflict") {
-        newErrors.headers = t("mcp.form.validation.jwtHeaderConflict");
-      } else if (headerError === "mcp_header_duplicate") {
-        newErrors.headers = t("mcp.form.validation.duplicateHeader");
-      }
+    if (!url.trim()) {
+      newErrors.url = t("mcp.form.validation.urlRequired");
+    }
+    const headerError = validateMcpStaticHeaderNames(headers);
+    if (headerError === "mcp_header_conflict") {
+      newErrors.headers = t("mcp.form.validation.jwtHeaderConflict");
+    } else if (headerError === "mcp_header_duplicate") {
+      newErrors.headers = t("mcp.form.validation.duplicateHeader");
     }
 
     setErrors(newErrors);
@@ -225,7 +203,7 @@ export function MCPServerForm({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!validate()) return;
+    if (!availableTransports.some((option) => option.value === transport) || !validate()) return;
 
     const data: MCPServerCreate = {
       name: name.trim(),
@@ -240,24 +218,15 @@ export function MCPServerForm({
         : undefined,
     };
 
-    if (isSandbox) {
-      data.command = command.trim();
-      if (envKeys.length > 0) {
-        data.env_keys = envKeys;
-      }
-    } else {
-      data.url = url.trim();
-      if (headers.length > 0) {
-        data.headers = headers.reduce(
-          (acc, { key, value }) => {
-            if (key.trim()) {
-              acc[key.trim()] = value;
-            }
-            return acc;
-          },
-          {} as Record<string, string>,
-        );
-      }
+    data.url = url.trim();
+    if (headers.length > 0) {
+      data.headers = headers.reduce(
+        (acc, { key, value }) => {
+          if (key.trim()) acc[key.trim()] = value;
+          return acc;
+        },
+        {} as Record<string, string>,
+      );
     }
 
     await onSave(data);
@@ -307,14 +276,16 @@ export function MCPServerForm({
         <label className="es-label">{t("mcp.form.transportType")}</label>
         <EnterpriseSelect
           value={transport}
-          onChange={(v) => setTransport(v as MCPTransport)}
+          onChange={(v) => setTransport(v as MCPServerCreate["transport"])}
           options={availableTransports.map((tr) => ({
             value: tr.value,
             label: tr.label,
           }))}
-          disabled={isEditing}
+          disabled={isEditing && server?.transport !== "sandbox"}
         />
-        {isEditing && (
+        {server?.transport === "sandbox" ? (
+          <p className="es-hint" role="status">{t("mcp.form.unsupportedTransport")}</p>
+        ) : isEditing && (
           <p className="es-hint">{t("mcp.form.transportUneditable")}</p>
         )}
       </div>
@@ -434,40 +405,8 @@ export function MCPServerForm({
         <p className="es-hint">{t("mcp.form.connectionReentry")}</p>
       )}
 
-      {/* ── Sandbox-specific fields ── */}
-      {isSandbox && (
-        <>
-          {/* Command */}
-          <div className="es-field">
-            <label className="es-label">{t("mcp.form.command")}</label>
-            <input
-              type="text"
-              value={command}
-              onChange={(e) => setCommand(e.target.value)}
-              placeholder={t("mcp.form.commandPlaceholder")}
-              className={`enterprise-field-control es-input font-mono ${
-                errors.command ? "!border-red-300 dark:!border-red-700" : ""
-              }`}
-            />
-            {errors.command && (
-              <p className="es-hint" style={{ color: "#dc2626" }}>
-                {errors.command}
-              </p>
-            )}
-          </div>
-
-          {/* Env Keys Selector */}
-          <div className="es-field">
-            <label className="es-label">{t("mcp.form.envKeys")}</label>
-            <p className="es-hint">{t("mcp.form.envKeysDescription")}</p>
-            <EnvKeysSelector selectedKeys={envKeys} onChange={setEnvKeys} />
-          </div>
-        </>
-      )}
-
-      {/* ── HTTP/SSE-specific fields ── */}
-      {!isSandbox && (
-        <>
+      {/* HTTP/SSE connection */}
+      <>
           {/* URL field */}
           <div className="es-field">
             <label className="es-label">{t("mcp.form.url")}</label>
@@ -540,8 +479,7 @@ export function MCPServerForm({
               )}
             </div>
           </div>
-        </>
-      )}
+      </>
 
       {/* Actions */}
       <div className="flex justify-end gap-2 pt-2">
@@ -555,7 +493,7 @@ export function MCPServerForm({
         </button>
         <button
           type="submit"
-          disabled={isLoading}
+          disabled={isLoading || availableTransports.length === 0}
           className="btn-primary disabled:opacity-50"
         >
           {isEditing ? t("mcp.form.saveChanges") : t("mcp.form.createServer")}
