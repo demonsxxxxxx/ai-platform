@@ -128,7 +128,7 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.match(form, /else \{[\s\S]*setAllowedDepartmentsInput\(""\);/);
   assert.ok(
     form.indexOf('t("mcp.form.connectionReentry")') <
-      form.indexOf("{/* HTTP\/SSE connection */}"),
+      form.indexOf("{/* HTTP/SSE connection */}"),
     "write-only re-entry warning must apply to every transport",
   );
   assert.match(ordinaryCatalog, /data-ordinary-mcp-catalog/);
