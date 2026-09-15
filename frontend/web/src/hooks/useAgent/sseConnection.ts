@@ -1224,6 +1224,12 @@ export async function reconnectSSE(
       currentRId || "",
       reconnectStreamVersion,
     );
+  const hasCurrentAssistant = () => Boolean(
+    currentMsgId && messagesRef.current.some((message) =>
+      message.id === currentMsgId &&
+      message.role === "assistant" && message.runId === currentRId,
+    ),
+  );
   const convergeUnavailable = () => {
     if (
       ctx.onRunStatusUnavailable?.(currentRId || "", currentMsgId || currentRId || "")
@@ -1280,7 +1286,7 @@ export async function reconnectSSE(
   if (statusResult.kind === "unavailable") {
     // Transport recovery is paused only while its assistant owner remains
     // available; a status read failure cannot recreate a missing owner.
-    if (currentMsgId) preserveStatusUnavailable();
+    if (hasCurrentAssistant()) preserveStatusUnavailable();
     else convergeUnavailable();
     return;
   }
@@ -1304,6 +1310,11 @@ export async function reconnectSSE(
     return;
   }
 
+  if (!hasCurrentAssistant()) {
+    convergeUnavailable();
+    return;
+  }
+
   setConnectionStatus("reconnecting");
 
   const delay = Math.max(
@@ -1319,29 +1330,29 @@ export async function reconnectSSE(
     if (!isCurrentReconnect()) {
       return;
     }
+    if (!hasCurrentAssistant()) {
+      convergeUnavailable();
+      return;
+    }
     if (currentMsgId) {
-      const msgs = messagesRef.current;
-      const lastMsg = msgs.find((m) => m.id === currentMsgId);
-      if (lastMsg) {
-        isReconnectFromHistoryRef.current = true;
-        try {
-          await connect(currentSessId, currentRId, currentMsgId, ctx);
-        } catch (error) {
-          if (!isCurrentReconnect()) {
-            return;
-          }
-          if (
-            isNonRetryableSSEAuthenticationError(error) ||
-            isNonRetryableSSEConnectionError(error)
-          ) {
-            // Authentication cannot be recovered by a status read or another
-            // stream attempt. The lifecycle converger clears the generation's
-            // active stream without fabricating a backend failed result.
-            convergeUnavailable();
-            return;
-          }
-          await reconnectSSE(ctx, dependencies);
+      isReconnectFromHistoryRef.current = true;
+      try {
+        await connect(currentSessId, currentRId, currentMsgId, ctx);
+      } catch (error) {
+        if (!isCurrentReconnect()) {
+          return;
         }
+        if (
+          isNonRetryableSSEAuthenticationError(error) ||
+          isNonRetryableSSEConnectionError(error)
+        ) {
+          // Authentication cannot be recovered by a status read or another
+          // stream attempt. The lifecycle converger clears the generation's
+          // active stream without fabricating a backend failed result.
+          convergeUnavailable();
+          return;
+        }
+        await reconnectSSE(ctx, dependencies);
       }
     }
   }, delay);

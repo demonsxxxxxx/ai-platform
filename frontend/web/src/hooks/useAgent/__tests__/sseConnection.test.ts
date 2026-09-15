@@ -968,7 +968,7 @@ test("does not let a stale connection target abort the active stream", async () 
   assert.equal(context.streamingMessageIdRef.current, "active-message");
 });
 
-test("keeps the reconnect owner when authoritative status is temporarily unavailable", async () => {
+test("keeps the hydrated reconnect assistant when authoritative status is temporarily unavailable", async () => {
   const connectionStates: string[] = [];
   let connectCalls = 0;
   const context = {
@@ -977,7 +977,14 @@ test("keeps the reconnect owner when authoritative status is temporarily unavail
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
     retryCountRef: { current: 0 },
-    messagesRef: { current: [] },
+    messagesRef: { current: [{
+      id: "assistant-1",
+      role: "assistant" as const,
+      runId: "run-1",
+      content: "partial",
+      parts: [],
+      timestamp: new Date(),
+    }] },
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
     processedEventIdsRef: { current: new Set<string>() },
@@ -1024,6 +1031,18 @@ test("fails closed when reconnect status is unauthorized or its assistant owner 
       error: new Error("status unavailable"),
       expectedMessageId: "run-1",
     },
+    {
+      name: "orphaned assistant pointer",
+      messageId: "assistant-1",
+      error: new Error("status unavailable"),
+      expectedMessageId: "assistant-1",
+    },
+    {
+      name: "orphaned assistant with active authority",
+      messageId: "assistant-1",
+      error: null,
+      expectedMessageId: "assistant-1",
+    },
   ];
 
   for (const candidate of cases) {
@@ -1057,7 +1076,8 @@ test("fails closed when reconnect status is unauthorized or its assistant owner 
 
     await reconnectSSE(context, {
       getStatus: async () => {
-        throw candidate.error;
+        if (candidate.error) throw candidate.error;
+        return { session_id: "session-1", run_id: "run-1", status: "running" };
       },
     });
 
@@ -1132,7 +1152,14 @@ test("bounds status-query retries without terminalizing the reconnect owner", as
     reconnectTimeoutRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
-    messagesRef: { current: [] },
+    messagesRef: { current: [{
+      id: "assistant-1",
+      role: "assistant" as const,
+      runId: "run-1",
+      content: "partial",
+      parts: [],
+      timestamp: new Date(),
+    }] },
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
     processedEventIdsRef: { current: new Set<string>() },
@@ -1793,6 +1820,7 @@ test("a scheduled reconnect converges non-retryable auth without another status 
         {
           id: "assistant-auth",
           role: "assistant",
+          runId: "run-auth",
           content: "",
           timestamp: new Date(),
           isStreaming: true,
@@ -1905,6 +1933,7 @@ test("a scheduled reconnect reconciles a post-refresh transport failure", async 
         {
           id: "assistant-transport",
           role: "assistant",
+          runId: "run-transport",
           content: "",
           timestamp: new Date(),
           isStreaming: true,
@@ -2011,6 +2040,7 @@ test("keeps an active run recoverable after repeated replay-only transport losse
         {
           id: "assistant-1",
           role: "assistant",
+          runId: "run-1",
           content: "",
           timestamp: new Date(),
           isStreaming: true,
@@ -2121,6 +2151,7 @@ test("recovers a terminal run after heartbeat-only losses without inventing cont
     {
       id: "assistant-heartbeat-loop",
       role: "assistant" as const,
+      runId: "run-heartbeat-loop",
       content: "",
       timestamp: new Date(),
       isStreaming: true,
@@ -2217,6 +2248,7 @@ test("recovers a terminal run after heartbeat-only losses without inventing cont
     {
       id: "assistant-heartbeat-loop",
       role: "assistant",
+      runId: "run-heartbeat-loop",
       content: "",
       timestamp: messages[0]?.timestamp,
       isStreaming: true,
@@ -3177,6 +3209,63 @@ test("does not mutate shared state when a stale owner receives a replay gap", as
   assert.equal(context.acceptedRunEventSequenceRef!.current.sequence, 8);
 });
 
+test("a queued reconnect fails closed if its assistant disappears before the timer fires", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let connectCalls = 0;
+  const unavailableCalls: Array<[string, string]> = [];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: { current: [{
+      id: "assistant-1",
+      role: "assistant" as const,
+      runId: "run-1",
+      content: "partial",
+      parts: [],
+      timestamp: new Date(),
+    }] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunStatusUnavailable: (runId: string, messageId: string) => {
+      unavailableCalls.push([runId, messageId]);
+      return true;
+    },
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+
+  await reconnectSSE(context, {
+    reconnectDelay: () => 1,
+    getStatus: async () => ({
+      session_id: "session-1",
+      run_id: "run-1",
+      status: "running",
+    }),
+    connect: async () => { connectCalls += 1; },
+  });
+  assert.notEqual(context.reconnectTimeoutRef.current, null);
+  context.messagesRef.current = [];
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+
+  assert.equal(connectCalls, 0);
+  assert.deepEqual(unavailableCalls, [["run-1", "assistant-1"]]);
+});
+
 test("drops a queued reconnect timer after session switch or unmount", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const originalRandom = Math.random;
@@ -3196,6 +3285,7 @@ test("drops a queued reconnect timer after session switch or unmount", async (t)
         {
           id: "assistant-old",
           role: "assistant",
+          runId: "run-old",
           content: "",
           timestamp: new Date(),
           isStreaming: true,
@@ -3233,6 +3323,7 @@ test("drops a queued reconnect timer after session switch or unmount", async (t)
         connectCalls += 1;
       },
     });
+    assert.notEqual(context.reconnectTimeoutRef.current, null);
     context.sessionIdRef.current = "session-new";
     context.currentRunIdRef.current = "run-new";
     context.streamVersionRef.current += 1;

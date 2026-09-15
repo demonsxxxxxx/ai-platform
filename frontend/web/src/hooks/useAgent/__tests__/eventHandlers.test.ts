@@ -1849,6 +1849,11 @@ test("v4 rejects a message delta when its reducer message is missing", () => {
       reducerMessageId: "missing-assistant",
     },
   };
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-missing-message",
+    sequence: 9,
+  };
   const commits: boolean[] = [];
   const binding = {
     sessionId: "session-1",
