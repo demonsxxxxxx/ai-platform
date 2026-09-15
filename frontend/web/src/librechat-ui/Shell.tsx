@@ -34,7 +34,7 @@ export function LibreChatShell({
       >
         <div className={libreChatSurface.thread}>
           {rightPanel && (
-            <div className="hidden justify-end px-3 pt-2 sm:flex sm:px-4">
+            <div className="absolute right-3 top-2 z-10 hidden sm:flex sm:right-4">
               <button
                 type="button"
                 data-librechat-context-toggle

@@ -856,7 +856,7 @@ export const ChatInput = memo(function ChatInput({
       <form
         onSubmit={handleSubmit}
         className={
-          className ?? "mx-auto max-w-3xl lg:max-w-4xl xl:max-w-5xl px-2"
+          className ?? "mx-auto max-w-[68rem] px-2"
         }
       >
         <div
@@ -880,14 +880,19 @@ export const ChatInput = memo(function ChatInput({
             onDrop={handleDrop}
             dragging={isDraggingOver}
           >
-            <ChatInputAttachments
-              attachments={attachments}
-              onRemoveAttachment={removeAttachment}
-              onCancelUpload={cancelUpload}
-              onImageViewerOpen={(url) => setImageViewerSrc(url)}
-            />
+            <LibreChatComposerRegion
+              region="attachments"
+              className="col-span-2"
+            >
+              <ChatInputAttachments
+                attachments={attachments}
+                onRemoveAttachment={removeAttachment}
+                onCancelUpload={cancelUpload}
+                onImageViewerOpen={(url) => setImageViewerSrc(url)}
+              />
+            </LibreChatComposerRegion>
 
-            <LibreChatComposerRegion region="chips">
+            <LibreChatComposerRegion region="chips" className="col-span-2">
               <ComposerChips
                 selections={composerSelections}
                 onRemove={handleRemoveComposerSelection}
@@ -896,7 +901,7 @@ export const ChatInput = memo(function ChatInput({
 
             {selectedSkillState?.recoveryCode && (
               <div
-                className="mx-3 mt-2 rounded-lg border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs leading-relaxed text-[var(--theme-warning)]"
+                className="col-span-2 mx-3 mt-2 rounded-lg border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs leading-relaxed text-[var(--theme-warning)]"
                 role="status"
                 data-selected-skill-error={selectedSkillState.recoveryCode}
               >
@@ -944,7 +949,7 @@ export const ChatInput = memo(function ChatInput({
               </div>
             </LibreChatComposerRegion>
 
-            <LibreChatComposerRegion region="toolbar">
+            <LibreChatComposerRegion region="toolbar" className="min-w-0">
               <ChatInputToolbar
                 activePanel={activePanel}
                 onActivePanelChange={handlePanelChange}

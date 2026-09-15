@@ -88,7 +88,7 @@ export function ChatInputToolbar({
   );
 
   return (
-    <div className="flex justify-between flex-nowrap pt-2 pb-2 px-2 mx-0.5 max-w-full">
+      <div className="mx-0.5 flex max-w-full flex-nowrap justify-between px-2 py-1.5">
       <div className="flex items-center gap-1 sm:gap-2 self-end flex-1 min-w-0 overflow-x-auto no-scrollbar">
         <input
           ref={fileInputRef}

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
@@ -42,6 +42,7 @@ interface HeaderProps {
   showOutlineButton?: boolean;
   allowNewSessionAction?: boolean;
   newSessionActionLabel?: string;
+  chatIdentity?: ReactNode;
 }
 
 export function Header({
@@ -57,6 +58,7 @@ export function Header({
   showOutlineButton,
   allowNewSessionAction = true,
   newSessionActionLabel,
+  chatIdentity,
 }: HeaderProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -114,11 +116,11 @@ export function Header({
     <>
       <header
         data-workbench-header
-        className="relative z-50 flex min-h-[2.75rem] items-center border-b border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-3 pb-2 sm:px-5"
-        style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))" }}
+        className="relative z-50 flex min-h-[2.75rem] items-center border-b border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-3 pb-1.5 sm:px-5"
+        style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top))" }}
       >
         {/* Left */}
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {activeTab === "chat" ? (
             <>
               <button
@@ -153,6 +155,14 @@ export function Header({
                   />
                 )}
 
+              {chatIdentity ? (
+                <div
+                  className="flex min-w-0 items-center gap-2 border-l border-[var(--theme-border)] pl-2 sm:pl-3"
+                  data-chat-header-identity
+                >
+                  {chatIdentity}
+                </div>
+              ) : null}
             </>
           ) : (
             <div className="flex items-center gap-1.5">
@@ -172,10 +182,6 @@ export function Header({
           )}
         </div>
 
-        {/* Spacer */}
-        <div className="flex-1" />
-
-        {/* Right */}
         <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
           {/* Overflow menu (unified for all screen sizes) */}
           <div className="relative">

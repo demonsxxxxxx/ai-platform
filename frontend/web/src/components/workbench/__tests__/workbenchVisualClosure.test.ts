@@ -18,9 +18,10 @@ test("workbench shell exposes dense chat regions", () => {
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
   assert.match(shell, /data-workbench-region="context"/);
+  assert.match(shell, /absolute right-3 top-2/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(surface, /workspace:/);
-  assert.match(surface, /thread:/);
+  assert.match(surface, /thread:[\s\S]*relative flex/);
   assert.match(surface, /composer:/);
   assert.match(surface, /context:/);
   assert.match(surface, /commandSurface:/);
@@ -655,11 +656,13 @@ test("public catalog pages use semantic workbench status tokens", () => {
   }
 });
 
-test("composer and command surfaces use stable dimensions", () => {
+test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
+  const composer = read("src/librechat-ui/Composer.tsx");
   assert.match(css, /\.chat-input-container/);
-  assert.match(css, /min-height:\s*72px/);
+  assert.match(css, /min-height:\s*56px/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
+  assert.match(composer, /grid-cols-\[minmax\(0,1fr\)_auto\]/);
   assert.match(css, /\.composer-command-surface/);
   assert.match(css, /overflow:\s*hidden/);
 });
