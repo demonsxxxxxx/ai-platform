@@ -1264,6 +1264,7 @@
       "transportSse": "SSE（服务器发送事件）",
       "transportType": "传输类型",
       "transportUneditable": "传输类型无法修改",
+      "unsupportedTransport": "命令传输尚不受支持，请改用 HTTP 或 SSE，并重新填写连接信息。",
       "unlimited": "不限",
       "url": "URL",
       "urlPlaceholder": "https://example.com/mcp",

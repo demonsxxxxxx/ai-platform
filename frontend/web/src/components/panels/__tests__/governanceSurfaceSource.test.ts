@@ -105,8 +105,8 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
     source,
     /startServer|stopServer|restartServer|rawCredential|allowedTransports|createAsSystem|changeToSystem/,
   );
-  assert.match(form, /server\?\.url|server\.url/);
-  assert.match(form, /server\?\.headers|server\.headers/);
+  assert.doesNotMatch(form, /server\?\.url|server\.url/);
+  assert.doesNotMatch(form, /server\?\.headers|server\.headers/);
   assert.doesNotMatch(form, /server\?\.command|server\.command/);
   assert.doesNotMatch(form, /server\?\.env_keys|server\.env_keys/);
   assert.match(form, /department_ids/);

@@ -179,11 +179,12 @@ it to the fixed translator origin after validating the child window and its
 nonce. It is never placed in a URL or AI Platform browser storage. The
 translator stores the received JWT in its own tab-scoped `sessionStorage` for
 its API calls. At MCP execution time the Worker reuses the existing Capability
-Distribution and Tool Policy plan, reads the current JWT and encrypted Server
-target, then registers the Server with the Agent SDK using static headers plus
-`JWT-Authorization`. The SDK calls the MCP Server directly. There is no
-separate MCP Broker capability or host Relay, and runtime connection material
-is removed from reconciliation persistence.
+Distribution and Tool Policy plan and reads the current JWT and encrypted
+Server target. The executor opens remote MCP sessions with static headers plus
+`JWT-Authorization`, then exposes only the authorized selected tools through
+the SDK's in-process MCP interface. SDK calls pass through that adapter to the
+original remote tool names. There is no separate MCP Broker capability or host
+Relay, and runtime connection material is removed from reconciliation persistence.
 
 The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selected-tool exposure, SDK alias mapping, HTTP/SSE transport limits, and runnable acceptance. Command/stdin (`sandbox`) configuration writes are rejected until a governed process adapter exists; existing rows remain readable but do not authorize command execution. Ordinary directory responses with `unavailable_reason` display unavailable state rather than an empty successful catalog.
 
