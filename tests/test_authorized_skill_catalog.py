@@ -452,6 +452,28 @@ async def test_runtime_catalog_rejects_identity_swap_and_manifest_set_expansion(
         "reference-fact-extraction",
     )
 
+    selected_pin = resolution.manifests[0]
+    compact_input = resolution.runtime_input_updates(pinned_manifests=[selected_pin])
+    assert [item["skill_id"] for item in compact_input[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY]] == [
+        "reference-fact-extraction"
+    ]
+    compact_loaded = load_runtime_authorized_skill_catalog(
+        compact_input, expected_binding=binding, pinned_manifests=[selected_pin]
+    )
+    assert compact_loaded is not None
+    assert compact_loaded.manifest_json == loaded.manifest_json
+    with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
+        load_runtime_authorized_skill_catalog(compact_input, expected_binding=binding)
+    tampered_pin = json.loads(json.dumps(selected_pin))
+    tampered_pin["description"] = "changed"
+    with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
+        load_runtime_authorized_skill_catalog(
+            compact_input, expected_binding=binding, pinned_manifests=[tampered_pin]
+        )
+    assert load_runtime_authorized_skill_catalog(
+        runtime_input, expected_binding=binding, pinned_manifests=[selected_pin]
+    ) == loaded
+
     with pytest.raises(AuthorizedSkillCatalogError, match="binding_mismatch"):
         load_runtime_authorized_skill_catalog(
             runtime_input,
@@ -464,6 +486,11 @@ async def test_runtime_catalog_rejects_identity_swap_and_manifest_set_expansion(
     )
     with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
         load_runtime_authorized_skill_catalog(injected, expected_binding=binding)
+
+    reordered = json.loads(json.dumps(runtime_input))
+    reordered[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY].reverse()
+    with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
+        load_runtime_authorized_skill_catalog(reordered, expected_binding=binding)
 
     tampered = json.loads(json.dumps(runtime_input))
     tampered[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY][1]["description"] = "tampered"
@@ -660,6 +687,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
     loaded = load_runtime_authorized_skill_catalog(
         authorization.payload.input,
         expected_binding=_binding(selected_skill_id="ctd-32s73-stability-template-fill"),
+        pinned_manifests=authorization.payload.skill_manifests,
     )
     assert loaded is not None
     assert set(loaded.snapshot.available_skill_ids) == {
@@ -1086,6 +1114,12 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     selected_manifest = _manifest_from_row(rows[1])
+    compact_input = resolution.runtime_input_updates(
+        pinned_manifests=[selected_manifest]
+    )
+    assert [item["skill_id"] for item in compact_input[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY]] == [
+        "reference-fact-extraction"
+    ]
     payload = RunPayload(
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -1096,7 +1130,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
         agent_id="general-agent",
         skill_id="ctd-32s73-stability-template-fill",
         file_ids=[],
-        input={"message": "Route this request", **resolution.runtime_input_updates()},
+        input={"message": "Route this request", **compact_input},
         skill_version=str(selected_manifest["version"]),
         release_decision={
             "schema_version": RELEASE_DECISION_SCHEMA_VERSION,
@@ -1104,7 +1138,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
             "selected_version": str(selected_manifest["version"]),
             "selected_track": "manifest_pin",
         },
-        skill_manifests=resolution.manifests,
+        skill_manifests=[selected_manifest],
     )
     workspace = tmp_path / "sandbox" / "workspace"
 

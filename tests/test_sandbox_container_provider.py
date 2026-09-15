@@ -1297,6 +1297,66 @@ async def test_opensandbox_workspace_transfer_fails_closed_without_secure_contro
         await provider.collect_workspace(lease, runtime_request, lease_workspace)
 
 
+@pytest.mark.parametrize("fail_second_batch", (False, True))
+@pytest.mark.asyncio
+async def test_opensandbox_stage_batches_files_without_bypassing_sentinel(
+    monkeypatch, tmp_path, fail_second_batch
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    # Batch boundaries are portable; the no-follow reader has separate Linux coverage.
+    monkeypatch.setattr(container_provider, "_require_secure_workspace_transfer", lambda: None)
+    monkeypatch.setattr(
+        container_provider,
+        "_read_stable_workspace_file",
+        lambda entry: entry.source_path.read_bytes(),
+    )
+    local_workspace = tmp_path / "attempt" / "workspace"
+    local_workspace.mkdir(parents=True)
+    for index in range(33):
+        (local_workspace / f"file-{index:02d}.bin").write_bytes(b"x")
+    (local_workspace / "file-33.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+    for index in (34, 35):
+        (local_workspace / f"file-{index:02d}.bin").write_bytes(b"x" * (700 * 1024))
+
+    runtime_request = request()
+    leased_workspace = workspace(
+        workspace_host_path=str(local_workspace), prepare_staged_skills=False
+    )
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(runtime_request, leased_workspace)
+    remote_files = FakeOpenSandbox.instances[lease.container_id].files
+    batches = []
+    write_files = remote_files.write_files
+
+    def capture(entries):
+        batches.append(list(entries))
+        if fail_second_batch and len(batches) == 2:
+            raise RuntimeError("synthetic batch write failed")
+        write_files(entries)
+
+    remote_files.write_files = capture
+    if fail_second_batch:
+        with pytest.raises(container_provider.ContainerStartFailedError, match="workspace staging failed"):
+            await provider.stage_workspace(lease, runtime_request, leased_workspace)
+        assert not any(
+            entry.path == "/workspace/.ai-platform-opensandbox-lease.json"
+            for entry in remote_files.written
+        )
+        return
+    await provider.stage_workspace(lease, runtime_request, leased_workspace)
+
+    assert [len(batch) for batch in batches] == [32, 1, 1, 1, 1, 1]
+    assert sum(len(batch) for batch in batches[:-1]) == 36
+    assert all(
+        sum(len(entry.data) for entry in batch) <= 1024 * 1024 or len(batch) == 1
+        for batch in batches[:-1]
+    )
+    assert batches[-1][0].path == "/workspace/.ai-platform-opensandbox-lease.json"
+    assert json.loads(remote_files.read_file(batches[-1][0].path))["attempt_id"] == runtime_request.attempt_id
+
+
 @pytest.mark.asyncio
 @requires_secure_opensandbox_transfer
 async def test_opensandbox_stages_skills_inputs_and_attempt_sentinel_after_ready_create(monkeypatch, tmp_path):

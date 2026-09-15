@@ -1318,7 +1318,9 @@ def _payload_with_authorized_skill_catalog(
     rebuilt_input = dict(payload.input)
     rebuilt_input.pop(RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY, None)
     rebuilt_input.pop(RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY, None)
-    rebuilt_input.update(resolution.runtime_input_updates())
+    rebuilt_input.update(
+        resolution.runtime_input_updates(pinned_manifests=payload.skill_manifests)
+    )
     return payload.model_copy(update={"input": rebuilt_input})
 
 

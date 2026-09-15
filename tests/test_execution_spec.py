@@ -12,6 +12,7 @@ from app.control_plane_contracts import (
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
 from app.executors.base import project_execution_spec_to_run_payload
+from app.runs.domain import execution_spec as execution_spec_domain
 from app.runs.api import (
     EXECUTION_SPEC_SCHEMA_VERSION,
     ExecutionSpec,
@@ -81,6 +82,24 @@ def test_execution_spec_is_deterministic_and_does_not_retain_caller_mutability()
     projected = first.to_mapping()
     projected["file_ids"].append("file-c")
     assert first.to_mapping()["file_ids"] == ["file-a"]
+
+
+def test_compiler_validates_once_but_canonical_restore_validates_again(monkeypatch):
+    normalize = execution_spec_domain._normalize_execution_spec
+    calls = 0
+
+    def counted(payload):
+        nonlocal calls
+        calls += 1
+        return normalize(payload)
+
+    monkeypatch.setattr(execution_spec_domain, "_normalize_execution_spec", counted)
+    spec = compile_execution_spec(_spec_payload())
+    assert calls == 1
+    assert ExecutionSpec.from_canonical_json(
+        spec.canonical_json, expected_sha256=spec.spec_sha256
+    ) == spec
+    assert calls == 2
 
 
 def test_execution_spec_wire_literals_match_the_legacy_projection_boundary():

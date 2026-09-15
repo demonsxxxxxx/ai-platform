@@ -11304,7 +11304,7 @@ async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable
 
 
 @pytest.mark.asyncio
-async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_drift():
+async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_drift(monkeypatch):
     manifests = [
         {
             "skill_id": skill_id,
@@ -11322,19 +11322,18 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
         )
     ]
     refs = repositories.skill_manifest_refs(manifests)
+    stored_rows = [
+        {
+            "skill_id": item["skill_id"],
+            "materialization_sha256": repositories.skill_manifest_materialization_sha256(item),
+            "manifest_json": item,
+        }
+        for item in reversed(manifests)
+    ]
 
     class Cursor:
         async def fetchall(self):
-            return [
-                {
-                    "skill_id": item["skill_id"],
-                    "materialization_sha256": repositories.skill_manifest_materialization_sha256(
-                        item
-                    ),
-                    "manifest_json": item,
-                }
-                for item in reversed(manifests)
-            ]
+            return stored_rows
 
     class Connection:
         async def execute(self, sql, params):
@@ -11342,6 +11341,17 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
             assert params == ("tenant-a", "run-a")
             return Cursor()
 
+    from app.skills import pinning
+
+    hash_manifest = pinning.skill_manifest_materialization_sha256
+    hash_count = 0
+
+    def counted(manifest):
+        nonlocal hash_count
+        hash_count += 1
+        return hash_manifest(manifest)
+
+    monkeypatch.setattr(pinning, "skill_manifest_materialization_sha256", counted)
     loaded = await repositories.materialize_run_skill_manifests(
         Connection(),
         tenant_id="tenant-a",
@@ -11350,6 +11360,7 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
     )
 
     assert [item["skill_id"] for item in loaded] == ["primary", "dependency"]
+    assert hash_count == len(manifests)
     with pytest.raises(
         RepositoryConflictError,
         match="run_skill_materialization_identity_mismatch",

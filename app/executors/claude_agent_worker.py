@@ -365,6 +365,7 @@ def _runtime_authorized_skill_catalog(
     return load_runtime_authorized_skill_catalog(
         payload.input,
         expected_binding=_authorized_skill_catalog_binding(payload),
+        pinned_manifests=payload.skill_manifests,
     )
 
 
