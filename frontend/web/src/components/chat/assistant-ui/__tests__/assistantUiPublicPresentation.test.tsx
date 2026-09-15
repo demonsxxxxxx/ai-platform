@@ -88,7 +88,7 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     assert.match(toggle.textContent || "", /工作中.*全部收起/s);
     assert.equal(
       container.querySelector("[data-public-thinking] button")?.getAttribute("aria-expanded"),
-      "true",
+      null,
     );
 
     act(() => {
@@ -123,7 +123,7 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     });
     assert.equal(
       container.querySelector("[data-public-thinking] button")?.getAttribute("aria-expanded"),
-      "false",
+      null,
     );
     const answer = [...container.querySelectorAll("p")].find((node) =>
       node.textContent?.includes("最终正文保持可见"),
@@ -140,8 +140,8 @@ test("chat work disclosure collapses on completion and keeps answer content outs
       "[data-public-thinking] button",
     ) as HTMLButtonElement;
     act(() => activateNativeButton(thinkingButton, " "));
-    assert.equal(thinkingButton.getAttribute("aria-expanded"), "true");
-    assert.match(container.textContent || "", /公开思考摘要/);
+    assert.equal(thinkingButton.getAttribute("aria-expanded"), null);
+    assert.doesNotMatch(container.textContent || "", /公开思考摘要/);
   } finally {
     closePersistentToolPanel();
     act(() => root.unmount());

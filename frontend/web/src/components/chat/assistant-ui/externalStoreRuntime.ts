@@ -36,7 +36,7 @@ function convertPart(part: MessagePart, index: number): AssistantUiContentPart |
     case "thinking":
       return {
         type: "reasoning",
-        text: part.public_reasoning === true ? part.content : "思考中",
+        text: part.isStreaming ? "思考中" : "已思考",
         status: part.isStreaming ? { type: "running" } : { type: "complete" },
       };
     case "tool": {

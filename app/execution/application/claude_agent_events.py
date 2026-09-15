@@ -33,7 +33,6 @@ from app.streaming.domain.protocol_v4 import (
 )
 
 _APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES
-_THINKING_SUMMARY_EVENT_TYPE = "claude_sdk_thinking_summary"
 _BUILTIN_TOOL_CATEGORIES = {
     "Read": "read",
     "Glob": "search",
@@ -324,47 +323,6 @@ class ClaudeAgentEventCandidate:
         }
 
 
-@dataclass(frozen=True)
-class ClaudeSdkThinkingSummaryCandidate:
-    """One private executor fact awaiting server-owned public projection."""
-
-    run_id: str
-    event_id: str
-    message_id: str
-    summary: str
-    sanitizer: InitVar[Callable[[object], str]]
-
-    def __post_init__(self, sanitizer: Callable[[object], str]) -> None:
-        _assert_run_id(self.run_id)
-        _assert_event_id(self.event_id)
-        _assert_safe_ref(self.message_id, "message_id")
-        if not self.summary or len(self.summary) > _MAX_TEXT:
-            raise ValueError("invalid summarized thinking bound")
-        if sanitizer(self.summary) != self.summary:
-            raise ValueError("summarized thinking is not sanitized")
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "run_id": self.run_id,
-            "event_id": self.event_id,
-            "event_type": _THINKING_SUMMARY_EVENT_TYPE,
-            "message_id": self.message_id,
-            "summary": self.summary,
-        }
-
-    def as_agent_event_fields(self) -> dict[str, object]:
-        return {
-            "type": _THINKING_SUMMARY_EVENT_TYPE,
-            "message": "",
-            "payload": {"summary": self.summary},
-            "event_id": self.event_id,
-            "run_id": self.run_id,
-            "message_id": self.message_id,
-            "causation_event_id": None,
-            "admin_only": True,
-        }
-
-
 def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
     if event_type not in _APPLICATION_EVENT_TYPES:
         raise ValueError("unsupported Claude application event")
@@ -462,7 +420,6 @@ class ClaudeSdkAgentEventAdapter:
         public_skill_metadata: Mapping[str, Mapping[str, str]] | None = None,
         sanitizer: Callable[[object], object],
         payload_sanitizer: Callable[[object], object],
-        reasoning_sanitizer: Callable[[object], str] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         _assert_run_id(run_id)
@@ -471,7 +428,6 @@ class ClaudeSdkAgentEventAdapter:
         self.attempt_id = attempt_id
         self._clock = clock
         self._sanitizer = sanitizer
-        self._reasoning_sanitizer = reasoning_sanitizer or sanitizer
         self._payload_sanitizer = payload_sanitizer
         self._sealed = False
         self._message_id = _opaque("msg", run_id, "assistant", attempt_id)
@@ -482,7 +438,6 @@ class ClaudeSdkAgentEventAdapter:
         self._last_delta_event_id: str | None = None
         self._answer_completed = False
         self._public_projection_omissions = 0
-        self._thinking_indices: set[tuple[object, object]] = set()
         self._task_progress_seen: set[tuple[str, str]] = set()
         self._accepted_event_ids: dict[str, str] = {}
         self._tool_blocks: dict[str, tuple[str, dict[str, object]]] = {}
@@ -736,50 +691,6 @@ class ClaudeSdkAgentEventAdapter:
         if commit:
             self._answer_completed = True
         return (completed,)
-
-    def accept_thinking_summary(
-        self,
-        value: object,
-        *,
-        block_index: object,
-        message_identity: object,
-    ) -> tuple[ClaudeSdkThinkingSummaryCandidate, ...]:
-        if self._sealed or not isinstance(value, str) or not value or len(value) > _MAX_TEXT:
-            return ()
-        key = (message_identity, block_index)
-        if key in self._thinking_indices:
-            return ()
-        try:
-            sanitized = self._reasoning_sanitizer(value)
-            if (
-                not isinstance(sanitized, str)
-                or not sanitized
-                or len(sanitized) > _MAX_TEXT
-            ):
-                self._omit_public_projection()
-                return ()
-            identity = f"thinking:{message_identity!s}:{block_index!s}"
-            event_id = _opaque(
-                "evt",
-                self.run_id,
-                _THINKING_SUMMARY_EVENT_TYPE,
-                identity,
-            )
-            if event_id in self._seen_events:
-                return ()
-            candidate = ClaudeSdkThinkingSummaryCandidate(
-                run_id=self.run_id,
-                event_id=event_id,
-                message_id=self._message_id,
-                summary=sanitized,
-                sanitizer=self._reasoning_sanitizer,
-            )
-        except Exception:  # noqa: BLE001 - projection faults omit only this summary.
-            self._omit_public_projection()
-            return ()
-        self._thinking_indices.add(key)
-        self._seen_events.add(event_id)
-        return (candidate,)
 
     def accept_content_block(
         self,

@@ -369,7 +369,7 @@ async def _acknowledge_capability_evidence(_evidence):
     [
         ("off", None, None),
         *[
-            (level, {"type": "adaptive", "display": "summarized"}, level)
+            (level, {"type": "adaptive", "display": "omitted"}, level)
             for level in ("low", "medium", "high")
         ],
     ],
@@ -3167,7 +3167,7 @@ async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_bou
         else candidate.as_agent_event_fields()["type"]
         for candidate in candidates
     ]
-    assert "claude_sdk_thinking_summary" in event_types
+    assert "claude_sdk_thinking_summary" not in event_types
     assert event_types.index("tool.completed") < event_types.index("message.delta")
 
 
@@ -4183,7 +4183,7 @@ async def test_stream_failure_before_publication_recovers_terminal_body(
 
 
 @pytest.mark.asyncio
-async def test_sdk_thinking_replaces_configured_private_values_but_preserves_paths(
+async def test_sdk_high_effort_does_not_publish_thinking_content(
     monkeypatch, tmp_path
 ):
     captured, candidates = {}, []
@@ -4232,14 +4232,10 @@ async def test_sdk_thinking_replaces_configured_private_values_but_preserves_pat
     )
 
     assert result.error is None
-    thinking_candidates = [
-        candidate for candidate in candidates if hasattr(candidate, "summary")
-    ]
-    assert len(thinking_candidates) == 1
-    summary = thinking_candidates[0].summary
-    assert "C:/agent-workspaces/run-1/output/result.txt" in summary
+    assert all(not hasattr(candidate, "summary") for candidate in candidates)
+    assert thinking not in repr(candidates)
     for private_value in private_values:
-        assert private_value not in summary
+        assert private_value not in repr(candidates)
 
 
 @pytest.mark.asyncio

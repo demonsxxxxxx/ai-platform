@@ -126,7 +126,7 @@ test("renders historical sandbox readiness duration without requiring details", 
   assert.match(markup, /用时 850毫秒/);
 });
 
-test("keeps completed public thinking collapsed and streaming thinking expanded inline", () => {
+test("renders thinking status without model reasoning content", () => {
   const completed = renderToStaticMarkup(
     createElement(MessagePartRenderer, {
       isLast: true,
@@ -152,10 +152,10 @@ test("keeps completed public thinking collapsed and streaming thinking expanded 
   );
 
   assert.match(completed, /data-public-thinking/);
-  assert.match(completed, /aria-expanded="false"/);
+  assert.doesNotMatch(completed, /aria-expanded/);
   assert.doesNotMatch(completed, /公开思考摘要/);
-  assert.match(streaming, /aria-expanded="true"/);
-  assert.match(streaming, /正在核对公开证据/);
+  assert.doesNotMatch(streaming, /aria-expanded/);
+  assert.doesNotMatch(streaming, /正在核对公开证据/);
   assert.doesNotMatch(streaming, /data-persistent-tool-panel/);
 });
 

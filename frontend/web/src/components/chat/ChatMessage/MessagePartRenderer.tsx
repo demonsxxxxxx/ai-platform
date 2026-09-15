@@ -245,7 +245,6 @@ export function MessagePartRenderer({
   if (part.type === "thinking") {
     return (
       <ThinkingBlock
-        content={part.content}
         isStreaming={isStreaming && isLast && part.isStreaming}
       />
     );

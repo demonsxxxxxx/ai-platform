@@ -27,7 +27,6 @@ from app.control_plane_contracts import (
 from app.platform.public_payload import (
     sanitize_public_answer_text,
     sanitize_public_event_candidate,
-    sanitize_public_reasoning_text,
 )
 from app.executors.claude.capability_policy import (
     CapabilityExecutionPlan,
@@ -1187,7 +1186,6 @@ async def run_claude_agent_sdk(
         TaskProgressMessage = getattr(sdk, "TaskProgressMessage", ())
         TaskNotificationMessage = getattr(sdk, "TaskNotificationMessage", ())
         TaskUpdatedMessage = getattr(sdk, "TaskUpdatedMessage", ())
-        ThinkingBlock = getattr(sdk, "ThinkingBlock", ())
         ToolPermissionContext = getattr(sdk, "ToolPermissionContext", ())
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
@@ -1515,12 +1513,6 @@ async def run_claude_agent_sdk(
     def replacement_for_private_token(token: str) -> str:
         return private_replacements.get(token, private_replacement)
 
-    def sanitize_sdk_reasoning_text(value: object) -> str:
-        text = "" if value is None else str(value)
-        for token in sorted(private_replacements, key=lambda item: (-len(item), item)):
-            text = text.replace(token, private_replacements[token])
-        return sanitize_public_reasoning_text(text)
-
     def register_dynamic_tool_call_id(value: object) -> None:
         call_id = canonical_tool_call_id(value)
         if call_id is not None:
@@ -1545,7 +1537,6 @@ async def run_claude_agent_sdk(
             public_skill_metadata=public_skill_metadata,
             sanitizer=sanitize_public_answer_text,
             payload_sanitizer=sanitize_public_event_candidate,
-            reasoning_sanitizer=sanitize_sdk_reasoning_text,
         )
         if run_id and attempt_id and on_agent_event is not None
         else None
@@ -2370,7 +2361,7 @@ async def run_claude_agent_sdk(
     thinking_options: dict[str, Any] = {}
     if thinking_effort != "off":
         thinking_options = {
-            "thinking": {"type": "adaptive", "display": "summarized"},
+            "thinking": {"type": "adaptive", "display": "omitted"},
             "effort": thinking_effort,
         }
     options = ClaudeAgentOptions(
@@ -2547,19 +2538,7 @@ async def run_claude_agent_sdk(
                 for block_index, block in enumerate(message.content):
                     if type(block).__name__ == "ToolUseBlock":
                         register_dynamic_tool_call_id(getattr(block, "id", None))
-                    if (
-                        thinking_effort != "off"
-                        and agent_event_adapter is not None
-                        and isinstance(block, ThinkingBlock)
-                    ):
-                        await publish_agent_candidates(
-                            agent_event_adapter.accept_thinking_summary(
-                                block.thinking,
-                                block_index=block_index,
-                                message_identity=assistant_message_identity,
-                            )
-                        )
-                    elif agent_event_adapter is not None:
+                    if agent_event_adapter is not None:
                         await publish_agent_candidates(
                             agent_event_adapter.accept_content_block(
                                 block,

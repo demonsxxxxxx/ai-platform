@@ -72,8 +72,9 @@ instantiates the stream and terminal message types.
   `app/executors/claude_agent_sdk_runner.py`, owning runner/Worker/sandbox tests,
   and this contract. SSE v4, Runs terminal, Artifact storage, Tool/Skill
   admission, and frontend state contracts are unchanged.
-- **Invariants:** ordinary answer and Thinking text may contain Unix/Windows
-  paths, filenames, code, and technical identifiers. Credentials, configured
+- **Invariants:** ordinary answer text may contain Unix/Windows
+  paths, filenames, code, and technical identifiers. Model Thinking content is
+  not part of the public answer projection. Credentials, configured
   model credentials/base URLs, MCP static header values, native tool tokens,
   and exact run-bound private values remain locally redacted; structured event
   fields, storage keys, executor payloads, and private event identities remain
@@ -108,6 +109,28 @@ instantiates the stream and terminal message types.
   stateful secret handling, event persistence, receipt reconstruction, required
   Artifact validation, or changing SSE v4, Runs terminal, Artifact, Tool/Skill
   admission, or frontend contracts requires a revised contract.
+
+## Change Contract: hidden model Thinking content
+
+- **Owner and scope:** Execution independently maps the Run preference to SDK
+  `effort` and `thinking.display`; Chat presentation owns the status-only view.
+  `off/low/medium/high` effort semantics and model selection remain unchanged.
+- **Behavior:** enabled thinking uses adaptive mode with `display=omitted`.
+  The runner does not publish returned `ThinkingBlock` text, and both frontend
+  rendering paths replace historical reasoning bodies with only a generic
+  thinking status. Ordinary answer `TextBlock` content remains unchanged.
+- **Compatibility and retirement:** no wire or schema field is added. Existing
+  `claude_sdk_thinking_summary` and `thinking.*` readers remain only for
+  callbacks or persisted history produced before the release; they no longer
+  authorize displaying their body. Remove that compatibility transport after
+  deployed executors have crossed the release and retained old events have
+  expired under the owning lifecycle policy.
+- **Acceptance:** tests prove effort remains selected, SDK display is omitted,
+  an unexpected Thinking block creates no public event, and live plus historical
+  frontend parts contain no supplied reasoning text.
+- **Stop conditions:** any need to expose model Thinking text again, alter effort
+  semantics, infer Thinking from ordinary answer text, or change SSE/Run terminal
+  authority requires a revised contract.
 
 ## Redis Lifecycle Authority
 
