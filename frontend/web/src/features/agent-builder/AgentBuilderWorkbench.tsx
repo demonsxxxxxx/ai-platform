@@ -31,6 +31,7 @@ import {
   type AgentBuilderSafeMcpTool,
 } from "./agentBuilderAdapter";
 import { AgentBuilderController } from "./agentBuilderController";
+import { filterSkillCatalog } from "./skillSetSearch";
 
 export interface AgentBuilderWorkbenchCatalog {
   skills: readonly PublicSkillResponse[];
@@ -88,6 +89,7 @@ export function AgentBuilderWorkbench({
   const [pendingEditorAction, setPendingEditorAction] = useState<PendingEditorAction | null>(null);
   const [profileQuery, setProfileQuery] = useState("");
   const [profilePage, setProfilePage] = useState(1);
+  const [skillQuery, setSkillQuery] = useState("");
   const retryCatalog = catalog.retry;
 
   useEffect(() => controller.subscribe(setWorkbench), [controller]);
@@ -164,6 +166,10 @@ export function AgentBuilderWorkbench({
     );
   }, [profileQuery, workbench.profiles]);
 
+  const filteredSkills = useMemo(
+    () => filterSkillCatalog(catalog.skills, skillQuery),
+    [catalog.skills, skillQuery],
+  );
   const profilePageCount = Math.max(
     1,
     Math.ceil(visibleProfiles.length / AGENT_DIRECTORY_PAGE_SIZE),
@@ -191,7 +197,10 @@ export function AgentBuilderWorkbench({
     [workbench.profiles],
   );
 
-  const closeDialog = useCallback(() => setDialog(null), []);
+  const closeDialog = useCallback(() => {
+    setDialog(null);
+    setSkillQuery("");
+  }, []);
   const performRefresh = useCallback((discardUnsavedChanges = false) => {
     retryCatalog();
     void controller.loadProfiles(discardUnsavedChanges);
@@ -575,7 +584,8 @@ export function AgentBuilderWorkbench({
                     <BadgeCheck size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
                     <h3 id="agent-skill-heading" className="text-sm font-semibold">Skill Set</h3>
                   </div>
-                  <button className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => setDialog("skills")} type="button">
+                  <button className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => { setSkillQuery(""); setDialog("skills"); }} type="button">
+                    <BadgeCheck size={15} aria-hidden="true" />
                     配置 Skill
                   </button>
                 </div>
@@ -772,27 +782,78 @@ export function AgentBuilderWorkbench({
         ) : catalog.skills.length === 0 ? (
           <p className="text-sm text-[var(--theme-text-secondary)]">当前没有可选的已授权 Skill。</p>
         ) : (
-          <div className="divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
-            {catalog.skills.map((skill) => (
-              <label
-                key={skill.name}
-                className="flex cursor-pointer items-start gap-3 px-1 py-3 hover:bg-[var(--theme-hover)]"
-              >
-                <input
-                  checked={selectedSkillKeys.has(skill.name)}
+          <div className="flex min-h-0 flex-col gap-3">
+            <label className="relative block">
+              <span className="sr-only">搜索 Skill</span>
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
+                size={16}
+                aria-hidden="true"
+              />
+              <input
+                aria-label="搜索 Skill"
+                className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-9 pr-10 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
+                disabled={interactionBusy}
+                onChange={(event) => setSkillQuery(event.target.value)}
+                placeholder="按名称、描述或标签搜索"
+                type="search"
+                value={skillQuery}
+              />
+              {skillQuery ? (
+                <button
+                  aria-label="清除 Skill 搜索"
+                  className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-[var(--theme-text-secondary)] hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] disabled:opacity-60"
                   disabled={interactionBusy}
-                  onChange={() => toggleSkill(skill)}
-                  type="checkbox"
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="block font-medium">{skill.name}</span>
-                  <span className="mt-1 block text-sm text-[var(--theme-text-secondary)]">{skill.description}</span>
-                </span>
-                <span className="break-all text-xs text-[var(--theme-text-secondary)] sm:shrink-0">
-                  {skill.expected_version}
-                </span>
-              </label>
-            ))}
+                  onClick={() => setSkillQuery("")}
+                  title="清除搜索"
+                  type="button"
+                >
+                  <X size={15} aria-hidden="true" />
+                </button>
+              ) : null}
+            </label>
+            <div className="flex items-center justify-between gap-3 text-xs text-[var(--theme-text-secondary)]">
+              <span aria-live="polite">
+                已选 {selectedSkillKeys.size} 项 · 显示 {filteredSkills.length} / {catalog.skills.length} 项
+              </span>
+              {skillQuery ? <span className="max-w-[12rem] truncate" title={skillQuery}>“{skillQuery}”</span> : null}
+            </div>
+            {filteredSkills.length === 0 ? (
+              <div className="rounded-md border border-dashed border-[var(--theme-border-strong)] px-4 py-10 text-center text-sm text-[var(--theme-text-secondary)]">
+                没有匹配的 Skill
+              </div>
+            ) : (
+              <div className="min-h-0 max-h-[min(34rem,calc(100vh-16rem))] overflow-y-auto rounded-md border border-[var(--theme-border)]">
+                <div className="divide-y divide-[var(--theme-border)]">
+                  {filteredSkills.map((skill) => (
+                    <label
+                      key={skill.name}
+                      className="flex cursor-pointer items-start gap-3 px-3 py-3 transition-colors hover:bg-[var(--theme-hover)] sm:px-4"
+                    >
+                      <input
+                        checked={selectedSkillKeys.has(skill.name)}
+                        className="mt-1 h-4 w-4 shrink-0 accent-[var(--theme-primary)]"
+                        disabled={interactionBusy}
+                        onChange={() => toggleSkill(skill)}
+                        type="checkbox"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block break-words font-medium text-[var(--theme-text)]">{skill.name}</span>
+                        <span className="mt-1 block line-clamp-2 text-sm leading-5 text-[var(--theme-text-secondary)]">
+                          {skill.description || "暂无描述"}
+                        </span>
+                      </span>
+                      <span
+                        className="hidden max-w-[9rem] shrink-0 truncate pt-0.5 text-right text-xs text-[var(--theme-text-secondary)] sm:block"
+                        title={`版本 ${skill.expected_version}`}
+                      >
+                        {skill.expected_version}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </AgentBuilderDialog>

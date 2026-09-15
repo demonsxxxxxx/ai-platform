@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
+import type { PublicSkillResponse } from "../../../types";
+import { filterSkillCatalog } from "../skillSetSearch";
+
 const workbenchSource = readFileSync(
   join(process.cwd(), "src/features/agent-builder/AgentBuilderWorkbench.tsx"),
   "utf8",
@@ -23,6 +26,50 @@ const avatarPickerSource = readFileSync(
   join(process.cwd(), "src/features/agent-builder/AgentAvatarPicker.tsx"),
   "utf8",
 );
+
+function skill(
+  name: string,
+  description: string,
+  tags: string[] = [],
+): PublicSkillResponse {
+  return {
+    name,
+    expected_version: "1.0.0",
+    input_modes: ["chat"],
+    requires_file: false,
+    description,
+    tags,
+    enabled: true,
+    source: "marketplace",
+    files: {},
+    file_count: 0,
+    installed_from: "marketplace",
+    is_published: true,
+    marketplace_is_active: true,
+  };
+}
+
+test("Skill Set search matches names, descriptions, and tags", () => {
+  const skills = [
+    skill("qa-file-reviewer", "审核 Word 文档", ["合规"]),
+    skill("ragflow-knowledge-search", "检索知识库", ["搜索"]),
+    skill("audit-finding-rca", "分析审计发现", ["质量"]),
+  ];
+
+  assert.deepEqual(
+    filterSkillCatalog(skills, "合规").map(({ name }) => name),
+    ["qa-file-reviewer"],
+  );
+  assert.deepEqual(
+    filterSkillCatalog(skills, "知识库").map(({ name }) => name),
+    ["ragflow-knowledge-search"],
+  );
+  assert.deepEqual(
+    filterSkillCatalog(skills, "audit").map(({ name }) => name),
+    ["audit-finding-rca"],
+  );
+  assert.deepEqual(filterSkillCatalog(skills, "不存在"), []);
+});
 
 test("server list and mutations are owned by the feature-local controller", () => {
   assert.match(controllerSource, /agentProfileApi/);
@@ -105,6 +152,11 @@ test("expert management follows the directory and first-class configuration layo
   assert.doesNotMatch(enterpriseFieldsSource, />全租户</);
   assert.match(workbenchSource, /Agent SDK 根据任务上下文自主决定/);
   assert.match(workbenchSource, /title="配置 Skill Set"/);
+  assert.match(workbenchSource, /aria-label="搜索 Skill"/);
+  assert.match(workbenchSource, /按名称、描述或标签搜索/);
+  assert.match(workbenchSource, /filteredSkills/);
+  assert.match(workbenchSource, /没有匹配的 Skill/);
+  assert.match(workbenchSource, /line-clamp-2/);
   assert.match(enterpriseFieldsSource, /AgentAvatarPicker/);
   assert.match(enterpriseFieldsSource, /role="combobox"/);
   assert.match(enterpriseFieldsSource, /role="listbox"/);
