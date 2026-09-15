@@ -66,6 +66,11 @@ Marketplace file previews continue to read released Skill snapshots and do not i
 `POST /api/skills/upload/preview` accepts a multipart ZIP package in field
 `file`, validates the package `SKILL.md`, and returns package metadata without
 persistence. It only supports one Skill package per ZIP in this backend slice.
+Preview and actual upload use the same package parser: decoded file and directory
+name components must fit within 255 UTF-8 bytes; non-ASCII ZIP names without
+a UTF-8 flag or a verified Unicode Path (0x7075) extra field are rejected rather than
+guessed or silently renamed. ASCII names need no encoding flag. The admin
+Skill package preview and upload follow the same package-shape validation.
 
 `POST /api/skills/upload` accepts the same package shape for an existing public
 Skill and persists the package files as tenant/user-scoped public Skill file

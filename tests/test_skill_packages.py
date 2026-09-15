@@ -1,7 +1,9 @@
 import base64
 import io
 import stat
+import struct
 import zipfile
+import zlib
 
 import pytest
 
@@ -19,6 +21,17 @@ def package_zip(files: dict[str, str | bytes]) -> bytes:
         for name, content in files.items():
             archive.writestr(name, content)
     return buffer.getvalue()
+
+
+def unflag_utf8_names(content: bytes) -> bytes:
+    data = bytearray(content)
+    for signature, offset in ((b"PK" + bytes((3, 4)), 6), (b"PK" + bytes((1, 2)), 8)):
+        start = 0
+        while (start := data.find(signature, start)) != -1:
+            flags = struct.unpack_from("<H", data, start + offset)[0]
+            struct.pack_into("<H", data, start + offset, flags & ~0x800)
+            start += len(signature)
+    return bytes(data)
 
 
 def skill_md(name: str = "qa-file-reviewer", description: str = "Review Word documents.") -> str:
@@ -106,6 +119,69 @@ def test_parse_skill_package_zip_rejects_path_escape():
 
     with pytest.raises(ValueError, match="skill_package_path_escape"):
         parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
+def test_parse_skill_package_zip_accepts_255_byte_path_component():
+    filename = "a" * 252 + ".md"
+    parsed = parse_skill_package_zip(
+        package_zip({"SKILL.md": skill_md(), f"references/{filename}": "guide"}),
+        expected_skill_id="qa-file-reviewer",
+    )
+
+    assert [item["relative_path"] for item in parsed.files] == [
+        "SKILL.md",
+        f"references/{filename}",
+    ]
+
+
+def test_parse_skill_package_zip_rejects_path_component_over_255_utf8_bytes():
+    content = package_zip(
+        {
+            "SKILL.md": skill_md(),
+            f"references/{'测' * 85}.md": "too long after UTF-8 encoding",
+        }
+    )
+
+    with pytest.raises(ValueError, match="skill_package_path_too_long"):
+        parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
+def test_parse_skill_package_zip_rejects_unmarked_nonascii_filename():
+    content = unflag_utf8_names(
+        package_zip({"SKILL.md": skill_md(), "references/测试.md": "guide"})
+    )
+
+    with pytest.raises(ValueError, match="skill_package_filename_encoding_ambiguous"):
+        parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
+def test_parse_skill_package_zip_accepts_verified_unicode_path_without_utf8_flag():
+    name = "references/测试.md"
+    encoded_name = name.encode("utf-8")
+    info = zipfile.ZipInfo(name)
+    info.extra = struct.pack("<HHBI", 0x7075, 5 + len(encoded_name), 1, zlib.crc32(encoded_name)) + encoded_name
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("SKILL.md", skill_md())
+        archive.writestr(info, "guide")
+
+    parsed = parse_skill_package_zip(unflag_utf8_names(buffer.getvalue()))
+
+    assert [item["relative_path"] for item in parsed.files] == ["SKILL.md", name]
+
+
+def test_parse_skill_package_zip_rejects_unverified_unicode_path():
+    name = "references/测试.md"
+    encoded_name = name.encode("utf-8")
+    info = zipfile.ZipInfo(name)
+    info.extra = struct.pack("<HHBI", 0x7075, 5 + len(encoded_name), 1, 0) + encoded_name
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("SKILL.md", skill_md())
+        archive.writestr(info, "guide")
+
+    with pytest.raises(ValueError, match="skill_package_filename_encoding_ambiguous"):
+        parse_skill_package_zip(unflag_utf8_names(buffer.getvalue()))
 
 
 def test_parse_skill_package_zip_rejects_casefold_duplicate_paths():
