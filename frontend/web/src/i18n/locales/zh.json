@@ -2228,6 +2228,7 @@
     "operationFailed": "操作失败",
     "overwriteExisting": "覆盖同名技能",
     "preview": "预览",
+    "previewFailed": "无法读取 Skill ZIP，请检查文件后重试。",
     "promoteFailed": "升级技能失败",
     "promoteSuccess": "技能已升级为系统技能",
     "searchPlaceholder": "搜索名称、说明或标签",

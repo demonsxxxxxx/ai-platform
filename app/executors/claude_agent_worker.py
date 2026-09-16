@@ -55,6 +55,8 @@ from app.executors.claude.prompts import (
 )
 from app.execution.api import (
     SkillInvocationEvidenceBinder,
+    PinnedSkillMismatch,
+    validate_pinned_skill_relative_path,
     claude_sdk_failure_code,
     claude_sdk_failure_message,
     collect_workspace_artifacts, runtime_terminal_payload,
@@ -500,12 +502,6 @@ async def _submit_sandbox_runtime(
     if accepts_owner:
         kwargs["execution_owner"] = execution_owner
     return await runtime.submit(request, **kwargs)
-
-
-class PinnedSkillMismatch(ValueError):
-    def __init__(self, message: str, *, actual_content_hash: str = "") -> None:
-        super().__init__(message)
-        self.actual_content_hash = actual_content_hash
 
 
 class ClaudeAgentWorkerAdapter:
@@ -2466,8 +2462,7 @@ def _materialize_pinned_skill(skill_name: str, pin: dict[str, Any], snapshot_roo
             # The pinned-skill payload contract reports malformed entries as value errors.
             raise ValueError(f"invalid pinned skill file entry: {skill_name}")  # noqa: TRY004
         relative_path = str(item.get("relative_path") or "")
-        if not relative_path or Path(relative_path).is_absolute() or ".." in Path(relative_path).parts:
-            raise ValueError(f"invalid pinned skill file path: {skill_name}")
+        validate_pinned_skill_relative_path(relative_path, skill_name=skill_name)
         content = base64.b64decode(str(item.get("content_base64") or ""), validate=True)
         if "size_bytes" not in item:
             raise ValueError(f"pinned skill file missing size_bytes: {skill_name}")

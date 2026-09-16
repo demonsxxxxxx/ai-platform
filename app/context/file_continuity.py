@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from app.context.api import ContextFileContentError
+from app.context.api import ContextFileContentError, context_stage_filename_fits
 from app.context.file_content import (
     MAX_CONTEXT_FILE_STAGE_BYTES,
     validate_context_file_for_stage,
@@ -305,6 +305,12 @@ async def materialize_run_context_files(
             original_name = str(normalized_row.get("original_name") or file_id).replace("\\", "/")
             filename = Path(original_name).name or file_id
             file_kind = Path(filename).suffix.casefold().lstrip(".")
+            if not context_stage_filename_fits(filename):
+                raise ContextFileContentError(
+                    "context_file_staging_write_failed",
+                    file_kind=file_kind,
+                    attachment_index=attachment_index,
+                )
             content_type = str(normalized_row.get("content_type") or "")
             try:
                 size_bytes = int(normalized_row.get("size_bytes"))
