@@ -19,7 +19,13 @@ ExecutionSpec.
 
 Checkpoint token usage is merged into Run terminal observability in the owning
 Runs transaction. Billing records input, output, and total token counts only;
-no USD price is calculated or persisted by this feature.
+no USD price is calculated or persisted by this feature. The terminal
+application operation owns the cross-context sequence: it completes the Run,
+merges Context checkpoint usage, and releases the Context provider lineage in
+one transaction through Context's public API. Run SQL remains in
+`app/runs/infrastructure`, and provider epoch/checkpoint SQL remains in
+`app/context/infrastructure`; the frozen root `app/repositories.py` is a
+migration bridge and must not own or grow this orchestration.
 
 The old per-Run `sdk_session_id_for_run`, `has_main_transcript`, 64-candidate,
 and 8192-byte conversation selectors are retired from production execution.
@@ -72,6 +78,10 @@ This phase implements Claude only. Pi continuation is explicitly deferred.
   composed only in bootstrap.
 - Execution owns provider identity dispatch, public per-Run projection, resume
   evidence validation, the Claude `SessionStore` adapter, and SDK option selection.
+- Runs owns model snapshot and Attempt/ExecutionSpec binding, terminal state,
+  checkpoint token observability, and the atomic terminal application operation
+  that calls Context's public lineage-release contract. Concrete Run SQL stays
+  in Runs infrastructure; the legacy root repository is not an owner.
 - Runtime callback transport owns authenticated sandbox-to-host delivery only.
 
 ### Bounded paths
