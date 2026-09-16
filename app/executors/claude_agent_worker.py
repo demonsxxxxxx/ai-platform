@@ -60,7 +60,11 @@ from app.execution.api import (
     collect_workspace_artifacts, runtime_terminal_payload,
     sandbox_reconciliation_payload,
 )
-from app.path_safety import ensure_creatable_inside, ensure_path_inside
+from app.path_safety import (
+    ensure_creatable_inside,
+    ensure_path_inside,
+    filesystem_component_fits,
+)
 from app.required_tool_contract import (
     RequiredCapabilityDecision,
     RequiredCapabilityDeclaration,
@@ -2466,7 +2470,13 @@ def _materialize_pinned_skill(skill_name: str, pin: dict[str, Any], snapshot_roo
             # The pinned-skill payload contract reports malformed entries as value errors.
             raise ValueError(f"invalid pinned skill file entry: {skill_name}")  # noqa: TRY004
         relative_path = str(item.get("relative_path") or "")
-        if not relative_path or Path(relative_path).is_absolute() or ".." in Path(relative_path).parts:
+        relative_parts = Path(relative_path).parts
+        if (
+            not relative_path
+            or Path(relative_path).is_absolute()
+            or ".." in relative_parts
+            or any(not filesystem_component_fits(part) for part in relative_parts)
+        ):
             raise ValueError(f"invalid pinned skill file path: {skill_name}")
         content = base64.b64decode(str(item.get("content_base64") or ""), validate=True)
         if "size_bytes" not in item:

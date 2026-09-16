@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from app.path_safety import filesystem_component_fits
 from app.skills.dependencies import validate_skill_dependency_ids
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.skills.lifecycle import is_admin_materializable_status
@@ -89,6 +90,7 @@ def _safe_manifest_file_summary(item: dict[str, Any]) -> dict[str, Any]:
         or raw_path.startswith("/")
         or ":" in raw_path
         or any(segment == ".." for segment in path_segments)
+        or any(not filesystem_component_fits(segment) for segment in path_segments)
     ):
         raise SkillVersionMaterializationError("skill_version_not_materializable")
     encoded = str(item.get("content_base64") or "")
@@ -320,6 +322,7 @@ def _build_skill_version_manifest_pin(
     files = source.get("files")
     if not isinstance(files, list) or not files:
         raise _materialization_error()
+    _safe_file_summaries(files)
 
     manifest_source = {key: value for key, value in source.items() if key not in {"files", "dependency_manifests"}}
     lifecycle_status = str(skill_version.get("status") or "")
