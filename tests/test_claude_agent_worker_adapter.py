@@ -14,6 +14,9 @@ import pytest
 from docx import Document
 from openpyxl import Workbook
 
+from tests.support.claude_mcp import install_mcp_sessions
+from tests.support.claude_sdk import native_client_factory
+
 import app.executors.claude_agent_sdk_runner as sdk_runner
 import app.worker as worker_module
 from app.context.file_content import ContextFileContentError
@@ -74,6 +77,7 @@ def _materialized_xlsx_bytes() -> bytes:
 
 @pytest.mark.asyncio
 async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_subjects(monkeypatch, tmp_path):
+    install_mcp_sessions(monkeypatch)
     captured, lifecycle_facts = {}, []
 
     class TextBlock:
@@ -115,6 +119,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             self.message = message
 
     async def query(prompt, options):
+        captured["mcp_servers"] = options.mcp_servers
         captured["pre_invocation_skill_write"] = await options.kwargs["can_use_tool"](
             "Write",
             {"file_path": ".claude/skills/qa-file-reviewer/SKILL.md", "content": "tampered"},
@@ -166,6 +171,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             ResultMessage=ResultMessage,
             TextBlock=TextBlock,
             query=query,
+            ClaudeSDKClient=native_client_factory(query),
         ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: settings)
@@ -240,16 +246,12 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         "Skill(qa-file-reviewer)",
         "mcp__corp-search__query",
     ]
-    assert captured["mcp_servers"] == {
-        "corp-search": {
-            "type": "http",
-            "url": "https://mcp.example.test/v1",
-            "headers": {
-                "X-Static-Header": "configured",
-                "JWT-Authorization": "Bearer runtime-jwt",
-            },
-        }
-    }
+    assert set(captured["mcp_servers"]) == {"corp-search"}
+    server_config = captured["mcp_servers"]["corp-search"]
+    assert server_config["type"] == "sdk"
+    assert server_config["name"] == "corp-search"
+    assert server_config["instance"].name == "corp-search"
+    assert server_config["instance"].instructions is None
     assert "on_tool_permission" not in captured
     assert captured["pre_invocation_skill_write"].behavior == "deny"
     assert captured["pre_invocation_output_write"].behavior == "allow"
@@ -2211,7 +2213,7 @@ def test_external_mcp_availability_requires_real_sandbox_without_client_executio
             skill_id="general-chat",
             input={
                 "message": "search with the selected tool",
-                "mcp_tool_ids": ["tenant-search"],
+                "mcp_tool_ids": ["tenant-server::search"],
                 "_runtime_tool_policy_subjects": [
                     {
                         "identity": "mcp__tenant-server__search",
@@ -2304,7 +2306,7 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
         skill_id="general-chat",
         input={
             "message": "answer or search as needed",
-            "mcp_tool_ids": ["tenant-search"],
+            "mcp_tool_ids": ["tenant-server::search"],
             "_runtime_tool_policy_subjects": [_mcp_subject()],
         },
     )
@@ -2312,7 +2314,7 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
     result = await adapter.submit_run(current_payload, event_sink=event_sink)
 
     assert result.status == "succeeded"
-    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-search"]
+    assert len(requests) == 1 and requests[0].mcp_tool_ids == ["tenant-server::search"]
     assert [event for event in events if event["payload"].get("tool_category") == "mcp"] == []
 
 
@@ -2505,7 +2507,7 @@ async def test_external_mcp_sandbox_activity_reports_public_failure_when_dispatc
         skill_id="general-chat",
         input={
             "message": "search with the selected tool",
-            "mcp_tool_ids": ["tenant-search"],
+            "mcp_tool_ids": ["tenant-server::search"],
             "_runtime_tool_policy_subjects": [
                 {
                     "identity": "mcp__tenant-server__search",
@@ -4639,6 +4641,7 @@ async def test_sdk_runner_records_structured_normal_stop_sequence(monkeypatch, t
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -4716,6 +4719,7 @@ async def test_sdk_runner_fails_closed_without_a_normal_structured_terminal(
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -4781,6 +4785,7 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -4855,6 +4860,7 @@ async def test_sdk_runner_uses_run_model_override(monkeypatch, tmp_path):
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -4928,6 +4934,7 @@ async def test_sdk_runner_keeps_authorized_skill_available_without_forced_invoca
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -5020,6 +5027,7 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -5112,6 +5120,7 @@ async def test_sdk_runner_removes_project_settings_before_sdk_launch(monkeypatch
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -5190,6 +5199,7 @@ async def test_sdk_runner_allows_authorized_skill_without_tool_invocation(
             ResultMessage=ResultMessage,
             TextBlock=TextBlock,
             query=query,
+            ClaudeSDKClient=native_client_factory(query),
         ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -5304,6 +5314,7 @@ async def test_sdk_runner_records_skill_use_from_sdk_hook(monkeypatch, tmp_path)
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -5399,6 +5410,7 @@ async def test_sdk_runner_preserves_skill_use_when_query_raises_after_hook(monke
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -5492,6 +5504,7 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -5584,6 +5597,7 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)

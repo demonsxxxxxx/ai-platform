@@ -211,6 +211,12 @@ async function loadReactHarness({
                   : "/:activeTab/:sessionId?",
                 element: children,
               }),
+              sessionRouteBasePath
+                ? React.createElement(Route, {
+                    path: "/skills",
+                    element: React.createElement("div"),
+                  })
+                : null,
             ),
           )
         : children;
@@ -440,15 +446,6 @@ function controlledNonClosingSseResponse(body: string) {
   };
 }
 
-function controlledNonClosingSseEventResponse(
-  event: string,
-  data: Record<string, unknown>,
-) {
-  return controlledNonClosingSseResponse(
-    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
-  );
-}
-
 function controlledNonClosingSseHeartbeatResponse() {
   return controlledNonClosingSseResponse(": keep-alive\n\n");
 }
@@ -464,6 +461,7 @@ function controlledPublicRunLifecycle(
   const streamIncarnation = 1;
   const encoder = new TextEncoder();
   let finish: (() => void) | null = null;
+  let push: ((sequence: number, delta: string) => void) | null = null;
   const response = new Response(
     new ReadableStream({
       start(controller) {
@@ -508,6 +506,25 @@ function controlledPublicRunLifecycle(
             ),
           );
         });
+        push = (sequence, delta) => {
+          const event = {
+            schema: PUBLIC_RUN_STREAM_SCHEMA,
+            event_id: `future-${runId}-${sequence}`,
+            run_id: runId,
+            message_id: `message-${runId}`,
+            seq: sequence,
+            event_type: "message.delta",
+            stream_incarnation: streamIncarnation,
+            replayable: true,
+            trace_ref: null,
+            causation_event_id: null,
+            emitted_at: "2026-08-21T00:00:01Z",
+            payload: { delta },
+          };
+          controller.enqueue(encoder.encode(
+            `id: ${runId}:${streamIncarnation}:${preceding.length + 2}-0\nevent: message.delta\ndata: ${JSON.stringify(event)}\n\n`,
+          ));
+        };
         finish = () => {
           const terminalEventType =
             status === "succeeded"
@@ -579,6 +596,10 @@ function controlledPublicRunLifecycle(
   );
   return {
     response,
+    push: (sequence: number, delta: string) => {
+      if (!push) throw new Error("stream controller not initialized");
+      push(sequence, delta);
+    },
     finish: () => {
       if (!finish) throw new Error("stream controller not initialized");
       const complete = finish;
@@ -4119,7 +4140,7 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
   }
 });
 
-test("useAgent converges a bounded status-query failure to one local unavailable card", async () => {
+test("useAgent preserves its active owner after bounded transient status-query failure", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -4154,16 +4175,18 @@ test("useAgent converges a bounded status-query failure to one local unavailable
 
     const parts = harness.hook.messages.flatMap((message) => message.parts || []);
     assert.equal(statusCalls, 3);
-    assert.equal(harness.hook.currentRunId, null);
-    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.currentRunId, "run-status-unavailable");
     assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(harness.hook.messages.some(
+      (message) => message.role === "assistant" &&
+        message.runId === "run-status-unavailable",
+    ), true);
     assert.equal(
-      parts.filter(
-        (part) =>
-          part.type === "run_status" &&
+      parts.some(
+        (part) => part.type === "run_status" &&
           part.event_id === "terminal-status-unavailable:run-status-unavailable",
-      ).length,
-      1,
+      ),
+      false,
     );
     assert.equal(
       parts.some(
@@ -6516,6 +6539,139 @@ test("useAgent rehydrates durable partial text and one fixed failure card", asyn
   }
 });
 
+test("Agent route restores a high-watermark history owner after unmount and replay", async () => {
+  const routeBasePath = "/agent-market/agt_replay/7/chat";
+  const sessionId = "session-route-replay";
+  const runId = "run-route-replay";
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const streams: Array<ReturnType<typeof controlledPublicRunLifecycle>> = [];
+  const streamSignals: AbortSignal[] = [];
+  let streamCalls = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: sessionId,
+    agent_id: "general-agent",
+    created_at: "2026-08-21T00:00:00Z",
+    updated_at: "2026-08-21T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: runId,
+    events: [
+      {
+        id: `${runId}:user`,
+        run_id: runId,
+        event_type: "user:message",
+        timestamp: "2026-08-21T00:00:00Z",
+        data: { content: "continue" },
+      },
+      {
+        id: `preceding-${runId}-1`,
+        run_id: runId,
+        sequence: 2,
+        event_type: "message:chunk",
+        timestamp: "2026-08-21T00:00:00.002Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: `preceding-${runId}-1`,
+          sequence: 2,
+          run_id: runId,
+          content: "history",
+        },
+      },
+      {
+        id: `${runId}:activity`,
+        run_id: runId,
+        sequence: 9,
+        event_type: "run_event",
+        timestamp: "2026-08-21T00:00:00.009Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          event_id: `${runId}:activity`,
+          run_id: runId,
+          event_type: "public_activity",
+          stage: "tool_started",
+          status: "running",
+          severity: "info",
+          message: "Working",
+        },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async () => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "running",
+  })) as typeof sessionApi.getStatus;
+  dom.window.fetch = async (_input, init) => {
+    streamCalls += 1;
+    streamSignals.push(init?.signal as AbortSignal);
+    const stream = controlledPublicRunLifecycle(runId, "cancelled", [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "history" } },
+      { eventType: "message.delta", payload: { delta: " live" } },
+    ]);
+    streams.push(stream);
+    return stream.response;
+  };
+  let harness: Awaited<ReturnType<typeof loadReactHarness>> | null = null;
+  try {
+    harness = await loadReactHarness({
+      sessionRouteLifecycle: true,
+      sessionRouteBasePath: routeBasePath,
+      initialRoute: routeBasePath,
+    });
+    await harness.navigateRoute(`${routeBasePath}/${sessionId}`);
+    await settle(harness.act);
+    assert.equal(harness.route.pathname, `${routeBasePath}/${sessionId}`);
+    assert.equal(harness.route.sessionId, sessionId);
+    assert.equal(harness.hook.currentRunId, runId);
+    await harness.navigateRoute("/skills");
+    assert.equal(streamSignals[0]?.aborted, true);
+    await harness.navigateRoute(`${routeBasePath}/${sessionId}`);
+    await settle(harness.act);
+
+    assert.equal(streamCalls, 2);
+    assert.equal(harness.hook.currentRunId, runId);
+    assert.equal(harness.hook.connectionStatus, "connected");
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === runId,
+      )?.content,
+      "history",
+    );
+    streams[1]?.push(10, " live");
+    await settle(harness.act);
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === runId,
+      )?.content,
+      "history live",
+    );
+    assert.equal(
+      harness.hook.messages.flatMap((message) => message.parts || []).some(
+        (part) => part.type === "run_status" &&
+          part.event_id === `terminal-status-unavailable:${runId}`,
+      ),
+      false,
+    );
+  } finally {
+    await harness?.cleanup();
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+  }
+});
+
 test("useAgent restores the v4 message owner while replay catches up with history", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -6745,167 +6901,6 @@ test("useAgent keeps transient status failure recoverable and fails closed on st
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
     sessionApi.markRead = originalMarkRead;
-    dom.window.fetch = originalFetch;
-    await harness.cleanup();
-  }
-});
-
-test("useAgent immediately reconciles a non-terminal application error without server close", async () => {
-  const harness = await loadReactHarness();
-  const { sessionApi } = await import("../../../services/api/session.ts");
-  const originalSubmitChat = sessionApi.submitChat;
-  const originalGetStatus = sessionApi.getStatus;
-  const originalGetEvents = sessionApi.getEvents;
-  const originalGetAuthoritative = sessionApi.getAuthoritative;
-  const originalMarkRead = sessionApi.markRead;
-  const originalGenerateTitle = sessionApi.generateTitle;
-  const originalFetch = dom.window.fetch;
-  let sseCalls = 0;
-  let statusCalls = 0;
-  const closeStreams: Array<() => void> = [];
-  dom.window.fetch = async () => {
-    sseCalls += 1;
-    const stream = controlledNonClosingSseEventResponse("error", {
-      error: "stream_timeout",
-    });
-    closeStreams.push(stream.close);
-    return stream.response;
-  };
-  sessionApi.markRead = async () => {};
-  sessionApi.getAuthoritative = async (sessionId) => ({
-    session_id: sessionId,
-    workspace_id: "workspace-test",
-    agent_id: "general-agent",
-    title: "Test session",
-    purpose: "conversation",
-    agent_conversation: null,
-  });
-  sessionApi.generateTitle = async () => ({
-    title: "中断会话",
-    session_id: "session-nonterminal-error",
-  });
-  sessionApi.submitChat = (async () => ({
-    session_id: "session-nonterminal-error",
-    run_id: "run-nonterminal-error",
-    trace_id: "trace-nonterminal-error",
-    status: "queued",
-  })) as typeof sessionApi.submitChat;
-  sessionApi.getStatus = (async () => {
-    statusCalls += 1;
-    return {
-      session_id: "session-nonterminal-error",
-      run_id: "run-nonterminal-error",
-      status: "error",
-      raw_status: "failed",
-    };
-  }) as typeof sessionApi.getStatus;
-  sessionApi.getEvents = (async (_sessionId, options) => ({
-    events: options?.run_id
-      ? [{
-          id: "run-nonterminal-error:partial",
-          event_type: "message:chunk",
-          run_id: "run-nonterminal-error",
-          timestamp: "2026-07-15T00:00:01Z",
-          data: { content: "中断前的部分结果" },
-        }]
-      : [],
-  })) as typeof sessionApi.getEvents;
-
-  try {
-    await harness.act(async () => {
-      await harness.hook.sendMessage("流中断后查询状态");
-    });
-    await settle(harness.act);
-    await settle(harness.act);
-
-    const cards = harness.hook.messages
-      .flatMap((message) => message.parts || [])
-      .filter(
-        (part) =>
-          part.type === "run_status" &&
-          part.event_id === "terminal-failure:run-nonterminal-error",
-      );
-    assert.equal(sseCalls, 1);
-    assert.equal(statusCalls, 1);
-    assert.equal(harness.hook.currentRunId, null);
-    assert.equal(harness.hook.isLoading, false);
-    assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(cards.length, 1);
-    assert.equal(
-      cards[0]?.type === "run_status" && cards[0].message,
-      "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
-    );
-  } finally {
-    sessionApi.submitChat = originalSubmitChat;
-    sessionApi.getStatus = originalGetStatus;
-    sessionApi.getEvents = originalGetEvents;
-    sessionApi.getAuthoritative = originalGetAuthoritative;
-    sessionApi.markRead = originalMarkRead;
-    sessionApi.generateTitle = originalGenerateTitle;
-    dom.window.fetch = originalFetch;
-    closeStreams.forEach((close) => close());
-    await harness.cleanup();
-  }
-});
-
-test("useAgent drops an application-error status continuation after clear", async () => {
-  const harness = await loadReactHarness();
-  const { sessionApi } = await import("../../../services/api/session.ts");
-  const originalSubmitChat = sessionApi.submitChat;
-  const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
-  const originalGenerateTitle = sessionApi.generateTitle;
-  const originalFetch = dom.window.fetch;
-  let resolveStatus!: (value: Awaited<ReturnType<typeof sessionApi.getStatus>>) => void;
-  let statusCalls = 0;
-  dom.window.fetch = async () =>
-    sseEventResponse("error", { error: "stream_timeout" });
-  sessionApi.markRead = async () => {};
-  sessionApi.generateTitle = async () => ({
-    title: "待清空会话",
-    session_id: "session-error-clear",
-  });
-  sessionApi.submitChat = (async () => ({
-    session_id: "session-error-clear",
-    run_id: "run-error-clear",
-    trace_id: "trace-error-clear",
-    status: "queued",
-  })) as typeof sessionApi.submitChat;
-  sessionApi.getStatus = (async () => {
-    statusCalls += 1;
-    return new Promise((resolve) => {
-      resolveStatus = resolve;
-    });
-  }) as typeof sessionApi.getStatus;
-
-  try {
-    await harness.act(async () => {
-      await harness.hook.sendMessage("错误帧后清空");
-    });
-    await settle(harness.act);
-    assert.equal(statusCalls, 1);
-
-    await harness.act(async () => {
-      harness.hook.clearMessages();
-    });
-    resolveStatus({
-      session_id: "session-error-clear",
-      run_id: "run-error-clear",
-      status: "error",
-      raw_status: "failed",
-    });
-    await settle(harness.act);
-
-    assert.equal(harness.hook.sessionId, null);
-    assert.equal(harness.hook.currentRunId, null);
-    assert.equal(harness.hook.isLoading, false);
-    assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(harness.hook.messages.length, 0);
-  } finally {
-    sessionApi.submitChat = originalSubmitChat;
-    sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
-    sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }

@@ -23,6 +23,9 @@ from app.context.application.provider_sessions import (
 from app.context.application.worker_snapshot import (
     materialize_worker_context_snapshot as _materialize_worker_context_snapshot,
 )
+from app.context.domain.file_staging import (
+    context_stage_filename_fits as context_stage_filename_fits,
+)
 from app.context.domain.conversation import (
     EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2,
     ConversationContextError,

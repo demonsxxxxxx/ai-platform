@@ -6,11 +6,14 @@ import hashlib
 import io
 import re
 import stat
+import struct
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
+from app.path_safety import filesystem_component_fits
 from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
 from app.skills.release_readiness import (
     _LICENSE_FILE_NAMES,
@@ -45,12 +48,36 @@ def _safe_zip_member_path(name: str) -> str:
     if normalized.startswith("/") or normalized.startswith("//") or re.match(r"^[A-Za-z]:", normalized):
         raise ValueError("skill_package_path_escape")
     normalized = normalized.rstrip("/")
-    if not normalized or any(part in {"", ".", ".."} for part in normalized.split("/")):
+    parts = normalized.split("/")
+    if not normalized or any(part in {"", ".", ".."} for part in parts):
         raise ValueError("skill_package_path_escape")
     path = PurePosixPath(normalized)
     if path.is_absolute():
         raise ValueError("skill_package_path_escape")
     return path.as_posix()
+
+
+def _has_valid_unicode_path(info: zipfile.ZipInfo) -> bool:
+    pos = 0
+    extra = info.extra
+    while pos + 4 <= len(extra):
+        kind, size = struct.unpack_from("<HH", extra, pos)
+        pos += 4
+        field = extra[pos : pos + size]
+        pos += size
+        if kind == 0x7075 and len(field) >= 5 and field[0] == 1:
+            name_crc = struct.unpack_from("<I", field, 1)[0]
+            if (
+                name_crc == zlib.crc32(info.orig_filename.encode("cp437"))
+                and field[5:].decode("utf-8") == info.filename
+            ):
+                return True
+    return False
+
+
+def _validate_zip_filename_encoding(info: zipfile.ZipInfo) -> None:
+    if not (info.flag_bits & 0x800) and not info.orig_filename.isascii() and not _has_valid_unicode_path(info):
+        raise ValueError("skill_package_filename_encoding_ambiguous")
 
 
 def _validate_zip_entry(info: zipfile.ZipInfo) -> None:
@@ -328,7 +355,7 @@ def parse_skill_package_zip(content: bytes, *, expected_skill_id: str | None = N
         raise ValueError("skill_package_too_large")
     try:
         archive = zipfile.ZipFile(io.BytesIO(content))
-    except zipfile.BadZipFile as exc:
+    except (zipfile.BadZipFile, UnicodeDecodeError) as exc:
         raise ValueError("skill_package_invalid_zip") from exc
 
     seen: set[str] = set()
@@ -340,7 +367,10 @@ def parse_skill_package_zip(content: bytes, *, expected_skill_id: str | None = N
             raise ValueError("skill_package_too_many_files")
         for info in entries:
             _validate_zip_entry(info)
+            _validate_zip_filename_encoding(info)
             relative_path = _safe_zip_member_path(info.filename)
+            if any(not filesystem_component_fits(part) for part in relative_path.split("/")):
+                raise ValueError("skill_package_path_too_long")
             if info.is_dir():
                 continue
             normalized_key = relative_path.casefold()

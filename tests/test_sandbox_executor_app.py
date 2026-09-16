@@ -17,6 +17,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.execution.api import ClaudeAgentEventCandidate
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
@@ -902,6 +904,7 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
         TextBlock=TextBlock,
         ThinkingBlock=ThinkingBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     settings = SimpleNamespace(

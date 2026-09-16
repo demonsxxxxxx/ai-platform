@@ -653,7 +653,28 @@ export function handlePublicRunStreamEventV4(
     (event.sequence < acceptedSequence.sequence ||
       (event.sequence === acceptedSequence.sequence && ownerMatchesRun))
   ) {
-    if (event.sequence === acceptedSequence.sequence && ownerMatchesRun) onCommitted?.(false);
+    if (!ctx.messagesRef.current.some(
+      (message) => message.id === projectedMessageId &&
+        message.role === "assistant" && message.runId === binding.runId,
+    )) return false;
+    if (event.sequence < acceptedSequence.sequence) {
+      // History can be ahead of initial Redis replay without projecting
+      // message.started. Restore its owner, but never replay older content.
+      if (
+        event.eventType === "message.started" &&
+        event.messageId &&
+        ctx.v4MessageOwnerRef
+      ) {
+        if (!rebindV4MessageOwner(
+          ctx.v4MessageOwnerRef,
+          binding,
+          messageId,
+          event.messageId,
+        )) return false;
+        if (ctx.v4MessageCandidateRef) ctx.v4MessageCandidateRef.current = null;
+      }
+    }
+    onCommitted?.(false);
     return false;
   }
   const commitV4Event = () => {

@@ -66,6 +66,11 @@ Marketplace file previews continue to read released Skill snapshots and do not i
 `POST /api/skills/upload/preview` accepts a multipart ZIP package in field
 `file`, validates the package `SKILL.md`, and returns package metadata without
 persistence. It only supports one Skill package per ZIP in this backend slice.
+Preview and actual upload use the same package parser: decoded file and directory
+name components must fit within 255 UTF-8 bytes; non-ASCII ZIP names without
+a UTF-8 flag or a verified Unicode Path (0x7075) extra field are rejected rather than
+guessed or silently renamed. ASCII names need no encoding flag. The admin
+Skill package preview and upload follow the same package-shape validation.
 
 `POST /api/skills/upload` accepts the same package shape for an existing public
 Skill and persists the package files as tenant/user-scoped public Skill file
@@ -174,11 +179,14 @@ it to the fixed translator origin after validating the child window and its
 nonce. It is never placed in a URL or AI Platform browser storage. The
 translator stores the received JWT in its own tab-scoped `sessionStorage` for
 its API calls. At MCP execution time the Worker reuses the existing Capability
-Distribution and Tool Policy plan, reads the current JWT and encrypted Server
-target, then registers the Server with the Agent SDK using static headers plus
-`JWT-Authorization`. The SDK calls the MCP Server directly. There is no
-separate MCP Broker capability or host Relay, and runtime connection material
-is removed from reconciliation persistence.
+Distribution and Tool Policy plan and reads the current JWT and encrypted
+Server target. The executor opens remote MCP sessions with static headers plus
+`JWT-Authorization`, then exposes only the authorized selected tools through
+the SDK's in-process MCP interface. SDK calls pass through that adapter to the
+original remote tool names. There is no separate MCP Broker capability or host
+Relay, and runtime connection material is removed from reconciliation persistence.
+
+The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selected-tool exposure, SDK alias mapping, HTTP/SSE transport limits, and runnable acceptance. Command/stdin (`sandbox`) configuration writes are rejected until a governed process adapter exists; existing rows remain readable but do not authorize command execution. Ordinary directory responses with `unavailable_reason` display unavailable state rather than an empty successful catalog.
 
 Explicitly fail-closed follow-up routes:
 

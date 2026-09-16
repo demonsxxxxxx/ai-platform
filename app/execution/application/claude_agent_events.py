@@ -421,6 +421,7 @@ class ClaudeSdkAgentEventAdapter:
         public_skill_metadata: Mapping[str, Mapping[str, str]] | None = None,
         sanitizer: Callable[[object], object],
         payload_sanitizer: Callable[[object], object],
+        tool_identity_resolver: Callable[[object], str] = str,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         _assert_run_id(run_id)
@@ -430,6 +431,7 @@ class ClaudeSdkAgentEventAdapter:
         self._clock = clock
         self._sanitizer = sanitizer
         self._payload_sanitizer = payload_sanitizer
+        self._tool_identity_resolver = tool_identity_resolver
         self._sealed = False
         self._message_id = _opaque("msg", run_id, "assistant", attempt_id)
         self._answer_started = False
@@ -718,7 +720,7 @@ class ClaudeSdkAgentEventAdapter:
         return ()
 
     def _resolve_tool(self, name: str, tool_input: Mapping[str, object] | None = None) -> tuple[str, str, str] | None:
-        identity = name
+        identity = self._tool_identity_resolver(name)
         if name == "Skill" and isinstance(tool_input, Mapping):
             selected = tool_input.get("skill")
             if isinstance(selected, str):

@@ -1467,6 +1467,8 @@ _OPENSANDBOX_STAGE_MAX_FILES = 1024
 _OPENSANDBOX_STAGE_MAX_FILE_BYTES = 128 * 1024 * 1024
 _OPENSANDBOX_STAGE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 _OPENSANDBOX_STAGE_MAX_DIRECTORIES = 512
+_OPENSANDBOX_STAGE_BATCH_MAX_FILES = 32
+_OPENSANDBOX_STAGE_BATCH_MAX_BYTES = 1024 * 1024
 _OPENSANDBOX_COLLECT_MAX_FILES = 128
 _OPENSANDBOX_COLLECT_MAX_FILE_BYTES = 64 * 1024 * 1024
 _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
@@ -4758,20 +4760,28 @@ class OpenSandboxContainerProvider:
                 for relative_path in directories
             ]
             await _maybe_await(filesystem.create_directories(remote_directories))
+            batch = []
+            batch_bytes = 0
             for entry in files:
                 payload = _read_stable_workspace_file(entry)
                 mode = encode_execd_mode(0o700 if entry.snapshot.mode & stat.S_IXUSR else 0o600)
-                await _maybe_await(
-                    filesystem.write_files(
-                        [
-                            self._file_class(
-                                path=f"{remote_root}/{entry.relative_path}",
-                                data=payload,
-                                mode=mode,
-                            )
-                        ]
+                if batch and (
+                    len(batch) >= _OPENSANDBOX_STAGE_BATCH_MAX_FILES
+                    or batch_bytes + len(payload) > _OPENSANDBOX_STAGE_BATCH_MAX_BYTES
+                ):
+                    await _maybe_await(filesystem.write_files(batch))
+                    batch = []
+                    batch_bytes = 0
+                batch.append(
+                    self._file_class(
+                        path=f"{remote_root}/{entry.relative_path}",
+                        data=payload,
+                        mode=mode,
                     )
                 )
+                batch_bytes += len(payload)
+            if batch:
+                await _maybe_await(filesystem.write_files(batch))
             await self._write_and_verify_sentinel(sandbox, request, workspace)
         except asyncio.CancelledError:
             raise

@@ -12,7 +12,16 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         SyncHookJSONOutput,
     )
 
-    assert {"prompt", "options", "transport"}.issubset(signature(sdk.query).parameters)
+    assert {"options", "transport"}.issubset(
+        signature(sdk.ClaudeSDKClient).parameters
+    )
+    assert "prompt" in signature(sdk.ClaudeSDKClient.connect).parameters
+    assert "prompt" in signature(sdk.ClaudeSDKClient.query).parameters
+    assert "session_id" in signature(sdk.ClaudeSDKClient.query).parameters
+    assert callable(sdk.ClaudeSDKClient.get_context_usage)
+    assert callable(sdk.ClaudeSDKClient.set_permission_mode)
+    assert callable(sdk.ClaudeSDKClient.receive_response)
+    assert callable(sdk.ClaudeSDKClient.disconnect)
     assert {"matcher", "hooks", "timeout"}.issubset(signature(sdk.HookMatcher).parameters)
     assert "hookSpecificOutput" in SyncHookJSONOutput.__annotations__
     assert "updatedInput" in PreToolUseHookSpecificOutput.__annotations__

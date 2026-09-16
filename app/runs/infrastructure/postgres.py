@@ -28,6 +28,15 @@ from app.runs.domain.terminalization import (
 )
 
 
+_RUN_ATTEMPT_STATE_COLUMNS = (
+    "id, tenant_id, run_id, ordinal, status, owner_kind, owner_id, "
+    "owner_generation, queue_message_id, queue_attempt_id, "
+    "execution_spec_schema_version, execution_spec_sha256, lease_expires_at, "
+    "last_heartbeat_at, started_at, finished_at, terminal_reason, error_code, "
+    "created_at, updated_at"
+)
+
+
 def _dumps_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -176,7 +185,7 @@ async def create_run_attempt(
         raise ValueError("run_attempt_execution_spec_identity_mismatch")
     canonical_json = execution_spec.canonical_json.decode("utf-8")
     cursor = await conn.execute(
-        """
+        f"""
         insert into run_attempts(
           id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
           owner_generation, queue_attempt_id, execution_spec_schema_version,
@@ -185,7 +194,7 @@ async def create_run_attempt(
           %s, %s, %s, %s, 'created', %s, %s,
           1, %s, %s, %s::jsonb, %s, %s
         )
-        returning *
+        returning {_RUN_ATTEMPT_STATE_COLUMNS}
         """,
         (
             attempt_id.strip(),
@@ -220,7 +229,7 @@ async def get_run_attempt_for_queue_attempt(
     lock_clause = "for update" if for_update else ""
     cursor = await conn.execute(
         f"""
-        select *
+        select {_RUN_ATTEMPT_STATE_COLUMNS}
         from run_attempts
         where tenant_id = %s
           and run_id = %s
@@ -468,8 +477,8 @@ async def transition_run_attempt(
 
     if not decision.did_transition:
         cursor = await conn.execute(
-            """
-            select *
+            f"""
+            select {_RUN_ATTEMPT_STATE_COLUMNS}
             from run_attempts
             where tenant_id = %s
               and run_id = %s
@@ -495,7 +504,7 @@ async def transition_run_attempt(
         return dict(row)
 
     cursor = await conn.execute(
-        """
+        f"""
         with locked as materialized (
           select run_attempts.id
           from run_attempts
@@ -554,7 +563,7 @@ async def transition_run_attempt(
             and exists (
               select 1 from locked where locked.id = run_attempts.id
             )
-          returning *
+          returning {_RUN_ATTEMPT_STATE_COLUMNS}
         )
         select *
         from transitioned
@@ -672,7 +681,7 @@ async def heartbeat_worker_run_attempt(
     if expected_owner_generation < 1:
         raise ValueError("run_attempt_owner_generation_invalid")
     cursor = await conn.execute(
-        """
+        f"""
         update run_attempts
         set last_heartbeat_at = %s,
             lease_expires_at = %s,
@@ -694,7 +703,7 @@ async def heartbeat_worker_run_attempt(
             lease_expires_at is null
             or lease_expires_at <= %s
           )
-        returning *
+        returning {_RUN_ATTEMPT_STATE_COLUMNS}
         """,
         (
             queue_lease[2],

@@ -4,7 +4,10 @@ import types
 
 import pytest
 
+from tests.support.claude_mcp import install_mcp_sessions
+
 from app.executors.claude_agent_sdk_runner import (
+    ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
@@ -22,6 +25,11 @@ from app.required_tool_contract import (
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
 )
+
+
+@pytest.fixture(autouse=True)
+def synthetic_mcp_sessions(monkeypatch):
+    install_mcp_sessions(monkeypatch)
 
 
 def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
@@ -66,6 +74,38 @@ def _settings():
         anthropic_auth_token="",
         openai_api_key="",
     )
+
+
+@pytest.mark.asyncio
+async def test_sdk_requires_native_client_and_rejects_legacy_query_only(
+    monkeypatch, tmp_path
+):
+    async def legacy_query(*, prompt, options):
+        del prompt, options
+        if False:
+            yield None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=object,
+            ClaudeAgentOptions=object,
+            ResultMessage=object,
+            TextBlock=object,
+            query=legacy_query,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _settings
+    )
+
+    with pytest.raises(ClaudeAgentSdkNotAvailable, match="ClaudeSDKClient"):
+        await run_claude_agent_sdk(
+            prompt="hello",
+            cwd=tmp_path,
+            skill_id=None,
+        )
 
 
 def _subject(
@@ -144,6 +184,10 @@ def _client_sdk(module, captured):
         def __init__(self, options):
             self.options = options
             self.responses = None
+            captured["client_mcp_server_types_at_construction"] = {
+                name: config.get("type") if isinstance(config, dict) else None
+                for name, config in getattr(options, "mcp_servers", {}).items()
+            }
 
         async def connect(self):
             captured["client_connected"] = True
@@ -2068,7 +2112,68 @@ async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering
     assert sdk_prompt == "User supplied question"
     if execution_policy == "sandbox_brokered":
         assert set(captured["mcp_servers"]) == {"tenant-server"}
+        assert captured["client_mcp_server_types_at_construction"] == {
+            "tenant-server": "sdk"
+        }
         assert "mcp__tenant-server__search" in captured["allowed_tools"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mirror_error", [False, True])
+async def test_sdk_disconnects_before_selected_mcp_session_closes(
+    monkeypatch, tmp_path, mirror_error
+):
+    from contextlib import asynccontextmanager
+
+    from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
+
+    captured = {}
+    lifecycle = []
+
+    @asynccontextmanager
+    async def session_factory(_config):
+        lifecycle.append("mcp_open")
+        try:
+            yield types.SimpleNamespace()
+        finally:
+            assert captured.get("client_disconnected") is True
+            lifecycle.append("mcp_closed")
+
+    async def list_tools(_session):
+        return [types.SimpleNamespace(name="search")]
+
+    def prepare(subjects, configs):
+        return ClaudeMcpRegistration(
+            subjects,
+            configs,
+            session_factory=session_factory,
+            list_tools=list_tools,
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[], mirror_error=mirror_error),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.prepare_claude_mcp", prepare
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _settings
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_subject()],
+    )
+
+    assert result.error == (
+        "claude_agent_sdk_provider_session_failed" if mirror_error else None
+    )
+    assert lifecycle == ["mcp_open", "mcp_closed"]
 
 
 def _mcp_hook_steps(subject, *, call_id="mcp-call-1", terminal="completed"):
@@ -3633,13 +3738,16 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
-        types.SimpleNamespace(
-            AssistantMessage=AssistantMessage,
-            ClaudeAgentOptions=ClaudeAgentOptions,
-            ResultMessage=ResultMessage,
-            StreamEvent=type("StreamEvent", (), {}),
-            TextBlock=TextBlock,
-            query=query,
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=AssistantMessage,
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                ResultMessage=ResultMessage,
+                StreamEvent=type("StreamEvent", (), {}),
+                TextBlock=TextBlock,
+                query=query,
+            ),
+            captured,
         ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
@@ -3650,7 +3758,6 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
         cwd=tmp_path,
         skill_id="general-chat",
         on_text=deltas.append,
-        query_fn=query,
     )
 
     assert observed_before_result
@@ -4352,15 +4459,18 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
-        types.SimpleNamespace(
-            AssistantMessage=AssistantMessage,
-            ClaudeAgentOptions=ClaudeAgentOptions,
-            HookMatcher=HookMatcher,
-            ResultMessage=ResultMessage,
-            StreamEvent=StreamEvent,
-            TextBlock=TextBlock,
-            ToolUseBlock=ToolUseBlock,
-            query=query,
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=AssistantMessage,
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                HookMatcher=HookMatcher,
+                ResultMessage=ResultMessage,
+                StreamEvent=StreamEvent,
+                TextBlock=TextBlock,
+                ToolUseBlock=ToolUseBlock,
+                query=query,
+            ),
+            {},
         ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
@@ -4371,7 +4481,6 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
             prompt="cancel me",
             cwd=tmp_path,
             skill_id="general-chat",
-            query_fn=query,
             execution_policy="worker_local_legacy",
             on_agent_event=lambda batch: events.extend(batch) or True,
             run_id="run-cancel",

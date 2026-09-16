@@ -142,6 +142,12 @@ runtime changes are in scope.
     phase adds no independent public retention or deletion surface.
 12. **Workspace independence:** no sandbox, home directory, or local Claude
     config path becomes durable.
+13. **Single SDK runtime:** Claude execution uses `ClaudeSDKClient` for both
+    fresh and resumed sessions. MCP activation completes before client
+    construction and remains active through usage inspection, optional native
+    compaction, business execution, message consumption, cancellation, and
+    disconnect. The legacy top-level SDK `query()` path is not a runtime
+    fallback.
 
 ### Acceptance
 
@@ -161,6 +167,9 @@ runtime changes are in scope.
 - Current platform recent conversation remains present for bootstrap and is
   absent after native continuation exists; current files/artifacts/memory and
   current policy remain present.
+- The runner fails closed when `ClaudeSDKClient` is unavailable and never
+  degrades to the legacy top-level SDK `query()` path; selected MCP sessions
+  are active before the client is constructed.
 - Focused unit, route, schema, worker-adapter, sandbox-executor, and installed
   SDK contract checks pass through the repository local test-stage runner.
 - Architecture governance reports no new frozen-hot-file growth.

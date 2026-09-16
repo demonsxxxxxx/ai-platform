@@ -151,6 +151,8 @@ test("projects stable Skill package failures to actionable Skill copy", () => {
     ["skill_package_multiple_skills_not_supported", "backendErrors.skillPackageMultipleSkills"],
     ["skill_package_description_required", "backendErrors.skillPackageDescriptionRequired"],
     ["skill_package_too_large", "backendErrors.skillPackageTooLarge"],
+    ["skill_package_path_too_long", "backendErrors.skillPackagePathTooLong"],
+    ["skill_package_filename_encoding_ambiguous", "backendErrors.skillPackageFilenameEncodingAmbiguous"],
     ["skill_release_review_not_verified", "backendErrors.skillReleaseReviewNotVerified"],
     ["skill_version_not_materializable", "backendErrors.skillVersionNotMaterializable"],
   ]);
@@ -175,6 +177,8 @@ test("the shipped Chinese catalog includes fail-closed governance error copy", (
     "skillPackageMultipleSkills",
     "skillPackageDescriptionRequired",
     "skillPackageTooLarge",
+    "skillPackagePathTooLong",
+    "skillPackageFilenameEncodingAmbiguous",
     "skillPackageUnsafe",
     "skillPackageInvalidText",
     "skillPackageNameMismatch",

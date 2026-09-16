@@ -324,7 +324,16 @@ const WordPreview = memo(function WordPreview({
         "span",
         "div",
       ],
-      ALLOWED_ATTR: ["href", "src", "alt", "class", "id", "style"],
+      ALLOWED_ATTR: [
+        "href",
+        "src",
+        "alt",
+        "class",
+        "id",
+        "style",
+        "colspan",
+        "rowspan",
+      ],
       ALLOW_DATA_ATTR: false,
     });
   }, [html]);

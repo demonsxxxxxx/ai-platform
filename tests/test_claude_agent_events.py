@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.execution.api import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
@@ -840,7 +842,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         prompt="hello",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         thinking_effort="high",
         on_text=lambda value: asyncio.sleep(0),
         on_tool_lifecycle=acknowledge_tool_lifecycle,
@@ -963,7 +965,7 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_text=on_text,
         on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
@@ -1033,7 +1035,7 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_text=on_text,
         on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
@@ -1104,7 +1106,7 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_agent_event=reject_batch,
         run_id="run-1187",
         attempt_id="attempt-1",
@@ -1168,7 +1170,7 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
             prompt="answer",
             cwd=Path("tests"),
             skill_id=None,
-            query_fn=query_fn,
+            client_fn=native_client_factory(query_fn),
             on_agent_event=await_ack,
             run_id="run-1187",
             attempt_id="attempt-1",
@@ -1242,7 +1244,7 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
             prompt="answer",
             cwd=Path("tests"),
             skill_id=None,
-            query_fn=query_fn,
+            client_fn=native_client_factory(query_fn),
             on_agent_event=callback,
             run_id="run-1187",
             attempt_id="attempt-1",
@@ -1280,6 +1282,9 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
     monkeypatch, answer
 ):
     import claude_agent_sdk as sdk
+    from tests.support.claude_mcp import install_mcp_sessions
+
+    install_mcp_sessions(monkeypatch)
 
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings",
@@ -1345,7 +1350,7 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_text=on_text,
         on_agent_event=accept_batch,
         run_id="run-1187",

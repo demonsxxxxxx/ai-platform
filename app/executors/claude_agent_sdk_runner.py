@@ -7,12 +7,14 @@ import shlex
 import sys
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from inspect import isawaitable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.context_manifest import available_context_retrieval_tools, truncate_utf8_text
+from app.bootstrap.claude_mcp import prepare_claude_mcp
 from app.context.retrieval import (
     ContextRetrievalAuthority,
     ContextRetrievalDenied,
@@ -996,7 +998,6 @@ async def run_claude_agent_sdk(
     model_max_output_tokens: int | None = None,
     system_prompt: str | None = None,
     skills: list[str] | None = None,
-    query_fn: Callable[..., Any] | None = None,
     client_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
@@ -1233,14 +1234,9 @@ async def run_claude_agent_sdk(
         ToolPermissionContext = getattr(sdk, "ToolPermissionContext", ())
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
-        if query_fn is None:
-            client_factory = client_fn or getattr(sdk, "ClaudeSDKClient", None)
-            query = getattr(sdk, "query", None) if client_factory is None else None
-            if client_factory is None and query is None:
-                raise AttributeError("ClaudeSDKClient")
-        else:
-            client_factory = None
-            query = query_fn
+        client_factory = client_fn or getattr(sdk, "ClaudeSDKClient", None)
+        if client_factory is None:
+            raise AttributeError("ClaudeSDKClient")
     except Exception as exc:
         raise ClaudeAgentSdkNotAvailable(str(exc)) from exc
 
@@ -1476,6 +1472,12 @@ async def run_claude_agent_sdk(
         mcp_servers = (
             _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
         )
+        mcp_registration = prepare_claude_mcp(
+            authorized_subjects if sandbox_brokered else {}, mcp_servers
+        )
+        allowed_tools = [
+            mcp_registration.sdk_names.get(name, name) for name in allowed_tools
+        ]
     except ValueError as exc:
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
@@ -1545,6 +1547,7 @@ async def run_claude_agent_sdk(
         for kind, identity in capability_plan.available
         if kind in {"skill", "mcp"}
     }
+    private_capability_tokens.update(mcp_registration.aliases)
     private_capability_tokens.update(
         identity
         for identity in authorized_subjects
@@ -1631,6 +1634,7 @@ async def run_claude_agent_sdk(
             public_skill_metadata=public_skill_metadata,
             sanitizer=sanitize_public_answer_text,
             payload_sanitizer=sanitize_public_event_candidate,
+            tool_identity_resolver=mcp_registration.canonical_identity,
         )
         if run_id and attempt_id and on_agent_event is not None
         else None
@@ -1925,7 +1929,7 @@ async def run_claude_agent_sdk(
         contextual_identity = f"mcp__ai-platform-context__{value}"
         if contextual_identity in declared_tool_identities:
             return contextual_identity
-        return value
+        return mcp_registration.canonical_identity(value)
 
     def policy_for_tool(tool_name: object, tool_input: object):
         identity = adapter_identity(tool_name)
@@ -1941,7 +1945,7 @@ async def run_claude_agent_sdk(
             subject_tool_name = (
                 identity.rsplit("__", 1)[-1]
                 if identity in internal_context_subjects
-                else str(tool_name or "")
+                else identity
             )
             parameters_authorized = bool(subject) and _parameters_match_subject(
                 subject,
@@ -1964,7 +1968,10 @@ async def run_claude_agent_sdk(
                 parameters_authorized = _native_tool_proxy_input(tool_input) is not None
             registered = bool(subject) and (
                 not identity.startswith("mcp__")
-                or str(subject.get("mcp_server") or "") in mcp_servers
+                or mcp_registration.server_aliases.get(
+                    str(subject.get("mcp_server") or ""),
+                    str(subject.get("mcp_server") or ""),
+                ) in mcp_servers
             )
             return evaluate_tool_policy(
                 tool={
@@ -2474,6 +2481,7 @@ async def run_claude_agent_sdk(
         system_prompt=sdk_system_prompt,
         tools=sdk_tools,
         mcp_servers=mcp_servers,
+        strict_mcp_config=True,
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
@@ -2632,13 +2640,12 @@ async def run_claude_agent_sdk(
         finally:
             await client.disconnect()
 
-    async def consume() -> ClaudeAgentSdkRunResult:
+    async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, structured_result_text, terminal_result_message
         answer_timeline = AssistantAnswerTimeline()
-        source = (query(prompt=_sdk_user_prompt_stream(sdk_prompt, session_id=session_id),
-                        options=options) if query is not None else _client_messages())
-        async for message in source:
+        async for message in messages:
+            mcp_registration.check_message(message)
             if isinstance(message, MirrorErrorMessage):
                 answer_stream_gate.finish(final_text="", release=False)
                 seal_agent_candidates("provider_session_mirror_error")
@@ -2954,7 +2961,9 @@ async def run_claude_agent_sdk(
     async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
         nonlocal consume_cancellation
         try:
-            return await consume()
+            async with mcp_registration.activate(options):
+                async with aclosing(_client_messages()) as messages:
+                    return await consume(messages)
         except asyncio.CancelledError as exc:
             consume_cancellation = exc
             raise
