@@ -3,9 +3,7 @@ from __future__ import annotations
 import secrets
 
 from app.context.application.checkpoint_build import prepare_checkpoint_for_run
-from app.context.application.checkpoints import (
-    load_ready_checkpoint, load_checkpoint_usage_for_run,
-)
+from app.context.application.checkpoints import load_checkpoint_usage_for_run
 from app.context.application.provider_sessions import (
     ProviderSessionOperationResult,
     matching_ready_provider_epoch,

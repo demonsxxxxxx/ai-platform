@@ -43,7 +43,6 @@ from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     build_skill_prompt,
     project_sdk_turn_diagnostics,
-    runtime_tool_policy_subjects as _runtime_tool_policy_subjects,
     sandbox_runtime_tool_policy_subjects as _sandbox_runtime_tool_policy_subjects,
 )
 from app.executors.claude.prompts import (

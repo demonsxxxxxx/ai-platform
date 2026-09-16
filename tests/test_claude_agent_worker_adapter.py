@@ -21,7 +21,6 @@ from app.execution.application import artifact_storage
 from app.executors import claude_agent_worker
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
-    ClaudeAgentSdkRunResult,
     build_sdk_env,
     build_skill_prompt,
     run_claude_agent_sdk,
@@ -4086,7 +4085,7 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
             ]
         }
     )
-    subjects = claude_agent_worker._runtime_tool_policy_subjects(
+    subjects = sdk_runner.runtime_tool_policy_subjects(
         payload,
         {
             "schema_version": "ai-platform.context-manifest.v1",
