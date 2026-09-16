@@ -49,6 +49,54 @@ def test_workspace_snapshot_accepts_only_root_or_target_owned_regular_tree():
     )
 
 
+def test_workspace_snapshot_accepts_platform_instruction_as_exact_read_only_file():
+    validate_workspace_snapshot(
+        root_device=7,
+        nodes=[
+            node(".", mode=stat.S_IFDIR | 0o755),
+            node(
+                "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
+                "runs/run-a/attempts/attempt-a/workspace/CLAUDE.md",
+                uid=RUNTIME_UID,
+                gid=RUNTIME_GID,
+                mode=stat.S_IFREG | 0o444,
+            ),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "mode"),
+    [
+        ("CLAUDE.md", 0o444),
+        (
+            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
+            "runs/run-a/attempts/attempt-a/workspace/nested/CLAUDE.md",
+            0o444,
+        ),
+        (
+            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
+            "runs/run-a/attempts/attempt-a/workspace/README.md",
+            0o444,
+        ),
+        (
+            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
+            "runs/run-a/attempts/attempt-a/workspace/CLAUDE.md",
+            0o400,
+        ),
+    ],
+)
+def test_workspace_snapshot_rejects_other_read_only_files(path, mode):
+    with pytest.raises(WorkspacePermissionError, match="workspace entry is not owner-writable"):
+        validate_workspace_snapshot(
+            root_device=7,
+            nodes=[
+                node(".", mode=stat.S_IFDIR | 0o755),
+                node(path, mode=stat.S_IFREG | mode),
+            ],
+        )
+
+
 @pytest.mark.parametrize(
     ("unsafe_node", "message"),
     [

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from app.sandbox.api import PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME
+
 
 RUNTIME_UID = 10001
 RUNTIME_GID = 10001
@@ -41,6 +43,19 @@ class _OpenWorkspaceNode:
     fd: int | None = None
 
 
+def _is_platform_read_only_instruction(node: WorkspaceNode) -> bool:
+    parts = node.relative_path.split("/")
+    return (
+        stat.S_ISREG(node.mode)
+        and stat.S_IMODE(node.mode) == 0o444
+        and len(parts) == 14
+        and tuple(parts[0:13:2])
+        == ("tenants", "workspaces", "users", "sessions", "runs", "attempts", "workspace")
+        and all(parts[index] for index in range(1, 12, 2))
+        and parts[-1] == PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME
+    )
+
+
 def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNode]) -> None:
     """Validate a complete no-follow workspace snapshot before any ownership mutation."""
 
@@ -60,7 +75,7 @@ def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNo
             raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
         if node.mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
-        if not node.mode & stat.S_IWUSR:
+        if not node.mode & stat.S_IWUSR and not _is_platform_read_only_instruction(node):
             raise WorkspacePermissionError(f"workspace entry is not owner-writable: {node.relative_path}")
         if stat.S_ISDIR(node.mode) and not node.mode & stat.S_IXUSR:
             raise WorkspacePermissionError(f"workspace directory is not owner-searchable: {node.relative_path}")
