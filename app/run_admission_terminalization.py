@@ -6,7 +6,11 @@ from psycopg import AsyncConnection
 
 from app import repositories
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
-from app.runs.api import RunDiagnosticsService, RunTerminalizationProgress
+from app.runs.api import (
+    RunDiagnosticsService,
+    RunTerminalizationProgress,
+    mark_run_enqueue_failed_with_context,
+)
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     exception_chain_from_error,
@@ -39,8 +43,9 @@ async def terminalize_enqueue_failure_with_v4(
         run_id=run_id,
         attempt_id=f"enqueue_failure_{run_id}",
     )
-    progress = await repositories.mark_run_enqueue_failed(
+    progress = await mark_run_enqueue_failed_with_context(
         conn,
+        mark_run_enqueue_failed=repositories.mark_run_enqueue_failed,
         tenant_id=tenant_id,
         user_id=user_id,
         run_id=run_id,

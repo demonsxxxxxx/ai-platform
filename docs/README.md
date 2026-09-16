@@ -29,6 +29,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | Product vocabulary and Expert Agent UX | [Workbench](architecture/expert-agent-service-workbench.md); root [CONTEXT](../CONTEXT.md) |
 | Profile revisions, visibility, and publication | [Profile boundary](architecture/agent-profile-persistence-boundary.md) |
 | Conversation selection and executor-private history | [Conversation context](architecture/agent-conversation-context.md) |
+| Claude-native session transcript and epoch lifecycle | [Provider continuity](architecture/claude-provider-session-continuity.md) |
 | Run terminalization and transaction ordering | [Run lifecycle](architecture/run-lifecycle-boundary.md) |
 | Immutable execution input and attempt ownership | [ExecutionSpec and RunAttempt](architecture/execution-spec-and-attempt-lifecycle.md) |
 | Provider resource lifecycle and callback authority | [Sandbox Runtime](architecture/sandbox-runtime-control-layer.md) |

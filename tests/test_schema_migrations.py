@@ -414,6 +414,23 @@ async def test_prior_schema_ledgers_advance_to_current_schema(
 
 
 @pytest.mark.asyncio
+async def test_agent_avatar_schema_ledger_is_upgraded_to_claude_context_cutover():
+    state = SharedMigrationState()
+    state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] = "legacy-checksum"
+
+    result = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert result["status"] == "applied"
+    assert state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] == "legacy-checksum"
+    assert state.ledger[schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION] == (
+        schema_migrations.schema_checksum()
+    )
+
+
+@pytest.mark.asyncio
 async def test_pending_admission_schema_advances_to_current_schema():
     state = SharedMigrationState()
     predecessor_checksum = "9f80933b643ad71c23f416e8ad2a52b3890efba83ec16e990a66979662b93d20"
@@ -459,24 +476,16 @@ async def test_successor_activation_ledger_advances_to_current_schema():
 
 
 def test_stream_only_schema_change_advances_schema_version():
-    # The cutover SQL changed after 2026.09.11.1 and must use a new ledger row.
     assert schema_migrations.STREAM_ONLY_SCHEMA_VERSION == "2026.09.12.1"
-    assert (
-        schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.RUN_DIAGNOSTICS_SCHEMA_VERSION
-    )
+    assert schema_migrations.RUN_DIAGNOSTICS_SCHEMA_VERSION == "2026.09.13.1"
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.13.1"
-    assert (
-        schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
-        == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
-    )
-    assert (
-        schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.RUN_DIAGNOSTICS_SCHEMA_VERSION
-    )
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.15.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION
+    assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
+    assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
+    assert schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
@@ -501,6 +510,13 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "mcp_servers",
         "mcp_server_credentials",
         "mcp_tools",
+        "provider_session_heads",
+        "provider_session_epochs",
+        "provider_session_entries",
+        "provider_session_append_receipts",
+        "provider_turn_receipts",
+        "conversation_context_checkpoints",
+        "run_context_snapshots",
     )
     assert (
         "users",
@@ -518,6 +534,42 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
+    for table, columns in {
+        "provider_session_heads": (("tenant_id", "text", True), ("current_epoch_id", "text", False),
+                                   ("active_run_id", "text", False)),
+        "provider_session_epochs": (("provider_session_id", "uuid", True), ("next_sequence", "int8", True),
+                                    ("coverage_source_sha256", "text", False)),
+        "provider_session_entries": (("epoch_id", "text", True), ("sequence", "int8", True)),
+        "provider_session_append_receipts": (("expected_sequence", "int8", True),
+                                             ("batch_sha256", "text", True)),
+        "provider_turn_receipts": (("committed_coverage_sha256", "text", False),),
+        "conversation_context_checkpoints": (("source_sha256", "text", True), ("state", "text", True)),
+        "run_context_snapshots": (("conversation_authority_json", "jsonb", False),),
+    }.items():
+        for column in columns:
+            assert (table, *column) in schema_migrations.CRITICAL_COLUMNS
+    for constraint in (
+        ("conversation_context_checkpoints", "chk_context_checkpoint_ready"),
+        ("conversation_context_checkpoints", "fk_context_checkpoint_source_scope"),
+        ("provider_session_heads", "fk_provider_head_current_epoch"),
+        ("provider_session_epochs", "fk_provider_epoch_head"),
+        ("provider_session_entries", "fk_provider_entry_epoch"),
+        ("provider_session_entries", "uq_provider_entry_global_sequence"),
+        ("provider_session_append_receipts", "provider_session_append_receipts_pkey"),
+        ("provider_turn_receipts", "fk_provider_turn_epoch"),
+    ):
+        assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
+    for index in (
+        ("idx_sessions_provider_scope", True),
+        ("uq_provider_entry_sdk_uuid", True),
+        ("idx_provider_entry_view", False),
+    ):
+        assert index in schema_migrations.CRITICAL_INDEXES
+    schema = schema_migrations.schema_sql().lower()
+    assert "create table if not exists provider_session_bindings" not in schema
+    assert "unique (epoch_id, sequence)" in schema
+    assert "provider_session_legacy_binding_requires_disposition" in schema
+
     assert (
         "agent_profile_revisions",
         "skill_set",
@@ -587,8 +639,13 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             *column,
             True,
         ) in schema_migrations.CRITICAL_COLUMNS
+    for column in ("max_input_tokens", "max_output_tokens"):
+        assert ("model_catalog_entries", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
+        assert ("runs", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
     for constraint in (
         ("runs", "fk_runs_model_gateway_revision"),
+        ("runs", "chk_runs_model_token_limits"),
+        ("model_catalog_entries", "chk_model_catalog_token_limits"),
         ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
         ("model_gateway_revisions", "chk_model_gateway_base_url"),
         ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),

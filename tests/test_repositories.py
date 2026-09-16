@@ -3896,7 +3896,7 @@ async def test_create_context_snapshot_preserves_private_context_manifest_refs_w
         },
     )
 
-    persisted_payload = json.loads(conn.params[-1])
+    persisted_payload = json.loads(conn.params[-2])
     assert persisted_payload["context_manifest"]["recent_messages"] == [
         {"message_id": "msg-a", "requires_retrieval": True}
     ]
@@ -5923,8 +5923,8 @@ async def test_create_context_snapshot_sanitizes_payload_and_summary_before_inse
     )
 
     _sql, params = conn.calls[0]
-    inserted_summary = json.loads(params[-2])
-    inserted_payload = json.loads(params[-1])
+    inserted_summary = json.loads(params[-3])
+    inserted_payload = json.loads(params[-2])
     assert inserted_summary == {"source": "internal", "note": "authorization=[redacted-secret]"}
     assert inserted_payload == {
         "window": "current",

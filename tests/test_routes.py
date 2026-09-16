@@ -114,6 +114,17 @@ async def resume_run(*args, **kwargs):
 
 
 @pytest.fixture(autouse=True)
+def _stub_terminal_provider_lineage(monkeypatch):
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
+@pytest.fixture(autouse=True)
 def default_run_model_inheritance(monkeypatch):
     async def inherit_run_model(*_args, **_kwargs):
         return None
@@ -128,6 +139,8 @@ def default_run_model_binding(monkeypatch):
             model_id="platform-default",
             model_value="provider/default",
             connection_revision=None,
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
     async def bind_model(*_args, **_kwargs):
@@ -3889,6 +3902,8 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
             model_id="catalog-default",
             model_value="provider/default",
             connection_revision=9,
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
     async def bind_model(conn, **kwargs):
@@ -3960,6 +3975,8 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         "model_id": "catalog-default",
         "model_value": "provider/default",
         "connection_revision": 9,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
     }
     snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")
     event_index = next(index for index, item in enumerate(calls) if item[0] == "event")

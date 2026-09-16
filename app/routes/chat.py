@@ -49,7 +49,7 @@ from app.intent_router import (
     fallback_to_general_chat,
     route_intent,
 )
-from app.execution.api import RunModelSelection, parse_requested_model_selection, resolve_chat_model_selection
+from app.execution.api import RunModelSelection, bind_selected_run_model, parse_requested_model_selection, resolve_chat_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -65,7 +65,6 @@ from app.models import (
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
-from app.runs.api import bind_run_model
 from app.product_events import initial_run_event_specs, intent_event_specs
 from app.projection_redaction import (
     RETIRED_INTERNAL_AGENT_IDS,
@@ -2225,13 +2224,8 @@ async def chat_stream(
                 )
             run_id = await repositories.create_run(conn, **run_create_kwargs)
             if selected_model is not None:
-                await bind_run_model(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id,
-                    model_id=selected_model.model_id,
-                    model_value=selected_model.model_value,
-                    connection_revision=selected_model.connection_revision,
+                await bind_selected_run_model(
+                    conn, tenant_id=principal.tenant_id, run_id=run_id, selected_model=selected_model,
                 )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await repositories.insert_run_skill_snapshots_at_creation(

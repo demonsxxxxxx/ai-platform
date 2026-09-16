@@ -24,11 +24,11 @@ from app.capability_distribution import (
     capability_distribution_audit_payload,
     resolve_capability_access,
 )
+from app.bootstrap.context import materialize_queued_worker_context_snapshot, prepare_worker_checkpoint
 from app.context_builder import (
     ensure_public_context_provenance,
     executor_context_pack_from_snapshot,
 )
-from app.context.api import materialize_worker_context_snapshot
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     sanitize_context_manifest_payload,
@@ -85,7 +85,7 @@ from app.principal_authority import (
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
 from app.runs.api import (
     RunAttemptLifecycleService,
-    compile_execution_spec_for_dispatch,
+    compile_execution_spec_for_dispatch, worker_dispatch_fence, persist_assistant_with_provider_coverage,
     load_run_model_snapshot as _load_run_model_snapshot,
 )
 from app.required_tool_contract import (
@@ -1925,24 +1925,6 @@ def _context_snapshot_ref_from_row(row: dict[str, Any]) -> dict[str, Any]:
     return context_ref
 
 
-async def _ensure_worker_context_snapshot(
-    conn,
-    payload: QueueRunPayload,
-    *,
-    trace_id: str,
-    run_identity: dict[str, str] | None = None,
-) -> dict[str, Any] | None:
-    identity = run_identity or _payload_identity(payload)
-    return await materialize_worker_context_snapshot(
-        conn,
-        identity=identity,
-        context_snapshot_id=str(payload.context_snapshot_id or ""),
-        snapshot_loader=repositories.get_context_snapshot_for_worker,
-        message_loader=repositories.list_scoped_context_messages,
-        context_projector=_context_snapshot_ref_from_row,
-    )
-
-
 async def process_run_payload(
     raw: dict[str, Any],
     registry: AdapterRegistry | None = None,
@@ -2329,19 +2311,37 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id, run_identity=run_identity)
+        prepared_checkpoint_id, checkpoint_preparation_failed = await prepare_worker_checkpoint(
+            transaction_factory=transaction_factory, payload=payload,
+            principal=capability_authorization.principal,
+            reconciliation=reconciliation is not None, queue_identity=run_identity,
+        )
+        async with transaction_factory() as conn:
+            fence = await worker_dispatch_fence(
+                conn, run_identity=run_identity, locked_run=locked,
+                context_snapshot_id=str(payload.context_snapshot_id or ""),
+                reconciliation=reconciliation is not None,
+            )
+            if fence == "stale":
+                return WorkerOutcome("skipped", payload.run_id, "stale_terminal_state")
+            checkpoint_preparation_failed |= fence != "ready"
+            context_ref = None if checkpoint_preparation_failed else await materialize_queued_worker_context_snapshot(
+                conn, payload=payload, run_identity=run_identity,
+                context_projector=_context_snapshot_ref_from_row,
+                prepared_checkpoint_id=prepared_checkpoint_id,
+            )
             if context_ref is None:
                 terminal_after_transaction = await _fail_worker_pre_dispatch_error(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
                     v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
-                    error_code="context_snapshot_unavailable",
-                    error_message="Run context snapshot is unavailable",
+                    error_code="worker_dispatch_fence_invalid" if fence == "invalid" else "context_checkpoint_unavailable" if checkpoint_preparation_failed else "context_snapshot_unavailable",
+                    error_message="Run dispatch authority changed" if fence == "invalid" else "Conversation checkpoint is unavailable" if checkpoint_preparation_failed else "Run context snapshot is unavailable",
                     event_stage="context",
                     event_payload={
                         "visible_to_user": False,
-                        "error_code": "context_snapshot_unavailable",
+                        "error_code": "worker_dispatch_fence_invalid" if fence == "invalid" else "context_checkpoint_unavailable" if checkpoint_preparation_failed else "context_snapshot_unavailable",
                     },
                 )
                 return terminal_after_transaction.outcome
@@ -2353,16 +2353,16 @@ async def process_run_payload(
                     trace_id=trace_id,
                     context_snapshot_id=str(context_ref["context_snapshot_id"]),
                     context_snapshot=context_ref["context_snapshot"],
-                    context_pack={
-                        **executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
-                        "conversation_context": context_ref["conversation_context"],
-                    },
+                    context_pack={**executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
+                                  "conversation_context": context_ref["conversation_context"]},
+                    run_model_snapshot=locked,
                 )
                 run_payload = project_execution_spec_to_run_payload(
-                    execution_spec,
-                    attempt_id=attempt_id,
+                    execution_spec, attempt_id=attempt_id
                 )
-                run_payload = await mcp_api.attach_mcp_server_configs(conn, principal=capability_authorization.principal, run_payload=run_payload)
+                run_payload = await mcp_api.attach_mcp_server_configs(
+                    conn, principal=capability_authorization.principal, run_payload=run_payload
+                )
             except ValueError as exc:
                 mcp_error = exc if isinstance(exc, mcp_api.McpRuntimeContextError) else None
                 error_code = mcp_error.code if mcp_error else "execution_spec_invalid"
@@ -2967,17 +2967,14 @@ async def process_run_payload(
                     result_capabilities=result.capabilities,
                     result_payload=result_payload,
                 )
-                await repositories.append_message(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    session_id=payload.session_id,
-                    run_id=payload.run_id,
-                    role="assistant",
-                    content=(
-                        assistant_message_for_persistence
-                        if assistant_message_for_persistence is not None
-                        else str(result_payload.get("message") or "")
-                    ),
+                await persist_assistant_with_provider_coverage(
+                    conn, append_message=repositories.append_message,
+                    tenant_id=payload.tenant_id, session_id=payload.session_id,
+                    run_id=payload.run_id, attempt_id=attempt_id,
+                    executor_type=payload.executor_type,
+                    content=(assistant_message_for_persistence
+                             if assistant_message_for_persistence is not None
+                             else str(result_payload.get("message") or "")),
                     metadata_json={
                         "artifact_count": len(result.artifacts),
                         "executor_type": result.executor_type,
@@ -2989,7 +2986,9 @@ async def process_run_payload(
                             else {"skills": skill_snapshot}
                         ),
                     },
+                    provider_final_sequence=result.executor_payload.get("provider_session_final_sequence"),
                 )
+
                 await append_user_event(
                     conn,
                     tenant_id=payload.tenant_id,

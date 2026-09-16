@@ -26,6 +26,7 @@ EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/tool-permission"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
+EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/provider-session"
 _TRUSTED_CALLBACK_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -59,6 +60,7 @@ class TrustedCallbackTarget:
     callback_url: str
     tool_permission_url: str
     context_retrieval_url: str
+    provider_session_url: str
     host: str
 
 
@@ -127,8 +129,51 @@ def build_trusted_callback_target(
         callback_url=f"{normalized_base_url}{EXECUTOR_CALLBACK_PATH}",
         tool_permission_url=f"{normalized_base_url}{EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH}",
         context_retrieval_url=f"{normalized_base_url}{EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH}",
+        provider_session_url=f"{normalized_base_url}{EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH}",
         host=host,
     )
+
+
+class ProviderSessionCallbackRequest(BaseModel):
+    """Private callback envelope for the opaque Claude SessionStore mirror."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["load", "append", "list_subkeys"]
+    run_id: str
+    attempt_id: str
+    callback_token_id: str
+    provider_session_id: str = Field(min_length=1, max_length=128)
+    subpath: str | None = Field(default=None, max_length=512)
+    entries: list[dict[str, Any]] = Field(default_factory=list, max_length=128)
+    expected_sequence: int | None = Field(default=None, ge=1)
+
+    @field_validator("run_id", "attempt_id", "callback_token_id")
+    @classmethod
+    def validate_ids(cls, value: str, info):
+        return assert_safe_id(value, info.field_name)
+
+    @model_validator(mode="after")
+    def validate_action_payload(self):
+        if self.action == "append" and (not self.entries or self.expected_sequence is None):
+            raise ValueError("provider_session_append_sequence_required")
+        if self.action != "append" and (self.entries or self.expected_sequence is not None):
+            raise ValueError("provider_session_append_fields_forbidden")
+        return self
+
+
+class ProviderSessionCallbackResponse(BaseModel):
+    """Private callback receipt carrying no platform scope claims."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["load", "append", "list_subkeys"]
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    subpaths: list[str] = Field(default_factory=list, max_length=4096)
+    accepted: bool = True
+    entry_count: int = Field(default=0, ge=0)
+    next_sequence: int = Field(ge=1)
+    last_sequence: int | None = Field(default=None, ge=1)
 
 
 class ContextRetrievalScope(BaseModel):
@@ -152,6 +197,15 @@ class ContextRetrievalScope(BaseModel):
         return assert_safe_principal_user_id(value)
 
 
+class ModelTokenLimits(BaseModel):
+    """Run-frozen model budget accepted by the sandbox transport."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    max_input_tokens: int = Field(gt=0, le=10_000_000)
+    max_output_tokens: int = Field(gt=0, le=10_000_000)
+
+
 class SandboxRuntimeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -172,6 +226,7 @@ class SandboxRuntimeRequest(BaseModel):
     sandbox_mode: SandboxMode
     browser_enabled: bool = False
     model: str
+    model_token_limits: ModelTokenLimits | None = None
     thinking_effort: str = "off"
     model_gateway: Literal["new-api"] = "new-api"
     permissions: list[str] = Field(default_factory=list)
@@ -183,6 +238,7 @@ class SandboxRuntimeRequest(BaseModel):
     context_manifest: dict[str, Any] = Field(default_factory=dict)
     context_retrieval_scope: ContextRetrievalScope | None = None
     sdk_session_id: str | None = None
+    provider_session_resume_required: bool = False
     governed_permission_wait: bool = False
     reconciliation_context: dict[str, Any] = Field(default_factory=dict)
 
@@ -361,6 +417,10 @@ class ExecutorTaskRequest(BaseModel):
     governed_permission_wait: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
 
+    @property
+    def callback_target(self) -> TrustedCallbackTarget:
+        return build_trusted_callback_target(self.callback_base_url)
+
     @field_validator(
         "tenant_id",
         "workspace_id",
@@ -383,6 +443,11 @@ class ExecutorTaskRequest(BaseModel):
     def validate_config(cls, value: dict[str, Any]):
         if "thinking_effort" in value:
             normalize_thinking_effort(value["thinking_effort"])
+        if "model_token_limits" in value:
+            try:
+                ModelTokenLimits.model_validate(value["model_token_limits"])
+            except Exception as exc:
+                raise ValueError("model_token_limits_invalid") from exc
         return value
 
     @field_validator("sdk_session_id")

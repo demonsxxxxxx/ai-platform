@@ -505,6 +505,10 @@ alter table sessions drop constraint if exists chk_sessions_title_source;
 alter table sessions add constraint chk_sessions_title_source
   check (title_source in ('initial', 'generated', 'user'));
 
+-- Provider continuity is executor-private and inherits Session deletion.
+create unique index if not exists idx_sessions_provider_scope
+  on sessions(tenant_id, workspace_id, user_id, id, agent_id);
+
 create table if not exists model_gateway_revisions (
   revision bigint primary key,
   base_url text not null,
@@ -529,6 +533,8 @@ create table if not exists model_catalog_entries (
   upstream_available boolean not null default true,
   is_default boolean not null default false,
   display_order integer not null default 0,
+  max_input_tokens bigint,
+  max_output_tokens bigint,
   first_seen_revision bigint not null references model_gateway_revisions(revision),
   last_seen_revision bigint not null references model_gateway_revisions(revision),
   first_seen_at timestamptz not null default now(),
@@ -539,7 +545,12 @@ create table if not exists model_catalog_entries (
     and upstream_model_id = btrim(upstream_model_id)
   ),
   constraint chk_model_catalog_display_name check (length(display_name) between 1 and 160),
-  constraint chk_model_catalog_default_enabled check (not is_default or enabled)
+  constraint chk_model_catalog_default_enabled check (not is_default or enabled),
+  constraint chk_model_catalog_token_limits check (
+    (max_input_tokens is null and max_output_tokens is null)
+    or (max_input_tokens is not null and max_output_tokens is not null
+        and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
+  )
 );
 create unique index if not exists uq_model_catalog_default
   on model_catalog_entries(is_default) where is_default = true;
@@ -567,6 +578,8 @@ create table if not exists runs (
   model_id text,
   model_value text,
   model_gateway_revision bigint,
+  max_input_tokens bigint,
+  max_output_tokens bigint,
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
   context_snapshot_id text,
@@ -599,6 +612,11 @@ create table if not exists runs (
   constraint chk_runs_execution_skill_identity check (
     (execution_kind = 'harness_chat' and skill_id is null)
     or (execution_kind = 'skill' and skill_id is not null)
+  ),
+  constraint chk_runs_model_token_limits check (
+    (max_input_tokens is null and max_output_tokens is null)
+    or (max_input_tokens is not null and max_output_tokens is not null
+        and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
   )
 );
 
@@ -940,6 +958,26 @@ alter table runs add column if not exists admitted_agent_profile_hash text;
 alter table runs add column if not exists model_id text;
 alter table runs add column if not exists model_value text;
 alter table runs add column if not exists model_gateway_revision bigint;
+alter table runs add column if not exists max_input_tokens bigint;
+alter table runs add column if not exists max_output_tokens bigint;
+alter table model_catalog_entries add column if not exists max_input_tokens bigint;
+alter table model_catalog_entries add column if not exists max_output_tokens bigint;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'chk_runs_model_token_limits') then
+    alter table runs add constraint chk_runs_model_token_limits check (
+      (max_input_tokens is null and max_output_tokens is null)
+      or (max_input_tokens is not null and max_output_tokens is not null
+          and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
+    );
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'model_catalog_entries'::regclass and conname = 'chk_model_catalog_token_limits') then
+    alter table model_catalog_entries add constraint chk_model_catalog_token_limits check (
+      (max_input_tokens is null and max_output_tokens is null)
+      or (max_input_tokens is not null and max_output_tokens is not null
+          and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
+    );
+  end if;
+end $$;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
 alter table agent_profile_revisions add column if not exists revision_status text not null default 'withdrawn';
@@ -1469,6 +1507,7 @@ create table if not exists run_context_snapshots (
   included_memory_record_ids jsonb not null default '[]'::jsonb,
   redaction_summary_json jsonb not null default '{}'::jsonb,
   payload_json jsonb not null default '{}'::jsonb,
+  conversation_authority_json jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -1476,6 +1515,181 @@ create index if not exists idx_run_context_snapshots_run
   on run_context_snapshots(tenant_id, run_id, created_at desc);
 create unique index if not exists idx_run_context_snapshots_scope_binding
   on run_context_snapshots(tenant_id, workspace_id, user_id, session_id, run_id, id);
+
+alter table run_context_snapshots add column if not exists conversation_authority_json jsonb;
+
+-- The interim #1397 binding layout was never shipped in main. An existing
+-- experimental database requires an explicit data disposition, not silent reuse.
+do $$
+begin
+  if to_regclass('provider_session_bindings') is not null then
+    raise exception 'provider_session_legacy_binding_requires_disposition';
+  end if;
+end $$;
+
+create table if not exists conversation_context_checkpoints (
+  id text primary key,
+  tenant_id text not null, workspace_id text not null, user_id text not null,
+  session_id text not null, agent_id text not null,
+  predecessor_checkpoint_id text,
+  source_snapshot_id text not null,
+  range_start_created_at timestamptz, range_start_id text,
+  range_end_created_at timestamptz, range_end_id text,
+  through_session_generation bigint not null check (through_session_generation > 0),
+  covered_message_count bigint not null default 0 check (covered_message_count >= 0),
+  covered_turn_count bigint not null default 0 check (covered_turn_count >= 0),
+  source_sha256 text not null check (source_sha256 ~ '^[0-9a-f]{64}$'),
+  summary_text text,
+  summary_sha256 text,
+  summary_schema_version text not null,
+  summary_prompt_version text not null,
+  model_id text not null, model_value text not null,
+  model_gateway_revision bigint not null check (model_gateway_revision > 0),
+  max_input_tokens bigint not null check (max_input_tokens > 0),
+  max_output_tokens bigint not null check (max_output_tokens > 0),
+  build_key_sha256 text not null check (build_key_sha256 ~ '^[0-9a-f]{64}$'),
+  state text not null check (state in ('building', 'ready', 'failed')),
+  owner_run_id text not null,
+  builder_lease_id text,
+  lease_not_after timestamptz,
+  input_tokens bigint not null default 0 check (input_tokens >= 0),
+  output_tokens bigint not null default 0 check (output_tokens >= 0),
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  constraint fk_context_checkpoint_session foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id
+  ) references sessions(tenant_id, workspace_id, user_id, id, agent_id) on delete cascade,
+  constraint fk_context_checkpoint_owner_scope foreign key (
+    tenant_id, workspace_id, user_id, session_id, owner_run_id
+  ) references runs(tenant_id, workspace_id, user_id, session_id, id) on delete cascade,
+  constraint fk_context_checkpoint_source_scope foreign key (
+    tenant_id, workspace_id, user_id, session_id, owner_run_id, source_snapshot_id
+  ) references run_context_snapshots(tenant_id, workspace_id, user_id, session_id, run_id, id)
+    on delete cascade,
+  constraint fk_context_checkpoint_predecessor foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id, predecessor_checkpoint_id
+  ) references conversation_context_checkpoints(
+    tenant_id, workspace_id, user_id, session_id, agent_id, id
+  ) on delete cascade,
+  constraint chk_context_checkpoint_ready check (
+    state <> 'ready' or (covered_message_count > 0 and covered_turn_count > 0
+      and summary_text is not null and summary_text <> ''
+      and summary_sha256 ~ '^[0-9a-f]{64}$'
+      and range_start_created_at is not null and range_start_id is not null
+      and range_end_created_at is not null and range_end_id is not null)
+  ),
+  unique (tenant_id, workspace_id, user_id, session_id, agent_id, id),
+  unique (tenant_id, workspace_id, user_id, session_id, agent_id, build_key_sha256)
+);
+
+create table if not exists provider_session_heads (
+  tenant_id text not null, workspace_id text not null,
+  user_id text not null, session_id text not null,
+  agent_id text not null, engine text not null,
+  current_epoch_id text,
+  next_epoch_number bigint not null default 1 check (next_epoch_number >= 1),
+  active_run_id text, active_attempt_id text, updated_at timestamptz not null default now(),
+  constraint chk_provider_head_engine check (engine = 'claude'),
+  constraint chk_provider_head_writer check (
+    (active_run_id is null and active_attempt_id is null)
+    or active_run_id is not null
+  ),
+  constraint pk_provider_session_heads primary key (tenant_id, session_id, engine),
+  constraint uq_provider_head_scope unique (tenant_id, workspace_id, user_id, session_id, agent_id, engine),
+  constraint fk_provider_head_session foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id
+  ) references sessions(tenant_id, workspace_id, user_id, id, agent_id) on delete cascade
+);
+
+create table if not exists provider_session_epochs (
+  id text primary key, tenant_id text not null, workspace_id text not null,
+  user_id text not null, session_id text not null, agent_id text not null,
+  engine text not null,
+  epoch_number bigint not null check (epoch_number >= 1),
+  provider_session_id uuid not null,
+  state text not null check (state in ('bootstrapping', 'ready', 'active', 'dirty', 'closed')),
+  next_sequence bigint not null default 1 check (next_sequence >= 1),
+  entry_count bigint not null default 0 check (entry_count >= 0),
+  transcript_bytes bigint not null default 0 check (transcript_bytes >= 0),
+  coverage_source_sha256 text check (coverage_source_sha256 ~ '^[0-9a-f]{64}$'),
+  coverage_through_generation bigint,
+  coverage_message_count bigint not null default 0 check (coverage_message_count >= 0),
+  writer_run_id text, writer_attempt_id text, writer_owner_generation bigint,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), closed_at timestamptz,
+  constraint chk_provider_epoch_writer check (
+    (writer_run_id is null and writer_attempt_id is null and writer_owner_generation is null)
+    or (writer_run_id is not null and writer_attempt_id is not null and writer_owner_generation > 0)
+  ),
+  constraint chk_provider_epoch_coverage check (
+    (coverage_source_sha256 is null and coverage_through_generation is null and coverage_message_count = 0)
+    or (coverage_source_sha256 is not null and coverage_through_generation > 0)
+  ),
+  constraint fk_provider_epoch_head foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine
+  ) references provider_session_heads(tenant_id, workspace_id, user_id, session_id, agent_id, engine)
+    on delete cascade,
+  constraint uq_provider_epoch_scope unique (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, id
+  ),
+  constraint uq_provider_epoch_number unique (tenant_id, session_id, engine, epoch_number),
+  constraint uq_provider_epoch_provider_id unique (provider_session_id)
+);
+
+alter table provider_session_heads drop constraint if exists fk_provider_head_current_epoch;
+alter table provider_session_heads add constraint fk_provider_head_current_epoch foreign key (
+  tenant_id, workspace_id, user_id, session_id, agent_id, engine, current_epoch_id
+) references provider_session_epochs(tenant_id, workspace_id, user_id, session_id, agent_id, engine, id)
+  deferrable initially deferred;
+
+create table if not exists provider_session_entries (
+  id text primary key,
+  tenant_id text not null, workspace_id text not null, user_id text not null,
+  session_id text not null, agent_id text not null, engine text not null check (engine = 'claude'),
+  epoch_id text not null, subpath text not null default '',
+  sequence bigint not null check (sequence >= 1),
+  sdk_entry_uuid text, entry_json jsonb not null,
+  created_at timestamptz not null default now(),
+  constraint fk_provider_entry_epoch foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, epoch_id
+  ) references provider_session_epochs(
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, id
+  ) on delete cascade,
+  constraint uq_provider_entry_global_sequence unique (epoch_id, sequence)
+);
+create unique index if not exists uq_provider_entry_sdk_uuid
+  on provider_session_entries(epoch_id, subpath, sdk_entry_uuid)
+  where sdk_entry_uuid is not null and sdk_entry_uuid <> '';
+create index if not exists idx_provider_entry_view
+  on provider_session_entries(epoch_id, subpath, sequence);
+
+create table if not exists provider_session_append_receipts (
+  epoch_id text not null references provider_session_epochs(id) on delete cascade,
+  expected_sequence bigint not null check (expected_sequence >= 1),
+  batch_sha256 text not null check (batch_sha256 ~ '^[0-9a-f]{64}$'),
+  entry_count integer not null check (entry_count > 0),
+  last_sequence bigint not null check (last_sequence = expected_sequence + entry_count - 1),
+  run_id text not null, attempt_id text not null, owner_generation bigint not null check (owner_generation >= 1),
+  created_at timestamptz not null default now(), primary key (epoch_id, expected_sequence)
+);
+
+create table if not exists provider_turn_receipts (
+  id text primary key, tenant_id text not null, workspace_id text not null, user_id text not null,
+  session_id text not null, agent_id text not null, engine text not null check (engine = 'claude'),
+  epoch_id text not null, run_id text not null, attempt_id text not null,
+  execution_spec_sha256 text not null check (execution_spec_sha256 ~ '^[0-9a-f]{64}$'),
+  bootstrap_source_sha256 text check (bootstrap_source_sha256 ~ '^[0-9a-f]{64}$'),
+  start_sequence bigint not null check (start_sequence >= 1),
+  final_sequence bigint check (final_sequence is null or final_sequence >= start_sequence), user_message_id text,
+  assistant_message_id text, prior_coverage_sha256 text check (prior_coverage_sha256 ~ '^[0-9a-f]{64}$'),
+  committed_coverage_sha256 text check (committed_coverage_sha256 ~ '^[0-9a-f]{64}$'),
+  state text not null check (state in ('writing', 'commit_pending', 'committed', 'failed')),
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  constraint fk_provider_turn_epoch foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, epoch_id
+  ) references provider_session_epochs(
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, id
+  ) on delete cascade,
+  unique (tenant_id, run_id, attempt_id)
+);
 
 -- A populated pre-#511 database can adopt a physical binding only when both
 -- legacy JSON mirrors already agree and name the exact scoped executor row.

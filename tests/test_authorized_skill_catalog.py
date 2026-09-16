@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAccessDecision
 from app.executors.base import RunPayload
@@ -773,7 +775,9 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "skill_id": "general-chat",
         "model_id": stored["model_id"],
         "model_value": stored["model_value"],
-        "model_gateway_revision": None,
+        "model_gateway_revision": 1,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": ["admin"],
         "principal_department_id": "qa",
@@ -845,9 +849,22 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
     async def no_publication(*_args, **_kwargs):
         return None
 
+    async def no_checkpoint_usage(_conn, **_kwargs):
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    async def no_provider_lineage(_conn, **_kwargs):
+        return None
+
     monkeypatch.setattr("app.worker.transaction", transaction)
     _TEST_ATTEMPT_LIFECYCLE.lock_queued_run = lock_queued_run_for_attempt
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    async def load_frozen_model(_conn, **_kwargs):
+        return {key: locked_run[key] for key in (
+            "model_id", "model_value", "model_gateway_revision",
+            "max_input_tokens", "max_output_tokens",
+        )}
+
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
@@ -856,6 +873,14 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         materialize_run_skill_manifests,
     )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
+        no_checkpoint_usage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        no_provider_lineage,
+    )
     monkeypatch.setattr("app.worker.admit_v4_stream", no_publication)
     monkeypatch.setattr("app.worker.publish_run_event", no_publication)
 
@@ -908,7 +933,7 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
     monkeypatch.setattr("app.worker.repositories.validate_replay_skill_manifests", forbidden)
     monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", forbidden)
     monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", forbidden)
-    monkeypatch.setattr("app.worker._ensure_worker_context_snapshot", forbidden)
+    monkeypatch.setattr("app.worker.materialize_queued_worker_context_snapshot", forbidden)
     monkeypatch.setattr("app.worker._create_worker_runtime_sandbox_lease", forbidden)
 
     outcome = await process_run_payload(
@@ -1363,6 +1388,7 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr(
@@ -1478,6 +1504,7 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         ResultMessage=ResultMessage,
         TextBlock=Message,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr(

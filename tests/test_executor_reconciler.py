@@ -1747,6 +1747,12 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         calls.append(("publish", kwargs))
         return True
 
+    async def no_checkpoint_usage(_conn, **_kwargs):
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    async def no_provider_lineage(_conn, **_kwargs):
+        return None
+
     owner = "app.executor_reconciler"
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr(f"{owner}.repositories.get_run", get_run)
@@ -1755,6 +1761,14 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         has_claim,
     )
     monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
+        no_checkpoint_usage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        no_provider_lineage,
+    )
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
     monkeypatch.setattr(
         f"{owner}.reconcile_terminalized_permission_run", reconcile_child

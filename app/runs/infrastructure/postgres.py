@@ -22,7 +22,6 @@ from app.runs.domain.attempt_lifecycle import (
     run_attempt_id_for_queue_attempt,
 )
 from app.runs.domain.execution_spec import ExecutionSpec
-from app.runs.domain.model_snapshot import legacy_queue_model_snapshot
 from app.runs.domain.terminalization import (
     RunTerminalEventFact,
     RunTerminalizationProgress,
@@ -72,6 +71,53 @@ def _validated_worker_queue_lease(
     if lease_expires_at <= last_heartbeat_at:
         raise ValueError("run_attempt_queue_lease_window_invalid")
     return queue_message_id, lease_expires_at, last_heartbeat_at
+
+
+async def update_terminal_run_checkpoint_counts(
+    conn: AsyncConnection, *, tenant_id: str, run_id: str,
+    result_json: dict[str, Any], input_tokens: int, output_tokens: int,
+    total_tokens: int, include_staged_cancellation: bool = False,
+) -> None:
+    cursor = await conn.execute(
+        """
+        update runs set
+          result_json = case
+            when status in ('succeeded', 'failed', 'cancelled') then %s::jsonb
+            else result_json
+          end,
+          input_token_count = %s, output_token_count = %s, total_token_count = %s
+        where tenant_id = %s and id = %s
+          and (
+            status in ('succeeded', 'failed', 'cancelled')
+            or (
+              %s
+              and status not in ('succeeded', 'failed', 'cancelled')
+              and permission_terminalization_target = 'cancelled'
+            )
+          )
+        returning id
+        """,
+        (_dumps_json(result_json), input_tokens, output_tokens, total_tokens,
+         tenant_id, run_id, include_staged_cancellation),
+    )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("run_checkpoint_terminal_usage_fenced")
+
+
+async def load_worker_dispatch_run_facts(
+    conn: AsyncConnection, *, tenant_id: str, run_id: str,
+) -> dict[str, Any] | None:
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, user_id, session_id, agent_id,
+          execution_kind, skill_id, status, cancel_requested_at,
+          context_snapshot_id, model_id, model_value, model_gateway_revision,
+          max_input_tokens, max_output_tokens
+        from runs where tenant_id = %s and id = %s for update
+        """,
+        (tenant_id, run_id),
+    )
+    return await cursor.fetchone()
 
 
 async def load_current_terminal_event_fact(
@@ -1159,7 +1205,8 @@ async def load_run_model_snapshot(
 
     cursor = await conn.execute(
         """
-        select model_id, model_value, model_gateway_revision
+        select model_id, model_value, model_gateway_revision,
+               max_input_tokens, max_output_tokens
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -1179,33 +1226,44 @@ async def bind_run_model(
     run_id: str,
     model_id: str,
     model_value: str,
-    connection_revision: int | None,
+    connection_revision: int,
+    max_input_tokens: int,
+    max_output_tokens: int,
 ) -> None:
-    """Persist an Execution-admitted model snapshot on a new queued Run."""
+    """Persist an Execution-admitted five-field snapshot on a queued Run."""
 
-    if not model_id or not model_value:
+    if not model_id or not model_value or type(connection_revision) is not int or connection_revision < 1:
         raise ValueError("run_model_binding_invalid")
-    if connection_revision is not None and (
-        not isinstance(connection_revision, int)
-        or isinstance(connection_revision, bool)
-        or connection_revision < 1
-    ):
-        raise ValueError("run_model_binding_invalid")
+    if any(type(value) is not int or not 1 <= value <= 10_000_000
+           for value in (max_input_tokens, max_output_tokens)):
+        raise ValueError("run_model_capacity_invalid")
     cursor = await conn.execute(
         """
         update runs
         set model_id = %s,
             model_value = %s,
-            model_gateway_revision = %s
+            model_gateway_revision = %s,
+            max_input_tokens = %s,
+            max_output_tokens = %s
         where tenant_id = %s
           and id = %s
           and status = 'queued'
           and model_id is null
           and model_value is null
           and model_gateway_revision is null
+          and max_input_tokens is null
+          and max_output_tokens is null
         returning id
         """,
-        (model_id, model_value, connection_revision, tenant_id, run_id),
+        (
+            model_id,
+            model_value,
+            connection_revision,
+            max_input_tokens,
+            max_output_tokens,
+            tenant_id,
+            run_id,
+        ),
     )
     if await cursor.fetchone() is None:
         raise ValueError("run_model_binding_invalid")
@@ -1224,7 +1282,8 @@ async def inherit_run_model(
         raise ValueError("run_model_inheritance_invalid")
     source_cursor = await conn.execute(
         """
-        select model_id, model_value, model_gateway_revision, input_json
+        select model_id, model_value, model_gateway_revision,
+               max_input_tokens, max_output_tokens
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -1236,7 +1295,8 @@ async def inherit_run_model(
         raise ValueError("run_model_source_missing")
     child_cursor = await conn.execute(
         """
-        select status, copied_from_run_id, model_id, model_value, model_gateway_revision
+        select status, copied_from_run_id, model_id, model_value,
+               model_gateway_revision, max_input_tokens, max_output_tokens
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -1254,46 +1314,47 @@ async def inherit_run_model(
     source_model_id = source.get("model_id")
     source_model_value = source.get("model_value")
     source_revision = source.get("model_gateway_revision")
-    if source_model_id is None and source_model_value is None and source_revision is None:
-        source_model_id, source_model_value = legacy_queue_model_snapshot(
-            source.get("input_json")
-        )
+    source_max_input_tokens = source.get("max_input_tokens")
+    source_max_output_tokens = source.get("max_output_tokens")
     if (
-        not isinstance(source_model_id, str)
-        or not source_model_id
-        or not isinstance(source_model_value, str)
-        or not source_model_value
-        or (
-            source_revision is not None
-            and (
-                not isinstance(source_revision, int)
-                or isinstance(source_revision, bool)
-                or source_revision < 1
-            )
-        )
+        not isinstance(source_model_id, str) or not source_model_id
+        or not isinstance(source_model_value, str) or not source_model_value
+        or type(source_revision) is not int or source_revision < 1
+        or any(type(value) is not int or not 1 <= value <= 10_000_000
+               for value in (source_max_input_tokens, source_max_output_tokens))
     ):
-        raise ValueError("run_model_source_partial")
+        raise ValueError("run_model_capacity_missing")
     if any(
         value is not None
         for value in (
             child.get("model_id"),
             child.get("model_value"),
             child.get("model_gateway_revision"),
+            child.get("max_input_tokens"),
+            child.get("max_output_tokens"),
         )
     ):
         raise ValueError("run_model_child_partial")
     update_cursor = await conn.execute(
         """
         update runs
-        set model_id = %s, model_value = %s, model_gateway_revision = %s
+        set model_id = %s,
+            model_value = %s,
+            model_gateway_revision = %s,
+            max_input_tokens = %s,
+            max_output_tokens = %s
         where tenant_id = %s and id = %s and status = 'queued'
-          and model_id is null and model_value is null and model_gateway_revision is null
+          and model_id is null and model_value is null
+          and model_gateway_revision is null
+          and max_input_tokens is null and max_output_tokens is null
         returning id
         """,
         (
             source_model_id,
             source_model_value,
             source_revision,
+            source_max_input_tokens,
+            source_max_output_tokens,
             tenant_id,
             child_run_id,
         ),

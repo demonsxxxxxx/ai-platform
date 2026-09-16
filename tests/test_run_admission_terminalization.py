@@ -7,6 +7,24 @@ from app import repositories
 from app import run_admission_terminalization as terminalization
 
 
+@pytest.fixture(autouse=True)
+def _stub_terminal_context_ports(monkeypatch):
+    async def usage(_conn, **_kwargs):
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
+        usage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
 class Cursor:
     def __init__(self, *, row=None, rows=None):
         self.row = row

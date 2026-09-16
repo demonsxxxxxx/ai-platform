@@ -49,6 +49,24 @@ _TEST_V4_CAPABILITIES = WorkerV4Capabilities(
 _TEST_ATTEMPT_LIFECYCLE = None
 
 
+@pytest.fixture(autouse=True)
+def _stub_terminal_context_ports(monkeypatch):
+    async def usage(_conn, **_kwargs):
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
+        usage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
 class _TestWorkerV4Runtime:
     capabilities = _TEST_V4_CAPABILITIES
 

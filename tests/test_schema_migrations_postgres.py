@@ -171,7 +171,8 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
             definition_mismatches = []
             if not status["constraint_definitions_current"]:
                 for relation_name, constraint_name, constraint_type, definition in (
-                    schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
+                    schema_migrations.MODEL_CRITICAL_CONSTRAINT_DEFINITIONS
+                    + schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
                 ):
                     cursor = await conn.execute(
                         """

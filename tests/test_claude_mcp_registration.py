@@ -109,26 +109,21 @@ async def test_registration_filters_catalog_preserves_results_and_closes_on_canc
     assert registration.sdk_names[item["identity"]] == SDK_TOOL
     assert registration.canonical_identity(SDK_TOOL) == item["identity"]
 
-    async def query(**_kwargs):
-        from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
-        server = config["gateway"]["instance"]
-        listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
-        assert [tool.name for tool in listed.root.tools] == [RAW_TOOL]
-        for name in (RAW_TOOL, "unselected"):
-            result = await server.request_handlers[CallToolRequest](CallToolRequest(
-                method="tools/call", params=CallToolRequestParams(name=name, arguments={"query": "synthetic"}),
-            ))
-            assert result.root.isError is True
-            if name == RAW_TOOL:
-                assert result.root.structuredContent == {"n": 1}
-        ready.set()
-        await asyncio.Event().wait()
-        yield None
-
     async def consume():
-        async with registration.query(query, prompt=None, options=SimpleNamespace()) as messages:
-            async for _ in messages:
-                pass
+        async with registration.activate(SimpleNamespace()):
+            from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
+            server = config["gateway"]["instance"]
+            listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
+            assert [tool.name for tool in listed.root.tools] == [RAW_TOOL]
+            for name in (RAW_TOOL, "unselected"):
+                result = await server.request_handlers[CallToolRequest](CallToolRequest(
+                    method="tools/call", params=CallToolRequestParams(name=name, arguments={"query": "synthetic"}),
+                ))
+                assert result.root.isError is True
+                if name == RAW_TOOL:
+                    assert result.root.structuredContent == {"n": 1}
+            ready.set()
+            await asyncio.Event().wait()
 
     task = asyncio.create_task(consume())
     try:
@@ -165,8 +160,11 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         monkeypatch.setattr(runner, "get_settings", lambda: settings)
         real_env = runner.build_sdk_env
 
-        def synthetic_env(*, cwd):
-            env = real_env(cwd=cwd)
+        def synthetic_env(*, cwd, model_max_output_tokens=None):
+            env = real_env(
+                cwd=cwd,
+                model_max_output_tokens=model_max_output_tokens,
+            )
             env.update({"ANTHROPIC_BASE_URL": peer.url, "ANTHROPIC_AUTH_TOKEN": "synthetic-model-token",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "NO_PROXY": "127.0.0.1,localhost"})
             for name in ("TEMP", "TMP", "APPDATA", "LOCALAPPDATA"):
@@ -231,10 +229,10 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_registration_rejects_missing_selected_tool_before_query():
+async def test_registration_rejects_missing_selected_tool_before_activation():
     item = subject()
     closed = []
-    queried = []
+    activated = []
 
     @asynccontextmanager
     async def session_factory(_config):
@@ -246,16 +244,12 @@ async def test_registration_rejects_missing_selected_tool_before_query():
     async def list_tools(_session):
         return []
 
-    async def query(**_kwargs):
-        queried.append(True)
-        yield None
-
     registration = ClaudeMcpRegistration(
         {item["identity"]: item}, {"gateway": item["mcp_server_config"]},
         session_factory=session_factory, list_tools=list_tools,
     )
     with pytest.raises(ValueError, match="mcp_selected_tool_unavailable"):
-        async with registration.query(query, prompt=None, options=SimpleNamespace()):
-            pytest.fail("query started before selected tool admission")
-    assert queried == []
+        async with registration.activate(SimpleNamespace()):
+            activated.append(True)
+    assert activated == []
     assert closed == [True]

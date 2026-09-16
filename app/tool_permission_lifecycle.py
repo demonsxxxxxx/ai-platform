@@ -9,6 +9,11 @@ from typing import Any, Callable
 from app.runs.api import (
     RunAttemptLifecycleService,
     RunTerminalizationProgress,
+    cancel_run_with_context,
+    complete_run_with_context,
+    converge_terminal_provider_lineage,
+    fail_run_with_context,
+    progress_run_terminalization_with_context,
 )
 from app.streaming.api import WorkerV4Capabilities, append_run_terminal_v4_row
 
@@ -130,6 +135,22 @@ def tool_permission_budget(normal_execution_timeout_seconds: float = 120.0) -> T
     )
 
 
+async def progress_run_terminalization(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> RunTerminalizationProgress | None:
+    from app import repositories
+
+    return await progress_run_terminalization_with_context(
+        conn,
+        progress_terminalization=repositories.progress_run_tool_permission_terminalization,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+
+
 async def progress_run_terminalization_with_v4(
     conn: Any,
     *,
@@ -139,9 +160,7 @@ async def progress_run_terminalization_with_v4(
 ) -> RunTerminalizationProgress | None:
     """Progress one locked Run and append its terminal v4 row transactionally."""
 
-    from app import repositories
-
-    progress = await repositories.progress_run_tool_permission_terminalization(
+    progress = await progress_run_terminalization(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
@@ -170,18 +189,15 @@ async def fail_run_with_v4(
 ) -> RunTerminalizationProgress:
     from app import repositories
 
-    progress = await repositories.fail_run(
+    progress = await fail_run_with_context(
         conn,
+        fail_run=repositories.fail_run,
         tenant_id=tenant_id,
         run_id=run_id,
         error_code=error_code,
         error_message=error_message,
         result_json=result_json,
-        **(
-            {"terminal_reason": terminal_reason}
-            if terminal_reason != "run_failed"
-            else {}
-        ),
+        terminal_reason=terminal_reason,
     )
     await append_run_terminal_v4_row(
         capabilities,
@@ -203,8 +219,9 @@ async def cancel_run_with_v4(
 ) -> RunTerminalizationProgress:
     from app import repositories
 
-    progress = await repositories.cancel_run(
+    progress = await cancel_run_with_context(
         conn,
+        cancel_run=repositories.cancel_run,
         tenant_id=tenant_id,
         run_id=run_id,
         result_json=result_json,
@@ -229,8 +246,9 @@ async def complete_run_with_v4(
 ) -> bool:
     from app import repositories
 
-    completed = await repositories.complete_run(
+    completed = await complete_run_with_context(
         conn,
+        complete_run=repositories.complete_run,
         tenant_id=tenant_id,
         run_id=run_id,
         result_json=result_json,
@@ -313,6 +331,9 @@ async def reconcile_terminalized_permission_run(
         )
         if reconciled is not None:
             parent_run_id = str(reconciled.get("parent_run_id") or "")
+            await converge_terminal_provider_lineage(
+                conn, tenant_id=tenant_id, run_id=parent_run_id,
+            )
             parent_run = await repositories.get_run(
                 conn,
                 tenant_id=tenant_id,

@@ -99,18 +99,31 @@ async def fake_transaction():
 
 
 @pytest.fixture(autouse=True)
-def legacy_model_control_plane_stub(monkeypatch):
-    async def no_managed_model(_conn, **_kwargs):
+def _stub_terminal_provider_lineage(monkeypatch):
+    async def release(_conn, **_kwargs):
         return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
+@pytest.fixture(autouse=True)
+def authorized_default_model_for_chat_routes(monkeypatch):
+    async def governed_model(_conn, *, selection):
+        if selection is not None:
+            raise ValueError("model_id_not_available")
+        return RunModelSelection(
+            model_id="test-model", model_value="provider/test-model",
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
+        )
 
     async def no_model_binding(_conn, **_kwargs):
         return None
 
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_management.resolve_run_model",
-        no_managed_model,
-    )
-    monkeypatch.setattr("app.routes.chat.bind_run_model", no_model_binding)
+    monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", governed_model)
+    monkeypatch.setattr("app.execution.application.model_selection.bind_run_model", no_model_binding)
 
 
 @pytest.fixture
@@ -714,7 +727,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
         return RunModelSelection(
             model_id="test-model",
             model_value="provider/test-model",
-            connection_revision=None,
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
@@ -954,7 +967,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         return RunModelSelection(
             model_id="test-model",
             model_value="provider/test-model",
-            connection_revision=None,
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
         )
 
     async def claim_submission(*_args, **kwargs):
@@ -2491,7 +2504,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
         return RunModelSelection(
             model_id="deepseek-v4-pro",
             model_value="deepseek-v4-pro",
-            connection_revision=None,
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
         )
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -3004,10 +3017,7 @@ async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monk
         raise ValueError("model_id_not_available")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_management.resolve_run_model",
-        reject_model,
-    )
+    monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", reject_model)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_side_effect)
@@ -3129,27 +3139,25 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
         return [snapshot_manifest(skill_id)]
 
-    async def fake_resolve_run_model(conn, *, model_id, model_value):
-        assert model_id == "pro-tier"
-        assert model_value == "openai/gpt-5"
+    async def fake_resolve_chat_model_selection(conn, *, selection):
+        assert selection == {"id": "pro-tier", "value": "openai/gpt-5"}
         return RunModelSelection(
             model_id="pro-tier",
             model_value="openai/gpt-5",
             connection_revision=7,
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_management.resolve_run_model",
-        fake_resolve_run_model,
-    )
+    monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", fake_resolve_chat_model_selection)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.bind_run_model", fake_bind_run_model)
+    monkeypatch.setattr("app.execution.application.model_selection.bind_run_model", fake_bind_run_model)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
@@ -3175,6 +3183,8 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
         "model_id": "pro-tier",
         "model_value": "openai/gpt-5",
         "connection_revision": 7,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
     }
     assert connections["create_run"] is connections["bind_run_model"]
     assert create_run_input["model_id"] == "pro-tier"
@@ -4741,7 +4751,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         return RunModelSelection(
             model_id="profile-model",
             model_value="provider/profile-model",
-            connection_revision=None,
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)

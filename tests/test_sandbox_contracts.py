@@ -8,7 +8,9 @@ from app.runtime.sandbox.contracts import (
     ContainerStatus,
     ContainerLease,
     ExecutorCallbackEvent,
+    ExecutorTaskRequest,
     ExecutorTerminalResult,
+    ModelTokenLimits,
     SandboxRuntimeRequest,
     WorkspaceLease,
     executor_terminal_receipt_payload,
@@ -41,6 +43,27 @@ def request_payload(**overrides):
     }
     values.update(overrides)
     return values
+
+
+def test_sandbox_model_budget_is_strict_at_both_transports():
+    budget = {"max_input_tokens": 32000, "max_output_tokens": 2048}
+    request = SandboxRuntimeRequest.model_validate(request_payload(model_token_limits=budget))
+    assert request.model_token_limits == ModelTokenLimits.model_validate(budget)
+    for invalid in (
+        {**budget, "max_input_tokens": "32000"},
+        {**budget, "max_output_tokens": True},
+        {**budget, "extra": 1},
+    ):
+        with pytest.raises(ValidationError):
+            SandboxRuntimeRequest.model_validate(request_payload(model_token_limits=invalid))
+        with pytest.raises(ValidationError, match="model_token_limits_invalid"):
+            ExecutorTaskRequest.model_validate({
+                "tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
+                "session_id": "session-a", "run_id": "run-a", "attempt_id": "attempt-a",
+                "prompt": "hello", "callback_url": "http://localhost:8020/api/ai/runtime/callbacks/executor",
+                "callback_token_id": "cbt-run-a", "callback_token": "synthetic",
+                "callback_base_url": "http://localhost:8020", "config": {"model_token_limits": invalid},
+            })
 
 
 def test_terminal_callback_rejects_empty_success_result():

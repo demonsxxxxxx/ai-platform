@@ -879,53 +879,23 @@ def test_notifications_have_one_workbench_route_owner(monkeypatch):
     assert authenticated_notifications.json()[0]["id"] == "platform-announcement"
 
 
-def test_lambchat_model_catalog_comes_from_settings(monkeypatch):
-    current_settings = type(
-        "S",
-        (),
-        {
-            "openai_model": "deepseek-v4-flash",
-            "anthropic_model": "deepseek-v4-flash",
-            "claude_agent_model": "deepseek-v4-pro",
-            "default_model_id": "deepseek-v4-pro",
-            "model_catalog_json": (
-                '[{"id":"deepseek-v4-flash","label":"DeepSeek V4 Flash","provider":"new-api","max_input_tokens":128000},'
-                '{"id":"deepseek-v4-pro","label":"DeepSeek V4 Pro","provider":"new-api","max_input_tokens":128000}]'
-            ),
-        },
-    )()
-    monkeypatch.setattr(
-        "app.bootstrap.model_services.get_settings",
-        lambda: current_settings,
-    )
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
-        AsyncMock(return_value=[]),
-    )
+def test_lambchat_model_catalog_is_empty_without_governed_connection(monkeypatch):
     monkeypatch.setattr(
         "app.execution.infrastructure.model_management.list_public_models",
         AsyncMock(return_value=None),
     )
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    client = TestClient(create_app())
-
-    response = client.get("/api/agent/models/available", headers=auth_headers())
-
+    response = TestClient(create_app()).get(
+        "/api/agent/models/available", headers=auth_headers(),
+    )
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["default_model_id"] == "deepseek-v4-pro"
-    assert payload["count"] == 2
-    assert payload["enabled_count"] == 2
-    assert [model["id"] for model in payload["models"]] == [
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
-    ]
-    assert payload["models"][1]["label"] == "DeepSeek V4 Pro"
-    assert payload["models"][1]["profile"]["max_input_tokens"] == 128000
+    assert response.json() == {
+        "models": [], "count": 0, "enabled_count": 0, "default_model_id": None,
+    }
 
 
-def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids(
+def test_lambchat_governed_model_catalog_preserves_raw_ids(
     monkeypatch,
 ):
     governed = {
@@ -942,20 +912,10 @@ def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_
         "default_model_id": "mdl_public",
     }
 
-    forbidden_legacy_fetch = AsyncMock(
-        side_effect=AssertionError(
-            "legacy discovery must not run after control-plane activation"
-        )
-    )
-
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
         "app.execution.infrastructure.model_management.list_public_models",
         AsyncMock(return_value=governed),
-    )
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
-        forbidden_legacy_fetch,
     )
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     response = TestClient(create_app()).get(

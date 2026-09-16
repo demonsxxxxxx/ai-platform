@@ -7,6 +7,7 @@ import shlex
 import sys
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from inspect import isawaitable
 from pathlib import Path, PurePosixPath
@@ -158,6 +159,8 @@ _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal
 _MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
+_SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
+_SDK_NATIVE_COMPACT_FAILED = "context_native_compact_failed"
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
 _MAX_TURN_DIAGNOSTIC_COUNTER = 1_000_000
 _MAX_PUBLIC_DIAGNOSTIC_SKILLS = 16
@@ -225,6 +228,29 @@ class ClaudeAgentSdkRunResult:
     turn_diagnostics: dict[str, Any] = field(default_factory=dict)
     runtime_diagnostics: dict[str, Any] = field(default_factory=dict)
     capability_evidence: list[dict[str, str]] = field(default_factory=list)
+    provider_final_sequence: int | None = None
+
+
+class _SessionStoreAppendTracker:
+    def __init__(self, store: Any) -> None:
+        self._store = store
+        self.main_append_acknowledged = False
+        self.final_sequence: int | None = None
+
+    async def load(self, key: Any) -> Any:
+        return await self._store.load(key)
+
+    async def append(self, key: Any, entries: Any) -> None:
+        await self._store.append(key, entries)
+        sequence = getattr(self._store, "accepted_final_sequence", None)
+        if type(sequence) is int and sequence >= 1:
+            self.final_sequence = sequence
+        subpath = key.get("subpath") if isinstance(key, dict) else None
+        if not subpath:
+            self.main_append_acknowledged = True
+
+    async def list_subkeys(self, key: Any = None) -> Any:
+        return await self._store.list_subkeys(key)
 
 
 class ClaudeAgentSdkNotAvailable(RuntimeError):
@@ -447,6 +473,8 @@ def _canonical_sdk_error(
         return _SDK_TIMEOUT
     if error_text == _SDK_MISSING_STRUCTURED_TERMINAL:
         return _SDK_MISSING_STRUCTURED_TERMINAL
+    if error_text == _SDK_NATIVE_COMPACT_FAILED:
+        return _SDK_NATIVE_COMPACT_FAILED
     if selected_skill_error:
         return selected_skill_error
     if tool_admission_denials > 0:
@@ -564,8 +592,12 @@ def _sdk_permission_type(sdk: object, name: str):
     return PermissionResult
 
 
-def build_sdk_env(*, cwd: Path | None = None) -> dict[str, str]:
+def build_sdk_env(*, cwd: Path | None = None, model_max_output_tokens: int | None = None) -> dict[str, str]:
     settings = get_settings()
+    if model_max_output_tokens is not None and (
+        type(model_max_output_tokens) is not int or not 1 <= model_max_output_tokens <= 10_000_000
+    ):
+        raise ValueError("model_output_capacity_invalid")
     env = {key: "" for key in os.environ if key not in _SDK_ENV_ALLOWLIST}
     for key in _SDK_ENV_ALLOWLIST:
         value = os.environ.get(key)
@@ -595,6 +627,8 @@ def build_sdk_env(*, cwd: Path | None = None) -> dict[str, str]:
         value = os.environ.get(key)
         if value:
             env[key] = value
+    if model_max_output_tokens is not None:
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(model_max_output_tokens)
     return env
 
 
@@ -955,12 +989,16 @@ async def run_claude_agent_sdk(
     cwd: Path,
     skill_id: str | None,
     session_id: str | None = None,
+    session_store: Any | None = None,
+    provider_session_resume_required: bool | None = None,
     context_retrieval: ContextRetrievalAuthority | None = None,
     context_retrieval_identity: ScopedContextRetrievalIdentity | None = None,
     model_id: str | None = None,
+    model_max_input_tokens: int | None = None,
+    model_max_output_tokens: int | None = None,
     system_prompt: str | None = None,
     skills: list[str] | None = None,
-    query_fn: Callable[..., Any] | None = None,
+    client_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_capability_evidence: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
@@ -975,6 +1013,11 @@ async def run_claude_agent_sdk(
     thinking_effort: str = "off",
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
+    if (model_max_input_tokens is None) != (model_max_output_tokens is None) or any(
+        value is not None and (type(value) is not int or not 1 <= value <= 10_000_000)
+        for value in (model_max_input_tokens, model_max_output_tokens)
+    ):
+        raise ValueError("model_token_limits_invalid")
     settings = get_settings()
     max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 256)))
     diagnostic_counters = {
@@ -1187,15 +1230,61 @@ async def run_claude_agent_sdk(
         TaskProgressMessage = getattr(sdk, "TaskProgressMessage", ())
         TaskNotificationMessage = getattr(sdk, "TaskNotificationMessage", ())
         TaskUpdatedMessage = getattr(sdk, "TaskUpdatedMessage", ())
+        MirrorErrorMessage = getattr(sdk, "MirrorErrorMessage", ())
         ToolPermissionContext = getattr(sdk, "ToolPermissionContext", ())
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
-        if query_fn is None:
-            query = sdk.query
-        else:
-            query = query_fn
+        client_factory = client_fn or getattr(sdk, "ClaudeSDKClient", None)
+        if client_factory is None:
+            raise AttributeError("ClaudeSDKClient")
     except Exception as exc:
         raise ClaudeAgentSdkNotAvailable(str(exc)) from exc
+
+    provider_session_store: _SessionStoreAppendTracker | None = None
+    if session_store is not None:
+        provider_session_store = _SessionStoreAppendTracker(session_store)
+        provider_session_options: dict[str, Any] = {
+            "session_store": provider_session_store,
+            "session_store_flush": "eager",
+        }
+        if not session_id:
+            error_code = _SDK_PROVIDER_SESSION_FAILED
+            return ClaudeAgentSdkRunResult(
+                used_sdk=True,
+                error=error_code,
+                turn_diagnostics=turn_diagnostics(error_code),
+            )
+        try:
+            main_transcript = await provider_session_store.load(session_id)
+        except Exception:  # noqa: BLE001 - provider details stay private.
+            main_transcript = None
+            error_code = _SDK_PROVIDER_SESSION_FAILED
+            return ClaudeAgentSdkRunResult(
+                used_sdk=True,
+                error=error_code,
+                turn_diagnostics=turn_diagnostics(error_code),
+            )
+        if type(provider_session_resume_required) is not bool:
+            error_code = _SDK_PROVIDER_SESSION_FAILED
+            return ClaudeAgentSdkRunResult(
+                used_sdk=True,
+                error=error_code,
+                turn_diagnostics=turn_diagnostics(error_code),
+            )
+        # The platform selected resume from exact coverage; SDK load only checks
+        # that the frozen choice matches the actual opaque store.
+        if provider_session_resume_required != bool(main_transcript):
+            error_code = _SDK_PROVIDER_SESSION_FAILED
+            return ClaudeAgentSdkRunResult(
+                used_sdk=True,
+                error=error_code,
+                turn_diagnostics=turn_diagnostics(error_code),
+            )
+        provider_session_options[
+            "resume" if provider_session_resume_required else "session_id"
+        ] = session_id
+    else:
+        provider_session_options = {"session_id": session_id}
 
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
@@ -1966,7 +2055,11 @@ async def run_claude_agent_sdk(
             }
         )
 
+    compact_in_progress = False
+
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
+        if compact_in_progress:
+            return PermissionResultDeny(message="native_compact_tools_forbidden")
         decision = policy_for_tool(tool_name, tool_input)
         context_tool_use_id = permission_context_tool_use_id(_context)
         record_runtime_tool_stage(
@@ -2000,6 +2093,9 @@ async def run_claude_agent_sdk(
     ) -> dict[str, object]:
         hook_input_is_mapping = isinstance(hook_input, dict)
         hook_input = hook_input if hook_input_is_mapping else {}
+        if compact_in_progress:
+            return {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                    "permissionDecisionReason": "native_compact_tools_forbidden"}
         tool_name = ""
         if not hook_input_is_mapping:
             decision = evaluate_tool_policy(tool={})
@@ -2389,14 +2485,14 @@ async def run_claude_agent_sdk(
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
-        env=build_sdk_env(cwd=cwd),
+        env=build_sdk_env(cwd=cwd, model_max_output_tokens=model_max_output_tokens),
         skills=configured_skills,
-        session_id=session_id,
         max_turns=max_turns,
         can_use_tool=can_use_tool,
         hooks=hooks,
         include_partial_messages=sandbox_partial_streaming,
         setting_sources=["project"],
+        **provider_session_options,
         **thinking_options,
     )
 
@@ -2499,12 +2595,74 @@ async def run_claude_agent_sdk(
             agent_public_answer_chunks.append(projected_value)
         return True
 
-    async def consume(messages) -> ClaudeAgentSdkRunResult:
+    async def _client_messages() -> AsyncIterator[Any]:
+        nonlocal compact_in_progress
+        if client_factory is None:
+            raise RuntimeError("sdk_client_unavailable")
+        client = client_factory(options)
+        try:
+            await client.connect()
+            context_usage = await client.get_context_usage()
+            used = context_usage.get("totalTokens") if isinstance(context_usage, dict) else None
+            if type(used) is not int or used < 0:
+                raise RuntimeError("sdk_context_usage_invalid")
+            prompt_ceiling = len(sdk_prompt.encode("utf-8"))
+            if (provider_session_resume_required and model_max_input_tokens is not None
+                and used + prompt_ceiling >= model_max_input_tokens):
+                compact_in_progress = True
+                try:
+                    await client.set_permission_mode("dontAsk")
+                    await client.query("/compact", session_id=session_id or "default")
+                    terminal = None
+                    async for private in client.receive_response():
+                        if isinstance(private, AssistantMessage) and any(
+                            type(block).__name__ == "ToolUseBlock" for block in private.content
+                        ):
+                            raise ValueError(_SDK_NATIVE_COMPACT_FAILED)
+                        if isinstance(private, ResultMessage):
+                            terminal = private
+                    if (terminal is None or terminal.is_error
+                        or terminal.session_id != session_id):
+                        raise ValueError(_SDK_NATIVE_COMPACT_FAILED)
+                    await client.set_permission_mode(permission_mode)
+                except Exception as exc:
+                    raise ValueError(_SDK_NATIVE_COMPACT_FAILED) from exc
+                finally:
+                    compact_in_progress = False
+                context_usage = await client.get_context_usage()
+                after = context_usage.get("totalTokens") if isinstance(context_usage, dict) else None
+                if type(after) is not int or after < 0 or after + prompt_ceiling >= model_max_input_tokens:
+                    raise ValueError(_SDK_NATIVE_COMPACT_FAILED)
+            await client.query(_sdk_user_prompt_stream(sdk_prompt, session_id=session_id),
+                               session_id=session_id or "default")
+            async for message in client.receive_response():
+                yield message
+        finally:
+            await client.disconnect()
+
+    async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, structured_result_text, terminal_result_message
         answer_timeline = AssistantAnswerTimeline()
         async for message in messages:
             mcp_registration.check_message(message)
+            if isinstance(message, MirrorErrorMessage):
+                answer_stream_gate.finish(final_text="", release=False)
+                seal_agent_candidates("provider_session_mirror_error")
+                error_code = _SDK_PROVIDER_SESSION_FAILED
+                return ClaudeAgentSdkRunResult(
+                    used_sdk=True,
+                    message="",
+                    session_id=result_session_id,
+                    usage=usage,
+                    error=error_code,
+                    terminal_reason=terminal_reason,
+                    received_structured_terminal=False,
+                    used_skills=list(used_skill_names),
+                    used_skills_source="executor_hook" if used_skill_names else "",
+                    turn_diagnostics=turn_diagnostics(error_code),
+                    capability_evidence=list(capability_evidence),
+                )
             if agent_event_adapter is not None and isinstance(
                 message,
                 (
@@ -2669,6 +2827,27 @@ async def run_claude_agent_sdk(
                         ),
                         capability_evidence=list(capability_evidence),
                     )
+                if (provider_session_store is not None
+                    and (not provider_session_store.main_append_acknowledged
+                         or provider_session_store.final_sequence is None
+                         or result_session_id != session_id)):
+
+                    answer_stream_gate.finish(final_text="", release=False)
+                    seal_agent_candidates("provider_session_append_not_acknowledged")
+                    error_code = _SDK_PROVIDER_SESSION_FAILED
+                    return ClaudeAgentSdkRunResult(
+                        used_sdk=True,
+                        message="",
+                        session_id=result_session_id,
+                        usage=usage,
+                        error=error_code,
+                        terminal_reason=resolved_terminal_reason,
+                        received_structured_terminal=False,
+                        used_skills=list(used_skill_names),
+                        used_skills_source="executor_hook" if used_skill_names else "",
+                        turn_diagnostics=turn_diagnostics(error_code),
+                        capability_evidence=list(capability_evidence),
+                    )
                 received_structured_terminal = True
                 answer_timeline.accept_result(str(message.result or ""))
                 structured_result_text = answer_timeline.text
@@ -2755,6 +2934,8 @@ async def run_claude_agent_sdk(
             used_skills_source="executor_hook" if used_skill_names else "",
             turn_diagnostics=turn_diagnostics(terminal_error),
             capability_evidence=list(capability_evidence),
+            provider_final_sequence=(provider_session_store.final_sequence
+                                     if terminal_error is None and provider_session_store is not None else None),
             runtime_diagnostics=(
                 runtime_diagnostics(
                     terminal_error,
@@ -2780,12 +2961,9 @@ async def run_claude_agent_sdk(
     async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
         nonlocal consume_cancellation
         try:
-            async with mcp_registration.query(
-                query,
-                prompt=_sdk_user_prompt_stream(sdk_prompt, session_id=session_id),
-                options=options,
-            ) as messages:
-                return await consume(messages)
+            async with mcp_registration.activate(options):
+                async with aclosing(_client_messages()) as messages:
+                    return await consume(messages)
         except asyncio.CancelledError as exc:
             consume_cancellation = exc
             raise

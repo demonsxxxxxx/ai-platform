@@ -7,6 +7,7 @@ import pytest
 from tests.support.claude_mcp import install_mcp_sessions
 
 from app.executors.claude_agent_sdk_runner import (
+    ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
@@ -73,6 +74,38 @@ def _settings():
         anthropic_auth_token="",
         openai_api_key="",
     )
+
+
+@pytest.mark.asyncio
+async def test_sdk_requires_native_client_and_rejects_legacy_query_only(
+    monkeypatch, tmp_path
+):
+    async def legacy_query(*, prompt, options):
+        del prompt, options
+        if False:
+            yield None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=object,
+            ClaudeAgentOptions=object,
+            ResultMessage=object,
+            TextBlock=object,
+            query=legacy_query,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _settings
+    )
+
+    with pytest.raises(ClaudeAgentSdkNotAvailable, match="ClaudeSDKClient"):
+        await run_claude_agent_sdk(
+            prompt="hello",
+            cwd=tmp_path,
+            skill_id=None,
+        )
 
 
 def _subject(
@@ -146,7 +179,49 @@ def _captured_sdk_prompt(captured):
     return captured["sdk_user_messages"][0]["message"]["content"]
 
 
-def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
+def _client_sdk(module, captured):
+    class FakeClient:
+        def __init__(self, options):
+            self.options = options
+            self.responses = None
+            captured["client_mcp_server_types_at_construction"] = {
+                name: config.get("type") if isinstance(config, dict) else None
+                for name, config in getattr(options, "mcp_servers", {}).items()
+            }
+
+        async def connect(self):
+            captured["client_connected"] = True
+
+        async def get_context_usage(self):
+            return {"totalTokens": 0}
+
+        async def set_permission_mode(self, mode):
+            captured["client_permission_mode"] = mode
+
+        async def query(self, prompt, session_id="default"):
+            assert session_id
+            self.responses = module.query(prompt=prompt, options=self.options)
+
+        async def receive_response(self):
+            async for message in self.responses:
+                yield message
+
+        async def disconnect(self):
+            captured["client_disconnected"] = True
+
+    module.ClaudeSDKClient = FakeClient
+    return module
+
+
+def _fake_sdk(
+    captured,
+    *,
+    hook_invocations,
+    thinking_text=None,
+    mirror_error=False,
+    append_provider_session=True,
+    append_provider_subpath=None,
+):
     class ThinkingBlock:
         def __init__(self, thinking):
             self.thinking = thinking
@@ -159,6 +234,9 @@ def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
         pass
 
     class StreamEvent:
+        pass
+
+    class MirrorErrorMessage:
         pass
 
     class ResultMessage:
@@ -180,10 +258,21 @@ def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.__dict__.update(kwargs)
 
     async def query(*, prompt, options):
-        del options
         captured["sdk_user_messages"] = [item async for item in prompt]
+        if mirror_error:
+            yield MirrorErrorMessage()
+            return
+        if append_provider_session and getattr(options, "session_store", None) is not None:
+            session_key = getattr(options, "session_id", None) or getattr(options, "resume", None)
+            await options.session_store.append(
+                {"session_id": session_key, "subpath": append_provider_subpath}
+                if append_provider_subpath
+                else session_key,
+                [{"uuid": "entry-ack"}],
+            )
         for hook_name, hook_input, tool_call_id in hook_invocations:
             matchers = captured["hooks"][hook_name]
             if hook_name == "PreToolUse":
@@ -204,18 +293,22 @@ def _fake_sdk(captured, *, hook_invocations, thinking_text=None):
             captured.setdefault("hook_results", []).append((hook_name, hook_result))
         if thinking_text is not None:
             yield AssistantMessage([ThinkingBlock(thinking_text)])
-        yield ResultMessage()
+        terminal = ResultMessage()
+        if getattr(options, "session_store", None) is not None:
+            terminal.session_id = getattr(options, "session_id", None) or getattr(options, "resume", None)
+        yield terminal
 
-    return types.SimpleNamespace(
+    return _client_sdk(types.SimpleNamespace(
         AssistantMessage=AssistantMessage,
         ClaudeAgentOptions=ClaudeAgentOptions,
         HookMatcher=HookMatcher,
+        MirrorErrorMessage=MirrorErrorMessage,
         ResultMessage=ResultMessage,
         StreamEvent=StreamEvent,
         TextBlock=TextBlock,
         ThinkingBlock=ThinkingBlock,
         query=query,
-    )
+    ), captured)
 
 
 def _scripted_sdk(
@@ -332,7 +425,7 @@ def _scripted_sdk(
                 value()
         yield ResultMessage()
 
-    return types.SimpleNamespace(
+    return _client_sdk(types.SimpleNamespace(
         AssistantMessage=AssistantMessage,
         ClaudeAgentOptions=ClaudeAgentOptions,
         HookMatcher=HookMatcher,
@@ -342,7 +435,7 @@ def _scripted_sdk(
         ThinkingBlock=ThinkingBlock,
         ToolUseBlock=ToolUseBlock,
         query=query,
-    )
+    ), captured)
 
 
 def _stream_steps(text, *, index=0):
@@ -2019,7 +2112,68 @@ async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering
     assert sdk_prompt == "User supplied question"
     if execution_policy == "sandbox_brokered":
         assert set(captured["mcp_servers"]) == {"tenant-server"}
+        assert captured["client_mcp_server_types_at_construction"] == {
+            "tenant-server": "sdk"
+        }
         assert "mcp__tenant-server__search" in captured["allowed_tools"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mirror_error", [False, True])
+async def test_sdk_disconnects_before_selected_mcp_session_closes(
+    monkeypatch, tmp_path, mirror_error
+):
+    from contextlib import asynccontextmanager
+
+    from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
+
+    captured = {}
+    lifecycle = []
+
+    @asynccontextmanager
+    async def session_factory(_config):
+        lifecycle.append("mcp_open")
+        try:
+            yield types.SimpleNamespace()
+        finally:
+            assert captured.get("client_disconnected") is True
+            lifecycle.append("mcp_closed")
+
+    async def list_tools(_session):
+        return [types.SimpleNamespace(name="search")]
+
+    def prepare(subjects, configs):
+        return ClaudeMcpRegistration(
+            subjects,
+            configs,
+            session_factory=session_factory,
+            list_tools=list_tools,
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[], mirror_error=mirror_error),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.prepare_claude_mcp", prepare
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _settings
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_subject()],
+    )
+
+    assert result.error == (
+        "claude_agent_sdk_provider_session_failed" if mirror_error else None
+    )
+    assert lifecycle == ["mcp_open", "mcp_closed"]
 
 
 def _mcp_hook_steps(subject, *, call_id="mcp-call-1", terminal="completed"):
@@ -3584,13 +3738,16 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
-        types.SimpleNamespace(
-            AssistantMessage=AssistantMessage,
-            ClaudeAgentOptions=ClaudeAgentOptions,
-            ResultMessage=ResultMessage,
-            StreamEvent=type("StreamEvent", (), {}),
-            TextBlock=TextBlock,
-            query=query,
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=AssistantMessage,
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                ResultMessage=ResultMessage,
+                StreamEvent=type("StreamEvent", (), {}),
+                TextBlock=TextBlock,
+                query=query,
+            ),
+            captured,
         ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
@@ -3871,14 +4028,14 @@ def _streaming_sdk(
             on_before_result()
         yield ResultMessage()
 
-    return types.SimpleNamespace(
+    return _client_sdk(types.SimpleNamespace(
         AssistantMessage=AssistantMessage,
         ClaudeAgentOptions=ClaudeAgentOptions,
         ResultMessage=ResultMessage,
         StreamEvent=StreamEvent,
         TextBlock=TextBlock,
         query=query,
-    )
+    ), captured)
 
 
 @pytest.mark.asyncio
@@ -4302,15 +4459,18 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
-        types.SimpleNamespace(
-            AssistantMessage=AssistantMessage,
-            ClaudeAgentOptions=ClaudeAgentOptions,
-            HookMatcher=HookMatcher,
-            ResultMessage=ResultMessage,
-            StreamEvent=StreamEvent,
-            TextBlock=TextBlock,
-            ToolUseBlock=ToolUseBlock,
-            query=query,
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=AssistantMessage,
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                HookMatcher=HookMatcher,
+                ResultMessage=ResultMessage,
+                StreamEvent=StreamEvent,
+                TextBlock=TextBlock,
+                ToolUseBlock=ToolUseBlock,
+                query=query,
+            ),
+            {},
         ),
     )
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
@@ -4337,3 +4497,262 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
         await task
     assert cleaned_up.is_set()
     assert events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_transcript", "expected_option"),
+    [(None, "session_id"), ([{"uuid": "entry-1"}], "resume")],
+)
+async def test_sdk_provider_session_options_are_exclusive_and_eager(
+    monkeypatch,
+    tmp_path,
+    stored_transcript,
+    expected_option,
+):
+    captured = {}
+
+    append_calls = []
+
+    class Store:
+        @property
+        def accepted_final_sequence(self):
+            return 1 if append_calls else None
+
+        async def load(self, provider_session_id):
+            assert provider_session_id == "stable-provider-id"
+            return stored_transcript
+
+        async def append(self, provider_session_id, entries):
+            append_calls.append((provider_session_id, entries))
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+        provider_session_resume_required=expected_option == "resume",
+    )
+
+    assert result.error is None
+    assert result.provider_final_sequence == 1
+    assert captured["session_store_flush"] == "eager"
+    assert captured["session_store"] is not None
+    assert captured[expected_option] == "stable-provider-id"
+    assert {"session_id", "resume"}.intersection(captured) == {expected_option}
+    assert append_calls == [("stable-provider-id", [{"uuid": "entry-ack"}])]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("append_subpath", [None, "child-agent"])
+async def test_sdk_provider_session_requires_main_append_for_success(
+    monkeypatch, tmp_path, append_subpath
+):
+    captured = {}
+
+    class Store:
+        async def load(self, _provider_session_id):
+            return None
+
+        async def append(self, _provider_session_id, _entries):
+            return None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[],
+            append_provider_session=append_subpath is not None,
+            append_provider_subpath=append_subpath,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+        provider_session_resume_required=False,
+    )
+
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_transcript", "resume_required"),
+    [(None, True), ([{"uuid": "entry-1"}], False)],
+)
+async def test_sdk_provider_session_resume_state_mismatch_fails_closed(
+    monkeypatch,
+    tmp_path,
+    stored_transcript,
+    resume_required,
+):
+    captured = {}
+
+    class Store:
+        async def load(self, _provider_session_id):
+            return stored_transcript
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+        provider_session_resume_required=resume_required,
+    )
+
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == ""
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_sdk_provider_session_preflight_failure_is_private_and_fail_closed(monkeypatch, tmp_path):
+    captured = {}
+
+    class Store:
+        async def load(self, _provider_session_id):
+            raise RuntimeError("private callback details")
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+        provider_session_resume_required=False,
+    )
+
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == ""
+    assert "private callback details" not in repr(result)
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_sdk_mirror_error_is_a_private_fail_closed_provider_failure(monkeypatch, tmp_path):
+    captured = {}
+
+    class Store:
+        async def load(self, _provider_session_id):
+            return [{"uuid": "entry-1"}]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[], mirror_error=True),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="continue",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+        provider_session_resume_required=True,
+    )
+
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == ""
+    assert "MirrorError" not in repr(result)
+    assert "entry-1" not in repr(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("compact_tool_attempt", [False, True])
+async def test_native_client_compact_is_private_and_fails_closed_on_a_tool_attempt(
+    monkeypatch, tmp_path, compact_tool_attempt,
+):
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[])
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    published = []
+
+    class Store:
+        accepted_final_sequence = 1
+
+        async def load(self, _key):
+            return [{"uuid": "entry-1"}]
+
+        async def append(self, _key, _entries):
+            return None
+
+    class Client:
+        def __init__(self, options):
+            self.options = options
+            self.after_compact = False
+            self.responses = None
+
+        async def connect(self):
+            captured["connected"] = True
+
+        async def get_context_usage(self):
+            return {"totalTokens": 128 if self.after_compact else 31990}
+
+        async def set_permission_mode(self, mode):
+            assert mode == "dontAsk"
+
+        async def query(self, prompt, session_id="default"):
+            if prompt == "/compact":
+                self.after_compact = True
+                captured["compact"] = True
+                denial = await self.options.can_use_tool("Bash", {"command": "do work"}, None)
+                assert denial.behavior == "deny" and denial.message == "native_compact_tools_forbidden"
+                terminal = sdk.ResultMessage()
+                terminal.session_id = "stable-provider-id"
+
+                async def private_response():
+                    if compact_tool_attempt:
+                        class ToolUseBlock:
+                            pass
+                        yield sdk.AssistantMessage([ToolUseBlock()])
+                    else:
+                        yield sdk.AssistantMessage([types.SimpleNamespace(text="private compact transcript")])
+                    yield terminal
+
+                self.responses = private_response()
+            else:
+                captured["business_query"] = True
+                self.responses = sdk.query(prompt=prompt, options=self.options)
+
+        async def receive_response(self):
+            async for message in self.responses:
+                yield message
+
+        async def disconnect(self):
+            captured["disconnected"] = True
+
+    result = await run_claude_agent_sdk(
+        prompt="continue with recent user request", cwd=tmp_path,
+        skill_id=None, session_id="stable-provider-id", session_store=Store(),
+        provider_session_resume_required=True, model_max_input_tokens=32000,
+        model_max_output_tokens=2048, client_fn=Client,
+        on_text=lambda text: published.append(text),
+    )
+    assert captured["compact"] and captured["disconnected"]
+    assert "private compact transcript" not in str(published)
+    if compact_tool_attempt:
+        assert result.error == "context_native_compact_failed" and not captured.get("business_query")
+        assert result.message == "" and not published
+    else:
+        assert result.error is None and captured["business_query"]
+        assert result.provider_final_sequence == 1

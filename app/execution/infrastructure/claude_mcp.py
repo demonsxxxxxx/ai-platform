@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from contextlib import AsyncExitStack, aclosing, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from mcp.server.lowlevel import Server
@@ -82,7 +82,7 @@ class ClaudeMcpRegistration:
         return {"type": "sdk", "name": server_name, "instance": server}
 
     @asynccontextmanager
-    async def query(self, query, *, prompt, options):
+    async def activate(self, options):
         async with AsyncExitStack() as stack:
             servers = self.configs
             for server_name, names in self.selected.items():
@@ -98,8 +98,7 @@ class ClaudeMcpRegistration:
                 servers.pop(server_name, None)
                 servers[server_alias] = self._server(server_alias, selected, session)
             options.mcp_servers = servers
-            async with aclosing(query(prompt=prompt, options=options)) as messages:
-                yield messages
+            yield
 
     def check_message(self, message):
         if getattr(message, "subtype", None) != "init":
