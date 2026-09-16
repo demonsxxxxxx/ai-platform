@@ -1539,6 +1539,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   }, [createSSEContext]);
 
   useEffect(() => {
+    const terminalReservations = v4TerminalReservationsRef.current;
     isMountedRef.current = true;
     const mountedGeneration = ++mountedGenerationRef.current;
     return () => {
@@ -1557,7 +1558,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
-      v4TerminalReservationsRef.current.clear();
+      terminalReservations.clear();
       statusRetryCountRef.current = 0;
       resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       isLoadingHistoryRef.current = false;
