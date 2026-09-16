@@ -4,6 +4,9 @@ from app.skills.domain.internal_dependencies import (
     INTERNAL_DEPENDENCY_SKILL_IDS,
     is_internal_dependency_skill,
 )
+from app.skills.domain.snapshot_paths import (
+    skill_snapshot_components_fit as skill_snapshot_components_fit,
+)
 from app.skills.domain.version_labels import (
     next_uploaded_skill_display_version,
     resolve_uploaded_skill_display_versions,
