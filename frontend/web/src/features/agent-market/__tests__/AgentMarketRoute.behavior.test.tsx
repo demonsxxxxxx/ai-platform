@@ -552,6 +552,7 @@ test("market search commits Chinese IME text only after composition ends", async
     expected_revision: 1,
     name: `支持助手 ${index + 1}`,
     description: "处理支持请求。",
+    market_tags: [`标签 ${index + 1}`],
     avatar_ref: "builtin:assistant",
     category: "support",
   }));
@@ -594,6 +595,24 @@ test("market search commits Chinese IME text only after composition ends", async
     });
 
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 9);
+    const moreTags = container.querySelector("details");
+    assert.ok(moreTags, "additional market tags stay reachable without a sidebar");
+    const eighthTag = moreTags.querySelectorAll("button")
+      .find((button) => button.textContent?.includes("标签 8"));
+    assert.ok(eighthTag);
+    await React.act(async () => {
+      eighthTag.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.match(currentPath, /tag=%E6%A0%87%E7%AD%BE\+8/);
+    const allTags = container.querySelector("[data-agent-market-filter]")?.querySelectorAll("button")
+      .find((button) => button.textContent?.trim() === "全部");
+    assert.ok(allTags);
+    await React.act(async () => {
+      allTags.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market");
     const pageTwo = container
       .querySelectorAll("button")
       .find((button) => button.textContent === "2");
