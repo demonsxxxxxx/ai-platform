@@ -4811,7 +4811,7 @@ class OpenSandboxContainerProvider:
             raise ContainerStartFailedError("OpenSandbox workspace collection path is invalid")
         relative_path = _safe_workspace_relative_path(raw_path[len(remote_root) + 1 :])
         entry_type = str(self._filesystem_entry_value(entry, "entry_type") or "").lower()
-        if entry_type not in {"file", "directory"}:
+        if entry_type not in {"file", "directory", "symlink", "other"}:
             raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid")
         try:
             size = int(self._filesystem_entry_value(entry, "size"))
@@ -5147,6 +5147,8 @@ class OpenSandboxContainerProvider:
                     workspace,
                     relative_directory,
                 ):
+                    if entry_type in {"symlink", "other"}:
+                        continue
                     if entry_type == "directory":
                         if not workspace_directory_allowed(relative_path):
                             continue

@@ -361,7 +361,7 @@ async def record_executor_callback(
                     ):
                         raise ValueError("sandbox_runtime_renewal_lease_unavailable")
                     provider = create_container_provider(persisted_lease.provider)
-                    await renew_opensandbox_lifetime(
+                    provider_expires_at = await renew_opensandbox_lifetime(
                         provider,
                         persisted_lease,
                         settings,
@@ -372,6 +372,16 @@ async def record_executor_callback(
                         status_code=503,
                         detail="sandbox_runtime_renewal_failed",
                     ) from exc
+                receipt = await sandbox_lease_repository.record_opensandbox_renewal_receipt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    lease_id=lease_id,
+                    provider_expires_at=provider_expires_at,
+                )
+                if receipt is None:
+                    raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
         await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,

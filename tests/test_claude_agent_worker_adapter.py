@@ -2984,6 +2984,36 @@ def test_sandbox_runtime_unknown_or_error_terminal_status_fails_closed(runtime_s
     assert result.executor_payload["runtime_terminal_status"] == runtime_status
 
 
+def test_sandbox_runtime_without_private_diagnostics_does_not_synthesize_rejection(tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="write the requested result",
+    )
+    for carrier in ({}, {"runtime_diagnostics": {}}):
+        result = adapter._executor_result_from_sandbox_runtime(
+            sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat"),
+            prepared,
+            types.SimpleNamespace(
+                status="failed",
+                provider="docker",
+                executor_response={"status": "failed", "error_code": "executor_reported_failure", **carrier},
+                timings={},
+            ),
+        )
+        if not carrier:
+            assert "runtime_diagnostics" not in result.result
+            assert "runtime_diagnostics" not in result.executor_payload
+        else:
+            assert result.result["runtime_diagnostics"]["error_code"] == "runtime_diagnostics_rejected"
+            assert result.executor_payload["runtime_diagnostics"] == result.result["runtime_diagnostics"]
+
+
 def test_sandbox_runtime_preserves_private_runtime_diagnostics(tmp_path):
     adapter = ClaudeAgentWorkerAdapter()
     prepared = PreparedSdkRun(

@@ -1548,6 +1548,7 @@ class ClaudeAgentWorkerAdapter:
         runtime_diagnostics = normalize_sdk_runtime_diagnostics(
             executor_response.get("runtime_diagnostics")
         )
+        diagnostic_payload = {"runtime_diagnostics": runtime_diagnostics} if runtime_diagnostics else {}
         failure_result_context = {
             "sdk_used": bool(executor_response.get("sdk_used")),
             "delegate_used": False,
@@ -1555,7 +1556,7 @@ class ClaudeAgentWorkerAdapter:
             "allowed_skills": prepared.allowed_skill_names,
             "staged_skills": prepared.staged_skill_names,
             "used_skills": used_skill_names,
-            "runtime_diagnostics": runtime_diagnostics,
+            **diagnostic_payload,
         }
         if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
             turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -1583,7 +1584,7 @@ class ClaudeAgentWorkerAdapter:
                     **common_payload,
                     "sdk_error": selected_capability_error,
                     "sdk_turn_diagnostics": turn_diagnostics,
-                    "runtime_diagnostics": runtime_diagnostics,
+                    **diagnostic_payload,
                 },
             )
         if runtime_status == "accepted":
@@ -1614,7 +1615,7 @@ class ClaudeAgentWorkerAdapter:
                     **common_payload,
                     "sdk_error": error_code,
                     "sdk_turn_diagnostics": turn_diagnostics,
-                    "runtime_diagnostics": runtime_diagnostics,
+                    **diagnostic_payload,
                 },
             )
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
@@ -1656,7 +1657,7 @@ class ClaudeAgentWorkerAdapter:
                     **common_payload,
                     "sdk_error": sdk_error,
                     "sdk_turn_diagnostics": turn_diagnostics,
-                    "runtime_diagnostics": runtime_diagnostics,
+                    **diagnostic_payload,
                 },
             )
 

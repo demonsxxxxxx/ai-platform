@@ -125,6 +125,12 @@ constraints and target ledger before API or Worker startup. New application
 versions strip the private carrier from `runs.result_json`; historical result
 diagnostics remain read-only through the authorized Runs projection.
 
+OpenSandbox renewal observations add two nullable columns to `sandbox_leases`
+under a new core-schema ledger version. The existing platform `expires_at`
+retains its lease authority, and older application images ignore the added
+columns on rollback. Do not drop the columns until all renewal-receipt callers
+are retired; no legacy provider-expiry reader is retained.
+
 Before rolling back to an artifact-only worker, stop the file-delete producer.
 Namespaced file rows remain invisible to that worker, so rollback cannot make it
 physically delete them; however, deletion progress stops until a target-aware

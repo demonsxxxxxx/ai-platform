@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -1523,8 +1524,15 @@ def test_opensandbox_callback_renews_after_heartbeat_in_same_transaction(monkeyp
     class FakeProvider:
         pass
 
+    provider_expires_at = datetime.now(timezone.utc) + timedelta(minutes=35)
+
     async def fake_renew(_provider, lease, _settings, *, ttl_seconds):
         order.append(("renew", lease, ttl_seconds))
+        return provider_expires_at
+
+    async def fake_receipt(conn, **kwargs):
+        order.append(("receipt", kwargs))
+        return heartbeat_row
 
     from app.routes import runtime_callbacks
 
@@ -1549,6 +1557,11 @@ def test_opensandbox_callback_renews_after_heartbeat_in_same_transaction(monkeyp
     )
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: FakeProvider())
     monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)
+    monkeypatch.setattr(
+        runtime_callbacks.sandbox_lease_repository,
+        "record_opensandbox_renewal_receipt",
+        fake_receipt,
+    )
 
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
@@ -1560,7 +1573,14 @@ def test_opensandbox_callback_renews_after_heartbeat_in_same_transaction(monkeyp
     assert order[0] == "begin"
     assert order[1] == "heartbeat"
     assert order[2] == ("renew", persisted_lease, 731)
-    assert order[3] == "commit"
+    assert order[3] == ("receipt", {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "lease_id": "lease-attempt-a",
+        "provider_expires_at": provider_expires_at,
+    })
+    assert order[4] == "commit"
 
 
 def test_opensandbox_callback_renewal_failure_rolls_back_and_hides_provider_error(monkeypatch):

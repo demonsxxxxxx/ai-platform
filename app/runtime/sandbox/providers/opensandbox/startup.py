@@ -249,7 +249,7 @@ async def renew_opensandbox_lifetime(
     settings: Any,
     *,
     ttl_seconds: int,
-) -> None:
+) -> datetime:
     """Renew one active OpenSandbox after exact remote identity verification."""
 
     from app.platform.sandbox.errors import ContainerStartFailedError, OpenSandboxUnavailableError
@@ -287,8 +287,17 @@ async def renew_opensandbox_lifetime(
     renew = getattr(sandbox, "renew", None)
     if not callable(renew):
         raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal is unavailable")
-    await _maybe_await(renew(_renewal_timeout(settings, ttl_seconds=ttl_seconds)))
+    receipt = await _maybe_await(renew(_renewal_timeout(settings, ttl_seconds=ttl_seconds)))
+    expires_at = getattr(receipt, "expires_at", None)
+    if (
+        not isinstance(expires_at, datetime)
+        or expires_at.tzinfo is None
+        or expires_at.utcoffset() is None
+        or expires_at <= datetime.now(timezone.utc)
+    ):
+        raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal receipt is invalid")
     provider._sandboxes[lease.container_id] = sandbox
+    return expires_at
 
 
 async def cleanup_started_sandbox(
@@ -524,6 +533,27 @@ def is_authoritative_sandbox_absent_error_code(exc: BaseException) -> bool:
         return False
     error = getattr(exc, "error", None)
     return getattr(error, "code", None) == "DOCKER::SANDBOX_NOT_FOUND"
+
+
+def opensandbox_probe_error_facts(exc: BaseException) -> dict[str, object]:
+    """Keep only typed, bounded provider facts for private probe diagnostics."""
+
+    try:
+        from opensandbox.exceptions import SandboxApiException
+    except ImportError:
+        return {}
+    if not isinstance(exc, SandboxApiException):
+        return {}
+    facts: dict[str, object] = {}
+    status_code = getattr(exc, "status_code", None)
+    if type(status_code) is int and 100 <= status_code <= 599:
+        facts["http_status"] = status_code
+    error = getattr(exc, "error", None)
+    if code := _safe_sdk_error_code(getattr(error, "code", None)):
+        facts["provider_error_code"] = code
+    if request_id := _safe_request_id(getattr(exc, "request_id", None)):
+        facts["request_id"] = request_id
+    return facts
 
 
 def is_authoritative_not_found_error(exc: BaseException) -> bool:
