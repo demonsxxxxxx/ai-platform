@@ -1720,7 +1720,9 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
             return_value=RunModelSelection(
                 model_id="model-a",
                 model_value="model-a",
-                connection_revision=None,
+                connection_revision=1,
+                max_input_tokens=32_000,
+                max_output_tokens=2_048,
             )
         ),
     )

@@ -92,8 +92,8 @@ BACKEND_TEST_SHARDS = {
     ),
     "model-control-plane": (
         "tests/test_model_management.py",
-        "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_comes_from_settings",
-        "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids",
+        "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_is_empty_without_governed_connection",
+        "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preserves_raw_ids",
         "tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity",
         "tests/test_execution_spec.py::test_execution_spec_rejects_unsafe_upstream_model_identity",
         "tests/test_schema.py::test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog",

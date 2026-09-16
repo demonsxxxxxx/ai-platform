@@ -18,6 +18,7 @@ from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 from app import repositories, schema_migrations
 from app.bootstrap import run_lifecycle
+from app.bootstrap.context import configure_context_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.run_admission_terminalization import terminalize_enqueue_failure_with_v4
 from app.runs.infrastructure.postgres import load_current_terminal_event_fact
@@ -330,6 +331,7 @@ async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, st
 
 @asynccontextmanager
 async def _schema():
+    configure_context_services()
     dsn = _dsn()
     schema_name = f"streaming_v4_evidence_{uuid.uuid4().hex}"
     admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)

@@ -65,7 +65,11 @@ async def test_model_resolution_shared_lock_allows_readers_and_blocks_activation
             upstream_model_ids=["openai/gpt-5"],
         )
         await first.execute(
-            "update model_catalog_entries set enabled = true, is_default = true"
+            """
+            update model_catalog_entries
+            set enabled = true, is_default = true,
+                max_input_tokens = 32000, max_output_tokens = 2048
+            """
         )
 
         activation_started = asyncio.Event()
@@ -117,7 +121,7 @@ async def test_model_resolution_shared_lock_allows_readers_and_blocks_activation
 
 
 @pytest.mark.asyncio
-async def test_legacy_model_inheritance_updates_child_and_failure_rolls_back() -> None:
+async def test_model_inheritance_updates_child_and_failure_rolls_back() -> None:
     dsn = _postgres_dsn()
     schema_name = f"model_snapshot_rollback_{uuid.uuid4().hex}"
     schema_sql = Path("app/schema.sql").read_text(encoding="utf-8")
@@ -151,13 +155,21 @@ async def test_legacy_model_inheritance_updates_child_and_failure_rolls_back() -
         )
         await conn.execute(
             """
+            insert into model_gateway_revisions(
+              revision, base_url, api_key_ciphertext, key_fingerprint, created_by
+            ) values (1, 'https://gateway.example', '\\x00', '0123456789abcdef', 'user-a')
+            """
+        )
+        await conn.execute(
+            """
             insert into runs(
               id, tenant_id, workspace_id, session_id, user_id, agent_id,
-              execution_kind, status, input_json
+              execution_kind, status, model_id, model_value,
+              model_gateway_revision, max_input_tokens, max_output_tokens
             ) values (
               'run-source', 'tenant-a', 'workspace-a', 'session-a', 'user-a', 'agent-a',
-              'harness_chat', 'failed',
-              '{"model_id":"legacy-default","model_value":"openai/gpt-5"}'::jsonb
+              'harness_chat', 'failed', 'model-default', 'openai/gpt-5',
+              1, 32000, 2048
             )
             """
         )
@@ -181,16 +193,19 @@ async def test_legacy_model_inheritance_updates_child_and_failure_rolls_back() -
                 child_run_id="run-child",
             )
 
-        modernized_cursor = await conn.execute(
+        inherited_cursor = await conn.execute(
             """
-            select model_id, model_value, model_gateway_revision
+            select model_id, model_value, model_gateway_revision,
+                   max_input_tokens, max_output_tokens
             from runs where tenant_id = 'tenant-a' and id = 'run-child'
             """
         )
-        assert await modernized_cursor.fetchone() == {
-            "model_id": "legacy-default",
+        assert await inherited_cursor.fetchone() == {
+            "model_id": "model-default",
             "model_value": "openai/gpt-5",
-            "model_gateway_revision": None,
+            "model_gateway_revision": 1,
+            "max_input_tokens": 32000,
+            "max_output_tokens": 2048,
         }
 
         with pytest.raises(ValueError, match="run_model_child_source_mismatch"):

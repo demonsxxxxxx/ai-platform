@@ -29,11 +29,18 @@ async def _materialize_scoped_worker_snapshot(conn, payload):
 
 
 @pytest.fixture(autouse=True)
-def _stub_run_model_inheritance_for_route_fakes(monkeypatch):
+def _stub_run_model_and_provider_lineage_for_route_fakes(monkeypatch):
     async def inherit_run_model(*_args, **_kwargs):
         return None
 
+    async def release_provider_lineage(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr("app.routes.runs.inherit_run_model", inherit_run_model)
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release_provider_lineage,
+    )
 
 
 @asynccontextmanager

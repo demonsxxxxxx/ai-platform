@@ -329,19 +329,19 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
         "runs",
         "chk_runs_model_token_limits",
         "c",
-        "CHECK ((max_input_tokens IS NULL AND max_output_tokens IS NULL) OR "
-        "(max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "CHECK (max_input_tokens IS NULL AND max_output_tokens IS NULL OR "
+        "max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
         "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
-        "max_output_tokens >= 1 AND max_output_tokens <= 10000000))",
+        "max_output_tokens >= 1 AND max_output_tokens <= 10000000)",
     ),
     (
         "model_catalog_entries",
         "chk_model_catalog_token_limits",
         "c",
-        "CHECK ((max_input_tokens IS NULL AND max_output_tokens IS NULL) OR "
-        "(max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "CHECK (max_input_tokens IS NULL AND max_output_tokens IS NULL OR "
+        "max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
         "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
-        "max_output_tokens >= 1 AND max_output_tokens <= 10000000))",
+        "max_output_tokens >= 1 AND max_output_tokens <= 10000000)",
     ),
     (
         "runs",
