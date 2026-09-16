@@ -99,17 +99,19 @@ async def fake_transaction():
 
 
 @pytest.fixture(autouse=True)
-def legacy_model_control_plane_stub(monkeypatch):
-    async def no_managed_model(_conn, **_kwargs):
-        return None
+def authorized_default_model_for_chat_routes(monkeypatch):
+    async def governed_model(_conn, *, selection):
+        if selection is not None:
+            raise ValueError("model_id_not_available")
+        return RunModelSelection(
+            model_id="test-model", model_value="provider/test-model",
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
+        )
 
     async def no_model_binding(_conn, **_kwargs):
         return None
 
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_management.resolve_run_model",
-        no_managed_model,
-    )
+    monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", governed_model)
     monkeypatch.setattr("app.execution.application.model_selection.bind_run_model", no_model_binding)
 
 
@@ -714,7 +716,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
         return RunModelSelection(
             model_id="test-model",
             model_value="provider/test-model",
-            connection_revision=None,
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
@@ -954,7 +956,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         return RunModelSelection(
             model_id="test-model",
             model_value="provider/test-model",
-            connection_revision=None,
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
         )
 
     async def claim_submission(*_args, **kwargs):
@@ -2491,7 +2493,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
         return RunModelSelection(
             model_id="deepseek-v4-pro",
             model_value="deepseek-v4-pro",
-            connection_revision=None,
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
         )
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -3004,10 +3006,7 @@ async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monk
         raise ValueError("model_id_not_available")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_management.resolve_run_model",
-        reject_model,
-    )
+    monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", reject_model)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_side_effect)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_side_effect)
@@ -4741,7 +4740,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         return RunModelSelection(
             model_id="profile-model",
             model_value="provider/profile-model",
-            connection_revision=None,
+            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
