@@ -128,7 +128,9 @@ workspace. Claude Agent SDK runs with the workspace as `cwd` and project setting
 sources enabled, so the file supplies the default Simplified Chinese response
 instruction. An explicit user language request takes precedence. The platform
 rewrites this file when it prepares an attempt, excludes it from artifact
-collection, and denies SDK Write/Edit access to it.
+collection, and denies SDK Write/Edit access to it. The release workspace
+initializer accepts this exact attempt-root file only as a regular `0444` file;
+all other workspace entries remain subject to the owner-writable requirement.
 
 Skill writes are allowed anywhere else in the assigned workspace. The protected
 roots remain `inputs/`, `.claude/`, `.ai-platform/`, the runtime configuration
