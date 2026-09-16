@@ -67,18 +67,29 @@ def _validated_worker_queue_lease(
 async def update_terminal_run_checkpoint_counts(
     conn: AsyncConnection, *, tenant_id: str, run_id: str,
     result_json: dict[str, Any], input_tokens: int, output_tokens: int,
-    total_tokens: int,
+    total_tokens: int, include_staged_cancellation: bool = False,
 ) -> None:
     cursor = await conn.execute(
         """
-        update runs set result_json = %s::jsonb, input_token_count = %s,
-          output_token_count = %s, total_token_count = %s
+        update runs set
+          result_json = case
+            when status in ('succeeded', 'failed', 'cancelled') then %s::jsonb
+            else result_json
+          end,
+          input_token_count = %s, output_token_count = %s, total_token_count = %s
         where tenant_id = %s and id = %s
-          and status in ('succeeded', 'failed', 'cancelled')
+          and (
+            status in ('succeeded', 'failed', 'cancelled')
+            or (
+              %s
+              and status not in ('succeeded', 'failed', 'cancelled')
+              and permission_terminalization_target = 'cancelled'
+            )
+          )
         returning id
         """,
         (_dumps_json(result_json), input_tokens, output_tokens, total_tokens,
-         tenant_id, run_id),
+         tenant_id, run_id, include_staged_cancellation),
     )
     if await cursor.fetchone() is None:
         raise RepositoryConflictError("run_checkpoint_terminal_usage_fenced")

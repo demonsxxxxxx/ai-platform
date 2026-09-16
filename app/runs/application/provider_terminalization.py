@@ -120,6 +120,13 @@ async def cancel_run_with_context(
         conn, tenant_id=tenant_id, run_id=run_id,
         result_json=None if result_json is None and merged is result_payload else merged,
     )
+    if merged is not result_payload and progress.status == "cancelled":
+        counts = merged["token_counts"]
+        await _configured_checkpoint_dependencies()[0](
+            conn, tenant_id=tenant_id, run_id=run_id, result_json=merged,
+            input_tokens=counts["input"], output_tokens=counts["output"],
+            total_tokens=counts["total"], include_staged_cancellation=True,
+        )
     if progress.is_terminal():
         await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
     return progress

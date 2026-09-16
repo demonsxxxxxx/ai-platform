@@ -115,6 +115,20 @@ async def test_checkpoint_usage_scopes_run_and_counts_tokens(monkeypatch):
     assert sql.count("%s") == len(params)
     assert params[1:4] == (4211, 37, 4248)
 
+    cancellation_conn = Connection([{"id": "run-current"}])
+    await update_terminal_run_checkpoint_counts(
+        cancellation_conn, tenant_id="tenant-a", run_id="run-current",
+        result_json=merged, input_tokens=4211, output_tokens=37, total_tokens=4248,
+        include_staged_cancellation=True,
+    )
+    cancellation_sql, cancellation_params = cancellation_conn.calls[0]
+    assert "permission_terminalization_target = 'cancelled'" in cancellation_sql
+    assert "else result_json" in cancellation_sql
+    assert cancellation_sql.count("%s") == len(cancellation_params)
+    assert cancellation_params[1:] == (
+        4211, 37, 4248, "tenant-a", "run-current", True,
+    )
+
 
 @pytest.mark.asyncio
 async def test_run_terminal_context_wrappers_preserve_one_transaction_and_event_usage(monkeypatch):
@@ -128,7 +142,8 @@ async def test_run_terminal_context_wrappers_preserve_one_transaction_and_event_
 
     async def update_counts(actual_conn, **kwargs):
         assert actual_conn is conn
-        calls.append(("update", kwargs["result_json"]["token_counts"]))
+        label = "update_cancel" if kwargs.get("include_staged_cancellation") else "update"
+        calls.append((label, kwargs["result_json"]["token_counts"]))
 
     async def release(actual_conn, **kwargs):
         assert actual_conn is conn
@@ -144,6 +159,11 @@ async def test_run_terminal_context_wrappers_preserve_one_transaction_and_event_
         calls.append(("fail", kwargs["result_json"]["token_counts"]))
         return RunTerminalizationProgress(True, "failed", True, True)
 
+    async def cancel(actual_conn, **kwargs):
+        assert actual_conn is conn
+        calls.append(("cancel", kwargs["result_json"]["token_counts"]))
+        return RunTerminalizationProgress(False, "cancelled")
+
     monkeypatch.setattr(runs_terminal_app, "load_checkpoint_usage_for_run", load_usage)
     monkeypatch.setattr(runs_terminal_app, "_update_checkpoint_counts", update_counts)
     monkeypatch.setattr(runs_terminal_app, "_validate_terminal_result", lambda _value: None)
@@ -158,14 +178,21 @@ async def test_run_terminal_context_wrappers_preserve_one_transaction_and_event_
         conn, fail_run=fail, tenant_id="tenant-a", run_id="run-current",
         error_code="executor_failed", error_message="failed", result_json=result,
     )
+    cancelled = await runs_terminal_app.cancel_run_with_context(
+        conn, cancel_run=cancel, tenant_id="tenant-a", run_id="run-current",
+        result_json=result,
+    )
 
     assert failed.is_terminal("failed")
+    assert cancelled.status == "cancelled" and not cancelled.completed
     assert calls == [
         ("complete", {"input": 11, "output": 13, "total": 24}),
         ("update", {"input": 4211, "output": 37, "total": 4248}),
         ("release", {"tenant_id": "tenant-a", "run_id": "run-current"}),
         ("fail", {"input": 4211, "output": 37, "total": 4248}),
         ("release", {"tenant_id": "tenant-a", "run_id": "run-current"}),
+        ("cancel", {"input": 4211, "output": 37, "total": 4248}),
+        ("update_cancel", {"input": 4211, "output": 37, "total": 4248}),
     ]
 
 
