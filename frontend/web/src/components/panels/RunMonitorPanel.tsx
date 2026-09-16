@@ -26,12 +26,14 @@ import {
 import { formatDateTimeShort } from "../../utils/datetime";
 import {
   buildAdminRunMonitorView,
+  type AdminRunEventDiagnostic,
   type AdminRunTimelineItem,
 } from "./adminRunTimeline";
 import { RunDiagnosticsSection } from "./RunDiagnosticsSection";
 
 const RUN_LIMIT = 50;
 const PAGE_SIZE = 10;
+const DIAGNOSTIC_PAGE_SIZE = 20;
 
 const STATUS_FILTERS = [
   { value: "all", label: "全部" },
@@ -43,6 +45,7 @@ const STATUS_FILTERS = [
 ] as const;
 
 type StatusFilter = (typeof STATUS_FILTERS)[number]["value"];
+type RunDiagnosticView = "events" | "stages";
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "排队",
@@ -188,6 +191,15 @@ function timelineCountLabel(item: AdminRunTimelineItem): string {
   return item.count > 1 ? ` · ${item.count} 次合并` : "";
 }
 
+function diagnosticLengthLabel(item: AdminRunEventDiagnostic): string {
+  const values = [
+    item.deltaLength === null ? null : `增量 ${item.deltaLength} 字符`,
+    item.textLength === null ? null : `累计 ${item.textLength} 字符`,
+    item.deltaCount === null ? null : `${item.deltaCount} 个增量`,
+  ].filter(Boolean);
+  return values.join(" · ") || "无正文长度字段";
+}
+
 function MetricTile({
   icon,
   label,
@@ -264,10 +276,17 @@ function RunDetail({
   const detailRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
+  const [diagnosticView, setDiagnosticView] = useState<RunDiagnosticView>("events");
+  const [diagnosticPage, setDiagnosticPage] = useState(0);
 
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    setDiagnosticView("events");
+    setDiagnosticPage(0);
+  }, [detail?.run.run_id]);
 
   useEffect(() => {
     const restoreFocus =
@@ -328,6 +347,16 @@ function RunDetail({
   const monitorView = detail
     ? buildAdminRunMonitorView(detail.run, detail.events, diagnostics)
     : null;
+  const eventDiagnostics = monitorView?.eventDiagnostics ?? [];
+  const diagnosticPageCount = Math.max(
+    1,
+    Math.ceil(eventDiagnostics.length / DIAGNOSTIC_PAGE_SIZE),
+  );
+  const currentDiagnosticPage = Math.min(diagnosticPage, diagnosticPageCount - 1);
+  const visibleEventDiagnostics = eventDiagnostics.slice(
+    currentDiagnosticPage * DIAGNOSTIC_PAGE_SIZE,
+    (currentDiagnosticPage + 1) * DIAGNOSTIC_PAGE_SIZE,
+  );
 
   return (
     <aside
@@ -437,9 +466,9 @@ function RunDetail({
             </div>
             <div className="mt-3 rounded-md border border-[var(--theme-border)] p-3">
               <div className="flex items-center justify-between gap-2">
-                <h4 className="text-xs font-semibold text-[var(--theme-text)]">模型输出</h4>
+                <h4 className="text-xs font-semibold text-[var(--theme-text)]">公开输出</h4>
                 {monitorView?.modelOutput ? (
-                  <span className="text-[11px] text-[var(--theme-text-tertiary)]">已聚合</span>
+                  <span className="text-[11px] text-[var(--theme-text-tertiary)]">由公开事件重组</span>
                 ) : null}
               </div>
               {monitorView?.modelOutput ? (
@@ -454,12 +483,104 @@ function RunDetail({
 
           <section className="p-4">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="text-xs font-semibold text-[var(--theme-text)]">最近活动</h3>
+              <div>
+                <h3 className="text-xs font-semibold text-[var(--theme-text)]">事件诊断</h3>
+                <p className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
+                  仅显示公开消息和终态事件的身份与长度统计，不显示事件正文或 SDK 原始日志。
+                </p>
+              </div>
               <span className="text-[11px] text-[var(--theme-text-tertiary)]">
-                {monitorView?.recentActivity.length ?? 0} 条 · 已记录 {monitorView?.rawEventCount ?? detail.events.length} 个事件
+                已记录 {monitorView?.rawEventCount ?? detail.events.length} 个事件
               </span>
             </div>
-            {monitorView?.recentActivity.length ? (
+            <div
+              className="mt-3 inline-flex rounded-md border border-[var(--theme-border)] p-0.5"
+              role="tablist"
+              aria-label="运行诊断视图"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={diagnosticView === "events"}
+                className={`rounded px-2.5 py-1.5 text-xs font-medium ${diagnosticView === "events" ? "bg-[var(--theme-info-soft)] text-[var(--theme-info)]" : "text-[var(--theme-text-secondary)]"}`}
+                onClick={() => setDiagnosticView("events")}
+              >
+                消息事件
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={diagnosticView === "stages"}
+                className={`rounded px-2.5 py-1.5 text-xs font-medium ${diagnosticView === "stages" ? "bg-[var(--theme-info-soft)] text-[var(--theme-info)]" : "text-[var(--theme-text-secondary)]"}`}
+                onClick={() => setDiagnosticView("stages")}
+              >
+                关键阶段
+              </button>
+            </div>
+            {diagnosticView === "events" ? (
+              eventDiagnostics.length ? (
+                <>
+                  <ol className="mt-3 space-y-2" data-run-event-diagnostics>
+                    {visibleEventDiagnostics.map((item) => (
+                      <li
+                        key={`${item.id}:${item.sequence ?? "na"}`}
+                        className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="font-mono text-xs font-medium text-[var(--theme-text)]">
+                            {item.type}
+                          </span>
+                          <span className="font-mono text-[11px] text-[var(--theme-text-tertiary)]">
+                            seq {item.sequence ?? "-"}
+                          </span>
+                          <time className="ml-auto text-[11px] text-[var(--theme-text-tertiary)]">
+                            {dateTime(item.created_at)}
+                          </time>
+                        </div>
+                        <div className="mt-1.5 grid gap-x-3 gap-y-1 text-[11px] text-[var(--theme-text-secondary)] sm:grid-cols-2">
+                          <span>message_id: <code>{item.messageId ?? "-"}</code></span>
+                          <span>stream: <code>{item.streamIncarnation ?? "-"}</code></span>
+                          <span>{diagnosticLengthLabel(item)}</span>
+                          <span>event_id: <code>{item.id}</code></span>
+                        </div>
+                        {item.errorCode || item.severity ? (
+                          <p className="mt-1 text-[11px] text-[var(--theme-danger)]">
+                            {[item.severity, item.errorCode].filter(Boolean).join(" · ")}
+                          </p>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ol>
+                  {diagnosticPageCount > 1 ? (
+                    <div className="mt-3 flex items-center justify-between gap-2 text-[11px] text-[var(--theme-text-secondary)]">
+                      <button
+                        type="button"
+                        aria-label="上一页事件"
+                        className="rounded-md border border-[var(--theme-border)] px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={currentDiagnosticPage === 0}
+                        onClick={() => setDiagnosticPage((page) => Math.max(0, page - 1))}
+                      >
+                        上一页
+                      </button>
+                      <span>
+                        第 {currentDiagnosticPage + 1} / {diagnosticPageCount} 页 · 共 {eventDiagnostics.length} 条
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="下一页事件"
+                        className="rounded-md border border-[var(--theme-border)] px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={currentDiagnosticPage >= diagnosticPageCount - 1}
+                        onClick={() => setDiagnosticPage((page) => Math.min(diagnosticPageCount - 1, page + 1))}
+                      >
+                        下一页
+                      </button>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <p className="mt-3 text-xs text-[var(--theme-text-tertiary)]">暂无消息或终态事件</p>
+              )
+            ) : monitorView?.recentActivity.length ? (
               <ol className="mt-3 space-y-2">
                 {monitorView.recentActivity.map((item) => (
                   <li
@@ -486,7 +607,7 @@ function RunDetail({
                 ))}
               </ol>
             ) : (
-              <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">暂无可展示的活动</p>
+              <p className="mt-3 text-xs text-[var(--theme-text-tertiary)]">暂无可展示的关键阶段</p>
             )}
           </section>
 
