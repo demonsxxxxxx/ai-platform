@@ -106,6 +106,11 @@ def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
                 or identity != f"mcp__{server_id}__{tool_name}"
             ):
                 continue
+        existing = subjects.get(identity)
+        if existing and identity.startswith("mcp__") and (
+            existing.get("mcp_server"), existing.get("mcp_tool")
+        ) != (raw.get("mcp_server"), raw.get("mcp_tool")):
+            raise ValueError("mcp_identity_collision")
         validation = evaluate_tool_policy(
             tool={
                 "requested_identity": identity,
