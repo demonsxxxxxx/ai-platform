@@ -32,7 +32,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.bootstrap.execution import build_claude_session_store
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import normalize_thinking_effort
-from app.execution.api import sdk_session_id_for_run
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
@@ -69,6 +68,7 @@ from app.runtime.sandbox.contracts import (
     ContextRetrievalScope,
     ExecutorCallbackEvent,
     ExecutorTaskRequest,
+    ModelTokenLimits,
     build_trusted_callback_target,
     executor_callback_receipt_event_count,
 )
@@ -1956,7 +1956,6 @@ async def _default_executor_runner(
             status="running",
             progress=20,
             state_patch={"stage": "agent_event"},
-            sdk_session_id=sdk_session_id_for_run(request.run_id),
             events=events,
         )
         try:
@@ -2230,6 +2229,14 @@ async def _default_executor_runner(
             raise
 
     await emit_event(_PlatformExecutionPhaseFact("model_wait", "started"))
+    try:
+        model_limits = ModelTokenLimits.model_validate(request.config["model_token_limits"])
+    except Exception:  # noqa: BLE001 - model budget and validation details stay private.
+        return {
+            "status": "failed", "message": "Run model capacity is unavailable",
+            "error_code": "model_capacity_missing", "error_message": "Run model capacity is unavailable",
+            "sdk_used": False, "executor_mode": "model_capacity_invalid",
+        }
     provider_session_resume_required = request.config.get(
         "provider_session_resume_required", False
     )
@@ -2259,6 +2266,8 @@ async def _default_executor_runner(
             "session_store": session_store,
             "provider_session_resume_required": provider_session_resume_required,
             "model_id": model_id,
+            "model_max_input_tokens": model_limits.max_input_tokens,
+            "model_max_output_tokens": model_limits.max_output_tokens,
             "skills": skill_ids,
             "context_retrieval": context_retrieval,
             "context_retrieval_identity": context_retrieval_identity,
@@ -2334,6 +2343,7 @@ async def _default_executor_runner(
         "answer_receipt": getattr(sdk_result, "answer_receipt", None),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
+        "provider_session_final_sequence": getattr(sdk_result, "provider_final_sequence", None),
         "sdk_used": used_sdk,
         "sdk_received_structured_terminal": received_structured_terminal,
         "sdk_terminal_reason": getattr(sdk_result, "terminal_reason", None),
@@ -2989,7 +2999,6 @@ def create_executor_app(
                 status="running",
                 progress=35 if event_type and event_type.startswith("tool_call") else 60 if event_type == "artifact_created" else 20,
                 state_patch={"stage": event_type or "execution_step"},
-                sdk_session_id=sdk_session_id_for_run(request.run_id),
                 events=agent_events,
             )
             artifact_started_at = time.monotonic() if event_type == "artifact_created" else None
@@ -3248,7 +3257,6 @@ def create_executor_app(
                     "marker_path": f"/workspace/runtime/{marker_path.name}",
                 }
             ),
-            sdk_session_id=sdk_session_id_for_run(request.run_id),
             error_message=error_message,
         )
 
@@ -3281,7 +3289,6 @@ def create_executor_app(
         for key in (
             "message",
             "answer_receipt",
-            "sdk_session_id",
             "sdk_usage",
             "sdk_used",
             "sdk_received_structured_terminal",
@@ -3297,7 +3304,6 @@ def create_executor_app(
         ):
             if key in runner_result and runner_result[key] is not None:
                 response[key] = runner_result[key]
-        response["sdk_session_id"] = sdk_session_id_for_run(request.run_id)
         if failed:
             response["error_code"] = error_code or "executor_failed"
             response["error_message"] = error_message or "Executor failed"
@@ -3330,7 +3336,6 @@ def create_executor_app(
             batch_id=f"terminal-{uuid.uuid4().hex}",
             status=callback_status,
             progress=progress,
-            sdk_session_id=sdk_session_id_for_run(request.run_id),
             error_message=str(result.get("error_message") or "") or None,
             terminal_result=result,
         )

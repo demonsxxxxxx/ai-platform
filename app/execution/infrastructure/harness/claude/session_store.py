@@ -71,6 +71,12 @@ class ClaudeSessionStoreAdapter:
         self._max_request_bytes = max_request_bytes
         self._max_response_bytes = max_response_bytes
         self._load_cache: dict[tuple[str, str | None], list[dict[str, Any]] | None] = {}
+        self._next_sequence: int | None = None
+        self._pending_batch: tuple[int, str] | None = None
+
+    @property
+    def accepted_final_sequence(self) -> int | None:
+        return self._next_sequence - 1 if self._next_sequence is not None else None
 
     @staticmethod
     def _key_value(key: Mapping[str, Any] | str, name: str) -> Any:
@@ -106,6 +112,7 @@ class ClaudeSessionStoreAdapter:
         action: str,
         key: Mapping[str, Any] | str,
         entries: Sequence[Mapping[str, Any]] = (),
+        expected_sequence: int | None = None,
     ) -> dict[str, Any]:
         session_id = self._session_id(key)
         if action == "append":
@@ -124,6 +131,7 @@ class ClaudeSessionStoreAdapter:
             "provider_session_id": session_id,
             "subpath": self._subpath(key),
             "entries": encoded_entries,
+            "expected_sequence": expected_sequence,
         }
         try:
             encoded = json.dumps(
@@ -176,9 +184,14 @@ class ClaudeSessionStoreAdapter:
             raise ClaudeSessionStoreTransportError("provider_session_response_invalid") from exc
         if not isinstance(body, dict) or body.get("action") != payload["action"]:
             raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+        sequence = body.get("next_sequence")
+        if type(sequence) is not int or sequence < 1:
+            raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
         if payload["action"] == "append" and (
             body.get("accepted") is not True
             or body.get("entry_count") != len(payload["entries"])
+            or body.get("last_sequence") != payload["expected_sequence"] + len(payload["entries"]) - 1
+            or sequence != body["last_sequence"] + 1
         ):
             raise ClaudeSessionStoreTransportError("provider_session_append_rejected")
         return body
@@ -190,6 +203,10 @@ class ClaudeSessionStoreAdapter:
         if cache_key in self._load_cache:
             return self._load_cache[cache_key]
         body = await self._request(self._payload(action="load", key=key))
+        sequence = body["next_sequence"]
+        if self._next_sequence is not None and sequence != self._next_sequence:
+            raise ClaudeSessionStoreTransportError("provider_session_sequence_conflict")
+        self._next_sequence = sequence
         entries = body.get("entries")
         if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
             raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
@@ -204,7 +221,20 @@ class ClaudeSessionStoreAdapter:
     ) -> None:
         if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes, bytearray)):
             raise ClaudeSessionStoreTransportError("provider_session_entry_batch_invalid")
-        await self._request(self._payload(action="append", key=key, entries=entries))
+        if self._next_sequence is None:
+            raise ClaudeSessionStoreTransportError("provider_session_sequence_uninitialized")
+        payload = self._payload(action="append", key=key, entries=entries,
+                                expected_sequence=self._next_sequence)
+        signature = (self._next_sequence, json.dumps(
+            [payload["subpath"] or "", payload["entries"]],
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ))
+        if self._pending_batch not in (None, signature):
+            raise ClaudeSessionStoreTransportError("provider_session_append_pending")
+        self._pending_batch = signature
+        body = await self._request(payload)
+        self._next_sequence = body["next_sequence"]
+        self._pending_batch = None
         self._load_cache.clear()
 
     async def list_subkeys(self, key: Mapping[str, Any] | str | None = None) -> list[str]:
@@ -213,6 +243,9 @@ class ClaudeSessionStoreAdapter:
                 raise ClaudeSessionStoreTransportError("provider_session_key_invalid")
             key = {"session_id": self._provider_session_id}
         body = await self._request(self._payload(action="list_subkeys", key=key))
+        if self._next_sequence is not None and body["next_sequence"] != self._next_sequence:
+            raise ClaudeSessionStoreTransportError("provider_session_sequence_conflict")
+        self._next_sequence = body["next_sequence"]
         subpaths = body.get("subpaths")
         if not isinstance(subpaths, list) or any(
             not isinstance(subpath, str) for subpath in subpaths

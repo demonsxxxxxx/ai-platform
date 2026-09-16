@@ -31,11 +31,17 @@ class _FakeResponse:
         *,
         accepted: object = True,
         entry_count: object = 1,
+        next_sequence: object = 2,
+        last_sequence: object = 1,
     ) -> None:
         self._payload = {
             "action": action,
             "accepted": accepted,
             "entry_count": entry_count,
+            "next_sequence": next_sequence,
+            "last_sequence": last_sequence if action == "append" else None,
+            "entries": [],
+            "subpaths": [],
         }
 
     async def aiter_bytes(self):
@@ -68,7 +74,45 @@ class _FakeClient:
     def stream(self, method: str, url: str, **kwargs: Any) -> _FakeStream:
         assert method == "POST"
         self.requests.append((url, kwargs))
-        return _FakeStream(_FakeResponse(kwargs["json"]["action"]))
+        payload = kwargs["json"]
+        if payload["action"] == "append":
+            return _FakeStream(_FakeResponse("append", next_sequence=payload["expected_sequence"] + len(payload["entries"]),
+                                             last_sequence=payload["expected_sequence"] + len(payload["entries"]) - 1,
+                                             entry_count=len(payload["entries"])))
+        return _FakeStream(_FakeResponse(payload["action"], next_sequence=1))
+
+
+@pytest.mark.asyncio
+async def test_uuidless_append_retry_after_lost_response_keeps_sequence_and_batch(monkeypatch):
+    class LostResponseClient(_FakeClient):
+        lost = False
+
+        def stream(self, method: str, url: str, **kwargs: Any) -> _FakeStream:
+            if kwargs["json"]["action"] == "append" and not self.lost:
+                type(self).lost = True
+                type(self).requests.append((url, kwargs))
+                raise httpx.ReadTimeout("response lost after commit")
+            return super().stream(method, url, **kwargs)
+
+    LostResponseClient.lost = False
+    LostResponseClient.requests = []
+    monkeypatch.setattr(
+        "app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient",
+        LostResponseClient,
+    )
+    adapter = ClaudeSessionStoreAdapter(
+        callback_url="http://127.0.0.1:8000/api/ai/runtime/callbacks/provider-session",
+        callback_token="secret", callback_token_id="cbt:run-a:attempt-a",
+        run_id="run-a", attempt_id="attempt-a", provider_session_id="provider-a",
+    )
+    await adapter.load({"session_id": "provider-a"})
+    with pytest.raises(ClaudeSessionStoreTransportError, match="callback_timeout"):
+        await adapter.append({"session_id": "provider-a"}, [{"type": "assistant", "content": "one"}])
+    with pytest.raises(ClaudeSessionStoreTransportError, match="append_pending"):
+        await adapter.append({"session_id": "provider-a"}, [{"type": "assistant", "content": "different"}])
+    await adapter.append({"session_id": "provider-a"}, [{"type": "assistant", "content": "one"}])
+    assert LostResponseClient.requests[1][1]["json"] == LostResponseClient.requests[2][1]["json"]
+    assert adapter._next_sequence == 2
 
 
 def test_session_store_response_bound_includes_transcript_envelope():
@@ -91,6 +135,7 @@ async def test_session_store_adapter_does_not_forward_project_key(monkeypatch):
         provider_session_id="provider-a",
     )
 
+    await adapter.load({"session_id": "provider-a"})
     await adapter.append(
         {
             "session_id": "provider-a",
@@ -100,7 +145,7 @@ async def test_session_store_adapter_does_not_forward_project_key(monkeypatch):
         [{"type": "assistant", "uuid": "entry-a"}],
     )
 
-    payload = _FakeClient.requests[0][1]["json"]
+    payload = _FakeClient.requests[1][1]["json"]
     assert payload == {
         "action": "append",
         "run_id": "run-a",
@@ -109,9 +154,10 @@ async def test_session_store_adapter_does_not_forward_project_key(monkeypatch):
         "provider_session_id": "provider-a",
         "subpath": "worker",
         "entries": [{"type": "assistant", "uuid": "entry-a"}],
+        "expected_sequence": 1,
     }
     assert "project_key" not in payload
-    assert _FakeClient.requests[0][1]["headers"] == {
+    assert _FakeClient.requests[1][1]["headers"] == {
         "X-AI-Platform-Callback-Token": "secret"
     }
 
@@ -129,9 +175,10 @@ async def test_session_store_adapter_bounds_request_body(monkeypatch):
         run_id="run-a",
         attempt_id="attempt-a",
         provider_session_id="provider-a",
-        max_request_bytes=128,
+        max_request_bytes=256,
     )
 
+    await adapter.load({"session_id": "provider-a"})
     with pytest.raises(ClaudeSessionStoreTransportError, match="request_too_large"):
         await adapter.append({"session_id": "provider-a"}, [{"text": "x" * 512}])
 
@@ -163,7 +210,7 @@ async def test_session_store_adapter_stops_oversized_stream(monkeypatch):
     )
 
     with pytest.raises(ClaudeSessionStoreTransportError, match="response_too_large"):
-        await adapter.append({"session_id": "provider-a"}, [{"uuid": "entry-a"}])
+        await adapter.load({"session_id": "provider-a"})
 
 
 @pytest.mark.asyncio
@@ -197,14 +244,16 @@ async def test_provider_session_callback_body_limit_runs_before_model_materializ
     )
 
     with pytest.raises(ClaudeSessionStoreTransportError, match="callback_timeout"):
-        await adapter.append({"session_id": "provider-a"}, [{"uuid": "entry-a"}])
+        await adapter.load({"session_id": "provider-a"})
 
 
 @pytest.mark.asyncio
 async def test_session_store_adapter_rejects_mismatched_response_action(monkeypatch):
     class MismatchedClient(_FakeClient):
-        def stream(self, _method: str, _url: str, **_kwargs: Any) -> _FakeStream:
-            return _FakeStream(_FakeResponse("load"))
+        def stream(self, _method: str, _url: str, **kwargs: Any) -> _FakeStream:
+            if kwargs["json"]["action"] == "append":
+                return _FakeStream(_FakeResponse("load"))
+            return super().stream(_method, _url, **kwargs)
 
     monkeypatch.setattr(
         "app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient",
@@ -219,6 +268,7 @@ async def test_session_store_adapter_rejects_mismatched_response_action(monkeypa
         provider_session_id="provider-a",
     )
 
+    await adapter.load({"session_id": "provider-a"})
     with pytest.raises(ClaudeSessionStoreTransportError, match="response_invalid"):
         await adapter.append({"session_id": "provider-a"}, [{"uuid": "entry-a"}])
 
@@ -233,8 +283,10 @@ async def test_session_store_adapter_rejects_mismatched_response_action(monkeypa
 )
 async def test_session_store_adapter_rejects_invalid_append_receipt(monkeypatch, response):
     class RejectedClient(_FakeClient):
-        def stream(self, _method: str, _url: str, **_kwargs: Any) -> _FakeStream:
-            return _FakeStream(response)
+        def stream(self, _method: str, _url: str, **kwargs: Any) -> _FakeStream:
+            if kwargs["json"]["action"] == "append":
+                return _FakeStream(response)
+            return super().stream(_method, _url, **kwargs)
 
     monkeypatch.setattr(
         "app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient",
@@ -249,6 +301,7 @@ async def test_session_store_adapter_rejects_invalid_append_receipt(monkeypatch,
         provider_session_id="provider-a",
     )
 
+    await adapter.load({"session_id": "provider-a"})
     with pytest.raises(ClaudeSessionStoreTransportError, match="append_rejected"):
         await adapter.append({"session_id": "provider-a"}, [{"uuid": "entry-a"}])
 
@@ -256,9 +309,10 @@ async def test_session_store_adapter_rejects_invalid_append_receipt(monkeypatch,
 @pytest.mark.parametrize(
     ("action", "entries", "error"),
     [
-        ("append", [], "append_entries_required"),
-        ("load", [{"uuid": "entry-a"}], "entries_forbidden"),
-        ("list_subkeys", [{"uuid": "entry-a"}], "entries_forbidden"),
+        ("append", [], "append_sequence_required"),
+        ("append", [{"uuid": "entry-a"}], "append_sequence_required"),
+        ("load", [{"uuid": "entry-a"}], "append_fields_forbidden"),
+        ("list_subkeys", [{"uuid": "entry-a"}], "append_fields_forbidden"),
     ],
 )
 def test_provider_session_callback_request_enforces_action_shape(action, entries, error):
@@ -350,6 +404,7 @@ async def test_provider_session_callback_load_uses_locked_scope(monkeypatch):
         "action": "load",
         "entries": [],
         "subpath": None,
+        "expected_sequence": None,
     }
 
 
@@ -418,6 +473,7 @@ async def test_provider_session_callback_entry_conflict_is_409(monkeypatch):
         ),
         provider_session_id="provider-a",
         entries=[{"uuid": "entry-a"}],
+        expected_sequence=1,
     )
     with pytest.raises(HTTPException) as error:
         await runtime_callbacks.provider_session_callback(
@@ -559,6 +615,7 @@ async def test_provider_session_callback_uses_locked_run_scope(monkeypatch):
         ),
         provider_session_id="provider-a",
         entries=[{"uuid": "entry-a"}],
+        expected_sequence=1,
     )
     response = await runtime_callbacks.provider_session_callback(
         callback,
@@ -578,6 +635,7 @@ async def test_provider_session_callback_uses_locked_run_scope(monkeypatch):
         "action": "append",
         "entries": [{"uuid": "entry-a"}],
         "subpath": None,
+        "expected_sequence": 1,
     }
 
 

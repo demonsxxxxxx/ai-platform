@@ -16,12 +16,6 @@ class RunModelSelection:
     max_output_tokens: int | None = None
 
 
-class LegacyModelResolver(Protocol):
-    async def public_models(self) -> dict[str, object]: ...
-
-    def resolve(self, selection: dict[str, str] | None) -> RunModelSelection: ...
-
-
 class GovernedModelResolver(Protocol):
     async def __call__(
         self,
@@ -64,9 +58,8 @@ async def resolve_chat_model_selection(
     *,
     selection: dict[str, str] | None,
     resolve_governed_model: GovernedModelResolver,
-    resolve_legacy_model: LegacyModelResolver,
-) -> RunModelSelection | None:
-    """Resolve governed selection, retaining legacy fallback only when inactive."""
+) -> RunModelSelection:
+    """Resolve only the configured, Run-budgeted model for new execution."""
 
     model_id = selection.get("id") if selection else None
     model_value = selection.get("value") if selection else None
@@ -75,6 +68,12 @@ async def resolve_chat_model_selection(
         model_id=model_id,
         model_value=model_value,
     )
-    if governed is not None:
-        return governed
-    return resolve_legacy_model.resolve(selection)
+    if governed is None:
+        raise ValueError("model_connection_not_configured")
+    if (
+        governed.connection_revision is None
+        or governed.max_input_tokens is None
+        or governed.max_output_tokens is None
+    ):
+        raise ValueError("model_capacity_missing")
+    return governed

@@ -414,7 +414,7 @@ async def test_prior_schema_ledgers_advance_to_current_schema(
 
 
 @pytest.mark.asyncio
-async def test_agent_avatar_schema_ledger_is_upgraded_to_model_budget_expand():
+async def test_agent_avatar_schema_ledger_is_upgraded_to_claude_context_cutover():
     state = SharedMigrationState()
     state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] = "legacy-checksum"
 
@@ -425,7 +425,7 @@ async def test_agent_avatar_schema_ledger_is_upgraded_to_model_budget_expand():
 
     assert result["status"] == "applied"
     assert state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] == "legacy-checksum"
-    assert state.ledger[schema_migrations.MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION] == (
+    assert state.ledger[schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION] == (
         schema_migrations.schema_checksum()
     )
 
@@ -481,8 +481,8 @@ def test_stream_only_schema_change_advances_schema_version():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.15.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.15.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION
     assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
     assert schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
@@ -510,8 +510,13 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "mcp_servers",
         "mcp_server_credentials",
         "mcp_tools",
-        "provider_session_bindings",
+        "provider_session_heads",
+        "provider_session_epochs",
         "provider_session_entries",
+        "provider_session_append_receipts",
+        "provider_turn_receipts",
+        "conversation_context_checkpoints",
+        "run_context_snapshots",
     )
     assert (
         "users",
@@ -529,59 +534,42 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
-    for column in (
-        ("tenant_id", "text", True),
-        ("workspace_id", "text", True),
-        ("user_id", "text", True),
-        ("session_id", "text", True),
-        ("agent_id", "text", True),
-        ("engine", "text", True),
-        ("provider_session_id", "uuid", True),
-        ("context_epoch", "int8", True),
-        ("next_sequence", "int8", True),
-        ("writer_run_id", "text", False),
-        ("writer_attempt_id", "text", False),
-        ("created_at", "timestamptz", True),
-        ("updated_at", "timestamptz", True),
-    ):
-        assert ("provider_session_bindings", *column) in schema_migrations.CRITICAL_COLUMNS
-    for column in (
-        ("id", "text", True),
-        ("tenant_id", "text", True),
-        ("workspace_id", "text", True),
-        ("user_id", "text", True),
-        ("session_id", "text", True),
-        ("agent_id", "text", True),
-        ("engine", "text", True),
-        ("provider_session_id", "uuid", True),
-        ("subpath", "text", True),
-        ("sequence", "int8", True),
-        ("sdk_entry_uuid", "text", False),
-        ("entry_json", "jsonb", True),
-        ("created_at", "timestamptz", True),
-    ):
-        assert ("provider_session_entries", *column) in schema_migrations.CRITICAL_COLUMNS
+    for table, columns in {
+        "provider_session_heads": (("tenant_id", "text", True), ("current_epoch_id", "text", False),
+                                   ("active_run_id", "text", False)),
+        "provider_session_epochs": (("provider_session_id", "uuid", True), ("next_sequence", "int8", True),
+                                    ("coverage_source_sha256", "text", False)),
+        "provider_session_entries": (("epoch_id", "text", True), ("sequence", "int8", True)),
+        "provider_session_append_receipts": (("expected_sequence", "int8", True),
+                                             ("batch_sha256", "text", True)),
+        "provider_turn_receipts": (("committed_coverage_sha256", "text", False),),
+        "conversation_context_checkpoints": (("source_sha256", "text", True), ("state", "text", True)),
+        "run_context_snapshots": (("conversation_authority_json", "jsonb", False),),
+    }.items():
+        for column in columns:
+            assert (table, *column) in schema_migrations.CRITICAL_COLUMNS
     for constraint in (
-        ("provider_session_bindings", "chk_provider_session_bindings_engine"),
-        ("provider_session_bindings", "chk_provider_session_bindings_context_epoch"),
-        ("provider_session_bindings", "chk_provider_session_bindings_next_sequence"),
-        ("provider_session_bindings", "pk_provider_session_bindings"),
-        ("provider_session_bindings", "uq_provider_session_bindings_provider_session_id"),
-        ("provider_session_bindings", "uq_provider_session_bindings_scope"),
-        ("provider_session_bindings", "fk_provider_session_bindings_session"),
-        ("provider_session_entries", "provider_session_entries_pkey"),
-        ("provider_session_entries", "chk_provider_session_entries_engine"),
-        ("provider_session_entries", "chk_provider_session_entries_sequence"),
-        ("provider_session_entries", "uq_provider_session_entries_sequence"),
-        ("provider_session_entries", "fk_provider_session_entries_binding"),
+        ("conversation_context_checkpoints", "chk_context_checkpoint_ready"),
+        ("conversation_context_checkpoints", "fk_context_checkpoint_source_scope"),
+        ("provider_session_heads", "fk_provider_head_current_epoch"),
+        ("provider_session_epochs", "fk_provider_epoch_head"),
+        ("provider_session_entries", "fk_provider_entry_epoch"),
+        ("provider_session_entries", "uq_provider_entry_global_sequence"),
+        ("provider_session_append_receipts", "provider_session_append_receipts_pkey"),
+        ("provider_turn_receipts", "fk_provider_turn_epoch"),
     ):
         assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
     for index in (
         ("idx_sessions_provider_scope", True),
-        ("uq_provider_session_entries_sdk_uuid", True),
-        ("idx_provider_session_entries_order", False),
+        ("uq_provider_entry_sdk_uuid", True),
+        ("idx_provider_entry_view", False),
     ):
         assert index in schema_migrations.CRITICAL_INDEXES
+    schema = schema_migrations.schema_sql().lower()
+    assert "create table if not exists provider_session_bindings" not in schema
+    assert "unique (epoch_id, sequence)" in schema
+    assert "provider_session_legacy_binding_requires_disposition" in schema
+
     assert (
         "agent_profile_revisions",
         "skill_set",

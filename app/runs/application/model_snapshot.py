@@ -22,9 +22,9 @@ class RunModelSnapshotRepository(Protocol):
         run_id: str,
         model_id: str,
         model_value: str,
-        connection_revision: int | None,
-        max_input_tokens: int | None = None,
-        max_output_tokens: int | None = None,
+        connection_revision: int,
+        max_input_tokens: int,
+        max_output_tokens: int,
     ) -> None: ...
 
     async def inherit(

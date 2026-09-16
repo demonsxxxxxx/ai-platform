@@ -47,7 +47,6 @@ from app.required_tool_contract import (
     parse_required_tool_declaration,
 )
 from app.runtime.kernel_contracts import AgentEvent
-from app.execution.api import sdk_session_id_for_run
 from app.runtime.sandbox.container_provider import (
     DockerContainerProvider,
     FakeContainerProvider,
@@ -318,68 +317,6 @@ class FakeQueryResult:
     received_structured_terminal = True
 
 
-class FakeSdkUnavailable:
-    used_sdk = False
-    message = ""
-    session_id = None
-    usage = {}
-    error = "claude_agent_sdk_unavailable: No module named claude_agent_sdk"
-
-
-class FakeSdkRuntimeError:
-    used_sdk = True
-    message = ""
-    session_id = None
-    usage = {}
-    error = "model gateway timeout"
-
-
-class FakeSdkCancelled:
-    used_sdk = True
-    message = "private partial text"
-    session_id = "sdk-session"
-    usage = {"input_tokens": 1}
-    error = "claude_agent_sdk_cancelled"
-    received_structured_terminal = False
-
-
-class FakeSdkStopSequence:
-    used_sdk = True
-    message = "completed at the requested stop sequence"
-    session_id = "sdk-session"
-    usage = {"input_tokens": 1}
-    error = None
-    terminal_reason = "stop_sequence"
-    received_structured_terminal = True
-
-
-class FakeSdkExceptionTextStopSequence:
-    used_sdk = True
-    message = ""
-    session_id = None
-    usage = {}
-    error = "stop_sequence"
-
-
-class FakeSdkMissingStructuredTerminal:
-    used_sdk = True
-    message = "assistant chunks are not a terminal result"
-    session_id = "sdk-session"
-    usage = {"input_tokens": 1}
-    error = "claude_agent_sdk_missing_structured_terminal"
-    received_structured_terminal = False
-
-
-class FakeSdkNativeSkillUse:
-    used_sdk = True
-    message = "reviewed with native skill telemetry"
-    session_id = "sdk-session"
-    usage = {"input_tokens": 1}
-    error = None
-    used_skills = ["qa-file-reviewer"]
-    used_skills_source = "executor_hook"
-
-
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 
 
@@ -455,8 +392,40 @@ def payload(**overrides):
         "skill_id": "qa-file-reviewer",
         "file_ids": ["file_1"],
         "input": {},
+        "context_pack": {
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "execution_tier": "",
+            "conversation_context": {
+                "schema_version": "ai-platform.executor-conversation-context.v2",
+                "execution_mode": "empty_start",
+                "provider_epoch_id": "pe_synthetic",
+                "provider_session_id": "00000000-0000-4000-8000-000000000002",
+                "source_sha256": "a" * 64,
+                "messages": [],
+            },
+        },
+        "model_id": "catalog-default",
+        "model_value": "provider/catalog-default",
+        "model_gateway_revision": 1,
+        "model_max_input_tokens": 32000,
+        "model_max_output_tokens": 2048,
+        "schema_version": "ai-platform.run-payload.v2",
     }
     data.update(overrides)
+    context_pack = data.get("context_pack")
+    if isinstance(context_pack, dict) and "conversation_context" not in context_pack:
+        data["context_pack"] = {
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            **context_pack,
+            "conversation_context": {
+                "schema_version": "ai-platform.executor-conversation-context.v2",
+                "execution_mode": "empty_start",
+                "provider_epoch_id": "pe_synthetic",
+                "provider_session_id": "00000000-0000-4000-8000-000000000002",
+                "source_sha256": "a" * 64,
+                "messages": [],
+            },
+        }
     if "skill_manifests" not in data:
         data["skill_manifests"] = [_test_skill_manifest(data["skill_id"])]
     primary_version = _primary_manifest_version(data["skill_id"], data.get("skill_manifests"))
@@ -492,7 +461,24 @@ def settings(tmp_path, *, sdk_enabled=True):
 def sandbox_writing_payload(**overrides):
     tier = str(overrides.pop("execution_tier", "document_worker"))
     overrides.setdefault("context_snapshot", {"execution_tier": tier})
-    overrides.setdefault("context_pack", {"execution_tier": tier})
+    overrides.setdefault("context_pack", {
+        "schema_version": "ai-platform.executor-context-pack.v1",
+        "execution_tier": tier,
+        "conversation_context": {
+            "schema_version": "ai-platform.executor-conversation-context.v2",
+            "execution_mode": "empty_start",
+            "provider_epoch_id": "pe_synthetic",
+            "provider_session_id": "00000000-0000-4000-8000-000000000002",
+            "source_sha256": "a" * 64,
+            "messages": [],
+        },
+    })
+    overrides.setdefault("model_id", "catalog-default")
+    overrides.setdefault("model_value", "provider/catalog-default")
+    overrides.setdefault("model_gateway_revision", 1)
+    overrides.setdefault("model_max_input_tokens", 32000)
+    overrides.setdefault("model_max_output_tokens", 2048)
+    overrides.setdefault("schema_version", "ai-platform.run-payload.v2")
     return payload(**overrides)
 
 
@@ -617,91 +603,6 @@ def _unbound_skill_evidence(skill_id, *phases):
         RequiredCapabilityEvidence.sdk_hook_payload(declaration=declaration, tool_call_id="skill-call-1", lifecycle_phase=phase)
         for phase in phases
     ]
-
-
-async def _run_worker_local_skill_evidence_case(monkeypatch, tmp_path, raw_evidence):
-    current_payload = payload(skill_id="qa-file-reviewer", file_ids=[])
-    acknowledgements = []
-    async def fake_run_claude_agent_sdk(**kwargs):
-        callback = kwargs["on_capability_evidence"]
-        for item in raw_evidence:
-            acknowledgements.append(await callback(item))
-        return ClaudeAgentSdkRunResult(
-            used_sdk=True, message="review complete", session_id="sdk-session",
-            received_structured_terminal=True, used_skills=["qa-file-reviewer"],
-            used_skills_source="executor_hook",
-        )
-
-    monkeypatch.setattr(claude_agent_worker, "get_settings", lambda: settings(tmp_path, sdk_enabled=True))
-    monkeypatch.setattr(claude_agent_worker, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    result = await ClaudeAgentWorkerAdapter()._try_run_sdk(
-        current_payload, workspace=tmp_path / "workspaces" / "default" / "run_1",
-        file_names=[], prompt="review this document", staged_skill_names=["qa-file-reviewer"],
-    )
-    return current_payload, result, acknowledgements
-
-
-@pytest.mark.asyncio
-async def test_worker_local_sdk_adapter_forwards_only_public_capability_answer(
-    monkeypatch,
-    tmp_path,
-):
-    current_payload = payload(skill_id="qa-file-reviewer", file_ids=[])
-    sealed_pre_capability_text = "raw tool output and /private/path are sealed."
-    public_chunks = ["Verified final answer ", "streams safely."]
-    public_answer = "".join(public_chunks)
-    events = []
-
-    async def fake_run_claude_agent_sdk(**kwargs):
-        callback = kwargs["on_capability_evidence"]
-        for evidence in _unbound_skill_evidence(
-            "qa-file-reviewer",
-            "invocation_requested",
-            "completed",
-        ):
-            assert await callback(evidence) is True
-        for chunk in public_chunks:
-            await kwargs["on_text"](chunk)
-        return ClaudeAgentSdkRunResult(
-            used_sdk=True,
-            message=public_answer,
-            session_id="sdk-session",
-            received_structured_terminal=True,
-            used_skills=["qa-file-reviewer"],
-            used_skills_source="executor_hook",
-        )
-
-    async def event_sink(**event):
-        events.append(event)
-
-    monkeypatch.setattr(
-        claude_agent_worker,
-        "get_settings",
-        lambda: settings(tmp_path, sdk_enabled=True),
-    )
-    monkeypatch.setattr(
-        claude_agent_worker,
-        "run_claude_agent_sdk",
-        fake_run_claude_agent_sdk,
-    )
-    result = await ClaudeAgentWorkerAdapter()._try_run_sdk(
-        current_payload,
-        event_sink=event_sink,
-        workspace=tmp_path / "workspaces" / "default" / "run_1",
-        file_names=[],
-        prompt="review this document",
-        staged_skill_names=["qa-file-reviewer"],
-    )
-
-    assert result.message == public_answer
-    assert [event["payload"]["delta"] for event in events if event["event_type"] == "assistant_delta"] == public_chunks
-    assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
-        "invocation_requested",
-        "completed",
-    ]
-    assert sealed_pre_capability_text not in json.dumps(
-        {"message": result.message, "events": events},
-    )
 
 
 def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="completed", provider="docker"):
@@ -1717,85 +1618,6 @@ def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
 
 
 @pytest.mark.asyncio
-async def test_general_chat_treats_sdk_stop_sequence_as_normal_completion(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter()
-
-    async def sdk_stop_sequence(*args, **kwargs):
-        return FakeSdkStopSequence()
-
-    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_stop_sequence)
-
-    result = await adapter._run_general_chat(payload())
-
-    assert result.status == "succeeded"
-    assert result.result["message"] == "completed at the requested stop sequence"
-    assert result.result["sdk_error"] is None
-    assert result.executor_payload["sdk_terminal_reason"] == "stop_sequence"
-
-
-@pytest.mark.asyncio
-async def test_general_chat_fails_closed_without_structured_sdk_terminal(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter()
-
-    async def sdk_missing_terminal(*args, **kwargs):
-        return FakeSdkMissingStructuredTerminal()
-
-    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_missing_terminal)
-
-    result = await adapter._run_general_chat(payload())
-
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_missing_structured_terminal"
-
-
-@pytest.mark.asyncio
-async def test_general_chat_keeps_real_sdk_errors_failed(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter()
-
-    async def sdk_runtime_error(*args, **kwargs):
-        return FakeSdkRuntimeError()
-
-    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_runtime_error)
-
-    result = await adapter._run_general_chat(payload())
-
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
-
-
-@pytest.mark.asyncio
-async def test_general_chat_projects_sdk_cancellation_without_partial_text(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter()
-
-    async def sdk_cancelled(*args, **kwargs):
-        return FakeSdkCancelled()
-
-    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_cancelled)
-
-    result = await adapter._run_general_chat(payload())
-
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_cancelled"
-    assert result.result["message"] == "This run was cancelled before completion."
-    assert "private partial text" not in str(result.result)
-
-
-@pytest.mark.asyncio
-async def test_general_chat_keeps_stop_sequence_exception_text_failed(monkeypatch):
-    adapter = ClaudeAgentWorkerAdapter()
-
-    async def sdk_exception(*args, **kwargs):
-        return FakeSdkExceptionTextStopSequence()
-
-    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_exception)
-
-    result = await adapter._run_general_chat(payload())
-
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
-
-
-@pytest.mark.asyncio
 async def test_sdk_disabled_fails_closed_without_secondary_executor(monkeypatch, tmp_path):
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr(
@@ -2299,9 +2121,6 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
                 },
             )
 
-    async def fail_try_run_sdk(*args, **kwargs):
-        raise AssertionError("heavy_sandbox ordinary run must not stay on the worker-local SDK path")
-
     async def no_files(payload, workspace):
         return []
 
@@ -2312,7 +2131,6 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
         lambda *args, **kwargs: FakeRuntime(),
         raising=False,
     )
-    monkeypatch.setattr(adapter, "_try_run_sdk", fail_try_run_sdk)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
 
     result = await adapter.submit_run(
@@ -2744,7 +2562,6 @@ async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
 
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fail_local_helper)
     runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
@@ -3884,6 +3701,7 @@ async def test_sandbox_projection_omission_keeps_worker_success_and_artifact(
                 "last_delta_event_id": "evt4_delta_1482",
             },
             "sdk_used": True,
+            "sdk_session_id": "synthetic-provider-id",
             "used_skills": [],
             "used_skills_source": "",
             "sdk_turn_diagnostics": {
@@ -3911,6 +3729,8 @@ async def test_sandbox_projection_omission_keeps_worker_success_and_artifact(
     assert result.status == "succeeded"
     assert result.result["message"] == ""
     assert result.result["artifact_count"] == 1
+    assert "sdk_session_id" not in result.result
+    assert "sdk_session_id" not in result.executor_payload
     assert result.result["sdk_turn_diagnostics"]["counters"][
         "public_projection_omissions"
     ] == 1
@@ -4067,7 +3887,6 @@ async def test_prompt_preflight_returns_typed_failure_before_runtime_dispatch(
         lambda: settings(tmp_path, sdk_enabled=True),
     )
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_must_not_run)
 
     failure = await adapter._run_with_staged_skills(
         payload(
@@ -4198,7 +4017,7 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_worker_passes_stable_platform_session_sdk_ids_to_sandbox(monkeypatch, tmp_path):
+async def test_sandbox_dispatch_uses_frozen_epoch_id_across_runs_and_new_adapter(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
     async def no_files(payload, workspace):
@@ -4228,7 +4047,7 @@ async def test_worker_passes_stable_platform_session_sdk_ids_to_sandbox(monkeypa
     await restarted_adapter.submit_run(base_payload)
 
     captured_session_ids = [request.sdk_session_id for request in runtime_requests]
-    assert captured_session_ids[0]
+    assert captured_session_ids[0] == "00000000-0000-4000-8000-000000000002"
     assert captured_session_ids[0] == captured_session_ids[1]
     assert captured_session_ids[2] == captured_session_ids[0]
     for request in runtime_requests:
@@ -4290,62 +4109,6 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
     assert subjects[2]["write_capable"] is True
 
 
-@pytest.mark.asyncio
-async def test_worker_local_selected_skill_binds_acknowledged_pre_and_post_evidence(monkeypatch, tmp_path):
-    current_payload, result, acknowledgements = await _run_worker_local_skill_evidence_case(
-        monkeypatch, tmp_path,
-        _unbound_skill_evidence("qa-file-reviewer", "invocation_requested", "completed"),
-    )
-
-    assert tuple(item is True for item in acknowledgements) == (True, True)
-    records = [RequiredCapabilityEvidence.from_payload(item) for item in result.capability_evidence]
-    assert [record.lifecycle_phase for record in records] == ["invocation_requested", "completed"]
-    assert [record.lifecycle_status for record in records] == ["invoking", "succeeded"]
-    for record in records:
-        fields = ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")
-        assert tuple(getattr(record, field) for field in fields) == ("default", "default", "user-a", "ses_1", "run_1", "qat-test-attempt")
-        assert (record.evidence_source, record.trust_basis) == ("claude_agent_sdk_hook", "tool_call_bound_invocation")
-    assert claude_agent_worker._capability_execution_error(
-        current_payload,
-        result.capability_evidence,
-        available_skill_identities=[current_payload.skill_id],
-    ) is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("case", "expected_acknowledged", "expected_phases", "expected_error"),
-    [
-        ("missing_post", (True,), ("invocation_requested",), "required_tool_completion_evidence_mismatch"),
-        ("wrong_identity", (False,), (), None),
-        ("malformed", (True, False), (), None),
-        ("failed", (True, True), ("invocation_requested", "failed"), "required_tool_completion_evidence_mismatch"),
-    ],
-)
-async def test_worker_local_selected_skill_validates_evidence_without_making_skill_required(
-    monkeypatch, tmp_path, case, expected_acknowledged, expected_phases, expected_error
-):
-    selected_pre = _unbound_skill_evidence("qa-file-reviewer", "invocation_requested")
-    cases = {
-        "missing_post": selected_pre,
-        "wrong_identity": _unbound_skill_evidence("minimax-docx", "invocation_requested"),
-        "malformed": selected_pre
-        + [{**_unbound_skill_evidence("qa-file-reviewer", "completed")[0], "extra": "invalid"}],
-        "failed": _unbound_skill_evidence("qa-file-reviewer", "invocation_requested", "failed"),
-    }
-    current_payload, result, acknowledgements = await _run_worker_local_skill_evidence_case(
-        monkeypatch,
-        tmp_path,
-        cases[case],
-    )
-
-    assert tuple(item is True for item in acknowledgements) == expected_acknowledged
-    assert tuple(item["lifecycle_phase"] for item in result.capability_evidence) == expected_phases
-    assert claude_agent_worker._capability_execution_error(
-        current_payload,
-        result.capability_evidence,
-        available_skill_identities=[current_payload.skill_id],
-    ) == expected_error
 
 
 
@@ -4464,7 +4227,7 @@ async def test_qa_file_reviewer_multi_agent_plan_emits_steps_and_runs_staged_sdk
     assert received_event_sinks == [event_sink]
     assert result.result["sdk_used"] is True
     assert result.result["delegate_used"] is False
-    assert result.result["sdk_session_id"] == sdk_session_id_for_run("run_1")
+    assert "sdk_session_id" not in result.result
     assert result.executor_payload["sdk_used"] is True
     assert result.executor_payload["delegate_used"] is False
     assert result.executor_payload["sdk_usage"] == {"input_tokens": 1}
@@ -4673,6 +4436,8 @@ def test_build_sdk_env_overrides_untrusted_inherited_environment(monkeypatch, tm
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/tmp/user-claude-config")
     monkeypatch.setenv("AI_PLATFORM_SECRET", "host-secret")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "ambient-token")
+    monkeypatch.setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "ambient-total-window")
+    monkeypatch.setenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "ambient-output-window")
     current_settings = type(
         "S",
         (),
@@ -4685,9 +4450,11 @@ def test_build_sdk_env_overrides_untrusted_inherited_environment(monkeypatch, tm
     )()
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
 
-    env = build_sdk_env(cwd=tmp_path / "run-workspace")
+    env = build_sdk_env(cwd=tmp_path / "run-workspace", model_max_output_tokens=2048)
 
     assert env["ANTHROPIC_AUTH_TOKEN"] == "settings-token"
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "2048"
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == ""
     assert env["HOME"] == str(tmp_path / "run-workspace" / ".home")
     assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "run-workspace" / ".claude-config")
     assert env["AI_PLATFORM_WORK_DIR"] == str(tmp_path / "run-workspace")
@@ -5195,149 +4962,6 @@ async def test_sdk_runner_keeps_authorized_skill_available_without_forced_invoca
     ]
     assert "Authoritative platform Skill requirement" not in malicious_prompt
     assert 'exactly this input: {"skill":"qa-file-reviewer"}' not in malicious_prompt
-
-
-@pytest.mark.asyncio
-async def test_harness_sdk_wires_no_skill_callback(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    captured = {}
-
-    async def fake_run_claude_agent_sdk(**kwargs):
-        captured.update(kwargs)
-        return FakeQueryResult()
-
-    adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.get_settings",
-        lambda: current_settings,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.run_claude_agent_sdk",
-        fake_run_claude_agent_sdk,
-    )
-
-    result = await adapter._try_run_sdk(
-        payload(
-            agent_id="general-agent",
-            execution_kind="harness_chat",
-            skill_id=None,
-            file_ids=[],
-            schema_version="ai-platform.run-payload.v2",
-            skill_manifests=[],
-            skill_version="",
-            release_decision={},
-        ),
-        workspace=tmp_path / "workspaces" / "default" / "run_1",
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error is None
-    assert captured["skill_id"] is None
-    assert captured["skills"] == []
-    assert captured["on_skill_use"] is None
-    assert "system_prompt" not in captured
-
-
-@pytest.mark.asyncio
-async def test_pinned_harness_profile_uses_private_sdk_system_channel(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    captured = {}
-    private_instruction = "Private profile instruction: never expose this marker."
-
-    async def fake_run_claude_agent_sdk(**kwargs):
-        captured.update(kwargs)
-        return FakeQueryResult()
-
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.get_settings",
-        lambda: current_settings,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.run_claude_agent_sdk",
-        fake_run_claude_agent_sdk,
-    )
-
-    result = await ClaudeAgentWorkerAdapter()._try_run_sdk(
-        payload(
-            agent_id="agt_support",
-            execution_kind="harness_chat",
-            skill_id=None,
-            file_ids=[],
-            input={"message": "public user question"},
-            schema_version="ai-platform.run-payload.v2",
-            skill_manifests=[],
-            skill_version="",
-            release_decision={},
-            agent_profile={
-                "agent_id": "agt_support",
-                "revision": 7,
-                "content_hash": "a" * 64,
-                "instructions": private_instruction,
-                "required_skill_id": "general-chat",
-                "required_skill_version": "version-a",
-            },
-        ),
-        workspace=tmp_path / "workspaces" / "default" / "run_1",
-        file_names=[],
-        prompt="public user question",
-        staged_skill_names=[],
-    )
-
-    assert result.message == "hello from sdk"
-    assert captured["prompt"] == "public user question"
-    assert captured["system_prompt"] == private_instruction
-    assert private_instruction not in json.dumps(
-        {"prompt": captured["prompt"], "result": result.message},
-    )
-
-
-@pytest.mark.asyncio
-async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    captured = {}
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        public_skill_metadata,
-        thinking_effort,
-        tool_policy_subjects,
-    ):
-        captured["model_id"] = model_id
-        captured["public_skill_metadata"] = public_skill_metadata
-        captured["thinking_effort"] = thinking_effort
-        return FakeQueryResult()
-
-    adapter = ClaudeAgentWorkerAdapter()
-    workspace = tmp_path / "workspaces" / "default" / "run_1"
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-
-    result = await adapter._try_run_sdk(
-        payload(
-            trace_id="trace-sdk",
-            model_id="pro-tier",
-            model_value="deepseek-v4-pro",
-        ),
-        workspace=workspace,
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error is None
-    assert captured["model_id"] == "deepseek-v4-pro"
-    assert captured["public_skill_metadata"] is None
-    assert captured["thinking_effort"] == "off"
 
 
 @pytest.mark.asyncio

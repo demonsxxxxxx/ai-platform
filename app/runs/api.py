@@ -37,6 +37,12 @@ from app.runs.application.cancellation import (
 )
 from app.runs.application.execution_spec import (
     compile_execution_spec_for_dispatch as compile_execution_spec_for_dispatch,
+    worker_dispatch_fence as worker_dispatch_fence,
+)
+from app.runs.application.provider_terminalization import (
+    persist_assistant_with_provider_coverage as persist_assistant_with_provider_coverage,
+    result_with_checkpoint_usage as result_with_checkpoint_usage,
+    commit_terminal_checkpoint_usage as commit_terminal_checkpoint_usage,
 )
 from app.runs.domain.attempt_lifecycle import (
     OPEN_RUN_ATTEMPT_STATUSES as OPEN_RUN_ATTEMPT_STATUSES,

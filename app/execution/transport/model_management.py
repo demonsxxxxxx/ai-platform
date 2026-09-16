@@ -53,6 +53,7 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "max_input_tokens_invalid",
         "max_output_tokens_invalid",
         "model_capacity_pair_required",
+        "model_capacity_missing",
     }:
         return HTTPException(status_code=422, detail=code)
     if code in {"model_connection_authentication_failed"}:
@@ -215,9 +216,16 @@ async def proxy_model_request(
     except ValueError as exc:
         if str(exc) == "model_proxy_body_invalid":
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if str(exc) == "model_proxy_max_tokens_invalid":
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if str(exc) == "context_bootstrap_input_too_large":
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503 if str(exc) == "model_proxy_count_tokens_unavailable" else 502,
+            detail=str(exc),
+        ) from exc
     return StreamingResponse(
         upstream.body,
         status_code=upstream.status,

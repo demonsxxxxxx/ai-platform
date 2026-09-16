@@ -65,6 +65,7 @@ def runtime_terminal_payload(
     return {
         "runtime_terminal_status": runtime_status,
         "answer_receipt": executor_response.get("answer_receipt"),
+        "provider_session_final_sequence": executor_response.get("provider_session_final_sequence"),
     }
 
 

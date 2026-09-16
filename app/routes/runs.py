@@ -1112,7 +1112,9 @@ async def create_run(
                 message_ids=[],
                 file_ids=primary_file_ids,
                 source="runs_api",
-                include_session_history=bool(request.session_id),
+                include_session_history=(
+                    bool(request.session_id) or executor_type == "claude-agent-worker"
+                ),
             )
             queue_payload = _validate_queue_payload_for_enqueue(
                 {

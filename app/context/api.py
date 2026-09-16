@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import secrets
 
+from app.context.application.checkpoint_build import prepare_checkpoint_for_run
+from app.context.application.checkpoints import (
+    load_ready_checkpoint, load_checkpoint_usage_for_run,
+)
 from app.context.application.provider_sessions import (
     ProviderSessionOperationResult,
+    matching_ready_provider_epoch,
+    claim_provider_lineage,
+    release_provider_lineage,
+    prepare_provider_epoch,
+    commit_provider_turn,
     execute_provider_session_callback,
-    provider_session_has_main_transcript,
 )
 from app.context.application.worker_snapshot import (
     materialize_worker_context_snapshot as _materialize_worker_context_snapshot,
 )
 from app.context.domain.conversation import (
-    MAX_CONVERSATION_CONTEXT_CANDIDATES,
+    EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2,
     ConversationContextError,
     build_executor_conversation_context,
     empty_executor_conversation_context,
@@ -35,8 +43,6 @@ from app.context.domain.provider_sessions import (
     normalize_provider_entry_batch,
     normalize_provider_subpath,
     provider_session_id_for_scope,
-    provider_session_id_for_session,
-    select_provider_conversation_context,
 )
 
 
@@ -174,11 +180,6 @@ def context_file_executor_failure(
     return error_code, message, diagnostic
 
 
-async def _provider_transcript_state(conn: object, **kwargs: object) -> bool:
-    kwargs.pop("run_id", None)
-    return await provider_session_has_main_transcript(conn, **kwargs)
-
-
 async def materialize_worker_context_snapshot(
     conn: object,
     *,
@@ -187,28 +188,40 @@ async def materialize_worker_context_snapshot(
     snapshot_loader,
     message_loader,
     context_projector,
-    provider_transcript_loader=None,
+    history_page_loader=None,
+    prepared_checkpoint_id=None,
 ):
-    if (
-        provider_transcript_loader is None
-        and identity.get("agent_id")
-        and identity.get("engine") == PROVIDER_SESSION_ENGINE_CLAUDE
-    ):
-        provider_transcript_loader = _provider_transcript_state
-    return await _materialize_worker_context_snapshot(
+    result = await _materialize_worker_context_snapshot(
         conn,
         identity=identity,
         context_snapshot_id=context_snapshot_id,
         snapshot_loader=snapshot_loader,
         message_loader=message_loader,
         context_projector=context_projector,
-        provider_transcript_loader=provider_transcript_loader,
+        history_page_loader=history_page_loader,
+        provider_epoch_matcher=matching_ready_provider_epoch,
+        prepared_checkpoint_id=prepared_checkpoint_id,
     )
+    if (result is not None and identity.get("engine") == PROVIDER_SESSION_ENGINE_CLAUDE
+        and result["conversation_context"].get("schema_version") == EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2):
+        try:
+            result["conversation_context"] = await prepare_provider_epoch(
+                conn,
+                scope=ProviderSessionScope(
+                    tenant_id=identity["tenant_id"], workspace_id=identity["workspace_id"],
+                    user_id=identity["user_id"], session_id=identity["session_id"],
+                    agent_id=identity["agent_id"],
+                ),
+                run_id=identity["run_id"],
+                conversation_context=result["conversation_context"],
+            )
+        except (ProviderSessionContinuityError, KeyError, TypeError):
+            return None
+    return result
 
 __all__ = [
     "CONTEXT_FILE_ERROR_CODES",
     "CONTEXT_FILE_FAILURE_SCHEMA_VERSION",
-    "MAX_CONVERSATION_CONTEXT_CANDIDATES",
     "ConversationContextError",
     "ContextFileContentError",
     "build_executor_conversation_context",
@@ -216,6 +229,8 @@ __all__ = [
     "context_file_failure_diagnostic",
     "empty_executor_conversation_context",
     "materialize_worker_context_snapshot",
+    "load_checkpoint_usage_for_run",
+    "prepare_checkpoint_for_run",
     "normalize_context_file_error_code",
     "MAX_PROVIDER_SESSION_BATCH_BYTES",
     "MAX_PROVIDER_SESSION_BATCH_COUNT",
@@ -230,13 +245,16 @@ __all__ = [
     "ProviderSessionEntry",
     "ProviderSessionNotFoundError",
     "ProviderSessionOperationResult",
+    "matching_ready_provider_epoch",
+    "claim_provider_lineage",
+    "release_provider_lineage",
+    "prepare_provider_epoch",
+    "commit_provider_turn",
     "ProviderSessionScope",
     "claude_provider_session_id_for_session",
     "normalize_provider_entry",
     "normalize_provider_entry_batch",
     "normalize_provider_subpath",
     "provider_session_id_for_scope",
-    "provider_session_id_for_session",
-    "select_provider_conversation_context",
     "execute_provider_session_callback",
 ]

@@ -104,6 +104,8 @@ def normalize_catalog_patch(
         row.get("max_input_tokens") if max_input_tokens is None else max_input_tokens,
         row.get("max_output_tokens") if max_output_tokens is None else max_output_tokens,
     )
+    if next_enabled and next_input is None:
+        raise ValueError("model_capacity_missing")
     return CatalogPatch(
         display_name=next_name,
         enabled=next_enabled,

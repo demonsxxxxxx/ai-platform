@@ -5,23 +5,26 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from app.context.domain.provider_sessions import (
-    PROVIDER_SESSION_ENGINE_CLAUDE,
     ProviderSessionConflictError,
+    ProviderSessionScope,
 )
 
 
 class ProviderSessionRepository(Protocol):
-    async def ensure_binding(self, conn: Any, **scope: Any) -> dict[str, Any]: ...
+    async def matching_ready_epoch(self, conn: Any, *, scope: ProviderSessionScope,
+                                   run_id: str, source_sha256: str, message_count: int) -> bool: ...
 
-    async def claim_writer(self, conn: Any, **scope: Any) -> dict[str, Any]: ...
+    async def callback_epoch(self, conn: Any, **scope: Any) -> dict[str, Any]: ...
 
-    async def append_entries(self, conn: Any, **scope: Any) -> list[dict[str, Any]]: ...
+    async def claim_lineage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None: ...
 
-    async def list_entries(self, conn: Any, **scope: Any) -> list[dict[str, Any]]: ...
+    async def release_lineage(self, conn: Any, *, tenant_id: str, run_id: str) -> None: ...
 
-    async def list_subpaths(self, conn: Any, **scope: Any) -> list[str]: ...
+    async def prepare_epoch(self, conn: Any, *, scope: ProviderSessionScope,
+                            run_id: str, conversation_context: Mapping[str, Any]) -> dict[str, Any]: ...
 
-    async def has_main_transcript(self, conn: Any, **scope: Any) -> bool: ...
+    async def commit_turn(self, conn: Any, *, tenant_id: str, run_id: str,
+                          attempt_id: str, assistant_message_id: str, final_sequence: int) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,8 @@ class ProviderSessionOperationResult:
     entries: tuple[dict[str, Any], ...] = ()
     subpaths: tuple[str, ...] = ()
     accepted_entry_count: int = 0
+    next_sequence: int = 1
+    last_sequence: int | None = None
 
     @property
     def entry_count(self) -> int:
@@ -42,6 +47,32 @@ class ProviderSessionUseCases:
 
     def __init__(self, repository: ProviderSessionRepository) -> None:
         self._repository = repository
+
+    async def matching_ready_epoch(self, conn: Any, *, scope: ProviderSessionScope,
+                                   run_id: str, source_sha256: str, message_count: int) -> bool:
+        return await self._repository.matching_ready_epoch(
+            conn, scope=scope, run_id=run_id,
+            source_sha256=source_sha256, message_count=message_count,
+        )
+
+    async def claim_lineage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None:
+        await self._repository.claim_lineage(conn, scope=scope, run_id=run_id)
+
+    async def release_lineage(self, conn: Any, *, tenant_id: str, run_id: str) -> None:
+        await self._repository.release_lineage(conn, tenant_id=tenant_id, run_id=run_id)
+
+    async def prepare_epoch(self, conn: Any, *, scope: ProviderSessionScope,
+                            run_id: str, conversation_context: Mapping[str, Any]) -> dict[str, Any]:
+        return await self._repository.prepare_epoch(
+            conn, scope=scope, run_id=run_id, conversation_context=conversation_context,
+        )
+
+    async def commit_turn(self, conn: Any, *, tenant_id: str, run_id: str,
+                          attempt_id: str, assistant_message_id: str, final_sequence: int) -> None:
+        await self._repository.commit_turn(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            assistant_message_id=assistant_message_id, final_sequence=final_sequence,
+        )
 
     async def execute_callback(
         self,
@@ -58,78 +89,22 @@ class ProviderSessionUseCases:
         action: str,
         entries: list[dict[str, Any]],
         subpath: str | None,
+        expected_sequence: int | None,
     ) -> ProviderSessionOperationResult:
-        base_scope = {
-            "tenant_id": tenant_id,
-            "workspace_id": workspace_id,
-            "user_id": user_id,
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "engine": PROVIDER_SESSION_ENGINE_CLAUDE,
-        }
-        provider_scope = {**base_scope, "provider_session_id": provider_session_id}
-        await self._repository.ensure_binding(conn, **base_scope)
-        await self._repository.claim_writer(
-            conn,
-            **provider_scope,
-            run_id=run_id,
-            attempt_id=attempt_id,
+        receipt = await self._repository.callback_epoch(
+            conn, tenant_id=tenant_id, workspace_id=workspace_id,
+            user_id=user_id, session_id=session_id, agent_id=agent_id,
+            run_id=run_id, attempt_id=attempt_id,
+            provider_session_id=provider_session_id, action=action,
+            subpath=subpath, entries=entries, expected_sequence=expected_sequence,
         )
-        if action == "append":
-            rows = await self._repository.append_entries(
-                conn,
-                **provider_scope,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                entries=entries,
-                subpath=subpath,
-            )
-            return ProviderSessionOperationResult(
-                action=action,
-                accepted_entry_count=len(rows),
-            )
-        if action == "list_subkeys":
-            subpaths = await self._repository.list_subpaths(conn, **provider_scope)
-            return ProviderSessionOperationResult(
-                action=action,
-                subpaths=tuple(subpaths),
-            )
-        if action != "load":
-            raise ProviderSessionConflictError("provider_session_action_invalid")
-        rows = await self._repository.list_entries(
-            conn,
-            **provider_scope,
-            subpath=subpath,
-        )
-        loaded: list[dict[str, Any]] = []
-        for row in rows:
-            entry = row.get("entry_json") if isinstance(row, Mapping) else None
-            if not isinstance(entry, Mapping):
-                raise ProviderSessionConflictError("provider_session_entry_shape_invalid")
-            loaded.append(dict(entry))
-        return ProviderSessionOperationResult(action=action, entries=tuple(loaded))
-
-    async def has_main_transcript(
-        self,
-        conn: Any,
-        *,
-        tenant_id: str,
-        workspace_id: str,
-        user_id: str,
-        session_id: str,
-        agent_id: str,
-        engine: str,
-    ) -> bool:
-        if engine != PROVIDER_SESSION_ENGINE_CLAUDE:
-            return False
-        return await self._repository.has_main_transcript(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            agent_id=agent_id,
-            engine=engine,
+        return ProviderSessionOperationResult(
+            action=action,
+            entries=tuple(receipt.get("entries", ())),
+            subpaths=tuple(receipt.get("subpaths", ())),
+            accepted_entry_count=receipt.get("entry_count", 0),
+            next_sequence=receipt["next_sequence"],
+            last_sequence=receipt.get("last_sequence"),
         )
 
 
@@ -147,20 +122,52 @@ def configured_provider_session_use_cases() -> ProviderSessionUseCases:
     return _use_cases
 
 
+async def matching_ready_provider_epoch(conn: Any, *, scope: ProviderSessionScope,
+                                        run_id: str, source_sha256: str, message_count: int) -> bool:
+    return await configured_provider_session_use_cases().matching_ready_epoch(
+        conn, scope=scope, run_id=run_id,
+        source_sha256=source_sha256, message_count=message_count,
+    )
+
+
+async def claim_provider_lineage(conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None:
+    await configured_provider_session_use_cases().claim_lineage(conn, scope=scope, run_id=run_id)
+
+
+async def release_provider_lineage(conn: Any, *, tenant_id: str, run_id: str) -> None:
+    await configured_provider_session_use_cases().release_lineage(conn, tenant_id=tenant_id, run_id=run_id)
+
+
+async def prepare_provider_epoch(conn: Any, *, scope: ProviderSessionScope, run_id: str,
+                                 conversation_context: Mapping[str, Any]) -> dict[str, Any]:
+    return await configured_provider_session_use_cases().prepare_epoch(
+        conn, scope=scope, run_id=run_id, conversation_context=conversation_context,
+    )
+
+
+async def commit_provider_turn(conn: Any, *, tenant_id: str, run_id: str,
+                               attempt_id: str, assistant_message_id: str,
+                               final_sequence: int) -> None:
+    await configured_provider_session_use_cases().commit_turn(
+        conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+        assistant_message_id=assistant_message_id, final_sequence=final_sequence,
+    )
+
+
 async def execute_provider_session_callback(conn: Any, **kwargs: Any) -> ProviderSessionOperationResult:
     return await configured_provider_session_use_cases().execute_callback(conn, **kwargs)
-
-
-async def provider_session_has_main_transcript(conn: Any, **kwargs: Any) -> bool:
-    return await configured_provider_session_use_cases().has_main_transcript(conn, **kwargs)
 
 
 __all__ = [
     "ProviderSessionOperationResult",
     "ProviderSessionRepository",
     "ProviderSessionUseCases",
+    "matching_ready_provider_epoch",
+    "claim_provider_lineage",
+    "release_provider_lineage",
+    "prepare_provider_epoch",
+    "commit_provider_turn",
     "configure_provider_session_use_cases",
     "configured_provider_session_use_cases",
     "execute_provider_session_callback",
-    "provider_session_has_main_transcript",
 ]

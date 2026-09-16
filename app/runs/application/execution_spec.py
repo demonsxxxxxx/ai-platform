@@ -5,12 +5,34 @@ from __future__ import annotations
 from typing import Any, Mapping, Protocol
 
 from app.runs.domain.execution_spec import (
-    EXECUTION_SPEC_SCHEMA_VERSION,
     EXECUTION_SPEC_SCHEMA_VERSION_V2,
     ExecutionSpec,
     ExecutionSpecError,
     compile_execution_spec,
 )
+from app.runs.infrastructure.postgres import load_worker_dispatch_run_facts
+
+
+async def worker_dispatch_fence(
+    conn: Any, *, run_identity: Mapping[str, str], locked_run: Mapping[str, Any],
+    context_snapshot_id: str, reconciliation: bool,
+) -> str:
+    row = await load_worker_dispatch_run_facts(
+        conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"],
+    )
+    if row is None or row["status"] != ("running" if reconciliation else "queued") or row["cancel_requested_at"] is not None:
+        return "stale"
+    if any(str(row[key] or "") != run_identity[key] for key in
+           ("tenant_id", "workspace_id", "user_id", "session_id", "agent_id",
+            "execution_kind", "skill_id")):
+        return "invalid"
+    if (row["id"] != run_identity["run_id"]
+        or row["context_snapshot_id"] != context_snapshot_id
+        or any(row[key] != locked_run[key] for key in
+               ("model_id", "model_value", "model_gateway_revision",
+                "max_input_tokens", "max_output_tokens"))):
+        return "invalid"
+    return "ready"
 
 
 class AuthorizedQueuePayload(Protocol):
@@ -67,17 +89,15 @@ def compile_execution_spec_for_dispatch(
         raise ExecutionSpecError("execution_spec_skill_identity_mismatch")
 
     model_snapshot = _v2_model_snapshot(run_model_snapshot)
-    if model_snapshot is not None and (
+    if model_snapshot is None:
+        raise ExecutionSpecError("execution_spec_model_snapshot_missing")
+    if (
         run_model_snapshot.get("model_id") != queue_payload.model_id
         or run_model_snapshot.get("model_value") != queue_payload.model_value
     ):
         raise ExecutionSpecError("execution_spec_model_snapshot_mismatch")
     spec_payload: dict[str, Any] = {
-        "schema_version": (
-            EXECUTION_SPEC_SCHEMA_VERSION_V2
-            if model_snapshot is not None
-            else EXECUTION_SPEC_SCHEMA_VERSION
-        ),
+        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION_V2,
         "run_payload_schema_version": queue_payload.schema_version,
         "tenant_id": run_identity["tenant_id"],
         "workspace_id": run_identity["workspace_id"],
@@ -101,6 +121,5 @@ def compile_execution_spec_for_dispatch(
         "model_value": queue_payload.model_value or "",
         "agent_profile": queue_payload.agent_profile or {},
     }
-    if model_snapshot is not None:
-        spec_payload.update(model_snapshot)
+    spec_payload.update(model_snapshot)
     return compile_execution_spec(spec_payload)

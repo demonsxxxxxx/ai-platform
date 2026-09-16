@@ -400,9 +400,13 @@ _PROVIDER_SESSION_LIMIT_ERRORS = frozenset(
 _PROVIDER_SESSION_CONFLICT_ERRORS = frozenset(
     {
         "provider_session_identity_mismatch",
+        "provider_session_append_conflict",
+        "provider_session_append_sequence_invalid",
+        "provider_session_epoch_unavailable",
+        "provider_session_spec_mismatch",
+        "provider_session_lineage_busy",
+        "provider_session_owner_invalid",
         "provider_session_writer_conflict",
-        "provider_session_binding_scope_invalid",
-        "provider_session_writer_identity_invalid",
         "provider_session_entry_conflict",
     }
 )
@@ -455,6 +459,7 @@ async def provider_session_callback(
                 action=callback.action,
                 entries=callback.entries,
                 subpath=callback.subpath,
+                expected_sequence=callback.expected_sequence,
             )
             return ProviderSessionCallbackResponse(
                 action=result.action,
@@ -462,6 +467,8 @@ async def provider_session_callback(
                 subpaths=list(result.subpaths),
                 accepted=result.accepted,
                 entry_count=result.entry_count,
+                next_sequence=result.next_sequence,
+                last_sequence=result.last_sequence,
             )
     except HTTPException:
         raise

@@ -145,6 +145,7 @@ class ProviderSessionCallbackRequest(BaseModel):
     provider_session_id: str = Field(min_length=1, max_length=128)
     subpath: str | None = Field(default=None, max_length=512)
     entries: list[dict[str, Any]] = Field(default_factory=list, max_length=128)
+    expected_sequence: int | None = Field(default=None, ge=1)
 
     @field_validator("run_id", "attempt_id", "callback_token_id")
     @classmethod
@@ -153,10 +154,10 @@ class ProviderSessionCallbackRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_action_payload(self):
-        if self.action == "append" and not self.entries:
-            raise ValueError("provider_session_append_entries_required")
-        if self.action != "append" and self.entries:
-            raise ValueError("provider_session_entries_forbidden")
+        if self.action == "append" and (not self.entries or self.expected_sequence is None):
+            raise ValueError("provider_session_append_sequence_required")
+        if self.action != "append" and (self.entries or self.expected_sequence is not None):
+            raise ValueError("provider_session_append_fields_forbidden")
         return self
 
 
@@ -170,6 +171,8 @@ class ProviderSessionCallbackResponse(BaseModel):
     subpaths: list[str] = Field(default_factory=list, max_length=4096)
     accepted: bool = True
     entry_count: int = Field(default=0, ge=0)
+    next_sequence: int = Field(ge=1)
+    last_sequence: int | None = Field(default=None, ge=1)
 
 
 class ContextRetrievalScope(BaseModel):

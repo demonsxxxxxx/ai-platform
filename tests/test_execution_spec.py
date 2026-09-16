@@ -18,11 +18,57 @@ from app.runs.api import (
     ExecutionSpec,
     ExecutionSpecError,
     compile_execution_spec_for_dispatch,
+    worker_dispatch_fence,
     compile_execution_spec,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.asyncio
+async def test_worker_dispatch_fence_relocks_exact_queued_run_and_fails_closed():
+    identity = {"tenant_id": "tenant-a", "workspace_id": "workspace-a",
+                "user_id": "alice@example.test", "session_id": "session-a",
+                "run_id": "run-a", "agent_id": "agent-a",
+                "execution_kind": "skill", "skill_id": "skill-a"}
+    frozen = {"model_id": "model-a", "model_value": "model-a",
+              "model_gateway_revision": 3, "max_input_tokens": 32000,
+              "max_output_tokens": 2048}
+    row = {**identity, **frozen, "id": "run-a", "status": "queued",
+           "cancel_requested_at": None, "context_snapshot_id": "ctx-a"}
+
+    class Cursor:
+        def __init__(self, value):
+            self.value = value
+
+        async def fetchone(self):
+            return self.value
+
+    class Connection:
+        def __init__(self):
+            self.value = row
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((sql, params))
+            return Cursor(self.value)
+
+    conn = Connection()
+    kwargs = {"run_identity": identity, "locked_run": frozen,
+              "context_snapshot_id": "ctx-a", "reconciliation": False}
+    assert await worker_dispatch_fence(conn, **kwargs) == "ready"
+    assert "for update" in conn.calls[0][0] and conn.calls[0][1] == ("tenant-a", "run-a")
+    conn.value = {**row, "model_gateway_revision": 4}
+    assert await worker_dispatch_fence(conn, **kwargs) == "invalid"
+    conn.value = {**row, "status": "succeeded"}
+    assert await worker_dispatch_fence(conn, **kwargs) == "stale"
+    conn.value = {**row, "cancel_requested_at": "requested"}
+    assert await worker_dispatch_fence(conn, **kwargs) == "stale"
+    conn.value = {**row, "status": "running"}
+    assert await worker_dispatch_fence(conn, **{**kwargs, "reconciliation": True}) == "ready"
+
+
 EXECUTION_SPEC_ARCHITECTURE = (
     ROOT / "docs/architecture/execution-spec-and-attempt-lifecycle.md"
 )
@@ -283,8 +329,11 @@ def test_dispatch_projection_preserves_legacy_run_payload_and_keeps_attempt_sepa
         context_snapshot_id=payload["context_snapshot_id"],
         context_snapshot=payload["context_snapshot"],
         context_pack=payload["context_pack"],
+        run_model_snapshot={"model_id": "model-a", "model_value": "model-a", "model_gateway_revision": 7,
+                            "max_input_tokens": 32000, "max_output_tokens": 2048},
     )
 
+    assert spec.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V2
     assert "attempt_id" not in spec.to_mapping()
     run_payload = project_execution_spec_to_run_payload(spec, attempt_id="attempt-a")
     assert run_payload.attempt_id == "attempt-a"
@@ -324,6 +373,8 @@ def test_v2_dispatch_binds_budget_to_locked_run_not_queue_body():
         )
 
     spec = dispatch(locked_model)
+    with pytest.raises(ExecutionSpecError, match="execution_spec_model_snapshot_missing"):
+        dispatch(None)
     assert spec.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V2
     assert spec.to_mapping()["model_max_input_tokens"] == 32000
     assert spec.to_mapping()["model_max_output_tokens"] == 2048
@@ -412,6 +463,8 @@ def test_dispatch_compiler_normalizes_skillless_harness_empty_string():
         context_snapshot_id=payload["context_snapshot_id"],
         context_snapshot=payload["context_snapshot"],
         context_pack=payload["context_pack"],
+        run_model_snapshot={"model_id": "model-a", "model_value": "model-a", "model_gateway_revision": 7,
+                            "max_input_tokens": 32000, "max_output_tokens": 2048},
     )
 
     assert spec.to_mapping()["skill_id"] is None

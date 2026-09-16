@@ -745,7 +745,9 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "skill_id": "general-chat",
         "model_id": stored["model_id"],
         "model_value": stored["model_value"],
-        "model_gateway_revision": None,
+        "model_gateway_revision": 1,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": ["admin"],
         "principal_department_id": "qa",
@@ -820,6 +822,13 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
     monkeypatch.setattr("app.worker.transaction", transaction)
     _TEST_ATTEMPT_LIFECYCLE.lock_queued_run = lock_queued_run_for_attempt
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    async def load_frozen_model(_conn, **_kwargs):
+        return {key: locked_run[key] for key in (
+            "model_id", "model_value", "model_gateway_revision",
+            "max_input_tokens", "max_output_tokens",
+        )}
+
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
@@ -880,7 +889,7 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
     monkeypatch.setattr("app.worker.repositories.validate_replay_skill_manifests", forbidden)
     monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", forbidden)
     monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", forbidden)
-    monkeypatch.setattr("app.worker._ensure_worker_context_snapshot", forbidden)
+    monkeypatch.setattr("app.worker.materialize_queued_worker_context_snapshot", forbidden)
     monkeypatch.setattr("app.worker._create_worker_runtime_sandbox_lease", forbidden)
 
     outcome = await process_run_payload(

@@ -19,6 +19,7 @@ from app.capability_distribution import (
     is_valid_archive_actor,
     resolve_capability_access,
 )
+from app.context.api import release_provider_lineage
 from app.context.file_continuity import (
     compatible_reusable_file_ids,
     has_file_input_mode,
@@ -3735,6 +3736,7 @@ async def progress_run_tool_permission_terminalization(
     if target_status not in {"failed", "cancel_requested", "cancelled"}:
         run_status = str(staged.get("status") or "")
         if run_status in {"succeeded", "failed", "cancelled"}:
+            await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
             terminal_status = "invalidated" if run_status == "succeeded" else run_status
             await terminalize_pending_tool_permission_requests(
                 conn, tenant_id=tenant_id, run_id=run_id, terminal_status=terminal_status,
@@ -3839,10 +3841,14 @@ async def progress_run_tool_permission_terminalization(
         return runs_api.RunTerminalizationProgress(completed=False, status=target_status)
     if target_status not in {"failed", "cancelled"}:
         return runs_api.RunTerminalizationProgress(completed=False, status="cancel_requested")
+    await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
     result_payload = (
         staged.get("permission_terminalization_result_json")
         if isinstance(staged.get("permission_terminalization_result_json"), dict)
         else {}
+    )
+    result_payload = await runs_api.commit_terminal_checkpoint_usage(
+        conn, tenant_id=tenant_id, run_id=run_id, result_json=result_payload,
     )
     result_latency, result_input, result_output, result_total, result_cost = _result_observability_values(result_payload)
     latency_ms = result_latency or _coerce_int(staged.get("latency_ms"))
@@ -7414,7 +7420,6 @@ async def complete_run(
     result_json: dict[str, Any],
 ) -> bool:
     _require_json_size(result_json, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
-    latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     lock_cursor = await conn.execute(
         """
         select id
@@ -7459,6 +7464,10 @@ async def complete_run(
         valid_allow_for_run_ids.append(str(permission.get("id") or ""))
     if any(not request_id for request_id in valid_allow_for_run_ids):
         raise RepositoryConflictError("allow_for_run_id_missing")
+    result_json = await runs_api.result_with_checkpoint_usage(
+        conn, tenant_id=tenant_id, run_id=run_id, result_json=result_json,
+    )
+    latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     cursor = await conn.execute(
         """
         update runs
@@ -7510,6 +7519,7 @@ async def complete_run(
         consumed_ids = {str(item.get("id") or "") for item in await consumed_cursor.fetchall()}
         if consumed_ids != set(valid_allow_for_run_ids):
             raise RepositoryConflictError("allow_for_run_consumption_mismatch")
+    await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
     return True
 
 

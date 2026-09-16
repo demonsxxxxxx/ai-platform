@@ -1,9 +1,30 @@
 # Claude Provider Session Continuity PRD
 
-Status: implementation and static review complete; Draft PR, CI, and candidate acceptance pending
+Status: Release B implementation in PR #1397; external provider/ PostgreSQL/cross-sandbox acceptance remains pending
 Owner: Context + Execution
-Design baseline: `origin/main@7956c98b`
-Last updated: 2026-09-02
+Design baseline: current `origin/main` plus technical plan `output/context-feasibility-20260915/technical-plan.md`
+Last updated: 2026-09-15
+
+### Current architecture
+
+The production path uses one Context-owned provider epoch per platform Session,
+selected by the immutable Run Snapshot and carried through `context_pack`.
+`native_resume`, `platform_bootstrap`, and `empty_start` are mutually exclusive;
+the sandbox receives the epoch-selected provider UUID and the current Run's
+Attempt/lease authorization. Recent conversation bodies are delivered through
+the v2 conversation authority and checkpoint path, not retrieval or an
+executor-local transcript probe. The Worker prepares a source-bound checkpoint
+outside the Attempt transaction, then re-locks the queued Run before binding the
+ExecutionSpec.
+
+Checkpoint token usage is merged into Run terminal observability in the owning
+Runs transaction. Billing records input, output, and total token counts only;
+no USD price is calculated or persisted by this feature.
+
+The old per-Run `sdk_session_id_for_run`, `has_main_transcript`, 64-candidate,
+and 8192-byte conversation selectors are retired from production execution.
+The superseded provider-session infrastructure and direct SDK adapter tests
+have also been removed.
 
 ## 1. Problem
 

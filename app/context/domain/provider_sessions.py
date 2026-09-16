@@ -5,8 +5,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from app.context.domain.conversation import empty_executor_conversation_context
-
 
 PROVIDER_SESSION_ENGINE_CLAUDE = "claude"
 PROVIDER_SESSION_CONTEXT_EPOCH = 1
@@ -200,15 +198,6 @@ def has_main_provider_transcript(entries: list[Mapping[str, Any]]) -> bool:
     return any(normalize_provider_subpath(row.get("subpath")) is None for row in entries)
 
 
-def select_provider_conversation_context(
-    reconstructed_context: dict[str, Any], *, has_main_transcript: bool
-) -> dict[str, Any]:
-    """Use native provider history only after a committed main transcript exists."""
-    if not has_main_transcript:
-        return reconstructed_context
-    return empty_executor_conversation_context()
-
-
 __all__ = [
     "MAX_PROVIDER_SESSION_BATCH_BYTES",
     "MAX_PROVIDER_SESSION_BATCH_COUNT",
@@ -233,6 +222,5 @@ __all__ = [
     "provider_entry_json_bytes",
     "provider_session_id_for_scope",
     "provider_session_id_for_session",
-    "select_provider_conversation_context",
     "stable_provider_session_id",
 ]

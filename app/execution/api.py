@@ -46,7 +46,6 @@ from app.execution.application.claude_agent_events import (
 from app.execution.application.stale_terminalization import (
     stage_stale_run_reconciliation,
 )
-from app.execution.domain.provider_sessions import sdk_session_id_for_run
 from app.execution.application.worker_answer_persistence import (
     AnswerPersistenceLimits,
     WorkerAnswerMaterialization,
@@ -77,6 +76,18 @@ from app.execution.application.model_selection import (
 )
 
 
+async def count_checkpoint_input_for_run(*, run_id: str, source_text: str) -> int:
+    return await configured_model_control_plane().count_checkpoint_input_for_run(
+        run_id=run_id, source_text=source_text,
+    )
+
+
+async def summarize_context_for_run(*, run_id: str, source_text: str) -> dict[str, Any]:
+    return await configured_model_control_plane().summarize_context_for_run(
+        run_id=run_id, source_text=source_text,
+    )
+
+
 async def list_public_models(conn: Any) -> dict[str, object]:
     return await configured_model_control_plane().public_models(conn)
 
@@ -85,7 +96,7 @@ async def resolve_chat_model_selection(
     conn: Any,
     *,
     selection: dict[str, str] | None,
-) -> RunModelSelection | None:
+) -> RunModelSelection:
     return await configured_model_control_plane().resolve_selection(
         conn,
         selection=selection,
@@ -121,10 +132,11 @@ __all__ = [
     "restored_executor_reconciliation_queue_payload",
     "restored_sandbox_run_payload",
     "sandbox_reconciliation_payload",
-    "sdk_session_id_for_run",
     "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
     "list_public_models",
+    "count_checkpoint_input_for_run",
+    "summarize_context_for_run",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",
     "promote_artifact_reservations",

@@ -1,36 +1,32 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import uuid
 from typing import Any
-
-from app.context.api import (
-    PROVIDER_SESSION_RESUME_CONTEXT_KEY,
-    claude_provider_session_id_for_session,
-)
 
 
 def claude_provider_session_dispatch(
     payload: object,
     context_pack: Mapping[str, Any],
 ) -> dict[str, object]:
-    """Bind private provider identity and Context-owned resume evidence for Harness."""
+    """Pass only the Context-frozen epoch identity to the SDK harness."""
     conversation_context = context_pack.get("conversation_context")
-    marker = (
-        conversation_context.get(PROVIDER_SESSION_RESUME_CONTEXT_KEY, False)
-        if isinstance(conversation_context, Mapping)
-        else False
-    )
-    if type(marker) is not bool:
-        raise ValueError("provider_session_resume_required_invalid")
+    if not isinstance(conversation_context, Mapping):
+        raise ValueError("provider_session_spec_missing")
+    mode = conversation_context.get("execution_mode")
+    epoch_id = conversation_context.get("provider_epoch_id")
+    session_id = conversation_context.get("provider_session_id")
+    try:
+        provider_id = str(uuid.UUID(session_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("provider_session_identity_invalid") from exc
+    if (mode not in {"native_resume", "platform_bootstrap", "empty_start"}
+        or not isinstance(epoch_id, str) or not epoch_id.startswith("pe_")
+        or not conversation_context.get("source_sha256")):
+        raise ValueError("provider_session_spec_invalid")
     return {
-        "sdk_session_id": claude_provider_session_id_for_session(
-            tenant_id=getattr(payload, "tenant_id", ""),
-            workspace_id=getattr(payload, "workspace_id", ""),
-            user_id=getattr(payload, "user_id", ""),
-            session_id=getattr(payload, "session_id", ""),
-            agent_id=getattr(payload, "agent_id", ""),
-        ),
-        "provider_session_resume_required": marker,
+        "sdk_session_id": provider_id,
+        "provider_session_resume_required": mode == "native_resume",
     }
 
 

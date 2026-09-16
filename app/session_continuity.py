@@ -1,4 +1,4 @@
-from app.execution.api import sdk_session_id_for_run
+from app.execution.application.provider_sessions import claude_provider_session_dispatch
 
 
-__all__ = ["sdk_session_id_for_run"]
+__all__ = ["claude_provider_session_dispatch"]

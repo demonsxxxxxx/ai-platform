@@ -15,7 +15,17 @@ from app.routes.runs import (
     retry_run,
     run_context_ref_from_snapshot_row,
 )
-from app.worker import _ensure_worker_context_snapshot
+from app.bootstrap.context import materialize_queued_worker_context_snapshot
+from app.worker import _context_snapshot_ref_from_row
+from app.worker_principal_authority import _payload_identity
+
+
+async def _materialize_scoped_worker_snapshot(conn, payload):
+    return await materialize_queued_worker_context_snapshot(
+        conn, payload=payload, run_identity=_payload_identity(payload),
+        context_projector=_context_snapshot_ref_from_row,
+        prepared_checkpoint_id=None,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +88,7 @@ async def test_worker_missing_physical_snapshot_never_rebuilds_context(monkeypat
 
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", missing_snapshot)
 
-    context_ref = await _ensure_worker_context_snapshot(object(), payload, trace_id="trace-run-a")
+    context_ref = await _materialize_scoped_worker_snapshot(object(), payload)
 
     assert context_ref is None
     assert calls == [{
@@ -160,11 +170,7 @@ async def test_worker_materializes_complete_snapshot_authorized_conversation(mon
         list_messages,
     )
 
-    context_ref = await _ensure_worker_context_snapshot(
-        object(),
-        payload,
-        trace_id="trace-run-current",
-    )
+    context_ref = await _materialize_scoped_worker_snapshot(object(), payload)
 
     assert context_ref is not None
     conversation = context_ref["conversation_context"]
@@ -229,9 +235,7 @@ async def test_worker_rejects_incomplete_snapshot_message_materialization(monkey
     )
 
     assert (
-        await _ensure_worker_context_snapshot(
-            object(), payload, trace_id="trace-run-current"
-        )
+        await _materialize_scoped_worker_snapshot(object(), payload)
         is None
     )
 
