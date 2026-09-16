@@ -924,6 +924,7 @@ def test_lambchat_governed_model_catalog_preserves_raw_ids(
     )
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
     assert response.json() == governed
 
 

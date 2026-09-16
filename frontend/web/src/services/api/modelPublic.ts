@@ -10,6 +10,7 @@ import { authFetch } from "./fetch";
 
 export interface ModelProfile {
   max_input_tokens?: number;
+  max_output_tokens?: number;
 }
 
 export interface ModelOption {
@@ -38,7 +39,7 @@ export const modelPublicApi = {
   ): Promise<AvailableModelListResponse> {
     return authFetch<AvailableModelListResponse>(
       `${API_BASE}/api/agent/models/available`,
-      { signal: options.signal },
+      { signal: options.signal, cache: "no-store" },
     );
   },
 

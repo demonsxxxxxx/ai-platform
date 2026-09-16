@@ -14,7 +14,11 @@ from app.execution.application.model_selection import (
     RunModelSelection,
     resolve_chat_model_selection,
 )
-from app.execution.domain.model_catalog import public_model_projection
+from app.execution.domain.model_catalog import (
+    normalize_model_token_limits,
+    platform_model_id,
+    public_model_projection,
+)
 
 
 _ALLOWED_RUNTIME_PATHS = {
@@ -79,9 +83,7 @@ class ModelManagementRepository(Protocol):
 
     async def public_models(self, conn: Any) -> dict[str, Any] | None: ...
 
-    async def activate_and_sync(self, conn: Any, **kwargs: Any) -> Any: ...
-
-    async def update_catalog(self, conn: Any, **kwargs: Any) -> Any: ...
+    async def publish_models(self, conn: Any, **kwargs: Any) -> Any: ...
 
     async def resolve_run_model(self, conn: Any, **kwargs: Any) -> RunModelSelection | None: ...
 
@@ -193,70 +195,114 @@ class ModelControlPlaneService:
                 "models": await self._repository.admin_models(conn),
             }
 
-    async def configure_connection(
+    async def discover(self, *, base_url: str, api_key: str | None) -> dict[str, Any]:
+        encryption_key, allowed_hosts = self._security_settings()
+        requested_url = self._security.validate(
+            base_url, allowed_internal_hosts=allowed_hosts
+        ).base_url
+        resolved_key = str(api_key or "").strip()
+        async with self._transaction() as conn:
+            current = await self._repository.active_connection(
+                conn, encryption_key=encryption_key
+            )
+            connection = await self._repository.connection_projection(conn)
+            existing = await self._repository.admin_models(conn)
+        if not resolved_key:
+            if current is None or requested_url != current.base_url:
+                raise ValueError("model_connection_api_key_required")
+            resolved_key = current.api_key
+        normalized_url, model_ids = await self._discover_models(
+            base_url=base_url, api_key=resolved_key
+        )
+        by_value = {model["value"]: model for model in existing}
+        return {
+            "connection": connection,
+            "base_url": normalized_url,
+            "models": [
+                {
+                    **(by_value.get(value) or {
+                        "id": platform_model_id(value),
+                        "value": value,
+                        "label": value,
+                        "provider": "compatible",
+                        "enabled": False,
+                        "is_default": False,
+                        "order": order,
+                    }),
+                    "order": order,
+                    "available": True,
+                }
+                for order, value in enumerate(model_ids, start=1)
+            ],
+        }
+
+    async def publish(
         self,
         *,
         base_url: str,
         api_key: str | None,
+        expected_revision: int | None,
+        models: list[dict[str, Any]],
         actor_user_id: str,
     ) -> dict[str, Any]:
-        encryption_key, _ = self._security_settings()
-        resolved_api_key = str(api_key or "").strip()
-        if not resolved_api_key:
+        encryption_key, allowed_hosts = self._security_settings()
+        requested_url = self._security.validate(
+            base_url, allowed_internal_hosts=allowed_hosts
+        ).base_url
+        resolved_key = str(api_key or "").strip()
+        if not resolved_key:
             async with self._transaction() as conn:
                 current = await self._repository.active_connection(
-                    conn,
-                    encryption_key=encryption_key,
+                    conn, encryption_key=encryption_key
                 )
-            if current is None:
+            if current is None or requested_url != current.base_url:
                 raise ValueError("model_connection_api_key_required")
-            resolved_api_key = current.api_key
+            resolved_key = current.api_key
         normalized_url, model_ids = await self._discover_models(
-            base_url=base_url,
-            api_key=resolved_api_key,
+            base_url=base_url, api_key=resolved_key
         )
+        discovered = set(model_ids)
+        if not model_ids or len(models) != len(model_ids) or {
+            model.get("value") for model in models
+        } != discovered:
+            raise ValueError("model_catalog_discovery_changed")
+        if len({model.get("value") for model in models}) != len(models):
+            raise ValueError("model_catalog_discovery_changed")
+        enabled = [model for model in models if model.get("enabled")]
+        defaults = [model for model in enabled if model.get("is_default")]
+        if not enabled or len(defaults) != 1 or any(
+            model.get("is_default") for model in models if not model.get("enabled")
+        ):
+            raise ValueError("model_catalog_default_required")
+        for model in models:
+            if model.get("id") != platform_model_id(model["value"]):
+                raise ValueError("model_catalog_identity_collision")
+            display_name = model.get("display_name", "")
+            if (display_name != display_name.strip() or any(
+                ord(character) < 32 for character in display_name
+            )):
+                raise ValueError("model_display_name_invalid")
+            limits = normalize_model_token_limits(
+                model.get("max_input_tokens"), model.get("max_output_tokens")
+            )
+            if model["enabled"] and limits[0] is None:
+                raise ValueError("model_capacity_pair_required")
+        if len({model["order"] for model in models}) != len(models):
+            raise ValueError("model_catalog_order_invalid")
         async with self._transaction() as conn:
-            revision, models = await self._repository.activate_and_sync(
+            revision, published = await self._repository.publish_models(
                 conn,
                 base_url=normalized_url,
-                api_key=resolved_api_key,
-                key_fingerprint=self._security.fingerprint(resolved_api_key),
+                api_key=resolved_key,
+                key_fingerprint=self._security.fingerprint(resolved_key),
                 encryption_key=encryption_key,
                 actor_user_id=actor_user_id,
                 upstream_model_ids=model_ids,
+                expected_revision=expected_revision,
+                models=models,
             )
             connection = await self._repository.connection_projection(conn)
-        return {"connection": connection, "models": models, "revision": revision}
-
-    async def sync(self, *, actor_user_id: str) -> dict[str, Any]:
-        encryption_key, _ = self._security_settings()
-        async with self._transaction() as conn:
-            current = await self._repository.active_connection(
-                conn,
-                encryption_key=encryption_key,
-            )
-        if current is None:
-            raise ValueError("model_connection_not_configured")
-        normalized_url, model_ids = await self._discover_models(
-            base_url=current.base_url,
-            api_key=current.api_key,
-        )
-        async with self._transaction() as conn:
-            revision, models = await self._repository.activate_and_sync(
-                conn,
-                base_url=normalized_url,
-                api_key=current.api_key,
-                key_fingerprint=current.key_fingerprint,
-                encryption_key=encryption_key,
-                actor_user_id=actor_user_id,
-                upstream_model_ids=model_ids,
-            )
-            connection = await self._repository.connection_projection(conn)
-        return {"connection": connection, "models": models, "revision": revision}
-
-    async def patch_catalog(self, *, model_id: str, **patch: Any) -> dict[str, Any] | None:
-        async with self._transaction() as conn:
-            return await self._repository.update_catalog(conn, model_id=model_id, **patch)
+        return {"connection": connection, "models": published, "revision": revision}
 
     async def public_models(self, conn: Any) -> dict[str, Any]:
         governed = await self._repository.public_models(conn)

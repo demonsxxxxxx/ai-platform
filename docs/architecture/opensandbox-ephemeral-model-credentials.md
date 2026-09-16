@@ -28,9 +28,11 @@ request. Anthropic version and beta headers are restricted to the installed
 CLI's fixed per-path allowlist; other upstream headers remain filtered. The
 proxy does not implement OpenSandbox lifecycle or capability admission.
 
-Model capacity expansion is not yet a runtime hard-budget gate: exact provider
-input counting and the Attempt-frozen conversation mode must be implemented
-before ExecutionSpec v2 becomes the new dispatch writer.
+Model capacities are frozen into Run admission and ExecutionSpec v2. Every
+Anthropic messages request validates its requested output against the frozen
+output limit and uses the pinned upstream `/v1/messages/count_tokens` result
+for the input limit. Counting failures fail closed; native-resume and platform-
+bootstrap overflows retain their separate current error behavior.
 
 Callbacks use the same stateless egress origin and are forwarded to the
 existing `/api/ai/runtime/callbacks/*` routes. Callback-token validation remains
@@ -39,18 +41,21 @@ owned by the API; Nginx does not replace it or accept lifecycle operations.
 ## Credential Boundary
 
 Administrators store compatible-endpoint roots and credentials in the Model
-control plane. The API encrypts immutable connection revisions with
-`MODEL_CONNECTION_ENCRYPTION_KEY`, validates the endpoint policy, and activates
-a revision only after model synchronization succeeds. Outside the explicit
-internal-test exception, plaintext credentials never appear in an OpenSandbox
+control plane. Model discovery validates the endpoint and reads `/v1/models`
+without changing the active revision. Publication re-discovers the same model
+identities and atomically activates a new encrypted connection revision together
+with the enabled directory, configured token capacities, and one default model.
+Users fetch the new public directory when they reload chat; no live catalog push
+or polling is required. Outside the explicit internal-test exception, plaintext credentials never appear in an OpenSandbox
 request, Run, lease, queue payload, event, receipt, callback, response, or
 lifecycle payload. The exception permits the two provider credentials only in
 the OpenSandbox executor environment; metadata, labels, Run/lease/queue data,
 events, receipts, callbacks, responses, and lifecycle payloads remain
 credential-free.
 
-Run admission pins the active connection revision and exact upstream model ID.
-The internal proxy serves only queued or running Runs whose requested model
+Run admission pins the active connection revision, exact upstream model ID,
+and input/output capacities. Existing Runs and Attempts retain that immutable
+snapshot after later publication. The internal proxy serves only queued or running Runs whose requested model
 matches that admission. Missing or invalid encryption, proxy authentication,
 Run binding, or connection configuration fails closed before an upstream model
 connection is opened.

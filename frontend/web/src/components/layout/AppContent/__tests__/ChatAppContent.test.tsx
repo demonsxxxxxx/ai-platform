@@ -78,6 +78,14 @@ test("Agent first send leaves route mutation to the shared session synchronizer"
   );
 });
 
+test("stale model selection is cleared and blocks send until explicit selection", () => {
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  assert.match(source, /hasPriorSelection && !stillAvailable[\s\S]*?setCurrentModelId\(""\)[\s\S]*?请重新选择模型/);
+  assert.match(source, /availableModels\?\.some\(\(model\) => model\.id === currentModelId[\s\S]*?return \{ status: "failed" \}/);
+  assert.match(source, /handleSelectModel[\s\S]*?setModelSelectionError\(null\)/);
+  assert.doesNotMatch(source, /localStorage\.getItem\("defaultModel/);
+});
+
 test("recovers an exact current Agent Conversation and keeps ordinary sessions generic", async () => {
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetPublished = agentProfileApi.getPublished;
