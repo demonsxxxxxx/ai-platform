@@ -99,6 +99,17 @@ async def fake_transaction():
 
 
 @pytest.fixture(autouse=True)
+def _stub_terminal_provider_lineage(monkeypatch):
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
+@pytest.fixture(autouse=True)
 def authorized_default_model_for_chat_routes(monkeypatch):
     async def governed_model(_conn, *, selection):
         if selection is not None:

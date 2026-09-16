@@ -40,9 +40,15 @@ from app.runs.application.execution_spec import (
     worker_dispatch_fence as worker_dispatch_fence,
 )
 from app.runs.application.provider_terminalization import (
-    persist_assistant_with_provider_coverage as persist_assistant_with_provider_coverage,
-    result_with_checkpoint_usage as result_with_checkpoint_usage,
+    cancel_run_with_context as cancel_run_with_context,
     commit_terminal_checkpoint_usage as commit_terminal_checkpoint_usage,
+    complete_run_with_context as complete_run_with_context,
+    converge_terminal_provider_lineage as converge_terminal_provider_lineage,
+    fail_run_with_context as fail_run_with_context,
+    mark_run_enqueue_failed_with_context as mark_run_enqueue_failed_with_context,
+    persist_assistant_with_provider_coverage as persist_assistant_with_provider_coverage,
+    progress_run_terminalization_with_context as progress_run_terminalization_with_context,
+    result_with_checkpoint_usage as result_with_checkpoint_usage,
 )
 from app.runs.domain.attempt_lifecycle import (
     OPEN_RUN_ATTEMPT_STATUSES as OPEN_RUN_ATTEMPT_STATUSES,

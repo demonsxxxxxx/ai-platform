@@ -73,7 +73,8 @@ async def update_terminal_run_checkpoint_counts(
         """
         update runs set result_json = %s::jsonb, input_token_count = %s,
           output_token_count = %s, total_token_count = %s
-        where tenant_id = %s and id = %s and status in ('failed', 'cancelled')
+        where tenant_id = %s and id = %s
+          and status in ('succeeded', 'failed', 'cancelled')
         returning id
         """,
         (_dumps_json(result_json), input_tokens, output_tokens, total_tokens,

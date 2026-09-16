@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.context.api import commit_provider_turn, load_checkpoint_usage_for_run
+from app.context.api import (
+    commit_provider_turn,
+    load_checkpoint_usage_for_run,
+    release_provider_lineage,
+)
+from app.runs.domain.terminalization import RunTerminalizationProgress
 
 
 _update_checkpoint_counts: Callable[..., Awaitable[None]] | None = None
@@ -65,6 +70,89 @@ async def commit_terminal_checkpoint_usage(
             total_tokens=counts["total"],
         )
     return merged
+
+
+async def complete_run_with_context(
+    conn: Any, *, complete_run: Callable[..., Awaitable[bool]],
+    tenant_id: str, run_id: str, result_json: dict[str, Any],
+) -> bool:
+    completed = await complete_run(
+        conn, tenant_id=tenant_id, run_id=run_id, result_json=result_json,
+    )
+    if completed:
+        await commit_terminal_checkpoint_usage(
+            conn, tenant_id=tenant_id, run_id=run_id, result_json=result_json,
+        )
+        await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
+    return completed
+
+
+async def fail_run_with_context(
+    conn: Any, *, fail_run: Callable[..., Awaitable[RunTerminalizationProgress]],
+    tenant_id: str, run_id: str, error_code: str, error_message: str,
+    result_json: dict[str, Any] | None = None,
+    terminal_reason: str = "run_failed",
+) -> RunTerminalizationProgress:
+    result_payload = result_json or {}
+    merged = await result_with_checkpoint_usage(
+        conn, tenant_id=tenant_id, run_id=run_id, result_json=result_payload,
+    )
+    progress = await fail_run(
+        conn, tenant_id=tenant_id, run_id=run_id, error_code=error_code,
+        error_message=error_message,
+        result_json=None if result_json is None and merged is result_payload else merged,
+        **({"terminal_reason": terminal_reason} if terminal_reason != "run_failed" else {}),
+    )
+    if progress.is_terminal():
+        await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
+    return progress
+
+
+async def cancel_run_with_context(
+    conn: Any, *, cancel_run: Callable[..., Awaitable[RunTerminalizationProgress]],
+    tenant_id: str, run_id: str, result_json: dict[str, Any] | None = None,
+) -> RunTerminalizationProgress:
+    result_payload = result_json or {}
+    merged = await result_with_checkpoint_usage(
+        conn, tenant_id=tenant_id, run_id=run_id, result_json=result_payload,
+    )
+    progress = await cancel_run(
+        conn, tenant_id=tenant_id, run_id=run_id,
+        result_json=None if result_json is None and merged is result_payload else merged,
+    )
+    if progress.is_terminal():
+        await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
+    return progress
+
+
+async def progress_run_terminalization_with_context(
+    conn: Any, *, progress_terminalization: Callable[..., Awaitable[RunTerminalizationProgress | None]],
+    tenant_id: str, run_id: str,
+) -> RunTerminalizationProgress | None:
+    progress = await progress_terminalization(
+        conn, tenant_id=tenant_id, run_id=run_id,
+    )
+    if progress is not None and progress.is_terminal():
+        await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
+    return progress
+
+
+async def mark_run_enqueue_failed_with_context(
+    conn: Any, *, mark_run_enqueue_failed: Callable[..., Awaitable[RunTerminalizationProgress]],
+    tenant_id: str, user_id: str | None, run_id: str, trace_id: str | None,
+) -> RunTerminalizationProgress:
+    progress = await mark_run_enqueue_failed(
+        conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, trace_id=trace_id,
+    )
+    if progress.is_terminal():
+        await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
+    return progress
+
+
+async def converge_terminal_provider_lineage(
+    conn: Any, *, tenant_id: str, run_id: str,
+) -> None:
+    await release_provider_lineage(conn, tenant_id=tenant_id, run_id=run_id)
 
 
 async def persist_assistant_with_provider_coverage(

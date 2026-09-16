@@ -17,6 +17,7 @@ from app.runs.infrastructure.postgres import (
 )
 from app.settings import get_settings
 from app.streaming.infrastructure.run_v4_events import PostgresRunCancellationEventWriter
+from app.tool_permission_lifecycle import progress_run_terminalization
 
 
 def build_run_cancellation_use_case(
@@ -37,6 +38,6 @@ def build_run_cancellation_use_case(
         ),
         progress_terminalization=cast(
             RunTerminalizationProgressor,
-            repositories.progress_run_tool_permission_terminalization,
+            progress_run_terminalization,
         ),
     )

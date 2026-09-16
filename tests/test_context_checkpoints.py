@@ -25,6 +25,7 @@ from app.context.infrastructure.checkpoints_postgres import (
     load_ready_checkpoint, load_checkpoint_usage_for_run,
 )
 from app.runs.application import provider_terminalization as runs_terminal_app
+from app.runs.api import RunTerminalizationProgress
 from app.runs.infrastructure.postgres import update_terminal_run_checkpoint_counts
 from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 
@@ -110,8 +111,62 @@ async def test_checkpoint_usage_scopes_run_and_counts_tokens(monkeypatch):
     assert merged["token_counts"] == {"input": 4211, "output": 37, "total": 4248}
     assert "cost" not in merged
     sql, params = conn.calls[0]
-    assert "status in ('failed', 'cancelled')" in sql and sql.count("%s") == len(params)
+    assert "status in ('succeeded', 'failed', 'cancelled')" in sql
+    assert sql.count("%s") == len(params)
     assert params[1:4] == (4211, 37, 4248)
+
+
+@pytest.mark.asyncio
+async def test_run_terminal_context_wrappers_preserve_one_transaction_and_event_usage(monkeypatch):
+    calls = []
+    conn = object()
+
+    async def load_usage(actual_conn, **kwargs):
+        assert actual_conn is conn
+        assert kwargs == {"tenant_id": "tenant-a", "run_id": "run-current"}
+        return {"input_tokens": 4200, "output_tokens": 24}
+
+    async def update_counts(actual_conn, **kwargs):
+        assert actual_conn is conn
+        calls.append(("update", kwargs["result_json"]["token_counts"]))
+
+    async def release(actual_conn, **kwargs):
+        assert actual_conn is conn
+        calls.append(("release", kwargs))
+
+    async def complete(actual_conn, **kwargs):
+        assert actual_conn is conn
+        calls.append(("complete", kwargs["result_json"]["token_counts"]))
+        return True
+
+    async def fail(actual_conn, **kwargs):
+        assert actual_conn is conn
+        calls.append(("fail", kwargs["result_json"]["token_counts"]))
+        return RunTerminalizationProgress(True, "failed", True, True)
+
+    monkeypatch.setattr(runs_terminal_app, "load_checkpoint_usage_for_run", load_usage)
+    monkeypatch.setattr(runs_terminal_app, "_update_checkpoint_counts", update_counts)
+    monkeypatch.setattr(runs_terminal_app, "_validate_terminal_result", lambda _value: None)
+    monkeypatch.setattr(runs_terminal_app, "release_provider_lineage", release)
+    result = {"token_counts": {"input": 11, "output": 13, "total": 24}}
+
+    assert await runs_terminal_app.complete_run_with_context(
+        conn, complete_run=complete, tenant_id="tenant-a", run_id="run-current",
+        result_json=result,
+    )
+    failed = await runs_terminal_app.fail_run_with_context(
+        conn, fail_run=fail, tenant_id="tenant-a", run_id="run-current",
+        error_code="executor_failed", error_message="failed", result_json=result,
+    )
+
+    assert failed.is_terminal("failed")
+    assert calls == [
+        ("complete", {"input": 11, "output": 13, "total": 24}),
+        ("update", {"input": 4211, "output": 37, "total": 4248}),
+        ("release", {"tenant_id": "tenant-a", "run_id": "run-current"}),
+        ("fail", {"input": 4211, "output": 37, "total": 4248}),
+        ("release", {"tenant_id": "tenant-a", "run_id": "run-current"}),
+    ]
 
 
 @pytest.mark.asyncio

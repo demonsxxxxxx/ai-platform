@@ -114,6 +114,17 @@ async def resume_run(*args, **kwargs):
 
 
 @pytest.fixture(autouse=True)
+def _stub_terminal_provider_lineage(monkeypatch):
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
+@pytest.fixture(autouse=True)
 def default_run_model_inheritance(monkeypatch):
     async def inherit_run_model(*_args, **_kwargs):
         return None

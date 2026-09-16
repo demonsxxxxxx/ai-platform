@@ -121,11 +121,18 @@ def _install_route_cancellation_adapter(monkeypatch):
     async def missing_cancel(*_args, **_kwargs):
         return None
 
+    async def release_provider_lineage(*_args, **_kwargs):
+        return None
+
     adapter = _RouteCancellationAdapter()
     monkeypatch.setattr(repository_module, "_test_owner_cancel", missing_cancel, raising=False)
     monkeypatch.setattr(repository_module, "_test_admin_cancel", missing_cancel, raising=False)
     monkeypatch.setattr("app.routes.runs._require_run_cancellation_use_case", lambda _request: adapter)
     monkeypatch.setattr("app.routes.admin_runs._require_run_cancellation_use_case", lambda _request: adapter)
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release_provider_lineage,
+    )
 
 
 @pytest.fixture(autouse=True)

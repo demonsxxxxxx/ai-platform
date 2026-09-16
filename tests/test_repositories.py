@@ -8596,7 +8596,6 @@ async def test_tenant_permission_inbox_expiry_is_bounded_and_makes_batch_progres
     assert [entry[1]["run_id"] for entry in calls if entry[0] == "event"] == ["run-a", "run-b"]
 
 
-@pytest.mark.usefixtures("no_checkpoint_usage")
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("request_count", "batch_size", "target_status"),
@@ -13389,20 +13388,6 @@ async def test_admin_run_detail_sanitizes_dirty_skill_snapshot_source_and_usage(
     assert "/var/lib/ai-platform" not in serialized
 
 
-@pytest.fixture
-def no_checkpoint_usage(monkeypatch):
-    async def usage(_conn, **_kwargs):
-        return {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
-
-    monkeypatch.setattr("app.runs.application.provider_terminalization.load_checkpoint_usage_for_run", usage)
-
-    async def no_provider_lineage(_conn, **_kwargs):
-        return None
-
-    monkeypatch.setattr("app.repositories.release_provider_lineage", no_provider_lineage)
-
-
-@pytest.mark.usefixtures("no_checkpoint_usage")
 @pytest.mark.asyncio
 async def test_complete_run_persists_g2_observability_columns_from_result_json():
     conn = RecordingConnection()
@@ -13436,27 +13421,6 @@ async def test_complete_run_persists_g2_observability_columns_from_result_json()
     assert 17 in params
 
 
-@pytest.mark.usefixtures("no_checkpoint_usage")
-@pytest.mark.asyncio
-async def test_complete_run_commits_checkpoint_usage_with_executor_usage(monkeypatch):
-    async def usage(_conn, **kwargs):
-        assert kwargs == {"tenant_id": "tenant-a", "run_id": "run-a"}
-        return {"input_tokens": 4200, "output_tokens": 24, "cost_usd": None}
-
-    monkeypatch.setattr("app.runs.application.provider_terminalization.load_checkpoint_usage_for_run", usage)
-    conn = RecordingConnection()
-    assert await complete_run(
-        conn, tenant_id="tenant-a", run_id="run-a",
-        result_json={"message": "done", "token_counts": {"input": 11, "output": 13, "total": 24},
-                     "cost": {"estimated_cost_minor": 17}},
-    )
-    sql, params = next((sql, params) for sql, params in conn.calls
-                       if sql.startswith("update runs") and "set status = 'succeeded'" in sql)
-    assert json.loads(params[0])["token_counts"] == {"input": 4211, "output": 37, "total": 4248}
-    assert params[2:6] == (4211, 37, 4248, 17)
-
-
-@pytest.mark.usefixtures("no_checkpoint_usage")
 @pytest.mark.asyncio
 async def test_complete_run_consumes_valid_allow_for_run_before_its_final_pending_guard():
     authority_now = datetime(2026, 7, 16, tzinfo=timezone.utc)
@@ -13556,7 +13520,6 @@ async def test_complete_run_permission_blocker_returns_before_any_run_or_grant_m
     assert "for update" in conn.calls[0][0]
 
 
-@pytest.mark.usefixtures("no_checkpoint_usage")
 @pytest.mark.asyncio
 async def test_complete_run_uses_one_locked_db_time_and_consumes_exact_valid_run_grants():
     authority_now = datetime(2026, 7, 16, tzinfo=timezone.utc)
@@ -13617,7 +13580,6 @@ async def test_complete_run_uses_one_locked_db_time_and_consumes_exact_valid_run
     assert all("expires_at > clock_timestamp()" not in sql for sql, _params in conn.calls[2:])
 
 
-@pytest.mark.usefixtures("no_checkpoint_usage")
 @pytest.mark.asyncio
 async def test_complete_run_raises_before_commit_when_exact_grant_consumption_is_partial():
     authority_now = datetime(2026, 7, 16, tzinfo=timezone.utc)
