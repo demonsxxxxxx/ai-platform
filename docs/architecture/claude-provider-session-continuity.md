@@ -289,21 +289,20 @@ provider transcript/subpath. Main and subpath loads order by sequence.
 - local sandbox transcript remains disposable and is not evidence of host
   durability.
 
-## 7. Delivery tasks and live status
+## 7. Verification status
 
-| ID | Module | Owner | Status | Proof |
-|---|---|---|---|---|
-| M0 | PRD, Change Contract, baseline and flow inventory | Parent | complete | this document |
-| M1 | Context domain rules, PostgreSQL binding/entry persistence, schema migration, bootstrap/resume conversation selection | Agent Context | complete | focused domain, SQL-fencing, and conversation-context checks implemented; canonical gate pending |
-| M2 | Authenticated host callback endpoints and Execution-owned `SessionStore` adapter | Agent Boundary | complete | callback isolation, writer fencing, bounded transport, narrow Context use cases, and bootstrap composition implemented; canonical gate pending |
-| M3 | Stable platform-Session provider identity, Claude SDK new/resume option selection, eager flush and mirror-error failure | Agent Execution | complete | runner + installed SDK contract checks implemented; canonical gate pending |
-| M4 | Composition updates, schema migration, documentation/index, focused verification | Parent | complete with evidence ceiling | compileall, focused Ruff, and `git diff --check` pass; the governed test-stage is blocked before pytest by the recorded Windows process-wrapper `PermissionError` |
-| R1 | Independent staged correctness/security/architecture review | Review agents | complete | three final reviewers found no remaining correctness, isolation, architecture, or migration issues; no pytest-pass or runtime claim is made |
+Local changed-module regressions passed through `tools/run_test_stage.py`:
+Worker (235), context/checkpoint/schema/model (110), Claude adapter/session/provider
+(epoch: 178 passed, 4 Windows symlink skips), SDK runner (151), routes (161),
+and conversation authority/provider transport (24). Later scoped checks of the
+current API-boundary repair passed 315 tests. These are local implementation
+checks, not real provider, PostgreSQL, packaged-image, or cross-sandbox
+acceptance. Independent GitHub review of the current PR head remains pending.
 
-Module writers run sequentially in one isolated worktree. Each handoff must
-report changed files, tests run, unresolved risks, and whether the PRD status
-still matches implementation. The parent updates this table immediately after
-each accepted module.
+The current PR is still a draft. Trusted architecture governance has reported
+violations, notably in the frozen repository/migration bridge; these must be
+repaired without policy bypass before the PR can be treated as ready for review
+or merge.
 
 ## 8. Deferred
 

@@ -3,7 +3,14 @@ from __future__ import annotations
 import secrets
 
 from app.context.application.checkpoint_build import prepare_checkpoint_for_run
-from app.context.application.checkpoints import load_checkpoint_usage_for_run
+from app.context.application.checkpoints import (
+    load_ready_checkpoint as load_ready_checkpoint,
+    load_checkpoint_usage_for_run,
+)
+from app.context.domain.conversation_authority import (
+    ConversationSourceChain as ConversationSourceChain,
+    validate_authority_receipt as validate_authority_receipt,
+)
 from app.context.application.provider_sessions import (
     ProviderSessionOperationResult,
     matching_ready_provider_epoch,
@@ -227,6 +234,9 @@ __all__ = [
     "context_file_failure_diagnostic",
     "empty_executor_conversation_context",
     "materialize_worker_context_snapshot",
+    "ConversationSourceChain",
+    "validate_authority_receipt",
+    "load_ready_checkpoint",
     "load_checkpoint_usage_for_run",
     "prepare_checkpoint_for_run",
     "normalize_context_file_error_code",

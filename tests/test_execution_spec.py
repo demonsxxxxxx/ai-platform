@@ -21,6 +21,7 @@ from app.runs.api import (
     worker_dispatch_fence,
     compile_execution_spec,
 )
+from app.runs.infrastructure.postgres import load_worker_dispatch_run_facts
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,7 +57,8 @@ async def test_worker_dispatch_fence_relocks_exact_queued_run_and_fails_closed()
 
     conn = Connection()
     kwargs = {"run_identity": identity, "locked_run": frozen,
-              "context_snapshot_id": "ctx-a", "reconciliation": False}
+              "context_snapshot_id": "ctx-a", "reconciliation": False,
+              "run_facts_loader": load_worker_dispatch_run_facts}
     assert await worker_dispatch_fence(conn, **kwargs) == "ready"
     assert "for update" in conn.calls[0][0] and conn.calls[0][1] == ("tenant-a", "run-a")
     conn.value = {**row, "model_gateway_revision": 4}

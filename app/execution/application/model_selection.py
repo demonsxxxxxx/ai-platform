@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.runs.api import bind_run_model
+
 
 @dataclass(frozen=True)
 class RunModelSelection:
@@ -24,6 +26,18 @@ class GovernedModelResolver(Protocol):
         model_id: str | None,
         model_value: str | None,
     ) -> RunModelSelection | None: ...
+
+
+async def bind_selected_run_model(
+    conn: Any, *, tenant_id: str, run_id: str, selected_model: RunModelSelection,
+) -> None:
+    await bind_run_model(
+        conn, tenant_id=tenant_id, run_id=run_id,
+        model_id=selected_model.model_id, model_value=selected_model.model_value,
+        connection_revision=selected_model.connection_revision,
+        max_input_tokens=selected_model.max_input_tokens,
+        max_output_tokens=selected_model.max_output_tokens,
+    )
 
 
 def parse_requested_model_selection(agent_options: object) -> dict[str, str] | None:

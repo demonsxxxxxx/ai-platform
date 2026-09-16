@@ -5,9 +5,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app import repositories
-from app.context.api import ProviderSessionScope, claim_provider_lineage
-from app.context.application.checkpoints import load_ready_checkpoint
-from app.context.domain.conversation_authority import ConversationSourceChain, validate_authority_receipt
+from app.context.api import (
+    ConversationSourceChain, ProviderSessionScope, claim_provider_lineage,
+    load_ready_checkpoint, validate_authority_receipt,
+)
 from app.context.file_continuity import snapshot_file_ids
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,

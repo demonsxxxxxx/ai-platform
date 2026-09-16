@@ -72,6 +72,7 @@ from app.execution.application.model_selection import (
     RunModelSelection as RunModelSelection,
 )
 from app.execution.application.model_selection import (
+    bind_selected_run_model as bind_selected_run_model,
     parse_requested_model_selection as parse_requested_model_selection,
 )
 
@@ -135,6 +136,7 @@ __all__ = [
     "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
     "list_public_models",
+    "bind_selected_run_model",
     "count_checkpoint_input_for_run",
     "summarize_context_for_run",
     "locked_run_payload_candidate",

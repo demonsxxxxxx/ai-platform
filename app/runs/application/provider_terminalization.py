@@ -6,8 +6,25 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.context.api import commit_provider_turn, load_checkpoint_usage_for_run
-from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
-from app.runs.infrastructure.postgres import update_terminal_run_checkpoint_counts
+
+
+_update_checkpoint_counts: Callable[..., Awaitable[None]] | None = None
+_validate_terminal_result: Callable[[dict[str, Any]], None] | None = None
+
+
+def configure_terminal_checkpoint_dependencies(
+    *, update_counts: Callable[..., Awaitable[None]],
+    validate_result: Callable[[dict[str, Any]], None],
+) -> None:
+    global _update_checkpoint_counts, _validate_terminal_result
+    _update_checkpoint_counts = update_counts
+    _validate_terminal_result = validate_result
+
+
+def _configured_checkpoint_dependencies() -> tuple[Callable[..., Awaitable[None]], Callable[[dict[str, Any]], None]]:
+    if _update_checkpoint_counts is None or _validate_terminal_result is None:
+        raise RuntimeError("run_terminal_checkpoint_dependencies_not_configured")
+    return _update_checkpoint_counts, _validate_terminal_result
 
 
 async def result_with_checkpoint_usage(
@@ -30,7 +47,7 @@ async def result_with_checkpoint_usage(
         raise ValueError("conversation_checkpoint_usage_overflow")
     merged = {**result_json, "token_counts": {**counts, "input": input_total,
                                               "output": output_total, "total": total}}
-    ensure_json_size(merged, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
+    _configured_checkpoint_dependencies()[1](merged)
     return merged
 
 
@@ -42,7 +59,7 @@ async def commit_terminal_checkpoint_usage(
     )
     if merged is not result_json:
         counts = merged["token_counts"]
-        await update_terminal_run_checkpoint_counts(
+        await _configured_checkpoint_dependencies()[0](
             conn, tenant_id=tenant_id, run_id=run_id, result_json=merged,
             input_tokens=counts["input"], output_tokens=counts["output"],
             total_tokens=counts["total"],

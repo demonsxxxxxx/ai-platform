@@ -110,7 +110,7 @@ def legacy_model_control_plane_stub(monkeypatch):
         "app.execution.infrastructure.model_management.resolve_run_model",
         no_managed_model,
     )
-    monkeypatch.setattr("app.routes.chat.bind_run_model", no_model_binding)
+    monkeypatch.setattr("app.execution.application.model_selection.bind_run_model", no_model_binding)
 
 
 @pytest.fixture
@@ -3129,27 +3129,25 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
         return [snapshot_manifest(skill_id)]
 
-    async def fake_resolve_run_model(conn, *, model_id, model_value):
-        assert model_id == "pro-tier"
-        assert model_value == "openai/gpt-5"
+    async def fake_resolve_chat_model_selection(conn, *, selection):
+        assert selection == {"id": "pro-tier", "value": "openai/gpt-5"}
         return RunModelSelection(
             model_id="pro-tier",
             model_value="openai/gpt-5",
             connection_revision=7,
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_management.resolve_run_model",
-        fake_resolve_run_model,
-    )
+    monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", fake_resolve_chat_model_selection)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.bind_run_model", fake_bind_run_model)
+    monkeypatch.setattr("app.execution.application.model_selection.bind_run_model", fake_bind_run_model)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
@@ -3175,6 +3173,8 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
         "model_id": "pro-tier",
         "model_value": "openai/gpt-5",
         "connection_revision": 7,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
     }
     assert connections["create_run"] is connections["bind_run_model"]
     assert create_run_input["model_id"] == "pro-tier"

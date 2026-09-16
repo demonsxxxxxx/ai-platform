@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION_V2,
@@ -10,14 +10,25 @@ from app.runs.domain.execution_spec import (
     ExecutionSpecError,
     compile_execution_spec,
 )
-from app.runs.infrastructure.postgres import load_worker_dispatch_run_facts
+
+
+_dispatch_run_facts_loader: Callable[..., Any] | None = None
+
+
+def configure_worker_dispatch_run_facts_loader(loader: Callable[..., Any]) -> None:
+    global _dispatch_run_facts_loader
+    _dispatch_run_facts_loader = loader
 
 
 async def worker_dispatch_fence(
     conn: Any, *, run_identity: Mapping[str, str], locked_run: Mapping[str, Any],
     context_snapshot_id: str, reconciliation: bool,
+    run_facts_loader: Callable[..., Any] | None = None,
 ) -> str:
-    row = await load_worker_dispatch_run_facts(
+    loader = run_facts_loader or _dispatch_run_facts_loader
+    if loader is None:
+        raise RuntimeError("worker_dispatch_run_facts_loader_not_configured")
+    row = await loader(
         conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"],
     )
     if row is None or row["status"] != ("running" if reconciliation else "queued") or row["cancel_requested_at"] is not None:

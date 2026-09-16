@@ -25,6 +25,8 @@ from app.context.infrastructure.checkpoints_postgres import (
     load_ready_checkpoint, load_checkpoint_usage_for_run,
 )
 from app.runs.application import provider_terminalization as runs_terminal_app
+from app.runs.infrastructure.postgres import update_terminal_run_checkpoint_counts
+from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 
 _SCOPE = {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
           "session_id": "session-a", "agent_id": "agent-a"}
@@ -96,6 +98,10 @@ async def test_checkpoint_usage_scopes_run_and_counts_tokens(monkeypatch):
         return usage
 
     monkeypatch.setattr(runs_terminal_app, "load_checkpoint_usage_for_run", load_usage)
+    monkeypatch.setattr(runs_terminal_app, "_update_checkpoint_counts", update_terminal_run_checkpoint_counts)
+    monkeypatch.setattr(runs_terminal_app, "_validate_terminal_result", lambda value: ensure_json_size(
+        value, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large",
+    ))
     result = {"message": "done", "token_counts": {"input": 11, "output": 13, "total": 24}}
     conn = Connection([{"id": "run-current"}])
     merged = await runs_terminal_app.commit_terminal_checkpoint_usage(
