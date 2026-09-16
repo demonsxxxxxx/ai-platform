@@ -117,8 +117,8 @@ async def load_checkpoint_usage_for_run(
     cursor = await conn.execute(
         """
         select count(runs.id) as run_count,
-               coalesce(sum(checkpoint.input_tokens), 0) as input_tokens,
-               coalesce(sum(checkpoint.output_tokens), 0) as output_tokens
+               coalesce(sum(checkpoint.input_tokens), 0)::bigint as input_tokens,
+               coalesce(sum(checkpoint.output_tokens), 0)::bigint as output_tokens
         from runs
         left join conversation_context_checkpoints checkpoint
           on checkpoint.tenant_id = runs.tenant_id

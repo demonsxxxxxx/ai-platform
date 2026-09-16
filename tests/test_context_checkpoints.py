@@ -86,6 +86,8 @@ async def test_checkpoint_usage_scopes_run_and_counts_tokens(monkeypatch):
     assert params == ("tenant-a", "run-current")
     assert "checkpoint.owner_run_id = runs.id" in sql
     assert "checkpoint.user_id = runs.user_id" in sql
+    assert "coalesce(sum(checkpoint.input_tokens), 0)::bigint as input_tokens" in sql
+    assert "coalesce(sum(checkpoint.output_tokens), 0)::bigint as output_tokens" in sql
     assert "checkpoint.cost_usd" not in sql
     assert usage["input_tokens"] == 4200
     assert usage["output_tokens"] == 24
