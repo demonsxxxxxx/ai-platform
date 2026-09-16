@@ -81,7 +81,6 @@ from app.runtime.sandbox.contracts import (
     SandboxRuntimeRequest,
 )
 from app.runtime.sandbox.runtime import SandboxRuntime
-from app.sandbox.api import normalize_sdk_runtime_diagnostics
 from app.settings import get_settings
 from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,
@@ -1545,10 +1544,9 @@ class ClaudeAgentWorkerAdapter:
             "capability_evidence": capability_evidence,
             **runtime_tool_evidence.private_payload(),
         }
-        runtime_diagnostics = normalize_sdk_runtime_diagnostics(
+        diagnostic_payload = execution_api.normalized_runtime_diagnostics_payload(
             executor_response.get("runtime_diagnostics")
         )
-        diagnostic_payload = {"runtime_diagnostics": runtime_diagnostics} if runtime_diagnostics else {}
         failure_result_context = {
             "sdk_used": bool(executor_response.get("sdk_used")),
             "delegate_used": False,

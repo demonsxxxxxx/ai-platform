@@ -40,6 +40,7 @@ from app.execution.application.worker_attempt_lifecycle import (
 )
 from app.execution.application.worker_failure_diagnostics import (
     executor_exception_failure,
+    normalized_runtime_diagnostics_payload,
     predispatch_failure_result,
 )
 from app.execution.application.claude_agent_events import (
@@ -134,6 +135,7 @@ __all__ = [
     "fail_run_and_reconcile_worker_child",
     "executor_exception_failure",
     "finalize_worker_child_parent",
+    "normalized_runtime_diagnostics_payload",
     "restored_executor_reconciliation_queue_payload",
     "restored_sandbox_run_payload",
     "sandbox_reconciliation_payload",
