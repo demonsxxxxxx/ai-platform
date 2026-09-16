@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from app.path_safety import filesystem_component_fits
+from app.skills.api import skill_snapshot_components_fit
 from app.skills.dependencies import validate_skill_dependency_ids
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.skills.lifecycle import is_admin_materializable_status
@@ -90,7 +90,7 @@ def _safe_manifest_file_summary(item: dict[str, Any]) -> dict[str, Any]:
         or raw_path.startswith("/")
         or ":" in raw_path
         or any(segment == ".." for segment in path_segments)
-        or any(not filesystem_component_fits(segment) for segment in path_segments)
+        or not skill_snapshot_components_fit(path_segments)
     ):
         raise SkillVersionMaterializationError("skill_version_not_materializable")
     encoded = str(item.get("content_base64") or "")

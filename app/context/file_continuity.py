@@ -7,12 +7,12 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from app.context.api import ContextFileContentError
+from app.context.api import ContextFileContentError, context_stage_filename_fits
 from app.context.file_content import (
     MAX_CONTEXT_FILE_STAGE_BYTES,
     validate_context_file_for_stage,
 )
-from app.path_safety import ensure_creatable_inside, filesystem_component_fits
+from app.path_safety import ensure_creatable_inside
 
 
 _FILE_INPUT_MODES = frozenset({"csv", "docx", "json", "markdown", "md", "pdf", "text", "txt", "xlsx"})
@@ -305,7 +305,7 @@ async def materialize_run_context_files(
             original_name = str(normalized_row.get("original_name") or file_id).replace("\\", "/")
             filename = Path(original_name).name or file_id
             file_kind = Path(filename).suffix.casefold().lstrip(".")
-            if not filesystem_component_fits(filename):
+            if not context_stage_filename_fits(filename):
                 raise ContextFileContentError(
                     "context_file_staging_write_failed",
                     file_kind=file_kind,

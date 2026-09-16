@@ -3,6 +3,9 @@ from __future__ import annotations
 import secrets
 
 from app.context.application.worker_snapshot import materialize_worker_context_snapshot
+from app.context.domain.file_staging import (
+    context_stage_filename_fits as context_stage_filename_fits,
+)
 from app.context.domain.conversation import (
     MAX_CONVERSATION_CONTEXT_CANDIDATES,
     ConversationContextError,

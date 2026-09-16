@@ -8,6 +8,10 @@ from app.execution.application.adapter_run import (
     submit_run_until_cancelled,
     time,
 )
+from app.execution.application.pinned_skill_materialization import (
+    PinnedSkillMismatch as PinnedSkillMismatch,
+    validate_pinned_skill_relative_path as validate_pinned_skill_relative_path,
+)
 from app.execution.application.skill_invocation_evidence import (
     SkillInvocationEvidenceBinder,
 )
