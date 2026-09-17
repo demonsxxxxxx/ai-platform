@@ -28,6 +28,7 @@ type SiteRow = readonly [
 
 const siteRows: readonly SiteRow[] = [
   ["内网登录","灵犀平台","http://10.56.0.25:8189/#/TaskManagement/indexSpace","lingxi-platform.png","公司自研平台"],
+  ["内网登录","DRS","http://10.56.1.79:5173/documents","drs.png","文档查阅系统"],
   ["内网登录","QMS质量管理系统","http://dms.intbio.com/portal/index.html#/login","QMS_icon.png","DMS&TMS系统"],
   ["内网登录","vDrive(内部)","http://vdr-internal.intbio.com/","内部网盘.png","DataRoom_内部员工数据分享、共同编辑以及传输平台"],
   ["内网登录","OA","http://oa.intbio.com:8090/login.jsp","OA_icon.png","OA流程管理系统"],
