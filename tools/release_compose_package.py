@@ -24,6 +24,8 @@ PROFILES = {
 PACKAGE_OMITTED_ENV_KEYS = {
     "SANDBOX_CONTAINER_PROVIDER",
     "SANDBOX_EGRESS_POLICY_ENABLED", "OPENSANDBOX_USE_SERVER_PROXY",
+    "OPENAI_BASE_URL", "OPENAI_API_KEY",
+    "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
     "DOCKER_SOCKET_GID",
 }
 
@@ -68,9 +70,8 @@ def build_package(source: Path, manifest: dict, profile: str, output: Path, data
         ".env.example": ".env.example",
         "deploy.py": "deploy.py",
         "README.md": "README.md",
+        "opensandbox-egress-nginx.conf.template": "opensandbox-egress-nginx.conf.template",
     }
-    if profile == "production":
-        files["opensandbox-egress-nginx.conf.template"] = "opensandbox-egress-nginx.conf.template"
     payloads = {}
     for name, original in files.items():
         path = deployment / original
@@ -80,7 +81,10 @@ def build_package(source: Path, manifest: dict, profile: str, output: Path, data
         if name == ".env.example":
             omitted = PACKAGE_OMITTED_ENV_KEYS | bindings.keys()
             if profile == "production":
-                omitted = omitted | {"OPENSANDBOX_EGRESS_PROXY_URL"}
+                omitted = omitted | {
+                    "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS",
+                    "OPENSANDBOX_EGRESS_PROXY_URL",
+                }
             # Remove each assignment and its directly attached explanation.
             for key in sorted(omitted):
                 text = re.sub(rf"(?m)(?:^#[^\n]*\n)*^{key}=[^\n]*(?:\n|$)", "", text)

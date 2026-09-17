@@ -119,6 +119,9 @@ class RuntimeProxyResponse:
     body: Iterable[bytes]
 
 
+_COUNT_TOKENS_FALLBACK_OVERHEAD = 4096
+
+
 def _count_tokens_body(payload: Mapping[str, Any]) -> bytes:
     count_payload = {
         key: payload[key]
@@ -128,8 +131,16 @@ def _count_tokens_body(payload: Mapping[str, Any]) -> bytes:
     return json.dumps(count_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def _input_token_count(response: Any) -> int:
+def _conservative_input_token_count(body: bytes) -> int:
+    # ponytail: UTF-8 bytes plus fixed protocol overhead is deliberately loose for
+    # count-less compatible gateways; use a provider tokenizer if exact counts matter.
+    return len(body) + _COUNT_TOKENS_FALLBACK_OVERHEAD
+
+
+def _input_token_count(response: Any, *, fallback_body: bytes | None = None) -> int:
     status = getattr(response, "status", None)
+    if status == 404 and fallback_body is not None:
+        return _conservative_input_token_count(fallback_body)
     if type(status) is not int or not 200 <= status < 300:
         raise RuntimeError(
             "model_proxy_count_tokens_unavailable" if status in {429, 503} else "model_proxy_count_tokens_failed"
@@ -334,16 +345,20 @@ class ModelControlPlaneService:
             )
         if connection is None or not connection.model_value or connection.max_input_tokens is None:
             raise ValueError("run_model_capacity_missing")
+        count_body = _count_tokens_body({
+            "model": connection.model_value,
+            "tools": [],
+            "messages": [{"role": "user", "content": source_text}],
+        })
         response = await asyncio.to_thread(
             self._upstream.request, base_url=connection.base_url,
             allowed_internal_hosts=allowed_hosts, api_key=connection.api_key,
             method="POST", path="/v1/messages/count_tokens", provider="anthropic",
-            body=_count_tokens_body({"model": connection.model_value, "tools": [],
-                                     "messages": [{"role": "user", "content": source_text}]}),
+            body=count_body,
             headers={"anthropic-version": "2023-06-01", "content-type": "application/json"},
             query="beta=true", max_response_bytes=8192,
         )
-        return _input_token_count(response)
+        return _input_token_count(response, fallback_body=count_body)
 
     async def summarize_context_for_run(self, *, run_id: str, source_text: str) -> dict[str, Any]:
         """One stateless, tool-free checkpoint call under the immutable Run budget."""
@@ -366,14 +381,15 @@ class ModelControlPlaneService:
             "tools": [],
         }
         headers = {"anthropic-version": "2023-06-01", "content-type": "application/json"}
+        count_body = _count_tokens_body(request)
         counted = await asyncio.to_thread(
             self._upstream.request, base_url=connection.base_url,
             allowed_internal_hosts=allowed_hosts, api_key=connection.api_key,
             method="POST", path="/v1/messages/count_tokens", provider="anthropic",
-            body=_count_tokens_body(request), headers=headers, query="beta=true",
+            body=count_body, headers=headers, query="beta=true",
             max_response_bytes=8192,
         )
-        tokens = _input_token_count(counted)
+        tokens = _input_token_count(counted, fallback_body=count_body)
         if tokens > connection.max_input_tokens:
             raise ValueError("context_compaction_chunk_too_large")
         response = await asyncio.to_thread(
@@ -468,6 +484,7 @@ class ModelControlPlaneService:
                 or max_tokens > connection.max_output_tokens
             ):
                 raise ValueError("model_proxy_max_tokens_invalid")
+            count_body = _count_tokens_body(payload)
             count_response = await asyncio.to_thread(
                 self._upstream.request,
                 base_url=connection.base_url,
@@ -476,12 +493,12 @@ class ModelControlPlaneService:
                 method="POST",
                 path="/v1/messages/count_tokens",
                 provider="anthropic",
-                body=_count_tokens_body(payload),
+                body=count_body,
                 headers=outbound_headers,
                 query=query,
                 max_response_bytes=8192,
             )
-            if _input_token_count(count_response) > connection.max_input_tokens:
+            if _input_token_count(count_response, fallback_body=count_body) > connection.max_input_tokens:
                 if connection.conversation_mode == "native_resume":
                     error = {"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long"}}
                     return RuntimeProxyResponse(
@@ -489,6 +506,34 @@ class ModelControlPlaneService:
                         body=(json.dumps(error, separators=(",", ":")).encode("utf-8"),),
                     )
                 raise ValueError("context_bootstrap_input_too_large")
+        elif provider == "anthropic" and upstream_path == "v1/messages/count_tokens":
+            count_response = await asyncio.to_thread(
+                self._upstream.request,
+                base_url=connection.base_url,
+                allowed_internal_hosts=allowed_hosts,
+                api_key=connection.api_key,
+                method="POST",
+                path="/v1/messages/count_tokens",
+                provider="anthropic",
+                body=body,
+                headers=outbound_headers,
+                query=query,
+                max_response_bytes=8192,
+            )
+            if count_response.status == 404:
+                fallback = json.dumps(
+                    {"input_tokens": _conservative_input_token_count(body)},
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                return RuntimeProxyResponse(
+                    status=200, content_type="application/json", body=(fallback,),
+                )
+            _input_token_count(count_response)
+            return RuntimeProxyResponse(
+                status=count_response.status,
+                content_type=getattr(count_response, "content_type", "application/json"),
+                body=(count_response.body,),
+            )
         upstream = await asyncio.to_thread(
             self._upstream.open_stream,
             base_url=connection.base_url,

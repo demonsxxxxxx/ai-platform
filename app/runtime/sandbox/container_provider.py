@@ -1362,13 +1362,14 @@ def _opensandbox_runtime_egress_bases(
 ) -> _ExecutorEgressBases:
     if _is_internal_test_opensandbox(settings):
         callback = _trusted_callback_target(settings)
+        proxy = _opensandbox_egress_bases(settings)
         return _ExecutorEgressBases(
             callback_base_url=callback.base_url,
-            openai_base_url=_credential_free_internal_test_model_base(
-                _env_value(settings, "openai_base_url")
+            openai_base_url=(
+                f"{proxy.callback_base_url}/openai/{request.run_id}/{request.attempt_id}/v1"
             ),
-            anthropic_base_url=_credential_free_internal_test_model_base(
-                _env_value(settings, "anthropic_base_url")
+            anthropic_base_url=(
+                f"{proxy.callback_base_url}/anthropic/{request.run_id}/{request.attempt_id}"
             ),
         )
     configuration = _direct_opensandbox_egress_configuration(settings, request)
@@ -1377,32 +1378,6 @@ def _opensandbox_runtime_egress_bases(
         openai_base_url=configuration["openai_base_url"],
         anthropic_base_url=configuration["anthropic_base_url"],
     )
-
-
-
-def _credential_free_internal_test_model_base(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return raw
-    try:
-        parsed = urlsplit(raw)
-        parsed.port
-    except ValueError:
-        raise OpenSandboxCapabilityAdmissionError(
-            "OpenSandbox internal-test model base is invalid"
-        ) from None
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise OpenSandboxCapabilityAdmissionError(
-            "OpenSandbox internal-test model base is invalid"
-        )
-    return raw
 
 
 def _assert_no_raw_model_credentials_in_environment(
@@ -4400,21 +4375,15 @@ class OpenSandboxContainerProvider:
             egress_bases=_opensandbox_runtime_egress_bases(settings, request),
             workspace_container_path=workspace.workspace_container_path,
         )
-        forward_model_credentials = bool(
-            getattr(settings, "opensandbox_internal_test_forward_model_credentials", False)
-        ) and _is_internal_test_opensandbox(settings)
         callback_binding = CallbackTokenBinding(run_id=request.run_id, attempt_id=request.attempt_id)
         if not callback_token_id_matches_binding(request.callback_token_id, callback_binding):
             raise ContainerStartFailedError("OpenSandbox callback token binding is invalid")
         callback_secret = str(getattr(settings, "sandbox_callback_token", "") or "")
-        if not forward_model_credentials and not callback_secret:
+        if not callback_secret:
             raise ContainerStartFailedError("OpenSandbox model proxy capability is unavailable")
         environment, credential_free_environment = prepare_opensandbox_executor_environment(
             environment,
-            forward_model_credentials=forward_model_credentials,
-            model_proxy_capability=(
-                "" if forward_model_credentials else derive_callback_token(callback_secret, request.callback_token_id)
-            ),
+            model_proxy_capability=derive_callback_token(callback_secret, request.callback_token_id),
         )
         _assert_no_raw_model_credentials_in_environment(
             credential_free_environment,

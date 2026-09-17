@@ -160,7 +160,6 @@ def test_internal_test_opensandbox_profile_requires_explicit_test_bridge_selecti
     )
 
     assert settings.sandbox_security_profile == "internal-test"
-    assert settings.opensandbox_internal_test_forward_model_credentials is False
 
 
 def test_production_opensandbox_requires_the_isolated_network():
@@ -185,48 +184,6 @@ def test_production_opensandbox_requires_the_isolated_network():
 
     values["opensandbox_expected_network_mode"] = "bridge"
     with pytest.raises(ValidationError, match="production_opensandbox_network_mode_invalid"):
-        Settings(_env_file=None, **values)
-
-
-def test_internal_test_model_credential_forwarding_is_allowed_for_exact_profile():
-    settings = Settings(
-        _env_file=None,
-        deployment_environment="test",
-        sandbox_container_provider="opensandbox",
-        sandbox_security_profile="internal-test",
-        opensandbox_expected_network_mode="bridge",
-        opensandbox_internal_test_forward_model_credentials=True,
-        openai_api_key="test-openai-key",
-        anthropic_auth_token="test-anthropic-token",
-    )
-
-    assert settings.opensandbox_internal_test_forward_model_credentials is True
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"deployment_environment": "development"},
-        {"sandbox_container_provider": "docker"},
-        {"sandbox_security_profile": "governed"},
-        {"opensandbox_expected_network_mode": "none"},
-        {"openai_api_key": ""},
-        {"anthropic_auth_token": ""},
-    ],
-)
-def test_internal_test_model_credential_forwarding_rejects_other_profiles(overrides):
-    values = {
-        "deployment_environment": "test",
-        "sandbox_container_provider": "opensandbox",
-        "sandbox_security_profile": "internal-test",
-        "opensandbox_expected_network_mode": "bridge",
-        "opensandbox_internal_test_forward_model_credentials": True,
-        "openai_api_key": "test-openai-key",
-        "anthropic_auth_token": "test-anthropic-token",
-        **overrides,
-    }
-
-    with pytest.raises(ValidationError):
         Settings(_env_file=None, **values)
 
 

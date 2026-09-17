@@ -58,7 +58,6 @@ class Settings(BaseSettings):
     opensandbox_api_key: str = Field(default="")
     opensandbox_ca_cert_file: str = Field(default="")
     opensandbox_use_server_proxy: bool = Field(default=False)
-    opensandbox_internal_test_forward_model_credentials: bool = Field(default=False)
     opensandbox_request_timeout_seconds: float = Field(default=30.0)
     opensandbox_timeout_seconds: int = Field(default=1800)
     opensandbox_executor_image: str = Field(default="")
@@ -246,15 +245,6 @@ class Settings(BaseSettings):
             and self.opensandbox_expected_network_mode == "bridge"
         ):
             raise ValueError("internal_test_opensandbox_profile_invalid")
-        if self.opensandbox_internal_test_forward_model_credentials and not (
-            self.deployment_environment == "test"
-            and self.sandbox_container_provider == "opensandbox"
-            and self.sandbox_security_profile == "internal-test"
-            and self.opensandbox_expected_network_mode == "bridge"
-            and self.openai_api_key.strip()
-            and self.anthropic_auth_token.strip()
-        ):
-            raise ValueError("internal_test_model_credential_forwarding_invalid")
         if self.deployment_environment == "production" and self.sandbox_container_provider == "opensandbox":
             if self.sandbox_security_profile != "governed":
                 raise ValueError("production_opensandbox_profile_invalid")

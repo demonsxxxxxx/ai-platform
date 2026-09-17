@@ -61,10 +61,12 @@ access, artifact collection and cleanup. A healthy lifecycle listener alone
 does not establish those properties.
 
 The internal-test package selects ordinary `bridge`, disables governed egress
-and permits its explicit model-credential forwarding exception. Editing
-`DEPLOYMENT_ENVIRONMENT` in its env file does not convert it to production;
-the Compose profile fixes that value. Moving to production requires the matching
-host topology, production package and runtime acceptance.
+and exposes the same capability-authenticated model proxy only on the configured
+private Docker bridge address. It never forwards provider credentials into the
+sandbox, but its unrestricted bridge network still prevents production
+acceptance. Editing `DEPLOYMENT_ENVIRONMENT` in its env file does not convert it
+to production; the Compose profile fixes that value. Moving to production
+requires the matching host topology, production package and runtime acceptance.
 
 ## Verify the host
 

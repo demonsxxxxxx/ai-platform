@@ -1120,13 +1120,14 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
         assert captured == {}
 
     captured.clear()
-    await service.proxy(
+    count_response = await service.proxy(
         provider="anthropic", upstream_path="v1/messages/count_tokens", query="beta=true",
         headers={"anthropic-version": "2023-06-01", "anthropic-beta": "token-counting-2024-11-01"},
         **{**fields, "body": b'{"model":"model-a","messages":[]}'},
     )
-    assert captured["path"] == "/v1/messages/count_tokens"
-    assert "count" not in captured
+    assert captured["count"]["path"] == "/v1/messages/count_tokens"
+    assert count_response.status == 200
+    assert json.loads(b"".join(count_response.body)) == {"input_tokens": 12}
 
 
 @pytest.mark.asyncio
@@ -1195,6 +1196,109 @@ async def test_anthropic_messages_recount_each_request_and_fail_closed_on_invali
         await service.proxy(body=json.dumps(payload).encode(), **fields)
     assert len(forwarded) == 1
 
+    def malformed_count(**_kwargs):
+        return SimpleNamespace(status=200, body=b'{"input_tokens":true}')
+
+    service._upstream = SimpleNamespace(request=malformed_count, open_stream=forward)
+    with pytest.raises(RuntimeError, match="model_proxy_count_tokens_invalid"):
+        await service.proxy(body=json.dumps(payload).encode(), **fields)
+    assert len(forwarded) == 1
+
+
+@pytest.mark.asyncio
+async def test_anthropic_count_tokens_404_uses_bounded_local_fallback_only():
+    forwarded = []
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def connection(_conn, **_kwargs):
+        return SimpleNamespace(
+            base_url="https://gateway.example", api_key="synthetic-key",
+            max_input_tokens=5000, max_output_tokens=2048, conversation_mode="empty_start",
+        )
+
+    def missing_count(**_kwargs):
+        return SimpleNamespace(status=404, content_type="application/json", body=b'{}')
+
+    def forward(**kwargs):
+        forwarded.append(kwargs)
+        return SimpleNamespace(
+            status=200, content_type="application/json", body=lambda: iter([b"{}"]),
+        )
+
+    service = ModelControlPlaneService(
+        transaction_factory=transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_proxy_internal_token="synthetic-internal",
+            model_connection_encryption_key="synthetic-encryption",
+            model_connection_allowed_internal_hosts="",
+        ),
+        repository=SimpleNamespace(run_connection=connection), security=SimpleNamespace(),
+        upstream=SimpleNamespace(request=missing_count, open_stream=forward),
+        attempt_capability_verifier=lambda **_kwargs: True,
+    )
+    fields = dict(
+        query="beta=true", headers={"anthropic-version": "2023-06-01"},
+        run_id="run-a", attempt_id="attempt-a", internal_token="synthetic-internal",
+        model_proxy_capability="synthetic-capability",
+    )
+    message_body = b'{"model":"model-a","max_tokens":512,"messages":[]}'
+    response = await service.proxy(
+        provider="anthropic", upstream_path="v1/messages", body=message_body, **fields,
+    )
+    assert response.status == 200 and len(forwarded) == 1
+
+    count_body = b'{"model":"model-a","messages":[]}'
+    response = await service.proxy(
+        provider="anthropic", upstream_path="v1/messages/count_tokens",
+        body=count_body, **fields,
+    )
+    assert response.status == 200
+    assert json.loads(b"".join(response.body)) == {"input_tokens": len(count_body) + 4096}
+
+    service._upstream = SimpleNamespace(
+        request=lambda **_kwargs: SimpleNamespace(status=200, body=b'{"input_tokens":true}'),
+        open_stream=forward,
+    )
+    with pytest.raises(RuntimeError, match="model_proxy_count_tokens_invalid"):
+        await service.proxy(
+            provider="anthropic", upstream_path="v1/messages/count_tokens",
+            body=count_body, **fields,
+        )
+
+    for status, error in (
+        (401, "model_proxy_count_tokens_failed"),
+        (429, "model_proxy_count_tokens_unavailable"),
+        (500, "model_proxy_count_tokens_failed"),
+    ):
+        service._upstream = SimpleNamespace(
+            request=lambda status=status, **_kwargs: SimpleNamespace(
+                status=status, body=b'{}',
+            ),
+            open_stream=forward,
+        )
+        with pytest.raises(RuntimeError, match=error):
+            await service.proxy(
+                provider="anthropic", upstream_path="v1/messages/count_tokens",
+                body=count_body, **fields,
+            )
+
+    service._upstream = SimpleNamespace(request=missing_count, open_stream=forward)
+
+    async def low_capacity_connection(_conn, **_kwargs):
+        value = await connection(_conn, **_kwargs)
+        value.max_input_tokens = 4096
+        return value
+
+    service._repository = SimpleNamespace(run_connection=low_capacity_connection)
+    with pytest.raises(ValueError, match="context_bootstrap_input_too_large"):
+        await service.proxy(
+            provider="anthropic", upstream_path="v1/messages", body=message_body, **fields,
+        )
+    assert len(forwarded) == 1
+
 
 @pytest.mark.asyncio
 async def test_stateless_context_summary_uses_frozen_run_budget_and_no_tools():
@@ -1241,6 +1345,17 @@ async def test_stateless_context_summary_uses_frozen_run_budget_and_no_tools():
         "model": "claude-custom", "messages": [{"role": "user", "content": "checkpoint and tail"}],
         "tools": [],
     }
+    sent.clear()
+
+    def missing_count(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(status=404, body=b'{}')
+
+    service._upstream = SimpleNamespace(request=missing_count)
+    count = await service.count_checkpoint_input_for_run(
+        run_id="run-a", source_text="count-less gateway",
+    )
+    assert count == len(sent[0]["body"]) + 4096
     sent.clear()
 
     def over_budget(**kwargs):

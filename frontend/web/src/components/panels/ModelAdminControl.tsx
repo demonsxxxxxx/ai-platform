@@ -6,8 +6,33 @@ import {
   type AdminModelEntry,
   type AdminModelState,
 } from "../../services/api/modelAdmin";
+import { ApiRequestError } from "../../services/api/fetch";
+
+const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
+  model_connection_endpoint_invalid: "API 地址格式无效，请填写模型服务地址。",
+  model_connection_endpoint_must_be_origin: "API 地址只能包含协议、主机和端口。",
+  model_connection_endpoint_forbidden: "该 API 地址未获平台网络策略授权。",
+  model_connection_https_required: "公网模型 API 必须使用 HTTPS。",
+  model_connection_api_key_invalid: "API Key 格式无效，请重新检查。",
+  model_connection_api_key_required: "请输入 API Key。",
+  model_connection_authentication_failed: "API Key 无效或上游拒绝认证。",
+  model_connection_rate_limited: "上游请求过于频繁，请稍后重试。",
+  model_connection_catalog_failed: "无法读取上游 /v1/models，请检查地址和服务状态。",
+  model_connection_catalog_invalid: "上游 /v1/models 返回格式不符合兼容协议。",
+  model_connection_catalog_empty: "上游 /v1/models 没有返回任何模型。",
+  model_upstream_unavailable: "无法连接模型服务，请检查地址、网络和服务状态。",
+  model_catalog_revision_conflict: "模型配置已被更新，请重新获取后再发布。",
+  model_catalog_discovery_changed: "上游模型已变化，请重新获取后再发布。",
+};
 
 function errorMessage(error: unknown): string {
+  if (error instanceof ApiRequestError) {
+    const message = error.code ? MODEL_ADMIN_ERROR_MESSAGES[error.code] : undefined;
+    if (message) return message;
+    if (error.status >= 500) return "模型服务暂不可用，请检查连接后重试。";
+    if (error.status === 409) return "模型配置已变化，请重新获取后再发布。";
+    if (error.status === 400 || error.status === 422) return "模型配置无效，请检查后重试。";
+  }
   return error instanceof Error ? error.message : "模型配置操作失败";
 }
 
@@ -105,14 +130,14 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
   if (!canManage) return null;
 
   return (
-    <section aria-labelledby="model-admin-heading" className="border-b border-[var(--theme-border)] pb-6" data-model-admin-control>
+    <section aria-labelledby="model-admin-heading" className="min-w-0 border-b border-[var(--theme-border)] px-4 pb-6 pt-3" data-model-admin-control>
       <div className="mb-4">
         <h2 id="model-admin-heading" className="text-base font-semibold">全员模型配置</h2>
         <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">
           先获取候选模型，再配置启用状态、容量和默认模型；只有发布后新 Run 才使用此配置。
         </p>
       </div>
-      <div className="grid gap-3 md:grid-cols-[minmax(16rem,1fr)_minmax(14rem,0.8fr)_auto]">
+      <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(16rem,1fr)_minmax(14rem,0.8fr)_auto]">
         <label className="flex flex-col gap-1.5 text-sm">
           <span className="font-medium">API 地址</span>
           <input aria-label="模型 API 地址" className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 outline-none focus:border-[var(--theme-primary)]" onChange={(event) => { setBaseUrl(event.target.value); setDiscoveredRevision(null); setDiscovered(false); }} placeholder="https://gateway.example.com" value={baseUrl} />
@@ -121,7 +146,7 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
           <span className="font-medium">API Key</span>
           <input aria-label="模型 API Key" autoComplete="new-password" className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 outline-none focus:border-[var(--theme-primary)]" onChange={(event) => { setCredential(event.target.value); setDiscoveredRevision(null); setDiscovered(false); }} placeholder={state?.connection.configured ? "留空则保持当前 Key" : "输入 API Key"} type="password" value={credential} />
         </label>
-        <button data-model-admin-discover className="btn-secondary mt-auto inline-flex h-10 items-center justify-center gap-2" disabled={busy !== null || !baseUrl.trim()} onClick={() => void discover()} type="button">
+        <button data-model-admin-discover className="btn-secondary mt-auto inline-flex h-10 w-full items-center justify-center gap-2 lg:w-auto" disabled={busy !== null || !baseUrl.trim()} onClick={() => void discover()} type="button">
           <Download size={16} aria-hidden="true" />获取模型
         </button>
       </div>
