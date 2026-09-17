@@ -17,6 +17,7 @@ from app.platform.public_payload import (
     sanitize_public_payload,
     sanitize_public_reasoning_text,
 )
+from app.required_tool_contract import with_sandbox_local_tool_capability_subjects
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import (
     CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
@@ -746,21 +747,11 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             openai_api_key="",
         ),
     )
-    subject = {
-        "identity": "Read",
-        "registered": True,
-        "declared": True,
-        "active": True,
-        "distributed": True,
-        "identity_authorized": True,
-        "object_authorized": True,
-        "parameters_authorized": True,
-        "allowed_parameter_keys": ["file_path"],
-        "required_parameter_keys": ["file_path"],
-        "risk_level": "low",
-        "write_capable": False,
-        "public_tool_label": "Read file",
-    }
+    subject = with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="docker",
+        authorized_sandbox_tool_identities={"Read"},
+    )[0]
     candidates = []
     tool_lifecycle = []
 
