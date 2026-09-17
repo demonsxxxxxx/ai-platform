@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image as SpreadsheetImage
 
 from app import file_preview_contracts
+from app.bootstrap.files import configure_file_preview_services
 from app.file_parser_contracts import AttachmentParserRequirement, parser_spec_for_attachment
 from app.file_preview_contracts import (
     _stage_xlsx_preview_bytes,
@@ -23,6 +24,11 @@ from app.file_preview_contracts import (
 
 
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _configure_preview_services() -> None:
+    configure_file_preview_services()
 
 
 def _workbook_bytes(*, formulas: list[str] | None = None) -> bytes:
@@ -452,6 +458,7 @@ def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_da
         b"sanitized",
         requirement.model_dump(mode="json"),
         5.0,
+        file_preview_contracts.xlsx_preview_image_extractor(),
     )
 
     assert file_preview_contracts.os.environ["OPENPYXL_LXML"] == "False"

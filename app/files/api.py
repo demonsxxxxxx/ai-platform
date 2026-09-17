@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
+from app.files.application.previews import (
+    XlsxPreviewImageExtractor,
+    configure_xlsx_preview_image_extractor,
+    xlsx_preview_image_extractor,
+)
 from app.files.application.upload_sessions import (
     FileUploadPersistence,
     configure_file_upload_persistence,
@@ -162,11 +167,13 @@ __all__ = [
     "MultipartUploadCompleteRequest",
     "MultipartUploadCreateRequest",
     "MultipartUploadPart",
+    "XlsxPreviewImageExtractor",
     "abort_file_upload_session",
     "activate_file_upload_session",
     "claim_direct_file_upload_session",
     "complete_file_upload_session",
     "configure_file_upload_persistence",
+    "configure_xlsx_preview_image_extractor",
     "create_file_upload_session",
     "delete_expired_file_upload_session",
     "direct_upload_storage_key",
@@ -177,4 +184,5 @@ __all__ = [
     "parse_multipart_upload_complete_request",
     "parse_multipart_upload_create_request",
     "retry_expired_file_upload_session",
+    "xlsx_preview_image_extractor",
 ]
