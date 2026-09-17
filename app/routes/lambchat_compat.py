@@ -16,6 +16,7 @@ from fastapi import (
     Header,
     HTTPException,
     Request,
+    Response,
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
@@ -1435,8 +1436,10 @@ async def permissions() -> dict[str, object]:
 
 @router.get("/agent/models/available")
 async def available_models(
+    response: Response,
     _principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
     async with transaction() as conn:
         return await list_public_models(conn)
 
