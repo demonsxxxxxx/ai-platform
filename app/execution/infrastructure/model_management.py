@@ -11,8 +11,6 @@ from app.execution.application.model_selection import RunModelSelection
 from app.execution.domain.model_catalog import (
     admin_model_projection,
     discovered_model_mapping,
-    normalize_catalog_patch,
-    platform_model_id as platform_model_id,
     public_model_projection,
 )
 
@@ -256,54 +254,43 @@ async def list_public_models(conn: AsyncConnection) -> dict[str, Any] | None:
     return public_model_projection(await cursor.fetchall())
 
 
-async def update_catalog_entry(
+async def publish_models(
     conn: AsyncConnection,
     *,
-    model_id: str,
-    display_name: str | None,
-    enabled: bool | None,
-    is_default: bool | None,
-    max_input_tokens: int | None = None,
-    max_output_tokens: int | None = None,
-) -> dict[str, Any] | None:
+    expected_revision: int | None,
+    models: list[dict[str, Any]],
+    **connection: Any,
+) -> tuple[int, list[dict[str, Any]]]:
+    await conn.execute("select pg_advisory_xact_lock(%s)", (_CONNECTION_LOCK_KEY,))
     cursor = await conn.execute(
-        "select * from model_catalog_entries where model_id = %s for update",
-        (model_id,),
+        "select revision from model_gateway_revisions where active = true limit 1"
     )
-    row = await cursor.fetchone()
-    if row is None:
-        return None
-    patch = normalize_catalog_patch(
-        row,
-        display_name=display_name,
-        enabled=enabled,
-        is_default=is_default,
-        max_input_tokens=max_input_tokens,
-        max_output_tokens=max_output_tokens,
+    active = await cursor.fetchone()
+    if (int(active["revision"]) if active else None) != expected_revision:
+        raise ValueError("model_catalog_revision_conflict")
+    revision, _ = await activate_connection_and_sync(
+        conn, upstream_model_ids=connection.pop("upstream_model_ids"), **connection
     )
-    if patch.is_default:
-        await conn.execute("update model_catalog_entries set is_default = false where is_default = true")
-    await conn.execute(
-        """
-        update model_catalog_entries
-        set display_name = %s,
-            enabled = %s,
-            is_default = %s,
-            max_input_tokens = %s,
-            max_output_tokens = %s
-        where model_id = %s
-        """,
-        (
-            patch.display_name,
-            patch.enabled,
-            patch.is_default,
-            patch.max_input_tokens,
-            patch.max_output_tokens,
-            model_id,
-        ),
-    )
-    cursor = await conn.execute("select * from model_catalog_entries where model_id = %s", (model_id,))
-    return admin_model_projection(await cursor.fetchone())
+    await conn.execute("update model_catalog_entries set enabled = false, is_default = false")
+    for model in models:
+        cursor = await conn.execute(
+            """
+            update model_catalog_entries
+            set display_name = %s, enabled = %s, is_default = %s,
+                display_order = %s, max_input_tokens = %s, max_output_tokens = %s
+            where model_id = %s and upstream_model_id = %s
+              and upstream_available = true and last_seen_revision = %s
+            returning model_id
+            """,
+            (
+                model["display_name"], model["enabled"], model["is_default"],
+                model["order"], model.get("max_input_tokens"),
+                model.get("max_output_tokens"), model["id"], model["value"], revision,
+            ),
+        )
+        if await cursor.fetchone() is None:
+            raise ValueError("model_catalog_discovery_changed")
+    return revision, await list_admin_models(conn)
 
 
 async def resolve_run_model(
@@ -387,8 +374,8 @@ class PostgresModelManagementRepository:
     async def activate_and_sync(self, conn: AsyncConnection, **kwargs: Any) -> Any:
         return await activate_connection_and_sync(conn, **kwargs)
 
-    async def update_catalog(self, conn: AsyncConnection, **kwargs: Any) -> Any:
-        return await update_catalog_entry(conn, **kwargs)
+    async def publish_models(self, conn: AsyncConnection, **kwargs: Any) -> Any:
+        return await publish_models(conn, **kwargs)
 
     async def resolve_run_model(
         self,

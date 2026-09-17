@@ -147,7 +147,7 @@ export function ModelCatalogPanel() {
       title={t("models.title", "模型")}
       subtitle={t(
         "models.subtitle",
-        "查看平台公共模型；管理员可配置兼容地址、同步目录并控制启用状态。",
+        "查看平台公共模型；管理员可获取候选模型、配置容量和默认模型，然后发布给全员。",
       )}
       icon={<DatabaseZap size={20} className="text-theme-text-secondary" />}
       searchValue={searchQuery}
@@ -289,7 +289,7 @@ export function ModelCatalogPanel() {
             <p className={`mt-2 max-w-md text-center ${workbenchSurface.catalog.body}`}>
               {t(
                 "models.emptyDescription",
-                "当前没有已启用且上游可用的模型。请管理员同步目录并启用至少一个模型。",
+                "当前没有已发布且可用的模型。请管理员获取上游候选、配置并发布至少一个模型。",
               )}
             </p>
           </div>

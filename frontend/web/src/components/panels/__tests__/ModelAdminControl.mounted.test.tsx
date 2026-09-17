@@ -102,35 +102,37 @@ async function waitFor(
   assert.ok(predicate(), description);
 }
 
-test("Model admin control gates non-admins and refreshes mounted mutations without rendering the key", async () => {
+test("Model admin discovery is a draft and only publication changes the active catalog", async () => {
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
   const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
 
   const original = {
     get: modelAdminApi.get,
-    configure: modelAdminApi.configure,
-    sync: modelAdminApi.sync,
-    patch: modelAdminApi.patch,
+    discover: modelAdminApi.discover,
+    publish: modelAdminApi.publish,
   };
   const calls = {
     get: 0,
-    configure: [] as Array<{ baseUrl: string; credential?: string }>,
-    sync: 0,
-    patch: [] as Array<{ modelId: string; patch: Record<string, unknown> }>,
+    discover: [] as Array<{ baseUrl: string; credential?: string }>,
+    publish: [] as Array<{
+      baseUrl: string; credential?: string; expectedRevision: number | null;
+      models: AdminModelEntry[];
+    }>,
   };
-  const configured = state({
+  const candidate = model({ label: "GPT-5" });
+  const published = state({
     connection: {
       configured: true,
-      revision: 2,
+      revision: 4,
       base_url: "https://gateway.example",
       key_fingerprint: "0123456789abcdef",
     },
-    models: [model({ label: "Configured GPT-5" })],
-  });
-  const synced = state({
-    connection: configured.connection,
-    models: [model({ label: "Synced GPT-5", last_seen_revision: 2 })],
+    models: [model({
+      enabled: true, is_default: true,
+      max_input_tokens: 32000, max_output_tokens: 2048,
+      last_seen_revision: 4,
+    })],
   });
 
   modelAdminApi.get = async () => {
@@ -144,27 +146,22 @@ test("Model admin control gates non-admins and refreshes mounted mutations witho
       },
     });
   };
-  modelAdminApi.configure = async (baseUrl, credential) => {
-    calls.configure.push({ baseUrl, credential });
-    return configured;
+  modelAdminApi.discover = async (baseUrl, credential) => {
+    calls.discover.push({ baseUrl, credential });
+    return {
+      connection: {
+        configured: true,
+        revision: 3,
+        base_url: "https://gateway.example",
+        key_fingerprint: "fedcba9876543210",
+      },
+      base_url: baseUrl,
+      models: [candidate],
+    };
   };
-  modelAdminApi.sync = async () => {
-    calls.sync += 1;
-    return synced;
-  };
-  modelAdminApi.patch = async (modelId, patch) => {
-    calls.patch.push({ modelId, patch });
-    const current = synced.models[0];
-    if (patch.enabled === true) {
-      return { ...current, label: "Enabled GPT-5", enabled: true };
-    }
-    if (patch.is_default === true) {
-      return { ...current, label: "Default GPT-5", enabled: true, is_default: true };
-    }
-    if (patch.max_input_tokens && patch.max_output_tokens) {
-      return { ...current, max_input_tokens: patch.max_input_tokens, max_output_tokens: patch.max_output_tokens };
-    }
-    return current;
+  modelAdminApi.publish = async (baseUrl, credential, expectedRevision, models) => {
+    calls.publish.push({ baseUrl, credential, expectedRevision, models });
+    return published;
   };
 
   const container = dom.document.createElement("div");
@@ -187,116 +184,63 @@ test("Model admin control gates non-admins and refreshes mounted mutations witho
     assert.equal(calls.get, 1);
 
     const keyInput = inputByLabel(container, "模型 API Key");
-    assert.equal(keyInput.value, "");
     await React.act(async () => {
       changeMountedInput(keyInput, "super-secret-key");
     });
-    const configureButton = container
-      .querySelectorAll("button")
-      .find((button) => button.hasAttribute("data-model-admin-configure"));
-    assert.ok(configureButton);
+    const discoverButton = container.querySelectorAll("button")
+      .find((button) => button.getAttribute("data-model-admin-discover") !== null);
+    assert.ok(discoverButton);
     await React.act(async () => {
-      configureButton.dispatchEvent({ type: "click", bubbles: true });
+      discoverButton.dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
     });
     await waitFor(
       React,
-      () => calls.configure.length === 1 && inputByLabel(container, "模型 API Key").value === "",
-      "configure should refresh state and clear the write-only key field",
+      () => calls.discover.length === 1
+        && inputByLabel(container, "openai/gpt-5 显示名称").value === "GPT-5",
+      "discovery should populate only the editable draft",
     );
-    assert.deepEqual(calls.configure, [
+    assert.deepEqual(calls.discover, [
       { baseUrl: "https://gateway.example", credential: "super-secret-key" },
     ]);
-    assert.equal(inputByLabel(container, "模型 API Key").value, "");
-    const connectionText = renderedParagraphText(container);
-    assert.match(connectionText, /当前 revision 2/);
-    assert.match(connectionText, /0123456789abcdef/);
-    assert.equal(
-      inputByLabel(container, "openai/gpt-5 显示名称").value,
-      "Configured GPT-5",
-    );
-    assert.doesNotMatch(renderedParagraphText(container), /super-secret-key/);
+    assert.equal(calls.publish.length, 0);
+    assert.equal(inputByLabel(container, "模型 API Key").value, "super-secret-key");
 
-    const syncButton = container
-      .querySelectorAll("button")
-      .find((button) => button.hasAttribute("data-model-admin-sync"));
-    assert.ok(syncButton);
-    await React.act(async () => {
-      syncButton.dispatchEvent({ type: "click", bubbles: true });
-      await Promise.resolve();
-    });
-    await waitFor(
-      React,
-      () => inputByLabel(container, "openai/gpt-5 显示名称").value === "Synced GPT-5",
-      "sync should refresh the mounted catalog projection",
-    );
-    assert.equal(calls.sync, 1);
-
-    const enabled = inputByLabel(container, "启用 Synced GPT-5");
+    const enabled = inputByLabel(container, "启用 GPT-5");
     enabled.checked = true;
-    await React.act(async () => {
-      enabled.dispatchEvent({ type: "click", bubbles: true });
-      await Promise.resolve();
-    });
-    await waitFor(
-      React,
-      () => inputByLabel(container, "启用 Enabled GPT-5").checked,
-      "enable response should refresh the checked model projection",
-    );
-    assert.equal(
-      inputByLabel(container, "openai/gpt-5 显示名称").value,
-      "Enabled GPT-5",
-    );
-    assert.deepEqual(calls.patch[0], {
-      modelId: "mdl_gpt",
-      patch: { enabled: true },
-    });
-
-    const defaultInput = inputByLabel(container, "设为默认 Enabled GPT-5");
+    const defaultInput = inputByLabel(container, "设为默认 GPT-5");
     defaultInput.checked = true;
     await React.act(async () => {
-      defaultInput.dispatchEvent({ type: "click", bubbles: true });
+      changeMountedInput(enabled, enabled.value);
+      changeMountedInput(defaultInput, defaultInput.value);
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "32000");
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "2048");
+    });
+    const publishButton = container.querySelectorAll("button")
+      .find((button) => button.getAttribute("data-model-admin-publish") !== null);
+    assert.ok(publishButton);
+    await React.act(async () => {
+      publishButton.dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
     });
     await waitFor(
       React,
-      () => inputByLabel(container, "设为默认 Default GPT-5").checked,
-      "default response should refresh the selected model projection",
+      () => calls.publish.length === 1 && inputByLabel(container, "模型 API Key").value === "",
+      "publication should apply the whole draft and clear the write-only key",
     );
-    assert.equal(inputByLabel(container, "启用 Default GPT-5").checked, true);
-    assert.equal(
-      inputByLabel(container, "openai/gpt-5 显示名称").value,
-      "Default GPT-5",
-    );
-    assert.deepEqual(calls.patch[1], {
-      modelId: "mdl_gpt",
-      patch: { is_default: true },
-    });
-
-    await React.act(async () => {
-      changeMountedInput(inputByLabel(container, "openai/gpt-5 输入 token 上限"), "32000");
-      changeMountedInput(inputByLabel(container, "openai/gpt-5 输出 token 上限"), "2048");
-    });
-    const capacitySave = container
-      .querySelectorAll("button")
-      .find((button) => button.getAttribute("aria-label") === "保存 openai/gpt-5 token 上限");
-    assert.ok(capacitySave);
-    await React.act(async () => {
-      capacitySave.dispatchEvent({ type: "click", bubbles: true });
-      await Promise.resolve();
-    });
-    await waitFor(React, () => calls.patch.length === 3, "capacity save should patch the model");
-    assert.deepEqual(calls.patch[2], {
-      modelId: "mdl_gpt",
-      patch: { max_input_tokens: 32000, max_output_tokens: 2048 },
-    });
+    assert.equal(calls.publish[0].expectedRevision, 3);
+    assert.equal(calls.publish[0].models[0].enabled, true);
+    assert.equal(calls.publish[0].models[0].is_default, true);
+    assert.equal(calls.publish[0].models[0].max_input_tokens, 32000);
+    assert.equal(calls.publish[0].models[0].max_output_tokens, 2048);
+    assert.match(renderedParagraphText(container), /当前发布版本 4/);
+    assert.doesNotMatch(renderedParagraphText(container), /super-secret-key/);
   } finally {
     await React.act(async () => {
       root.unmount();
     });
     modelAdminApi.get = original.get;
-    modelAdminApi.configure = original.configure;
-    modelAdminApi.sync = original.sync;
-    modelAdminApi.patch = original.patch;
+    modelAdminApi.discover = original.discover;
+    modelAdminApi.publish = original.publish;
   }
 });

@@ -34,9 +34,13 @@ export const modelAdminApi = {
     return authFetch<AdminModelState>(`${API_BASE}/api/ai/admin/models`);
   },
 
-  configure(baseUrl: string, credential?: string): Promise<AdminModelState> {
-    return authFetch<AdminModelState>(`${API_BASE}/api/ai/admin/models/connection`, {
-      method: "PUT",
+  discover(baseUrl: string, credential?: string): Promise<{
+    connection: AdminModelConnection;
+    base_url: string;
+    models: AdminModelEntry[];
+  }> {
+    return authFetch(`${API_BASE}/api/ai/admin/models/discover`, {
+      method: "POST",
       body: JSON.stringify({
         base_url: baseUrl,
         ...(credential ? { credential } : {}),
@@ -44,25 +48,29 @@ export const modelAdminApi = {
     });
   },
 
-  sync(): Promise<AdminModelState> {
-    return authFetch<AdminModelState>(`${API_BASE}/api/ai/admin/models/sync`, {
+  publish(
+    baseUrl: string,
+    credential: string | undefined,
+    expectedRevision: number | null,
+    models: Array<AdminModelEntry & { display_name?: string }>,
+  ): Promise<AdminModelState> {
+    return authFetch(`${API_BASE}/api/ai/admin/models/publish`, {
       method: "POST",
+      body: JSON.stringify({
+        base_url: baseUrl,
+        ...(credential ? { credential } : {}),
+        expected_revision: expectedRevision,
+        models: models.map((model) => ({
+          id: model.id,
+          value: model.value,
+          display_name: model.display_name ?? model.label,
+          enabled: model.enabled,
+          is_default: model.is_default,
+          order: model.order,
+          ...(model.max_input_tokens ? { max_input_tokens: model.max_input_tokens } : {}),
+          ...(model.max_output_tokens ? { max_output_tokens: model.max_output_tokens } : {}),
+        })),
+      }),
     });
-  },
-
-  patch(
-    modelId: string,
-    patch: {
-      display_name?: string;
-      enabled?: boolean;
-      is_default?: boolean;
-      max_input_tokens?: number;
-      max_output_tokens?: number;
-    },
-  ): Promise<AdminModelEntry> {
-    return authFetch<AdminModelEntry>(
-      `${API_BASE}/api/ai/admin/models/${encodeURIComponent(modelId)}`,
-      { method: "PATCH", body: JSON.stringify(patch) },
-    );
   },
 };

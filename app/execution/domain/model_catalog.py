@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 
@@ -42,15 +41,6 @@ def normalize_model_token_limits(
     return input_limit, output_limit
 
 
-@dataclass(frozen=True)
-class CatalogPatch:
-    display_name: str
-    enabled: bool
-    is_default: bool
-    max_input_tokens: int | None
-    max_output_tokens: int | None
-
-
 def validate_upstream_model_id(value: str) -> str:
     if (
         not value
@@ -80,39 +70,6 @@ def discovered_model_mapping(upstream_model_ids: Sequence[str]) -> dict[str, str
         if previous != upstream_model_id:
             raise ValueError("model_catalog_identity_collision")
     return discovered
-
-
-def normalize_catalog_patch(
-    row: Mapping[str, Any],
-    *,
-    display_name: str | None,
-    enabled: bool | None,
-    is_default: bool | None,
-    max_input_tokens: int | None,
-    max_output_tokens: int | None,
-) -> CatalogPatch:
-    next_name = str(row["display_name"]) if display_name is None else display_name.strip()
-    if not next_name or len(next_name) > 160 or any(ord(char) < 32 for char in next_name):
-        raise ValueError("model_display_name_invalid")
-    next_enabled = bool(row["enabled"]) if enabled is None else enabled
-    next_default = bool(row["is_default"]) if is_default is None else is_default
-    if next_default and (not next_enabled or not bool(row["upstream_available"])):
-        raise ValueError("model_default_must_be_available")
-    if not next_enabled:
-        next_default = False
-    next_input, next_output = normalize_model_token_limits(
-        row.get("max_input_tokens") if max_input_tokens is None else max_input_tokens,
-        row.get("max_output_tokens") if max_output_tokens is None else max_output_tokens,
-    )
-    if next_enabled and next_input is None:
-        raise ValueError("model_capacity_missing")
-    return CatalogPatch(
-        display_name=next_name,
-        enabled=next_enabled,
-        is_default=next_default,
-        max_input_tokens=next_input,
-        max_output_tokens=next_output,
-    )
 
 
 def admin_model_projection(row: Mapping[str, Any]) -> dict[str, Any]:
