@@ -18,12 +18,12 @@ from app.execution.application.model_control_plane import (
     ModelControlPlaneService,
     _runtime_proxy_headers,
 )
-from app.execution.domain.model_catalog import normalize_catalog_patch, normalize_model_token_limits
+from app.execution.domain.model_catalog import normalize_model_token_limits, platform_model_id
 from app.execution.infrastructure import model_upstream as client
 from app.execution.infrastructure.model_management import (
     activate_connection_and_sync,
     get_run_connection,
-    platform_model_id,
+    publish_models,
     resolve_run_model,
 )
 from app.execution.infrastructure.model_security import (
@@ -69,25 +69,6 @@ def _attempt_capability_verifier(secret: str):
     return verify
 
 
-def test_catalog_capacity_is_required_before_enabling_model():
-    row = {
-        "display_name": "Claude", "enabled": False, "is_default": False,
-        "upstream_available": True, "max_input_tokens": None, "max_output_tokens": None,
-    }
-    with pytest.raises(ValueError, match="model_capacity_missing"):
-        normalize_catalog_patch(
-            row, display_name=None, enabled=True, is_default=False,
-            max_input_tokens=None, max_output_tokens=None,
-        )
-    patch = normalize_catalog_patch(
-        row, display_name=None, enabled=True, is_default=True,
-        max_input_tokens=32000, max_output_tokens=2048,
-    )
-    assert (patch.enabled, patch.is_default, patch.max_input_tokens, patch.max_output_tokens) == (
-        True, True, 32000, 2048,
-    )
-
-
 def test_catalog_capacity_pair_and_anthropic_proxy_contract():
     assert normalize_model_token_limits(32000, 2048) == (32000, 2048)
     for pair in ((32000, None), (True, 2048), (0, 2048), (10_000_001, 2048)):
@@ -117,18 +98,106 @@ def test_model_transport_maps_missing_write_only_key_to_validation_error() -> No
 
     assert error.status_code == 422
     assert error.detail == "model_connection_api_key_required"
-    for code in ("model_capacity_pair_required", "model_capacity_missing", "max_input_tokens_invalid", "max_output_tokens_invalid"):
+    conflict = model_routes._translate_control_plane_error(
+        ValueError("model_catalog_revision_conflict")
+    )
+    assert (conflict.status_code, conflict.detail) == (
+        409, "model_catalog_revision_conflict"
+    )
+    for code in ("model_capacity_pair_required", "max_input_tokens_invalid", "max_output_tokens_invalid"):
         mapped = model_routes._translate_control_plane_error(ValueError(code))
         assert (mapped.status_code, mapped.detail) == (422, code)
     for budget in (True, 0, 10_000_001, "32000"):
         with pytest.raises(ValidationError):
-            model_routes.ModelCatalogEntryPatch(max_input_tokens=budget)
+            model_routes.ModelPublicationEntry(
+                id="mdl_gpt", value="openai/gpt-5", display_name="GPT-5",
+                enabled=True, is_default=True, order=1,
+                max_input_tokens=budget, max_output_tokens=2048,
+            )
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_identity() -> None:
+    upstream_ids = ["openai/gpt-5"]
+    publications = []
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    class Repository:
+        async def active_connection(self, _conn, **_kwargs):
+            return None
+
+        async def connection_projection(self, _conn):
+            return {"revision": None}
+
+        async def admin_models(self, _conn):
+            return [{
+                "id": platform_model_id("openai/gpt-5"), "value": "openai/gpt-5",
+                "label": "Existing GPT", "provider": "compatible", "enabled": True,
+                "available": False, "is_default": True, "order": 9,
+                "max_input_tokens": 32000, "max_output_tokens": 2048,
+            }]
+
+        async def publish_models(self, _conn, **kwargs):
+            publications.append(kwargs)
+            return 1, kwargs["models"]
+
+    class Security:
+        def validate(self, base_url, **_kwargs):
+            return SimpleNamespace(base_url=base_url)
+
+        def fingerprint(self, _api_key):
+            return "synthetic-fingerprint"
+
+    class Upstream:
+        def request(self, **_kwargs):
+            return b"synthetic-catalog"
+
+        def parse_model_ids(self, _body):
+            return list(upstream_ids)
+
+    service = ModelControlPlaneService(
+        transaction_factory=fake_transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_connection_encryption_key=_key(),
+            model_connection_allowed_internal_hosts="",
+        ),
+        repository=Repository(), security=Security(), upstream=Upstream(),
+        attempt_capability_verifier=lambda **_kwargs: True,
+    )
+    candidate = await service.discover(
+        base_url="https://gateway.example", api_key="synthetic-secret"
+    )
+    assert publications == []
+    assert candidate["models"][0]["label"] == "Existing GPT"
+    assert candidate["models"][0]["order"] == 1
+    entry = {
+        "id": candidate["models"][0]["id"], "value": "openai/gpt-5",
+        "display_name": "GPT-5", "enabled": True, "is_default": True,
+        "order": 1, "max_input_tokens": 32000, "max_output_tokens": 2048,
+    }
+    upstream_ids[:] = ["different-model"]
+    with pytest.raises(ValueError, match="model_catalog_discovery_changed"):
+        await service.publish(
+            base_url="https://gateway.example", api_key="synthetic-secret",
+            expected_revision=None, models=[entry], actor_user_id="admin-user",
+        )
+    assert publications == []
+    upstream_ids[:] = ["openai/gpt-5"]
+    published = await service.publish(
+        base_url="https://gateway.example", api_key="synthetic-secret",
+        expected_revision=None, models=[entry], actor_user_id="admin-user",
+    )
+    assert published["revision"] == 1
+    assert publications[0]["models"] == [entry]
 
 
 def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) -> None:
     principal = SimpleNamespace(user_id="admin-user")
     authorized = {"value": True}
-    configure_calls: list[dict[str, object]] = []
+    calls: list[tuple[str, dict[str, object]]] = []
 
     async def require_principal() -> SimpleNamespace:
         return principal
@@ -137,16 +206,15 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
         async def admin_projection(self) -> dict[str, object]:
             return {"connection": None, "models": []}
 
-        async def configure_connection(self, **kwargs) -> dict[str, object]:
-            configure_calls.append(kwargs)
-            return {"connection": {"configured": True}, "models": []}
+        async def discover(self, **kwargs) -> dict[str, object]:
+            calls.append(("discover", kwargs))
+            return {"connection": None, "base_url": kwargs["base_url"], "models": []}
 
-    service = _Service()
-    monkeypatch.setattr(
-        model_routes,
-        "configured_model_control_plane",
-        lambda: service,
-    )
+        async def publish(self, **kwargs) -> dict[str, object]:
+            calls.append(("publish", kwargs))
+            return {"connection": {"revision": 2}, "models": []}
+
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: _Service())
     app = FastAPI()
     app.include_router(
         model_routes.build_model_management_router(
@@ -155,113 +223,56 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
         ),
         prefix="/api/ai",
     )
-
-    credential_marker = "controlled-write-only-value"
-    legacy_marker = "deprecated-write-only-value"
-    camel_legacy_marker = "deprecated-camel-write-only-value"
-    unknown_marker = "unknown-write-only-value"
-    catalog_marker = "catalog-write-only-value"
-    oversized_marker = "oversized-write-only-value"
+    entry = {
+        "id": "mdl_gpt", "value": "openai/gpt-5", "display_name": "GPT-5",
+        "enabled": True, "is_default": True, "order": 1,
+        "max_input_tokens": 32000, "max_output_tokens": 2048,
+    }
     with TestClient(app) as client:
         accepted = client.get("/api/ai/admin/models")
-        configured = client.put(
-            "/api/ai/admin/models/connection",
-            json={
-                "base_url": "https://gateway.example",
-                "credential": credential_marker,
-            },
-        )
-        rejected_legacy_field = client.put(
-            "/api/ai/admin/models/connection",
-            json={"base_url": "https://gateway.example", "api_key": legacy_marker},
-        )
-        rejected_camel_legacy_field = client.put(
-            "/api/ai/admin/models/connection",
-            json={"base_url": "https://gateway.example", "apiKey": camel_legacy_marker},
-        )
-        rejected_unknown_field = client.put(
-            "/api/ai/admin/models/connection",
-            json={"base_url": "https://gateway.example", "credentail": unknown_marker},
-        )
-        rejected_legacy_without_base = client.put(
-            "/api/ai/admin/models/connection",
-            json={"api_key": legacy_marker},
-        )
-        rejected_unknown_with_invalid_base = client.put(
-            "/api/ai/admin/models/connection",
-            json={"base_url": 7, "credentail": unknown_marker},
-        )
-        rejected_credential_without_base = client.put(
-            "/api/ai/admin/models/connection",
-            json={"credential": credential_marker},
-        )
-        rejected_oversized_credential = client.put(
-            "/api/ai/admin/models/connection",
-            json={
-                "base_url": "https://gateway.example",
-                "credential": oversized_marker + ("x" * 4097),
-            },
-        )
-        rejected_catalog_field = client.patch(
-            "/api/ai/admin/models/mdl_gpt",
-            json={"api_key": catalog_marker},
-        )
+        found = client.post("/api/ai/admin/models/discover", json={
+            "base_url": "https://gateway.example", "credential": "synthetic-secret",
+        })
+        published = client.post("/api/ai/admin/models/publish", json={
+            "base_url": "https://gateway.example", "credential": "synthetic-secret",
+            "expected_revision": 1, "models": [entry],
+        })
+        invalid = client.post("/api/ai/admin/models/publish", json={
+            "base_url": "https://gateway.example", "models": [{**entry, "max_input_tokens": True}],
+        })
+        forbidden_field = client.post("/api/ai/admin/models/discover", json={
+            "base_url": "https://gateway.example", "api_key": "synthetic-secret",
+        })
+        unknown_key = client.post("/api/ai/admin/models/publish", json={
+            "base_url": "https://gateway.example", "credentail": "synthetic-secret",
+            "models": [entry],
+        })
+        retired = client.put("/api/ai/admin/models/connection", json={
+            "base_url": "https://gateway.example", "credential": "synthetic-secret",
+        })
         authorized["value"] = False
-        denied = client.get("/api/ai/admin/models")
+        denied = client.post("/api/ai/admin/models/discover", json={
+            "base_url": "https://gateway.example", "credential": "synthetic-secret",
+        })
 
     assert accepted.status_code == 200
-    assert accepted.json() == {"connection": None, "models": []}
-    assert configured.status_code == 200
-    assert credential_marker not in configured.text
-    assert configure_calls == [
-        {
-            "base_url": "https://gateway.example",
-            "api_key": credential_marker,
-            "actor_user_id": "admin-user",
-        }
-    ]
-    assert rejected_legacy_field.status_code == 422
-    assert rejected_legacy_field.json() == {
-        "detail": "model_connection_credential_field_invalid"
-    }
-    assert legacy_marker not in rejected_legacy_field.text
-    assert rejected_camel_legacy_field.status_code == 422
-    assert rejected_camel_legacy_field.json() == {
-        "detail": "model_connection_credential_field_invalid"
-    }
-    assert camel_legacy_marker not in rejected_camel_legacy_field.text
-    assert rejected_unknown_field.status_code == 422
-    assert rejected_unknown_field.json() == {
-        "detail": "model_connection_request_invalid"
-    }
-    assert unknown_marker not in rejected_unknown_field.text
-    assert rejected_legacy_without_base.status_code == 422
-    assert rejected_legacy_without_base.json() == {
-        "detail": "model_connection_credential_field_invalid"
-    }
-    assert legacy_marker not in rejected_legacy_without_base.text
-    assert rejected_unknown_with_invalid_base.status_code == 422
-    assert rejected_unknown_with_invalid_base.json() == {
-        "detail": "model_connection_request_invalid"
-    }
-    assert unknown_marker not in rejected_unknown_with_invalid_base.text
-    assert rejected_credential_without_base.status_code == 422
-    assert rejected_credential_without_base.json() == {
-        "detail": "model_connection_endpoint_invalid"
-    }
-    assert credential_marker not in rejected_credential_without_base.text
-    assert rejected_oversized_credential.status_code == 422
-    assert rejected_oversized_credential.json() == {
-        "detail": "model_connection_credential_field_invalid"
-    }
-    assert oversized_marker not in rejected_oversized_credential.text
-    assert rejected_catalog_field.status_code == 422
-    assert rejected_catalog_field.json() == {
-        "detail": "model_catalog_patch_request_invalid"
-    }
-    assert catalog_marker not in rejected_catalog_field.text
+    assert found.status_code == 200
+    assert published.status_code == 200
+    assert invalid.status_code == 422
+    assert forbidden_field.status_code == 422
+    assert unknown_key.json() == {"detail": "model_publication_request_invalid"}
+    assert retired.status_code == 404
     assert denied.status_code == 403
-    assert denied.json() == {"detail": "model_admin_required"}
+    assert all("synthetic-secret" not in response.text for response in (
+        found, published, invalid, forbidden_field, unknown_key, retired, denied
+    ))
+    assert calls == [
+        ("discover", {"base_url": "https://gateway.example", "api_key": "synthetic-secret"}),
+        ("publish", {
+            "base_url": "https://gateway.example", "api_key": "synthetic-secret",
+            "expected_revision": 1, "models": [entry], "actor_user_id": "admin-user",
+        }),
+    ]
 
 
 def test_model_api_key_encryption_is_revision_bound_and_never_plaintext() -> None:
@@ -582,17 +593,22 @@ async def test_inherit_run_model_rejects_child_from_a_different_source() -> None
 
 
 class _ActivationConnection:
-    def __init__(self, *, existing_rows=None):
+    def __init__(self, *, existing_rows=None, active_revision=2):
         self.calls = []
         self.existing_rows = existing_rows or []
+        self.active_revision = active_revision
 
     async def execute(self, sql, params=None):
         self.calls.append((sql, params))
         normalized = " ".join(sql.split())
+        if normalized.startswith("select revision from model_gateway_revisions where active"):
+            return _Cursor(row={"revision": self.active_revision} if self.active_revision else None)
         if "coalesce(max(revision), 0) + 1" in normalized:
             return _Cursor(row={"revision": 3})
         if normalized.startswith("select model_id, upstream_model_id from model_catalog_entries"):
             return _Cursor(rows=self.existing_rows)
+        if normalized.startswith("update model_catalog_entries set display_name"):
+            return _Cursor(row={"model_id": params[6]})
         if normalized.startswith("select model_id, upstream_model_id, display_name, provider"):
             now = datetime.now(timezone.utc)
             return _Cursor(
@@ -615,7 +631,7 @@ class _ActivationConnection:
 
 
 @pytest.mark.asyncio
-async def test_sync_rejects_platform_identity_collision_before_mutating_enabled_default_entry() -> None:
+async def test_connection_activation_rejects_platform_identity_collision_before_mutating_enabled_default_entry() -> None:
     platform_id = platform_model_id("legacy/provider-model")
     conn = _ActivationConnection(
         existing_rows=[
@@ -677,6 +693,33 @@ async def test_sync_rejects_platform_identity_collision_before_mutating_enabled_
         "openai/gpt-5",
         "compatible",
     )
+
+
+@pytest.mark.asyncio
+async def test_publication_checks_revision_before_changing_gateway_and_writes_one_catalog() -> None:
+    entry = {
+        "id": platform_model_id("openai/gpt-5"), "value": "openai/gpt-5",
+        "display_name": "GPT-5", "enabled": True, "is_default": True,
+        "order": 1, "max_input_tokens": 32000, "max_output_tokens": 2048,
+    }
+    kwargs = {
+        "models": [entry], "base_url": "https://gateway.example",
+        "api_key": "activation-secret", "key_fingerprint": "0123456789abcdef",
+        "encryption_key": _key(), "actor_user_id": "admin-user",
+        "upstream_model_ids": ["openai/gpt-5"],
+    }
+    conn = _ActivationConnection()
+    with pytest.raises(ValueError, match="model_catalog_revision_conflict"):
+        await publish_models(conn, expected_revision=1, **kwargs)
+    assert not any("insert into model_gateway_revisions" in sql for sql, _ in conn.calls)
+
+    conn = _ActivationConnection()
+    revision, _ = await publish_models(conn, expected_revision=2, **kwargs)
+    assert revision == 3
+    applied = [params for sql, params in conn.calls
+               if "update model_catalog_entries" in sql and "set display_name" in sql]
+    assert applied == [("GPT-5", True, True, 1, 32000, 2048,
+                        platform_model_id("openai/gpt-5"), "openai/gpt-5", 3)]
 
 
 class _ResolveConnection:

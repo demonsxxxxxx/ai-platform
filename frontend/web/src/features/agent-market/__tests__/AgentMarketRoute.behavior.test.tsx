@@ -500,10 +500,14 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     has_more: false,
   });
   modelPublicApi.listAvailable = async () => ({
-    models: [],
-    count: 0,
-    enabled_count: 0,
-    default_model_id: null,
+    models: [{
+      id: "model-default",
+      value: "model-default",
+      label: "默认模型",
+    }],
+    count: 1,
+    enabled_count: 1,
+    default_model_id: "model-default",
   });
   modelPublicApi.getPinnedModelIds = async () => [];
   notificationPublicApi.getActive = async () => [];
