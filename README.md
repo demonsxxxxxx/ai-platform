@@ -44,15 +44,38 @@ curl http://127.0.0.1:8020/api/ai/health
 
 ## Company Login
 
-The frontend shell should call the platform login endpoint and let the platform
-validate credentials through the existing account service. Use real credentials
-only in local curl/runtime input; do not commit them.
+The frontend shell first establishes the V2 browser auth context, then submits
+company credentials with the same HttpOnly context cookie. Use real credentials
+only in local curl/runtime input; do not commit them. This PowerShell example
+uses a temporary cookie jar because `ai_platform_auth_context` is server-owned:
 
 ```powershell
-curl -i -X POST http://127.0.0.1:8020/api/ai/auth/login `
-  -H "Content-Type: application/json" `
-  -d "{\"user_name\":\"<work-id>\",\"password\":\"<password>\"}"
-curl -b "ai_platform_session=<cookie>" http://127.0.0.1:8020/api/ai/auth/me
+$cookieJar = Join-Path $env:TEMP "ai-platform-auth-cookies.txt"
+Remove-Item $cookieJar -ErrorAction SilentlyContinue
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+function New-AuthContextToken {
+  $bytes = New-Object byte[] 32
+  $rng.GetBytes($bytes)
+  [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
+}
+$bootstrap = @{
+  nonce = New-AuthContextToken
+  protocol_version = 2
+  browser_incarnation = New-AuthContextToken
+  generation = 1
+} | ConvertTo-Json -Compress
+$rng.Dispose()
+$login = @{
+  user_name = "<work-id>"
+  password = "<password>"
+} | ConvertTo-Json -Compress
+
+curl.exe -i -c $cookieJar -b $cookieJar -X POST http://127.0.0.1:8020/api/ai/auth/bootstrap `
+  -H "Content-Type: application/json" --data-raw $bootstrap
+curl.exe -i -c $cookieJar -b $cookieJar -X POST http://127.0.0.1:8020/api/ai/auth/login `
+  -H "Content-Type: application/json" --data-raw $login
+curl.exe -b $cookieJar http://127.0.0.1:8020/api/ai/auth/me
+Remove-Item $cookieJar -ErrorAction SilentlyContinue
 ```
 
 ## Smoke test

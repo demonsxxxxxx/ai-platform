@@ -9,6 +9,44 @@ function read(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
+test("retired chat feedback and unowned browser smokes are absent", () => {
+  for (const path of [
+    "src/services/api/feedback.ts",
+    "src/types/feedback.ts",
+    "scripts/authorized-skill-browser-smoke.mjs",
+    "scripts/mcp-admin-browser-smoke.mjs",
+  ]) {
+    assert.equal(existsSync(join(root, path)), false, path);
+  }
+
+  const useAgent = read("src/hooks/useAgent.ts");
+  const message = read("src/types/message.ts");
+  const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
+  const skillCard = read("src/components/skill/SkillCard.tsx");
+  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
+  assert.doesNotMatch(useAgent, /feedbackApi|feedbackList|feedbackPromise/);
+  assert.doesNotMatch(message, /feedbackId|feedback\?:/);
+  assert.doesNotMatch(`${skillsList}\n${skillCard}`, /marketplace\.(?:clearFilters|files)/);
+  assert.match(skillsList, /fileLibrary\.clearFilters/);
+  assert.match(skillCard, /fileLibrary\.files/);
+  assert.equal(zh.feedback, undefined);
+  assert.deepEqual(Object.keys(zh.adminMarketplace).sort(), [
+    "tags",
+    "tagsHint",
+    "tagsPlaceholder",
+  ]);
+  const feedbackProjection = zh.workbench.phaseTwo.feedback;
+  assert.equal(feedbackProjection.capabilities.capture.title, "历史反馈投影");
+  assert.match(
+    feedbackProjection.capabilities.capture.description,
+    /当前聊天界面不采集新的消息级反馈/,
+  );
+  assert.match(
+    feedbackProjection.details.publicProjection,
+    /当前聊天界面不提供消息级反馈入口/,
+  );
+});
+
 test("skills and MCP surfaces avoid obsolete department availability placeholders", () => {
   const skillsHub = read("src/components/panels/SkillsHubPanel.tsx");
   const mcp = read("src/components/panels/MCPPanel.tsx");

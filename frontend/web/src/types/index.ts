@@ -1,14 +1,4 @@
 // ============================================
-// Feedback Types (re-export from feedback.ts)
-// ============================================
-export type {
-  RatingValue,
-  Feedback,
-  FeedbackStats,
-  FeedbackListResponse,
-} from "./feedback";
-
-// ============================================
 // Message Types
 // ============================================
 export type {

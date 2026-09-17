@@ -22,7 +22,7 @@ test("composer and feature menu expose no unavailable context action", () => {
   assert.doesNotMatch(featureMenu, /featureMenu\.context/);
 });
 
-test("chat actions omit unconsumed share and fork controls while preserving feedback gating", () => {
+test("chat actions omit unconsumed share, fork, and feedback controls", () => {
   const header = read("src/components/layout/AppContent/Header.tsx");
   const message = read("src/components/chat/ChatMessage/index.tsx");
   const userBubble = read("src/components/chat/ChatMessage/UserMessageBubble.tsx");
@@ -30,7 +30,7 @@ test("chat actions omit unconsumed share and fork controls while preserving feed
   assert.doesNotMatch(header, /ShareDialog|Share2|shareDialogOpen/);
   assert.doesNotMatch(message, /ShareButton|GitBranch|onForkMessage\(message\.id\)/);
   assert.doesNotMatch(userBubble, /onFork|GitBranch|chat\.message\.fork/);
-  assert.match(message, /showFeedbackAndShareActions &&/);
+  assert.doesNotMatch(message, /showFeedbackAndShareActions|FeedbackButtons/);
 });
 
 test("sidebar session actions omit the reachable Share path", () => {

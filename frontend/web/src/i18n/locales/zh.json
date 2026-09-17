@@ -1,31 +1,8 @@
 {
   "adminMarketplace": {
-    "confirmDelete": "删除技能「{{name}}」？",
-    "confirmDeleteMessage": "此操作会停止该技能的活跃使用；历史版本和运行记录将保留。",
-    "createSkill": "创建技能",
-    "createSuccess": "技能创建成功",
-    "createdBy": "由 {{who}} 创建",
-    "deleteSuccess": "技能删除成功",
-    "description": "描述",
-    "descriptionPlaceholder": "输入技能描述...",
-    "editSkill": "编辑技能",
-    "hint": "技能商店的管理操作已集成到技能商店面板中，您可以直接在那里激活、停用或删除技能。",
-    "inactive": "已停用",
-    "loading": "加载技能商店中...",
-    "nameRequired": "技能名称不能为空",
-    "noSkills": "技能商店中暂无技能，请先创建一个。",
-    "skillName": "技能名称",
-    "skillNamePlaceholder": "例如：ppt-generator",
-    "subtitle": "管理技能商店中的技能",
     "tags": "标签",
     "tagsHint": "多个标签用逗号分隔",
-    "tagsPlaceholder": "例如：ppt, 演示文稿, ai",
-    "title": "管理员技能商店",
-    "updateSuccess": "技能更新成功",
-    "uploadSuccess": "「{{name}}」文件上传成功",
-    "uploadZip": "上传 ZIP",
-    "version": "版本",
-    "zipRequired": "仅支持 ZIP 文件"
+    "tagsPlaceholder": "例如：ppt, 演示文稿, ai"
   },
   "agent": {
     "selectMode": "选择模式",
@@ -853,16 +830,6 @@
     "upload": "上传",
     "model": "模型",
     "context": "上下文"
-  },
-  "feedback": {
-    "alreadySubmitted": "您已对此对话提交过反馈",
-    "commentPlaceholder": "有什么可以改进的？",
-    "negative": "差评",
-    "positive": "好评",
-    "pressEnter": "⌘+Enter 发送",
-    "submit": "提交",
-    "submitFailed": "反馈提交失败",
-    "submitSuccess": "反馈提交成功"
   },
   "feishu": {
     "appId": "App ID",
@@ -2335,8 +2302,8 @@
             "title": "处理审计"
           },
           "capture": {
-            "description": "聊天消息级反馈保留在对话内，独立反馈台读取聚合投影。",
-            "title": "消息反馈采集"
+            "description": "处理台读取已有反馈记录的受治理聚合投影；当前聊天界面不采集新的消息级反馈。",
+            "title": "历史反馈投影"
           },
           "triage": {
             "description": "分派、关闭和标签治理不从旧反馈后台读取。",
@@ -2347,7 +2314,7 @@
           "adminProjection": "管理员控制：反馈汇总、分派、关闭和标签治理按工作台投影分层展示。",
           "auditProjection": "审计边界：处理状态和负责人变更需要事件链路，旧反馈后台不作为页面来源。",
           "nextContract": "已接入合同：反馈聚合和分派状态可安全读取；处理写入继续受权限治理。",
-          "publicProjection": "当前状态：聊天内消息反馈保留，独立反馈台读取受治理聚合数据。"
+          "publicProjection": "当前状态：独立反馈台读取已有反馈记录的受治理聚合数据；当前聊天界面不提供消息级反馈入口。"
         },
         "description": "反馈入口已作为统一处理台读取安全投影；分派、关闭和标签写入继续由权限与审计控制。",
         "title": "反馈处理台"
