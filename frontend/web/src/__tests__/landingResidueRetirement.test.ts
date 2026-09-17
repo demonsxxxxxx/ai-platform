@@ -9,35 +9,9 @@ const source = (relativePath: string) =>
 
 test("landing stylesheet residue is retired from the active frontend", () => {
   const main = source("src/main.tsx");
-  const sharedPage = source("src/components/share/SharedPage.tsx");
-  const scrollButtons = source("src/components/share/ScrollButtons.tsx");
-  const componentsCss = source("src/styles/components.css");
-  const authSources = [
-    "src/components/auth/RegistrationPending.tsx",
-    "src/components/auth/ResetPassword.tsx",
-    "src/components/auth/VerifyEmail.tsx",
-  ]
-    .map(source)
-    .join("\n");
 
   assert.equal(existsSync(join(root, "src/styles/landing.css")), false);
   assert.doesNotMatch(main, /styles\/landing\.css/);
-  assert.match(sharedPage, /className="share-scroll-progress"/);
-  assert.match(componentsCss, /\.share-scroll-progress\s*\{/);
-  assert.match(
-    componentsCss,
-    /animation: share-scroll-progress-shimmer 8s ease infinite/,
-  );
-  assert.match(componentsCss, /@keyframes share-scroll-progress-shimmer/);
-  assert.match(
-    componentsCss,
-    /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.share-scroll-progress[\s\S]*animation: none !important/,
-  );
-  assert.doesNotMatch(
-    `${sharedPage}\n${scrollButtons}`,
-    /landing-(?:progress-bar|scroll-btn)/,
-  );
-  assert.doesNotMatch(authSources, /blog-btn-(?:primary|ghost)/);
 });
 
 test("retired landing translations are absent from the Chinese catalog", () => {

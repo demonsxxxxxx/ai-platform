@@ -256,7 +256,7 @@ test("normalizeSkillListResponse preserves projected PR177 skill permissions", (
       skip: 20,
       limit: 10,
       available_tags: ["planning", "review"],
-      effective_permissions: ["skill:read", "marketplace:read"],
+      effective_permissions: ["skill:read"],
     }),
     {
       skills: [userSkill],
@@ -264,7 +264,7 @@ test("normalizeSkillListResponse preserves projected PR177 skill permissions", (
       skip: 20,
       limit: 10,
       available_tags: ["planning", "review"],
-      effective_permissions: ["skill:read", "marketplace:read"],
+      effective_permissions: ["skill:read"],
       effective_permissions_known: true,
       catalog_read_resolved: true,
     },

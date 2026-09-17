@@ -48,10 +48,6 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
     "backendErrors.skillDependencyPolicyViolation",
   skill_version_has_active_release_policy:
     "backendErrors.skillVersionHasActiveReleasePolicy",
-  marketplace_direct_write_contract_not_backed:
-    "backendErrors.marketplaceDirectWriteNotBacked",
-  mcp_lifecycle_contract_not_backed:
-    "backendErrors.mcpLifecycleNotBacked",
 
   // Stable HTTPException detail strings
   未提供认证信息: "backendErrors.authMissing",

@@ -3,7 +3,6 @@ import { matchRoutes } from "react-router-dom";
 export const APP_ROUTE_PATHS = {
   root: "/",
   login: "/auth/login",
-  register: "/auth/register",
   chat: "/chat/:sessionId?",
   agentBuilder: "/agent-builder",
   agentMarket: "/agent-market",
@@ -12,7 +11,6 @@ export const APP_ROUTE_PATHS = {
   aiApplication: "/ai-apps/:appKey",
   apps: "/apps",
   skills: "/skills",
-  marketplace: "/marketplace",
   mcp: "/mcp",
   users: "/users",
   roles: "/roles",
@@ -23,11 +21,6 @@ export const APP_ROUTE_PATHS = {
   notifications: "/notifications",
   memory: "/memory",
   oauthCallback: "/auth/callback",
-  resetRequest: "/auth/reset-request",
-  resetPassword: "/auth/reset-password",
-  verifyEmail: "/auth/verify-email",
-  registrationPending: "/auth/pending",
-  shared: "/shared/:shareId",
   notFound: "*",
 } as const;
 

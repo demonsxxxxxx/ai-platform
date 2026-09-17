@@ -1479,7 +1479,6 @@ export function ChatAppContent({
             externalScrollToBottom={externalScrollToBottom}
             outlineToggleRef={outlineToggleRef}
             WorkbenchShellComponent={WorkbenchShell}
-            sessionRouteBasePath={agentWorkspaceRouteBasePath}
             />
           </ChatMcpCatalogContext.Provider>
         {modelSelectionError ? (

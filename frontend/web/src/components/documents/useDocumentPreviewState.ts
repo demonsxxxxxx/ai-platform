@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { uploadApi } from "../../services/api";
 import {
   getSidebarHistoryLength,
   goBackSidebar,
@@ -361,13 +360,9 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
         return;
       }
 
-      if (s3Key || previewUrl || signedUrl) {
+      if (previewUrl || signedUrl) {
         try {
-          const url =
-            xlsxPreviewUrl ||
-            previewUrl ||
-            signedUrl ||
-            (s3Key ? await uploadApi.getSignedUrl(s3Key) : null);
+          const url = xlsxPreviewUrl || previewUrl || signedUrl;
 
           if (!url) {
             throw new Error("No URL available");

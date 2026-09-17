@@ -5,7 +5,6 @@
  * - /api/skills/ - list, get, delete user skills
  * - /api/skills/{name}/files/{path} - read/write individual files
  * - /api/skills/{name}/toggle - enable/disable
- * - /api/marketplace/ - browse and install from marketplace
  */
 
 import { API_BASE } from "./config";
@@ -507,25 +506,6 @@ export const skillApi = {
       `${SKILLS_API}/${encodeURIComponent(
         skillName,
       )}/files/${encodeURIComponent(filePath)}`,
-    );
-  },
-
-  /**
-   * Update skill file content
-   */
-  async updateFile(
-    skillName: string,
-    filePath: string,
-    content: string,
-  ): Promise<{ message: string }> {
-    return authFetch(
-      `${SKILLS_API}/${encodeURIComponent(
-        skillName,
-      )}/files/${encodeURIComponent(filePath)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify({ content }),
-      },
     );
   },
 

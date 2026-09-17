@@ -10,7 +10,6 @@ export type { LoadingSize } from "./LoadingSpinner";
 
 export { ThemeToggle } from "./ThemeToggle";
 export { ConfirmDialog } from "./ConfirmDialog";
-export { AboutDialog } from "./AboutDialog";
 
 export { ImageViewer } from "./ImageViewer";
 export { VideoViewer } from "./VideoViewer";

@@ -4,6 +4,7 @@ import test from "node:test";
 import type { UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import { Permission } from "../../../types/auth.ts";
+import { installBrowserAuthTestDb } from "../../__tests__/browserAuthTestDb.ts";
 
 type Listener = (event: { type: string; [key: string]: unknown }) => void;
 
@@ -225,6 +226,7 @@ function installDom() {
 }
 
 const dom = installDom();
+installBrowserAuthTestDb();
 
 function clearPersistedSubmissionReferences() {
   for (let index = dom.window.localStorage.length - 1; index >= 0; index -= 1) {
@@ -271,7 +273,11 @@ async function loadHarness({
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   });
-  authApi.bootstrapAuthContext = async () => {};
+  authApi.bootstrapAuthContext = async (request) => ({
+    status: "ready",
+    protocol_version: 2,
+    generation: request.generation,
+  });
 
   function Probe() {
     snapshot = useAgent();

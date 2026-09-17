@@ -12,8 +12,8 @@ entered interactively without echoing it:
     --username <work-id> --prompt-password --expect-user
 
 The script prints redacted evidence for:
-- LambChat-compatible login token issuance.
-- /api/auth/me principal projection.
+- V2 browser auth-context bootstrap and company login.
+- `/api/ai/auth/me` principal projection.
 - PostgreSQL audit_logs auth.login payload.
 """
 
@@ -23,10 +23,12 @@ import argparse
 import getpass
 import json
 import os
+import secrets
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from http.cookiejar import CookieJar
 from typing import Any
 from urllib import error, request
 
@@ -57,17 +59,21 @@ def redact_user_id(value: str) -> str:
     return f"{value[:2]}***{value[-2:]}"
 
 
-def request_json(method: str, url: str, *, payload: dict[str, Any] | None = None, token: str = "") -> HttpResult:
+def request_json(
+    method: str,
+    url: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    opener: Any | None = None,
+) -> HttpResult:
     headers = {"Accept": "application/json"}
     data = None
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     req = request.Request(url, data=data, headers=headers, method=method)
     try:
-        with request.urlopen(req, timeout=20) as response:
+        with (opener.open(req, timeout=20) if opener else request.urlopen(req, timeout=20)) as response:
             return HttpResult(response.status, dict(response.headers.items()), response.read())
     except error.HTTPError as exc:
         return HttpResult(exc.code, dict(exc.headers.items()), exc.read())
@@ -179,27 +185,47 @@ def main() -> int:
     base_url = args.base_url.rstrip("/")
     started_epoch = int(time.time()) - 5
 
+    cookie_jar = CookieJar()
+    opener = request.build_opener(request.HTTPCookieProcessor(cookie_jar))
+    bootstrap = request_json(
+        "POST",
+        f"{base_url}/api/ai/auth/bootstrap",
+        payload={
+            "nonce": secrets.token_urlsafe(32),
+            "protocol_version": 2,
+            "browser_incarnation": secrets.token_urlsafe(32),
+            "generation": 1,
+        },
+        opener=opener,
+    )
+    bootstrap_payload = bootstrap.json()
+    if (
+        bootstrap.status_code != 200
+        or not isinstance(bootstrap_payload, dict)
+        or bootstrap_payload.get("status") != "ready"
+    ):
+        detail = bootstrap.body.decode("utf-8", errors="replace")[:300]
+        raise RuntimeError(
+            f"auth bootstrap failed with HTTP {bootstrap.status_code}: {detail}"
+        )
     login = request_json(
         "POST",
-        f"{base_url}/api/auth/login",
-        payload={"username": username, "password": password},
+        f"{base_url}/api/ai/auth/login",
+        payload={"user_name": username, "password": password},
+        opener=opener,
     )
     if login.status_code != 200:
         detail = login.body.decode("utf-8", errors="replace")[:300]
         raise RuntimeError(f"login failed with HTTP {login.status_code}: {detail}")
-    login_payload = login.json()
-    token = str(login_payload.get("access_token") or "")
-    if len(token.split(".")) != 3:
-        raise RuntimeError("login response did not return a signed bearer token")
 
-    me = request_json("GET", f"{base_url}/api/auth/me", token=token)
+    me = request_json("GET", f"{base_url}/api/ai/auth/me", opener=opener)
     if me.status_code != 200:
         detail = me.body.decode("utf-8", errors="replace")[:300]
-        raise RuntimeError(f"/api/auth/me failed with HTTP {me.status_code}: {detail}")
+        raise RuntimeError(f"/api/ai/auth/me failed with HTTP {me.status_code}: {detail}")
     principal = me.json()
     principal_id = str(principal.get("id") or principal.get("user_id") or "")
     if principal_id != expected_work_id:
-        raise RuntimeError("/api/auth/me returned a different principal id")
+        raise RuntimeError("/api/ai/auth/me returned a different principal id")
     roles = [str(item) for item in principal.get("roles") or []]
     permissions = [str(item) for item in principal.get("permissions") or []]
     assert_contains(permissions, "agent:use", "permissions")
@@ -211,6 +237,7 @@ def main() -> int:
         raise RuntimeError("expected ordinary user login, but admin capability was present")
 
     evidence: dict[str, Any] = {
+        "bootstrap_http": bootstrap.status_code,
         "login_http": login.status_code,
         "me_http": me.status_code,
         "user": redact_user_id(expected_work_id),

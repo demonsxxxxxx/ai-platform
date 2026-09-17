@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 import {
   canManageMcpLifecycle,
-  canManageSharedMarketplace,
   isAiAdminRoleUser,
   isAiAdminUser,
 } from "../capabilityAdmin.ts";
@@ -20,23 +19,7 @@ test("capability admin helpers prefer backend admin projection and keep role ali
   assert.equal(isAiAdminRoleUser(["auditor"]), false);
 });
 
-test("shared marketplace and mcp management stay ai-admin only", () => {
-  assert.equal(
-    canManageSharedMarketplace({
-      isOwner: true,
-      hasMarketplaceAdminPermission: true,
-      isAiAdmin: false,
-    }),
-    false,
-  );
-  assert.equal(
-    canManageSharedMarketplace({
-      isOwner: false,
-      hasMarketplaceAdminPermission: false,
-      isAiAdmin: true,
-    }),
-    true,
-  );
+test("mcp management stays ai-admin only", () => {
   assert.equal(
     canManageMcpLifecycle({
       hasExplicitMcpPermission: true,
@@ -53,18 +36,12 @@ test("shared marketplace and mcp management stay ai-admin only", () => {
   );
 });
 
-test("marketplace and mcp panels gate shared admin actions on ai-admin projection", () => {
-  const marketplacePanelSource = readFileSync(
-    join(import.meta.dirname, "..", "MarketplacePanel.tsx"),
-    "utf8",
-  );
+test("mcp panel gates shared admin actions on ai-admin projection", () => {
   const mcpPanelSource = readFileSync(
     join(import.meta.dirname, "..", "MCPPanel.tsx"),
     "utf8",
   );
 
-  assert.match(marketplacePanelSource, /canManageSharedMarketplace\(\{/);
-  assert.match(marketplacePanelSource, /isAiAdminUser\(user\)/);
   assert.match(mcpPanelSource, /isAiAdminUser\(user\)/);
   assert.match(mcpPanelSource, /canManageMcpLifecycle\(\{/);
   assert.match(mcpPanelSource, /canManageMcp && !mcpGovernance\.governedUnavailable/);

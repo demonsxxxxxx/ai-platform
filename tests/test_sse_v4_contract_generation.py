@@ -287,28 +287,15 @@ def test_v4_rejects_retired_v3_frames():
     assert list(validator.iter_errors(_v4_event("message.delta", {"delta": "current"}))) == []
 
 
-def test_public_boundary_exposes_v4_without_duplicate_or_legacy_types():
+def test_generated_public_boundary_exposes_v4_without_legacy_types():
     from app.streaming.domain import protocol_v4
-    from app.streaming.events import (
-        INTERNAL_STREAM_EVENT_SCHEMA_V4,
-        PUBLIC_APPLICATION_EVENT_TYPES_V4,
-        PUBLIC_RUN_STREAM_SCHEMA_V4,
-        PUBLIC_STREAM_EVENT_TYPES_V4,
-        STREAM_DESIGN_ID_V4,
-        STREAM_PROJECTION_VERSION_V4,
-        PublicRunStreamEventV4,
-    )
 
-    import app.streaming.events as events
-
-    assert not hasattr(events, "PublicRunStreamEventV3")
-    assert PublicRunStreamEventV4 is protocol_v4.PublicRunStreamEventV4
-    assert PUBLIC_RUN_STREAM_SCHEMA_V4 == protocol_v4.PUBLIC_RUN_STREAM_SCHEMA
-    assert INTERNAL_STREAM_EVENT_SCHEMA_V4 == protocol_v4.INTERNAL_STREAM_EVENT_SCHEMA
-    assert STREAM_PROJECTION_VERSION_V4 == protocol_v4.STREAM_PROJECTION_VERSION
-    assert STREAM_DESIGN_ID_V4 == protocol_v4.STREAM_DESIGN_ID
-    assert PUBLIC_STREAM_EVENT_TYPES_V4 is protocol_v4.PUBLIC_STREAM_EVENT_TYPES
-    assert PUBLIC_APPLICATION_EVENT_TYPES_V4 == frozenset(
+    assert not hasattr(protocol_v4, "PublicRunStreamEventV3")
+    assert protocol_v4.PUBLIC_RUN_STREAM_SCHEMA == "ai-platform.public-run-stream-event.v4"
+    assert protocol_v4.INTERNAL_STREAM_EVENT_SCHEMA == "ai-platform.stream-event.v4"
+    assert protocol_v4.STREAM_PROJECTION_VERSION == "public-stream-v4"
+    assert protocol_v4.STREAM_DESIGN_ID == "ai-platform.redis-streams-sse-event-channel.v4"
+    assert protocol_v4.PUBLIC_APPLICATION_EVENT_TYPES == frozenset(
         value
         for value in protocol_v4.PUBLIC_STREAM_EVENT_TYPES
         if not value.startswith("stream.")

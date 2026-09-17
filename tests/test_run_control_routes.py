@@ -173,7 +173,7 @@ def _stub_permission_terminalization_for_run_control_mocks(monkeypatch):
         )
 
     monkeypatch.setattr(repository_module, "_stage_run_tool_permission_terminalization", stage)
-    monkeypatch.setattr("app.runs.infrastructure.postgres._stage_run_tool_permission_terminalization", stage)
+    monkeypatch.setattr(run_attempt_persistence, "_stage_run_tool_permission_terminalization", stage)
     monkeypatch.setattr(repository_module, "progress_run_tool_permission_terminalization", progress)
 
 

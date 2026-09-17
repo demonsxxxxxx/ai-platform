@@ -1903,7 +1903,7 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
 
 
 def test_profile_bound_continuation_rejects_client_execution_overrides():
-    from app.agent_apps.authority import reject_profile_selector_conflicts
+    from app.agent_apps.authority import AgentProfileAuthority
     from app.models import ChatStreamRequest, SelectedSkillRequest
 
     request = ChatStreamRequest(
@@ -1912,7 +1912,7 @@ def test_profile_bound_continuation_rejects_client_execution_overrides():
     )
 
     with pytest.raises(HTTPException) as caught:
-        reject_profile_selector_conflicts(request, active=True)
+        AgentProfileAuthority.reject_profile_selector_conflicts(request, active=True)
     assert (caught.value.status_code, caught.value.detail) == (400, "agent_profile_selector_conflict")
 
 

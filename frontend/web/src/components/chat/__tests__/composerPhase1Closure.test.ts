@@ -115,7 +115,6 @@ test("authenticated workbench popovers avoid legacy heavy overlays", () => {
   const activePopoverFiles = [
     "src/components/chat/AgentOptionButton.tsx",
     "src/components/chat/ChatInputShortcuts.tsx",
-    "src/components/chat/ChatMessage/FeedbackDialog.tsx",
     "src/components/layout/UserMenu.tsx",
     "src/components/notification/NotificationDialog.tsx",
     "src/components/selectors/SkillSelector.tsx",
@@ -180,10 +179,9 @@ test("governed selector primary controls use theme foreground contrast", () => {
   }
 });
 
-test("chat loading and feedback surfaces use restrained workbench radius", () => {
+test("chat loading surfaces use restrained workbench radius", () => {
   const sources = new Map([
     ["ChatSkeletons", read("src/components/skeletons/ChatSkeletons.tsx")],
-    ["FeedbackDialog", read("src/components/chat/ChatMessage/FeedbackDialog.tsx")],
   ]);
 
   for (const [name, source] of sources) {

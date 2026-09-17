@@ -3,10 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app.main import create_app
-from app.settings import Settings
 from app.tool_policy import evaluate_tool_policy
 
 
@@ -124,40 +121,10 @@ def test_mcp_identity_uses_authoritative_registry_id_grammar_without_prefix_auth
     assert malformed.reason == "tool_identity_malformed"
 
 
-def test_runtime_approval_write_routes_fail_closed_before_any_repository_mutation(monkeypatch):
-    async def fail_create(*args, **kwargs):
-        raise AssertionError("removed route must not create a permission row")
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.create_tool_permission_request", fail_create)
-    client = TestClient(create_app())
-    headers = {
-        "X-AI-User-ID": "user-a",
-        "X-AI-User-Name": "user-a",
-        "X-AI-Roles": "user",
-        "X-AI-Tenant-ID": "tenant-a",
-    }
-
-    requested = client.post(
-        "/api/ai/runs/run-a/tool-permissions/request",
-        headers=headers,
-        json={"tool_id": "tool-a"},
-    )
-    decided = client.post(
-        "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
-        headers=headers,
-        json={"decision": "deny"},
-    )
-
-    assert requested.status_code == decided.status_code == 410
-    assert requested.json()["detail"] == decided.json()["detail"] == "tool_permission_runtime_approval_removed"
-
-
 def test_no_active_production_permission_request_producer_or_sandbox_callback_sender_remains():
     root = Path(__file__).resolve().parents[1]
     production_files = [
         root / "app/executors/claude_agent_worker.py",
-        root / "app/routes/tool_permissions.py",
         root / "app/runtime/sandbox/executor_app.py",
     ]
     combined = "\n".join(path.read_text(encoding="utf-8") for path in production_files)

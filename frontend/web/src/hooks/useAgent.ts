@@ -648,10 +648,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [browserAuthIncarnation, setBrowserAuthIncarnation] = useState(
     getBrowserAuthIncarnation,
   );
-  const canReadFeedback = hasAnyPermission([
-    Permission.FEEDBACK_READ,
-    Permission.FEEDBACK_WRITE,
-  ]);
+  const canReadFeedback = hasAnyPermission([Permission.FEEDBACK_READ]);
   const runControlAuth = useMemo<RunControlAuthIdentity>(
     () => ({
       incarnation: browserAuthIncarnation,

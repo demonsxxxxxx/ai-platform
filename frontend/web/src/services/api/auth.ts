@@ -2,17 +2,9 @@
  * Auth API - 认证相关
  */
 
-import type {
-  User,
-  UserCreate,
-  LoginRequest,
-  TokenResponse,
-  PermissionsResponse,
-  RegisterResponse,
-} from "../../types";
+import type { User, LoginRequest } from "../../types";
 import { API_BASE } from "./config";
 import { ApiRequestError, authFetch } from "./fetch";
-import { refreshTokens } from "./tokenManager";
 import { projectSafeBackendError } from "../../utils/backendErrors";
 import i18n from "../../i18n";
 
@@ -28,19 +20,17 @@ interface PrincipalResponseWire {
   source: string;
 }
 
-export type AuthContextBootstrapRequest =
-  | { nonce: string; protocol_version?: 1 }
-  | {
-      nonce: string;
-      protocol_version: 2;
-      browser_incarnation: string;
-      generation: number;
-      rotation_ticket?: string;
-      recovery_only?: true;
-    };
+export interface AuthContextBootstrapRequest {
+  nonce: string;
+  protocol_version: 2;
+  browser_incarnation: string;
+  generation: number;
+  rotation_ticket?: string;
+  recovery_only?: true;
+}
 
 export type AuthContextBootstrapResponse =
-  | { status: "ready"; protocol_version?: 1 | 2; generation?: number }
+  | { status: "ready"; protocol_version: 2; generation: number }
   | {
       status: "rebootstrap_required";
       protocol_version: 2;
@@ -52,22 +42,20 @@ export type AuthContextBootstrapResult = AuthContextBootstrapResponse | void;
 
 export type BootstrapAuthContext = {
   bivarianceHack(
-    request: string | AuthContextBootstrapRequest,
+    request: AuthContextBootstrapRequest,
     signal?: AbortSignal,
   ): Promise<AuthContextBootstrapResult>;
 }["bivarianceHack"];
 
 async function bootstrapAuthContext(
-  request: string | AuthContextBootstrapRequest,
+  request: AuthContextBootstrapRequest,
   signal?: AbortSignal,
 ): Promise<AuthContextBootstrapResult> {
-  const payload: AuthContextBootstrapRequest =
-    typeof request === "string" ? { nonce: request } : request;
   return authFetch<AuthContextBootstrapResponse>(`${API_BASE}/api/ai/auth/bootstrap`, {
     method: "POST",
     skipAuth: true,
     credentials: "include",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(request),
     headers: { "Content-Type": "application/json" },
     signal,
   });
@@ -214,40 +202,6 @@ export const authApi = {
   },
 
   /**
-   * 用户注册
-   */
-  async register(
-    userData: UserCreate,
-    turnstileToken?: string,
-  ): Promise<RegisterResponse> {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (turnstileToken) {
-      headers["X-Turnstile-Token"] = turnstileToken;
-    }
-
-    return authFetch<RegisterResponse>(`${API_BASE}/api/auth/register`, {
-      method: "POST",
-      skipAuth: true,
-      body: JSON.stringify(userData),
-      headers,
-    });
-  },
-
-  /**
-   * 刷新 token
-   */
-  async refreshToken(): Promise<TokenResponse> {
-    const { access_token, refresh_token } = await refreshTokens();
-    return {
-      access_token,
-      refresh_token,
-      token_type: "bearer",
-    };
-  },
-
-  /**
    * 获取当前用户信息
    */
   async getCurrentUser(options: { signal?: AbortSignal } = {}): Promise<User> {
@@ -315,35 +269,6 @@ export const authApi = {
   },
 
   /**
-   * 获取所有可用权限列表
-   */
-  async getPermissions(): Promise<PermissionsResponse> {
-    return authFetch<PermissionsResponse>(`${API_BASE}/api/auth/permissions`, {
-      skipAuth: true,
-    });
-  },
-
-  /**
-   * 更新头像
-   */
-  async updateAvatar(avatarUrl: string): Promise<User> {
-    return authFetch<User>(`${API_BASE}/api/auth/update-avatar`, {
-      method: "POST",
-      body: JSON.stringify({ avatar_url: avatarUrl }),
-    });
-  },
-
-  /**
-   * 更新用户名
-   */
-  async updateUsername(username: string): Promise<User> {
-    return authFetch<User>(`${API_BASE}/api/auth/update-username`, {
-      method: "POST",
-      body: JSON.stringify({ username }),
-    });
-  },
-
-  /**
    * 获取用户个人资料
    */
   async getProfile(options: { signal?: AbortSignal } = {}): Promise<User> {
@@ -367,24 +292,18 @@ export const authApi = {
    */
   async getOAuthProviders(): Promise<{
     providers: { id: string; name: string }[];
-    registration_enabled: boolean;
     turnstile?: {
       enabled: boolean;
       site_key: string;
       require_on_login: boolean;
-      require_on_register: boolean;
-      require_on_password_change: boolean;
     };
   }> {
     return authFetch<{
       providers: { id: string; name: string }[];
-      registration_enabled: boolean;
       turnstile?: {
         enabled: boolean;
         site_key: string;
         require_on_login: boolean;
-        require_on_register: boolean;
-        require_on_password_change: boolean;
       };
     }>(`${API_BASE}/api/auth/oauth/providers`, { skipAuth: true });
   },
@@ -424,81 +343,6 @@ export const authApi = {
         credentials: "include",
         body: JSON.stringify({ code, state }),
         signal,
-      },
-    );
-  },
-
-  /**
-   * 忘记密码 - 发送重置邮件
-   */
-  async forgotPassword(email: string): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(
-      `${API_BASE}/api/auth/forgot-password`,
-      {
-        method: "POST",
-        skipAuth: true,
-        body: JSON.stringify({ email }),
-      },
-    );
-  },
-
-  /**
-   * 重置密码
-   */
-  async resetPassword(
-    token: string,
-    newPassword: string,
-  ): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(
-      `${API_BASE}/api/auth/reset-password`,
-      {
-        method: "POST",
-        skipAuth: true,
-        body: JSON.stringify({ token, new_password: newPassword }),
-      },
-    );
-  },
-
-  /**
-   * 验证邮箱
-   */
-  async verifyEmail(token: string): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(`${API_BASE}/api/auth/verify-email`, {
-      method: "POST",
-      skipAuth: true,
-      body: JSON.stringify({ token }),
-    });
-  },
-
-  /**
-   * 重发验证邮件
-   */
-  async resendVerification(email: string): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(
-      `${API_BASE}/api/auth/resend-verification`,
-      {
-        method: "POST",
-        skipAuth: true,
-        body: JSON.stringify({ email }),
-      },
-    );
-  },
-
-  /**
-   * 修改密码
-   */
-  async changePassword(
-    oldPassword: string,
-    newPassword: string,
-  ): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(
-      `${API_BASE}/api/auth/change-password`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          old_password: oldPassword,
-          new_password: newPassword,
-        }),
       },
     );
   },

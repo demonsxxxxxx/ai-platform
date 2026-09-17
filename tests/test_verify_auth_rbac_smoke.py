@@ -20,9 +20,6 @@ class AuthRbacHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):  # noqa: N802
-        if self.path == "/api/auth/me":
-            self._send_json(401, {"detail": "missing_authenticated_principal"})
-            return
         if self.path == "/api/ai/auth/me":
             user_id = self.headers.get("X-AI-User-ID", "")
             if not user_id:

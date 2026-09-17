@@ -135,10 +135,6 @@ def _safe_name(name: str, field_name: str = "mcp_server_name") -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _lifecycle_not_backed() -> None:
-    raise HTTPException(status_code=409, detail="mcp_lifecycle_contract_not_backed")
-
-
 def _distribution_status_mutation_http_exception(exc: repositories.RepositoryConflictError) -> HTTPException:
     """Map distribution status conflicts without exposing repository-internal details."""
 
@@ -699,17 +695,6 @@ async def create_mcp_server(
     )
 
 
-@router.post("/mcp/import")
-async def import_mcp_servers(
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> dict[str, Any]:
-    """Fail closed for MCP import until lifecycle governance is backed."""
-
-    _require_admin(principal)
-    _lifecycle_not_backed()
-
-
 @router.get("/mcp/export")
 async def export_mcp_servers(
     principal: AuthPrincipal = Depends(require_principal),
@@ -904,21 +889,6 @@ async def discover_mcp_tools(
     }
 
 
-@router.patch("/mcp/{name}/tools/{tool_name}")
-async def toggle_mcp_tool(
-    name: str,
-    tool_name: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> dict[str, Any]:
-    """Fail closed for MCP tool policy toggles outside admin tool policies."""
-
-    _require_admin(principal)
-    _safe_name(name)
-    _safe_name(tool_name, "mcp_tool_name")
-    _lifecycle_not_backed()
-
-
 @router.post("/admin/mcp/")
 @router.post("/admin/mcp")
 async def create_admin_mcp_server(
@@ -999,29 +969,3 @@ async def delete_admin_mcp_server(
     except repositories.RepositoryConflictError as exc:
         raise _distribution_status_mutation_http_exception(exc) from exc
     return _server_response(row, distribution=distribution, can_edit=True)
-
-
-@router.post("/admin/mcp/{name}/promote")
-async def promote_admin_mcp_server(
-    name: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> dict[str, Any]:
-    """Fail closed for MCP promote operations until lifecycle governance exists."""
-
-    _require_admin(principal)
-    _safe_name(name)
-    _lifecycle_not_backed()
-
-
-@router.post("/admin/mcp/{name}/demote")
-async def demote_admin_mcp_server(
-    name: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> dict[str, Any]:
-    """Fail closed for MCP demote operations until lifecycle governance exists."""
-
-    _require_admin(principal)
-    _safe_name(name)
-    _lifecycle_not_backed()

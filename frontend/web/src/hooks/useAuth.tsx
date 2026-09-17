@@ -40,7 +40,7 @@ import {
 } from "../components/governance/permissionProjection";
 import { THEME_STORAGE_KEY } from "../utils/themeDom";
 import { Permission } from "../types";
-import type { User, UserCreate, LoginRequest, AuthState } from "../types";
+import type { User, LoginRequest, AuthState } from "../types";
 
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
 
@@ -125,10 +125,6 @@ interface AuthContextType extends AuthState {
   loginWithAD: (
     loginUrl: string,
   ) => Promise<AuthOperationOutcome<string | null>>;
-  register: (
-    userData: UserCreate,
-    turnstileToken?: string,
-  ) => Promise<{ requiresVerification: boolean; email: string }>;
   loginWithOAuth: (provider: string) => Promise<void>;
   handleOAuthCallback: (
     provider: string,
@@ -582,26 +578,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  // 注册
-  const register = useCallback(
-    async (
-      userData: UserCreate,
-      turnstileToken?: string,
-    ): Promise<{ requiresVerification: boolean; email: string }> => {
-      setIsLoading(true);
-      try {
-        const response = await authApi.register(userData, turnstileToken);
-        return {
-          requiresVerification: response.requires_verification,
-          email: userData.email,
-        };
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [],
-  );
-
   // OAuth 登录由服务端 state 绑定同一个 browser auth context。
   const loginWithOAuth = useCallback(async (provider: string) => {
     const owner = beginAuthOperation();
@@ -718,7 +694,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     permissions,
     login,
     loginWithAD,
-    register,
     loginWithOAuth,
     handleOAuthCallback,
     logout,

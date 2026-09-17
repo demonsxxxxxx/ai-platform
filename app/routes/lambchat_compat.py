@@ -8,34 +8,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    Form,
-    Header,
-    HTTPException,
-    Request,
-    Response,
-    UploadFile,
-)
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from app import repositories, session_actions
-from app.auth import (
-    AuthPrincipal,
-    is_ai_admin,
-    require_principal,
-    sign_principal_session,
-    verify_principal_session,
-)
+from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import (
     EVENT_ENVELOPE_SCHEMA_VERSION,
     standard_trace_id,
 )
 from app.db import transaction
 from app.execution.api import list_public_models
-from app.models import LoginRequest, SessionRenameRequest
+from app.models import SessionRenameRequest
 from app.projection_redaction import (
     PUBLIC_RETIRED_AGENT_ID,
     PUBLIC_RETIRED_SESSION_TITLE,
@@ -50,8 +34,7 @@ from app.public_execution import (
     public_execution_event_from_row,
     validate_public_agent_progress_payload,
 )
-from app.routes.auth import _login_principal
-from app.routes.files import MAX_UPLOAD_BYTES, upload_file as upload_platform_file
+from app.routes.files import MAX_UPLOAD_BYTES
 from app.routes.runs import (
     artifact_card,
     event_visible_to_principal,
@@ -1329,52 +1312,6 @@ def _lambchat_status(status: str) -> str:
     }.get(status, status)
 
 
-@router.post("/auth/login")
-async def login(request: LoginRequest) -> dict[str, object]:
-    principal = await _login_principal(request)
-    token = sign_principal_session(principal)
-    settings = get_settings()
-    return {
-        "access_token": token,
-        "refresh_token": token,
-        "token_type": "bearer",
-        "expires_in": settings.ai_session_max_age_seconds,
-    }
-
-
-@router.get("/auth/me")
-async def me(
-    principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, object]:
-    return {
-        "id": principal.user_id,
-        "username": principal.user_id,
-        "email": "",
-        "avatar_url": None,
-        "roles": principal.roles,
-        "permissions": principal.permissions,
-        "is_active": True,
-        "metadata": {
-            "display_name": principal.display_name,
-            "source": principal.source,
-        },
-        "created_at": "",
-        "updated_at": "",
-    }
-
-
-@router.post("/auth/refresh")
-async def refresh(payload: dict[str, str]) -> dict[str, object]:
-    principal = verify_principal_session(payload.get("refresh_token") or "")
-    token = sign_principal_session(principal)
-    return {
-        "access_token": token,
-        "refresh_token": token,
-        "token_type": "bearer",
-        "expires_in": get_settings().ai_session_max_age_seconds,
-    }
-
-
 @router.get("/auth/oauth/providers")
 async def oauth_providers() -> dict[str, object]:
     return {
@@ -1444,28 +1381,6 @@ async def available_models(
         return await list_public_models(conn)
 
 
-@router.get("/agent/models/")
-async def model_configs() -> dict[str, object]:
-    async with transaction() as conn:
-        catalog = await list_public_models(conn)
-    models = [
-        {**model, "enabled": True, "order": index}
-        for index, model in enumerate(catalog["models"], start=1)
-    ]
-    return {**catalog, "models": models}
-
-
-@router.get("/version")
-async def version() -> dict[str, object]:
-    return {"version": "ai-platform-poc"}
-
-
-@router.get("/projects")
-@router.get("/projects/")
-async def projects() -> list[object]:
-    return []
-
-
 @router.get("/upload/config")
 async def upload_config() -> dict[str, object]:
     upload_limits_bytes = {
@@ -1493,39 +1408,6 @@ async def upload_config() -> dict[str, object]:
         "allowed_extensions": ["docx", "txt", "pdf"],
         "categories": ["document"],
     }
-
-
-@router.post("/upload/file")
-async def upload_file(
-    file: UploadFile = File(...),
-    folder: str = "uploads",
-    workspace_id: str = Form("default"),
-    session_id: str | None = Form(None),
-    principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, object]:
-    uploaded = await upload_platform_file(
-        file=file,
-        workspace_id=workspace_id,
-        session_id=session_id,
-        principal=principal,
-    )
-    mime_type = file.content_type or "application/octet-stream"
-    return {
-        "key": uploaded.file_id,
-        "file_id": uploaded.file_id,
-        "url": f"/api/ai/files/{uploaded.file_id}",
-        "name": uploaded.name,
-        "type": folder,
-        "mime_type": mime_type,
-        "mimeType": mime_type,
-        "size": uploaded.size_bytes,
-        "sha256": uploaded.sha256,
-    }
-
-
-@router.get("/tools")
-async def tools() -> dict[str, object]:
-    return {"tools": []}
 
 
 @router.get("/roles")
@@ -1825,13 +1707,6 @@ async def generate_title(
 @router.post("/sessions/{session_id}/mark-read")
 async def mark_read(session_id: str) -> dict[str, bool]:
     return {"success": True}
-
-
-@router.post("/chat/sessions/{session_id}/cancel")
-async def cancel_session(session_id: str) -> dict[str, object]:
-    raise HTTPException(
-        status_code=410, detail="session_cancel_unsupported_use_run_cancel"
-    )
 
 
 @router.get("/chat/sessions/{session_id}/status")

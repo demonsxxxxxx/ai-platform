@@ -70,38 +70,6 @@ export interface MCPServerToggleResponse {
   message: string;
 }
 
-// MCP Import Request
-export interface MCPImportRequest {
-  servers: Record<string, Record<string, unknown>>;
-  overwrite?: boolean;
-}
-
-// MCP Import Response
-export interface MCPImportResponse {
-  message: string;
-  imported_count: number;
-  skipped_count: number;
-  errors: string[];
-}
-
-// MCP Export Response
-export interface MCPExportResponse {
-  servers: Record<string, Record<string, unknown>>;
-}
-
-// MCP Server Move Request
-export interface MCPServerMoveRequest {
-  target_user_id?: string;
-}
-
-// MCP Server Move Response
-export interface MCPServerMoveResponse {
-  server: MCPServerResponse;
-  message: string;
-  from_type: string;
-  to_type: string;
-}
-
 // MCP Tool Info (discovered from server)
 export interface MCPToolInfo {
   name: string;
@@ -126,12 +94,4 @@ export interface MCPToolDiscoveryResponse {
   tools: MCPToolInfo[];
   count: number;
   error?: string;
-}
-
-// MCP Tool Toggle Response
-export interface MCPToolToggleResponse {
-  server_name: string;
-  tool_name: string;
-  enabled: boolean;
-  message: string;
 }

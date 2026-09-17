@@ -64,10 +64,8 @@ curl http://127.0.0.1:8020/api/ai/ready
 ```
 
 Compose runs the same migration command as a one-shot dependency before the API
-or worker starts. The authenticated `/admin/apply-schema` route remains only as
-an emergency-compatible wrapper around the versioned migration runner. See
-`docs/architecture/single-enterprise-data-lifecycle.md` for the identity,
-schema, retention, and rollback contract.
+or worker starts. See `docs/architecture/single-enterprise-data-lifecycle.md`
+for the identity, schema, retention, and rollback contract.
 
 ## Worker
 
@@ -88,9 +86,9 @@ same-origin `/api/*` requests from that entry. The
 frontend reverse proxy routes those requests to the platform API. Do not point
 the frontend at a non-platform backend or a temporary API proxy.
 
-The platform exposes frontend-compatible `/api/auth/login`, `/api/auth/me`,
-`/api/auth/refresh`, `/api/chat/stream`, `/api/sessions/*`, and `/api/upload/*`
-routes. The documented login flow is company-account login.
+The platform exposes the V2 context-bound auth routes under `/api/ai/auth/*`,
+current chat/session routes, and canonical `/api/ai/files*` upload routes. The
+documented login flow is company-account login.
 
 Frontend source lives under `frontend/web` for source ownership and
 backend/worker/frontend same-commit review. This does not create a new runtime

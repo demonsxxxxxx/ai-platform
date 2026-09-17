@@ -1,14 +1,10 @@
 import type { FrontendGovernanceState } from "../../governance/frontendGovernanceState";
 
-export type SkillsHubTab = "skills" | "marketplace";
-
 export interface SkillsHubGovernanceInput {
-  requestedTab: SkillsHubTab;
   isAuthenticated: boolean;
   isLoading?: boolean;
   hasWorkspace?: boolean;
   canReadSkills: boolean;
-  canReadMarketplace: boolean;
   effectivePermissions?: string[];
   effectivePermissionsKnown?: boolean;
   catalogReadResolved?: boolean;
@@ -25,56 +21,19 @@ export interface SkillsHubGovernanceState {
   effectivePermissionsSource: "catalog" | "auth" | "probe";
   catalogReadResolved: boolean;
   governedUnavailable: boolean;
-  requiredPermission: "skill:admin" | "marketplace:admin";
+  requiredPermission: "skill:admin";
   degraded: boolean;
 }
 
-function hasEffectiveAdminPermission(
-  permissions: string[] | undefined,
-  requiredPermission: "skill:admin" | "marketplace:admin",
-): boolean {
-  const permissionSet = new Set(permissions ?? []);
-  if (permissionSet.has(requiredPermission)) {
-    return true;
-  }
-
-  return (
-    permissionSet.has("skill:admin") ||
-    permissionSet.has("marketplace:admin")
-  );
-}
-
-export function resolveSkillsHubTab(
-  requestedTab: SkillsHubTab | undefined,
-  canReadSkills: boolean,
-  canReadMarketplace: boolean,
-): SkillsHubTab | null {
-  if (requestedTab) {
-    return requestedTab;
-  }
-
-  if (canReadSkills && canReadMarketplace) {
-    return "skills";
-  }
-
-  if (canReadSkills) {
-    return "skills";
-  }
-
-  if (canReadMarketplace) {
-    return "marketplace";
-  }
-
-  return "marketplace";
+function hasEffectiveAdminPermission(permissions: string[] | undefined): boolean {
+  return new Set(permissions ?? []).has("skill:admin");
 }
 
 export function resolveSkillsHubGovernance({
-  requestedTab,
   isAuthenticated,
   isLoading,
   hasWorkspace = true,
   canReadSkills,
-  canReadMarketplace,
   effectivePermissions,
   effectivePermissionsKnown = false,
   catalogReadResolved,
@@ -82,16 +41,10 @@ export function resolveSkillsHubGovernance({
   catalogPermissionDenied,
   projectionError,
 }: SkillsHubGovernanceInput): SkillsHubGovernanceState {
-  const requiredPermission =
-    requestedTab === "marketplace" ? "marketplace:admin" : "skill:admin";
-  const authProjectionHasPermission =
-    requestedTab === "marketplace"
-      ? canReadMarketplace
-      : canReadSkills || canReadMarketplace;
-  const effectiveProjectionHasPermission = hasEffectiveAdminPermission(
-    effectivePermissions,
-    requiredPermission,
-  );
+  const requiredPermission = "skill:admin" as const;
+  const authProjectionHasPermission = canReadSkills;
+  const effectiveProjectionHasPermission =
+    hasEffectiveAdminPermission(effectivePermissions);
   const hasAdminPermission =
     authProjectionHasPermission || effectiveProjectionHasPermission;
   const resolvedByCatalog = Boolean(
@@ -127,20 +80,6 @@ export function resolveSkillsHubGovernance({
         : projectionError || probingPermission
           ? "degraded"
           : "ready";
-
-  if (requestedTab === "marketplace") {
-    return {
-      pageState,
-      hasPermission: hasAdminPermission && !governedUnavailable,
-      authProjectionHasPermission,
-      effectiveProjectionHasPermission,
-      effectivePermissionsSource,
-      catalogReadResolved: resolvedByCatalog,
-      governedUnavailable,
-      requiredPermission,
-      degraded: Boolean(projectionError || probingPermission),
-    };
-  }
 
   return {
     pageState,

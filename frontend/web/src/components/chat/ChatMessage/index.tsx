@@ -15,11 +15,9 @@ import { ToolCallItem } from "./ToolCallItem";
 import { UserMessageBubble } from "./UserMessageBubble";
 import { createMessagePartRenderKeys, MessagePartRenderer } from "./MessagePartRenderer";
 import { RevealArtifactsSummary } from "./RevealArtifactsSummary";
-import { FeedbackButtons } from "./FeedbackButtons";
 import { AssistantAvatar } from "./AssistantAvatar";
 import { CollapsiblePill } from "../../common/CollapsiblePill";
 import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
-import { useAuth } from "../../../hooks/useAuth";
 import { ModelIconImg } from "../../agent/modelIcon.tsx";
 import { shouldCloseTokenDetailsPopover } from "./tokenDetailsPopoverGuards";
 import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
@@ -72,18 +70,13 @@ function ThinkingIndicator() {
 interface ChatMessageProps {
   message: Message;
   artifactDownloadScopeContext?: ArtifactDownloadScopeContext;
-  sessionId?: string;
-  runId?: string;
   isLastMessage?: boolean;
-  onStop?: () => void;
   activePreview?: RevealPreviewRequest | null;
   latestAutoPreview?: AutoPreviewTarget | null;
   onOpenPreview?: (
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
   ) => boolean;
-  onForkMessage?: (messageId: string) => void | Promise<void>;
-  showFeedbackAndShareActions?: boolean;
 }
 
 // Token usage statistics button component
@@ -250,17 +243,13 @@ function TokenDetailsButton({
 export const ChatMessage = memo(function ChatMessage({
   message,
   artifactDownloadScopeContext,
-  sessionId,
-  runId,
   isLastMessage,
   activePreview,
   latestAutoPreview,
   onOpenPreview,
-  showFeedbackAndShareActions = true,
 }: ChatMessageProps) {
   const { t } = useTranslation();
   const { availableModels } = useModelCatalogContext();
-  const { isAuthenticated } = useAuth();
   const isUser = message.role === "user";
   const isStreaming = message.isStreaming && !message.content;
   const artifactDownloadScope = createArtifactDownloadScope(
@@ -459,19 +448,6 @@ export const ChatMessage = memo(function ChatMessage({
                 modelDetails={modelDetails}
                 isLastMessage={isLastMessage}
               />
-            )}
-            {showFeedbackAndShareActions && (
-              <>
-                {/* Feedback buttons */}
-                {isAuthenticated && sessionId && (message.runId || runId) && (
-                  <FeedbackButtons
-                    sessionId={sessionId}
-                    runId={message.runId || runId!}
-                    currentFeedback={message.feedback}
-                    isLastMessage={isLastMessage}
-                  />
-                )}
-              </>
             )}
           </div>
         )}

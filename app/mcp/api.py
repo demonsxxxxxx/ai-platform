@@ -1,4 +1,4 @@
-"""Public MCP contracts for legacy delivery and execution callers."""
+"""Public MCP contracts for delivery and execution callers."""
 
 from __future__ import annotations
 

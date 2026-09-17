@@ -30,14 +30,11 @@ test("Chinese is the only shipped locale and language switching is retired", () 
   assert.doesNotMatch(i18n, /locales\/(?:en|ja|ko|ru)\.json/);
 });
 
-test("product language controls are absent from authentication, landing, workbench, and shared surfaces", () => {
+test("product language controls are absent from authentication and workbench surfaces", () => {
   for (const relativePath of [
     "components/auth/AuthLayout.tsx",
     "components/auth/AuthPage.tsx",
-    "components/auth/ForgotPassword.tsx",
-    "components/auth/ResetPassword.tsx",
     "components/layout/AppContent/Header.tsx",
-    "components/share/SharedPage.tsx",
   ]) {
     const source = read(relativePath);
     assert.doesNotMatch(source, /LanguageToggle|changeLanguage|common\.language/);

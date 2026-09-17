@@ -1485,18 +1485,3 @@ class AgentProfileAuthority:
             raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
         if "selected_mcp_tool_ids" in submitted_fields and request.selected_mcp_tool_ids:
             raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
-
-
-def reject_profile_selector_conflicts(
-    request: ChatStreamRequest,
-    *,
-    active: bool | None = None,
-    query_agent_id: str | None = None,
-) -> None:
-    """Compatibility delegate for the authoritative profile selector policy."""
-
-    AgentProfileAuthority.reject_profile_selector_conflicts(
-        request,
-        active=active,
-        query_agent_id=query_agent_id,
-    )
