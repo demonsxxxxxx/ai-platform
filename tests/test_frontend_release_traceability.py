@@ -653,21 +653,18 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
         for current_probe, next_probe in zip(healthcheck_probes, healthcheck_probes[1:])
     )
     assert "nginx.conf.template" in dockerfile
-    mkdir_templates = "RUN mkdir -p /etc/nginx/templates /etc/nginx/templates-opensandbox"
-    copy_full_template = (
+    mkdir_templates = "RUN mkdir -p /etc/nginx/templates"
+    copy_base_template = (
         "COPY frontend/web/nginx.conf.template "
-        "/etc/nginx/templates-opensandbox/default.conf.template"
+        "/etc/nginx/templates/default.conf.template"
     )
-    extract_base_template = "RUN sed '/^# AI_PLATFORM_S72_BRIDGE_BEGIN$/,$d'"
     assert mkdir_templates in runtime_dockerfile
-    assert copy_full_template in runtime_dockerfile
-    assert extract_base_template in runtime_dockerfile
+    assert "templates-opensandbox" not in runtime_dockerfile
+    assert copy_base_template in runtime_dockerfile
     assert runtime_dockerfile.index(mkdir_templates) < runtime_dockerfile.index(
-        copy_full_template
+        copy_base_template
     )
-    assert runtime_dockerfile.index(copy_full_template) < runtime_dockerfile.index(
-        extract_base_template
-    )
+    assert "AI_PLATFORM_S72_BRIDGE" not in runtime_dockerfile
     assert "package-import-method=copy" not in npmrc
     assert "pnpm install --frozen-lockfile --package-import-method=copy" in dockerfile
     assert "AI_PLATFORM_BUILD_COMMIT" in provenance_script

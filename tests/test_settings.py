@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.settings import OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL, Settings
+from app.settings import Settings
 
 
 def test_claude_agent_sdk_timeout_defaults_to_unbounded(monkeypatch):
@@ -377,28 +377,19 @@ def test_default_tenant_is_fixed_deployment_scope():
         Settings(_env_file=None, default_tenant_id="customer-a")
 
 
-def test_object_delete_settings_use_generic_names_and_keep_python_aliases():
+def test_object_delete_settings_use_only_generic_names():
     settings = Settings(_env_file=None)
 
     assert settings.object_delete_batch_limit == 50
     assert settings.object_delete_max_attempts == 5
     assert settings.object_delete_retry_base_seconds == 60
     assert settings.object_delete_retry_cap_seconds == 3600
-    assert settings.artifact_object_delete_max_attempts == 5
-    assert settings.artifact_object_delete_retry_base_seconds == 60
-    assert settings.artifact_object_delete_retry_cap_seconds == 3600
-    assert OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL == "2026-10-31"
-
-    settings.artifact_object_delete_max_attempts = 8
-    settings.artifact_object_delete_retry_base_seconds = 80
-    settings.artifact_object_delete_retry_cap_seconds = 800
-
-    assert settings.object_delete_max_attempts == 8
-    assert settings.object_delete_retry_base_seconds == 80
-    assert settings.object_delete_retry_cap_seconds == 800
+    assert not hasattr(settings, "artifact_object_delete_max_attempts")
+    assert not hasattr(settings, "artifact_object_delete_retry_base_seconds")
+    assert not hasattr(settings, "artifact_object_delete_retry_cap_seconds")
 
 
-def test_legacy_object_delete_environment_names_remain_fallbacks(monkeypatch):
+def test_legacy_object_delete_environment_names_are_ignored(monkeypatch):
     monkeypatch.setenv("ARTIFACT_RETENTION_CLEANUP_LIMIT", "17")
     monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS", "7")
     monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS", "90")
@@ -407,49 +398,44 @@ def test_legacy_object_delete_environment_names_remain_fallbacks(monkeypatch):
     settings = Settings(_env_file=None)
 
     assert settings.artifact_retention_cleanup_limit == 17
-    assert settings.object_delete_batch_limit == 17
-    assert settings.object_delete_max_attempts == 7
-    assert settings.object_delete_retry_base_seconds == 90
-    assert settings.object_delete_retry_cap_seconds == 900
+    assert settings.object_delete_batch_limit == 50
+    assert settings.object_delete_max_attempts == 5
+    assert settings.object_delete_retry_base_seconds == 60
+    assert settings.object_delete_retry_cap_seconds == 3600
 
 
-def test_canonical_object_delete_environment_names_win_over_legacy(monkeypatch):
-    monkeypatch.setenv("ARTIFACT_RETENTION_CLEANUP_LIMIT", "17")
+def test_canonical_object_delete_environment_names_are_loaded(monkeypatch):
     monkeypatch.setenv("OBJECT_DELETE_BATCH_LIMIT", "23")
-    monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS", "7")
     monkeypatch.setenv("OBJECT_DELETE_MAX_ATTEMPTS", "9")
-    monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS", "90")
     monkeypatch.setenv("OBJECT_DELETE_RETRY_BASE_SECONDS", "120")
-    monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_RETRY_CAP_SECONDS", "900")
     monkeypatch.setenv("OBJECT_DELETE_RETRY_CAP_SECONDS", "1200")
 
     settings = Settings(_env_file=None)
 
-    assert settings.artifact_retention_cleanup_limit == 17
     assert settings.object_delete_batch_limit == 23
     assert settings.object_delete_max_attempts == 9
     assert settings.object_delete_retry_base_seconds == 120
     assert settings.object_delete_retry_cap_seconds == 1200
 
 
-def test_compose_projects_canonical_object_delete_settings_with_legacy_fallbacks():
+def test_compose_projects_only_canonical_object_delete_settings():
     compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     expected = (
-        'OBJECT_DELETE_BATCH_LIMIT: "${OBJECT_DELETE_BATCH_LIMIT:-${ARTIFACT_RETENTION_CLEANUP_LIMIT:-50}}"',
-        'OBJECT_DELETE_MAX_ATTEMPTS: "${OBJECT_DELETE_MAX_ATTEMPTS:-${ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS:-5}}"',
-        'OBJECT_DELETE_RETRY_BASE_SECONDS: "${OBJECT_DELETE_RETRY_BASE_SECONDS:-${ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS:-60}}"',
-        'OBJECT_DELETE_RETRY_CAP_SECONDS: "${OBJECT_DELETE_RETRY_CAP_SECONDS:-${ARTIFACT_OBJECT_DELETE_RETRY_CAP_SECONDS:-3600}}"',
+        "OBJECT_DELETE_BATCH_LIMIT: ${OBJECT_DELETE_BATCH_LIMIT:-50}",
+        "OBJECT_DELETE_MAX_ATTEMPTS: ${OBJECT_DELETE_MAX_ATTEMPTS:-5}",
+        "OBJECT_DELETE_RETRY_BASE_SECONDS: ${OBJECT_DELETE_RETRY_BASE_SECONDS:-60}",
+        "OBJECT_DELETE_RETRY_CAP_SECONDS: ${OBJECT_DELETE_RETRY_CAP_SECONDS:-3600}",
     )
 
     for mapping in expected:
         assert compose.count(mapping) == 2
+    assert "ARTIFACT_OBJECT_DELETE_" not in compose
+    assert "OBJECT_DELETE_BATCH_LIMIT:-${ARTIFACT_RETENTION_CLEANUP_LIMIT" not in compose
 
 
-def test_environment_example_prefers_canonical_object_delete_names():
-    lines = (
-        Path("deploy/ai-platform/.env.example").read_text(encoding="utf-8").splitlines()
-    )
-    active = {line for line in lines if line and not line.startswith("#")}
+def test_environment_example_uses_only_canonical_object_delete_names():
+    source = Path("deploy/ai-platform/.env.example").read_text(encoding="utf-8")
+    active = {line for line in source.splitlines() if line and not line.startswith("#")}
 
     assert {
         "OBJECT_DELETE_BATCH_LIMIT=50",
@@ -457,28 +443,15 @@ def test_environment_example_prefers_canonical_object_delete_names():
         "OBJECT_DELETE_RETRY_BASE_SECONDS=60",
         "OBJECT_DELETE_RETRY_CAP_SECONDS=3600",
     }.issubset(active)
-    assert not any(line.startswith("ARTIFACT_OBJECT_DELETE_") for line in active)
-    assert "# Deprecated migration aliases remain accepted through 2026-10-31." in lines
+    assert "ARTIFACT_OBJECT_DELETE_" not in source
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {
-            "object_delete_retry_base_seconds": 120,
-            "object_delete_retry_cap_seconds": 60,
-        },
-        {
-            "artifact_object_delete_retry_base_seconds": 120,
-            "artifact_object_delete_retry_cap_seconds": 60,
-        },
-    ],
-)
-def test_object_delete_retry_cap_cannot_be_lower_than_base(overrides):
+def test_object_delete_retry_cap_cannot_be_lower_than_base():
     with pytest.raises(ValidationError, match="object_delete_retry_cap_below_base"):
         Settings(
             _env_file=None,
-            **overrides,
+            object_delete_retry_base_seconds=120,
+            object_delete_retry_cap_seconds=60,
         )
 
 

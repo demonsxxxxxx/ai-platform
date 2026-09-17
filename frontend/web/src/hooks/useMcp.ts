@@ -6,10 +6,6 @@ import type {
   MCPServerCreate,
   MCPServerUpdate,
   MCPServerToggleResponse,
-  MCPImportRequest,
-  MCPImportResponse,
-  MCPExportResponse,
-  MCPServerMoveResponse,
 } from "../types";
 
 const API_BASE = "/api/mcp";
@@ -485,113 +481,6 @@ export function useMCP(options?: {
     [enabled, fetchServers],
   );
 
-  // Import servers from JSON
-  const importServers = useCallback(
-    async (request: MCPImportRequest): Promise<MCPImportResponse | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        const data: MCPImportResponse = await authFetch(`${API_BASE}/import`, {
-          method: "POST",
-          body: JSON.stringify(request),
-        });
-        await fetchServers();
-        return data;
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to import MCP servers",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled, fetchServers],
-  );
-
-  // Export servers to JSON
-  const exportServers = useCallback(
-    async (): Promise<MCPExportResponse | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        return await authFetch<MCPExportResponse>(`${API_BASE}/export`);
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to export MCP servers",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled],
-  );
-
-  // Promote user server to system server (admin only)
-  const promoteServer = useCallback(
-    async (
-      name: string,
-      ownerUserId: string,
-    ): Promise<MCPServerMoveResponse | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        const data: MCPServerMoveResponse = await authFetch(
-          `/api/admin/mcp/${encodeURIComponent(name)}/promote`,
-          {
-            method: "POST",
-            body: JSON.stringify({ target_user_id: ownerUserId }),
-          },
-        );
-        await fetchServers();
-        return data;
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to promote MCP server",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled, fetchServers],
-  );
-
-  // Demote system server to user server (admin only)
-  const demoteServer = useCallback(
-    async (
-      name: string,
-      targetUserId: string,
-    ): Promise<MCPServerMoveResponse | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        const data: MCPServerMoveResponse = await authFetch(
-          `/api/admin/mcp/${encodeURIComponent(name)}/demote`,
-          {
-            method: "POST",
-            body: JSON.stringify({ target_user_id: targetUserId }),
-          },
-        );
-        await fetchServers();
-        return data;
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to demote MCP server",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled, fetchServers],
-  );
-
   // Initial load
   useEffect(() => {
     if (!enabled) return;
@@ -609,10 +498,6 @@ export function useMCP(options?: {
     updateServer,
     deleteServer,
     toggleServer,
-    importServers,
-    exportServers,
-    promoteServer,
-    demoteServer,
     clearError: () => {
       setError(null);
       setCatalogState((current) =>

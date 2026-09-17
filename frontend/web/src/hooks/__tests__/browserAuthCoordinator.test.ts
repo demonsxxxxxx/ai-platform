@@ -54,11 +54,6 @@ function deferred<T = void>() {
   return { promise, reject, resolve };
 }
 
-function legacyNonce(request: unknown): string {
-  assert.equal(typeof request, "string", "Web Locks path must keep the V1 string request interface");
-  return request as string;
-}
-
 async function ensureLoginContextRecovery(signal?: AbortSignal): Promise<void> {
   const coordinator = await import("../browserAuthCoordinator.ts") as unknown as {
     ensureBrowserAuthContextBeforeLogin?: (nextSignal?: AbortSignal) => Promise<void>;
@@ -321,12 +316,18 @@ function installBrowserCoordinatorStubs() {
   };
 }
 
-test("concurrent and late bootstrap operations use one stable browser nonce", async () => {
+test("Web Locks-capable browsers use the V2 coordinator", async () => {
   const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
   const originalBootstrap = authApi.bootstrapAuthContext;
-  const submitted: string[] = [];
-  authApi.bootstrapAuthContext = async (nonce) => {
-    submitted.push(legacyNonce(nonce));
+  const submitted: Array<Record<string, unknown>> = [];
+  authApi.bootstrapAuthContext = async (request) => {
+    submitted.push(request as unknown as Record<string, unknown>);
+    return {
+      status: "ready",
+      protocol_version: 2,
+      generation: request.generation,
+    };
   };
 
   try {
@@ -336,15 +337,12 @@ test("concurrent and late bootstrap operations use one stable browser nonce", as
     ]);
     await ensureBrowserAuthContext();
 
-    assert.equal(submitted.length, 3);
-    assert.equal(new Set(submitted).size, 1);
-    assert.equal(
-      stubs.values.get(BROWSER_AUTH_CONTEXT_NONCE_KEY),
-      submitted[0],
-    );
-    assert.match(submitted[0], /^[A-Za-z0-9_-]{43,512}$/);
+    assert.equal(submitted.length, 1);
+    assert.equal(submitted[0].protocol_version, 2);
+    assert.equal(stubs.values.has(BROWSER_AUTH_CONTEXT_NONCE_KEY), false);
   } finally {
     authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
     stubs.restore();
   }
 });
@@ -425,7 +423,7 @@ test("two no-cookie tabs share one transactional V2 identity and bootstrap once"
   const submitted: Array<Record<string, unknown>> = [];
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     if (submitted.length === 1) {
       firstStarted.resolve();
@@ -470,7 +468,7 @@ test("a forced V2 stale-cookie repair bypasses confirmed state exactly once", as
   const submitted: Array<Record<string, unknown>> = [];
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     return {
       status: "ready",
@@ -505,7 +503,7 @@ test("a confirmed V2 state restores its own missing server context before login 
   let serverContextPresent = false;
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     serverContextPresent = true;
     return {
@@ -636,7 +634,7 @@ test("ordinary V2 ensure retains pending-rotation completion behavior", async ()
   const submitted: Array<Record<string, unknown>> = [];
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     return { status: "ready", protocol_version: 2, generation: 2 };
   };
@@ -684,7 +682,7 @@ test("missing confirmed V2 recovery persists one fresh identity before one ordin
   const submitted: Array<Record<string, unknown>> = [];
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     if (submitted.length === 1) {
       assert.equal(v2.recovery_only, true);
@@ -857,7 +855,7 @@ test("ambiguous fresh initial bootstrap keeps its identity for the next login re
   const submitted: Array<Record<string, unknown>> = [];
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     if (submitted.length === 1) {
       throw new ApiRequestError("missing auth context", 401, "auth_context_missing");
@@ -931,7 +929,7 @@ test("a superseded fresh-bootstrap owner cannot confirm before its successor reu
   const submitted: Array<Record<string, unknown>> = [];
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     if (submitted.length === 1) {
       throw new ApiRequestError("missing auth context", 401, "auth_context_missing");
@@ -1001,7 +999,7 @@ test("concurrent or aborted V2 login-context recovery stays serially single-owne
       }
       activeRecoveries -= 1;
     }
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     return { status: "ready", protocol_version: 2, generation: v2.generation as number };
   };
 
@@ -1190,7 +1188,7 @@ test("pending single-use rotation survives cancellation and only advances genera
   const submitted: Array<Record<string, unknown>> = [];
   let call = 0;
   authApi.bootstrapAuthContext = async (request, signal) => {
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     call += 1;
     if (call === 1) {
@@ -1259,7 +1257,7 @@ test("an expired pending ticket is reissued under the same owner and target nonc
   const submitted: Array<Record<string, unknown>> = [];
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     switch (submitted.length) {
       case 1:
@@ -1322,7 +1320,7 @@ test("server-proven target reconciliation promotes a pending rotation after loca
   const submitted: Array<Record<string, unknown>> = [];
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     if (submitted.length === 1) {
       return {
@@ -1382,7 +1380,7 @@ test("a lost ticketed rotation response repairs the committed target while the c
   let cookieJar = "base";
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     switch (submitted.length) {
       case 1:
@@ -1439,7 +1437,7 @@ test("an uncommitted target repair performs one base ticket reissue and does not
   const submitted: Array<Record<string, unknown>> = [];
   authApi.bootstrapAuthContext = async (request) => {
     assert.notEqual(typeof request, "string");
-    const v2 = request as Record<string, unknown>;
+    const v2 = request as unknown as Record<string, unknown>;
     submitted.push(v2);
     switch (submitted.length) {
       case 1:
@@ -1494,225 +1492,6 @@ test("an uncommitted target repair performs one base ticket reissue and does not
   } finally {
     authApi.bootstrapAuthContext = originalBootstrap;
     idb.restore();
-    stubs.restore();
-  }
-});
-
-test("rebootstrap-required rotates the nonce once under the origin lock", async () => {
-  const stubs = installBrowserCoordinatorStubs();
-  const oldNonce = "A".repeat(43);
-  stubs.values.set(BROWSER_AUTH_CONTEXT_NONCE_KEY, oldNonce);
-  let lockCalls = 0;
-  Object.defineProperty(globalThis, "navigator", {
-    configurable: true,
-    value: {
-      locks: {
-        async request<T>(
-          _name: string,
-          _options: { mode: "exclusive" },
-          callback: () => Promise<T>,
-        ): Promise<T> {
-          lockCalls += 1;
-          return callback();
-        },
-      },
-    },
-  });
-  const originalBootstrap = authApi.bootstrapAuthContext;
-  const submitted: string[] = [];
-  authApi.bootstrapAuthContext = async (nonce) => {
-    submitted.push(legacyNonce(nonce));
-    if (submitted.length === 1) {
-      throw new ApiRequestError(
-        "safe rebootstrap requirement",
-        409,
-        "auth_context_rebootstrap_required",
-      );
-    }
-  };
-
-  try {
-    await ensureBrowserAuthContext();
-
-    assert.equal(lockCalls, 1);
-    assert.deepEqual(submitted.slice(0, 1), [oldNonce]);
-    assert.equal(submitted.length, 2);
-    assert.notEqual(submitted[1], oldNonce);
-    assert.equal(
-      stubs.values.get(BROWSER_AUTH_CONTEXT_NONCE_KEY),
-      submitted[1],
-    );
-  } finally {
-    authApi.bootstrapAuthContext = originalBootstrap;
-    stubs.restore();
-  }
-});
-
-test("transport and store errors do not rotate or retry the nonce", async () => {
-  const stubs = installBrowserCoordinatorStubs();
-  const oldNonce = "B".repeat(43);
-  stubs.values.set(BROWSER_AUTH_CONTEXT_NONCE_KEY, oldNonce);
-  const originalBootstrap = authApi.bootstrapAuthContext;
-  const failure = new ApiRequestError("safe store failure", 503);
-  let bootstrapCalls = 0;
-  authApi.bootstrapAuthContext = async () => {
-    bootstrapCalls += 1;
-    throw failure;
-  };
-
-  try {
-    await assert.rejects(
-      () => ensureBrowserAuthContext(),
-      (error: unknown) => error === failure,
-    );
-    assert.equal(bootstrapCalls, 1);
-    assert.equal(
-      stubs.values.get(BROWSER_AUTH_CONTEXT_NONCE_KEY),
-      oldNonce,
-    );
-  } finally {
-    authApi.bootstrapAuthContext = originalBootstrap;
-    stubs.restore();
-  }
-});
-
-test("an already-aborted caller never enters browser auth coordination", async () => {
-  const stubs = installBrowserCoordinatorStubs();
-  const originalBootstrap = authApi.bootstrapAuthContext;
-  const controller = new AbortController();
-  controller.abort();
-  let bootstrapCalls = 0;
-  authApi.bootstrapAuthContext = async () => {
-    bootstrapCalls += 1;
-  };
-
-  try {
-    await assert.rejects(
-      () => ensureBrowserAuthContext(controller.signal),
-      (error: unknown) =>
-        error instanceof DOMException && error.name === "AbortError",
-    );
-    assert.equal(bootstrapCalls, 0);
-    assert.equal(stubs.values.has(BROWSER_AUTH_CONTEXT_NONCE_KEY), false);
-  } finally {
-    authApi.bootstrapAuthContext = originalBootstrap;
-    stubs.restore();
-  }
-});
-
-test("a queued bootstrap cannot observe an older caller's unpublished nonce", async () => {
-  const stubs = installBrowserCoordinatorStubs();
-  const originalBootstrap = authApi.bootstrapAuthContext;
-  const submitted: string[] = [];
-  const firstBootstrapStarted = deferred<void>();
-  const releaseFirstBootstrap = deferred<void>();
-  authApi.bootstrapAuthContext = async (nonce) => {
-    submitted.push(legacyNonce(nonce));
-    if (submitted.length === 1) {
-      firstBootstrapStarted.resolve();
-      await releaseFirstBootstrap.promise;
-    }
-  };
-
-  try {
-    const older = ensureBrowserAuthContext();
-    await firstBootstrapStarted.promise;
-    const candidate = submitted[0];
-
-    assert.equal(stubs.values.has(BROWSER_AUTH_CONTEXT_NONCE_KEY), false);
-
-    const newer = ensureBrowserAuthContext();
-    assert.deepEqual(submitted, [candidate]);
-
-    releaseFirstBootstrap.resolve();
-    await Promise.all([older, newer]);
-
-    assert.deepEqual(submitted, [candidate, candidate]);
-    assert.equal(stubs.values.get(BROWSER_AUTH_CONTEXT_NONCE_KEY), candidate);
-  } finally {
-    authApi.bootstrapAuthContext = originalBootstrap;
-    stubs.restore();
-  }
-});
-
-test("an abort before rebootstrap rotation preserves the committed nonce", async () => {
-  const stubs = installBrowserCoordinatorStubs();
-  const oldNonce = "C".repeat(43);
-  stubs.values.set(BROWSER_AUTH_CONTEXT_NONCE_KEY, oldNonce);
-  const originalBootstrap = authApi.bootstrapAuthContext;
-  const firstBootstrapStarted = deferred<void>();
-  const rejectFirstBootstrap = deferred<void>();
-  const submitted: string[] = [];
-  authApi.bootstrapAuthContext = async (nonce) => {
-    submitted.push(legacyNonce(nonce));
-    firstBootstrapStarted.resolve();
-    await rejectFirstBootstrap.promise;
-  };
-  const controller = new AbortController();
-
-  try {
-    const operation = ensureBrowserAuthContext(controller.signal);
-    await firstBootstrapStarted.promise;
-    controller.abort();
-    rejectFirstBootstrap.reject(
-      new ApiRequestError(
-        "safe rebootstrap requirement",
-        409,
-        "auth_context_rebootstrap_required",
-      ),
-    );
-
-    await assert.rejects(
-      () => operation,
-      (error: unknown) =>
-        error instanceof DOMException && error.name === "AbortError",
-    );
-    assert.deepEqual(submitted, [oldNonce]);
-    assert.equal(stubs.values.get(BROWSER_AUTH_CONTEXT_NONCE_KEY), oldNonce);
-  } finally {
-    authApi.bootstrapAuthContext = originalBootstrap;
-    stubs.restore();
-  }
-});
-
-test("a started rotation bootstrap publishes its nonce despite later cancellation", async () => {
-  const stubs = installBrowserCoordinatorStubs();
-  const oldNonce = "D".repeat(43);
-  stubs.values.set(BROWSER_AUTH_CONTEXT_NONCE_KEY, oldNonce);
-  const originalBootstrap = authApi.bootstrapAuthContext;
-  const rotationStarted = deferred<void>();
-  const releaseRotation = deferred<void>();
-  const submitted: string[] = [];
-  const signals: Array<AbortSignal | undefined> = [];
-  authApi.bootstrapAuthContext = async (nonce, signal) => {
-    submitted.push(legacyNonce(nonce));
-    signals.push(signal);
-    if (submitted.length === 1) {
-      throw new ApiRequestError(
-        "safe rebootstrap requirement",
-        409,
-        "auth_context_rebootstrap_required",
-      );
-    }
-    rotationStarted.resolve();
-    await releaseRotation.promise;
-  };
-  const controller = new AbortController();
-
-  try {
-    const operation = ensureBrowserAuthContext(controller.signal);
-    await rotationStarted.promise;
-    const rotatedNonce = submitted[1];
-
-    assert.equal(stubs.values.get(BROWSER_AUTH_CONTEXT_NONCE_KEY), oldNonce);
-    controller.abort();
-    releaseRotation.resolve();
-    await operation;
-
-    assert.deepEqual(signals, [undefined, undefined]);
-    assert.equal(stubs.values.get(BROWSER_AUTH_CONTEXT_NONCE_KEY), rotatedNonce);
-  } finally {
-    authApi.bootstrapAuthContext = originalBootstrap;
     stubs.restore();
   }
 });

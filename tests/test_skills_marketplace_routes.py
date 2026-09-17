@@ -2174,41 +2174,23 @@ def test_public_skill_github_preview_rejects_duplicate_discovered_skill_ids(monk
     assert not any(name == "upsert_file" for name, _ in calls)
 
 
-def test_marketplace_release_writes_fail_closed_while_distribution_lifecycle_remains_backed(monkeypatch):
+def test_marketplace_distribution_lifecycle_remains_backed_without_direct_release_routes(monkeypatch):
     calls = install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
-    direct_marketplace_denied = client.post(
-        "/api/marketplace/",
-        json={"skill_name": "qa-file-reviewer"},
-        headers=headers("marketplace:read"),
-    )
-    assert direct_marketplace_denied.status_code == 403
-    assert direct_marketplace_denied.json()["detail"] == "missing_permission:marketplace:admin"
-
     direct_marketplace = client.post(
         "/api/marketplace/",
-        json={
-            "skill_name": "qa-file-reviewer",
-            "description": "Published from marketplace admin.",
-            "version": "hash-marketplace",
-            "tags": ["document", "admin"],
-        },
+        json={"skill_name": "qa-file-reviewer"},
         headers=headers("marketplace:admin"),
     )
-    assert direct_marketplace.status_code == 409
-    assert direct_marketplace.json()["detail"] == "marketplace_direct_write_contract_not_backed"
+    assert direct_marketplace.status_code == 405
 
     update_response = client.put(
         "/api/marketplace/qa-file-reviewer",
-        json={
-            "description": "Edited marketplace description.",
-            "tags": ["edited"],
-        },
+        json={"description": "Edited marketplace description."},
         headers=headers("marketplace:admin"),
     )
-    assert update_response.status_code == 409
-    assert update_response.json()["detail"] == "marketplace_direct_write_contract_not_backed"
+    assert update_response.status_code == 405
 
     deactivate_response = client.patch(
         "/api/marketplace/qa-file-reviewer/activate",
@@ -2245,51 +2227,6 @@ def test_marketplace_release_writes_fail_closed_while_distribution_lifecycle_rem
     read_after_write = client.get("/api/marketplace/qa-file-reviewer", headers=headers("marketplace:read"))
     assert read_after_write.status_code == 404
     assert read_after_write.json()["detail"] == "skill_not_found"
-
-
-def test_marketplace_release_write_compatibility_routes_do_not_probe_catalog(monkeypatch):
-    calls = install_route_fakes(monkeypatch)
-    client = TestClient(create_app())
-
-    mismatched_payload_response = client.put(
-        "/api/marketplace/qa-file-reviewer",
-        json={"skill_name": "other-skill", "version": "hash-other"},
-        headers=headers("marketplace:admin"),
-    )
-    assert mismatched_payload_response.status_code == 409
-    assert mismatched_payload_response.json()["detail"] == "marketplace_direct_write_contract_not_backed"
-
-    missing_response = client.put(
-        "/api/marketplace/missing-skill",
-        json={"version": "hash-missing"},
-        headers=headers("marketplace:admin"),
-    )
-    assert missing_response.status_code == 409
-    assert missing_response.json()["detail"] == "marketplace_direct_write_contract_not_backed"
-
-    denied_response = client.put(
-        "/api/marketplace/missing-skill",
-        json={"version": "hash-missing"},
-        headers=headers("marketplace:read"),
-    )
-    assert denied_response.status_code == 403
-    assert denied_response.json()["detail"] == "missing_permission:marketplace:admin"
-    assert not any(name in {"list", "forbidden_release_write"} for name, _ in calls)
-
-
-def test_marketplace_release_write_rejects_every_payload_before_release_mutation(monkeypatch):
-    calls = install_route_fakes(monkeypatch)
-    client = TestClient(create_app())
-
-    response = client.put(
-        "/api/marketplace/qa-file-reviewer",
-        json={"version": "hash-a", "description": "Cannot overwrite hash-a in place."},
-        headers=headers("marketplace:admin"),
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "marketplace_direct_write_contract_not_backed"
-    assert not any(name == "forbidden_release_write" for name, _ in calls)
 
 
 def test_public_skill_direct_marketplace_activation_accepts_frontend_is_active_payload(monkeypatch):

@@ -901,8 +901,17 @@ def test_browser_principal_snapshot_strictly_preserves_authority_metadata():
         assert auth_sessions._valid_snapshot(incomplete) is None
 
 
+def bootstrap_request(nonce: str = "A" * 43) -> dict[str, object]:
+    return {
+        "nonce": nonce,
+        "protocol_version": 2,
+        "browser_incarnation": nonce[:43],
+        "generation": 1,
+    }
+
+
 def bootstrap(client: TestClient, nonce: str = "A" * 43) -> str:
-    response = client.post("/api/ai/auth/bootstrap", json={"nonce": nonce})
+    response = client.post("/api/ai/auth/bootstrap", json=bootstrap_request(nonce))
     assert response.status_code == 200, response.text
     cookie = response.cookies.get("ai_platform_auth_context")
     assert cookie
@@ -929,14 +938,16 @@ def install_company_login(monkeypatch, *, gate_a: threading.Event | None = None,
     monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
 
 
-def test_bootstrap_concurrent_and_late_requests_set_one_stable_context_cookie(monkeypatch):
+def test_bootstrap_concurrent_and_late_requests_keep_one_stable_v2_cookie(monkeypatch):
     redis = FakeAuthRedis()
     install_auth_context_dependencies(monkeypatch, redis)
     clients = [TestClient(create_app()), TestClient(create_app())]
     responses = []
 
     def bootstrap_client(client: TestClient):
-        responses.append(client.post("/api/ai/auth/bootstrap", json={"nonce": "A" * 43}))
+        responses.append(
+            client.post("/api/ai/auth/bootstrap", json=bootstrap_request())
+        )
 
     threads = [threading.Thread(target=bootstrap_client, args=(client,)) for client in clients]
     for thread in threads:
@@ -944,11 +955,23 @@ def test_bootstrap_concurrent_and_late_requests_set_one_stable_context_cookie(mo
     for thread in threads:
         thread.join(timeout=5)
 
-    late_response = clients[0].post("/api/ai/auth/bootstrap", json={"nonce": "A" * 43})
     assert all(response.status_code == 200 for response in responses)
-    cookies = [response.cookies["ai_platform_auth_context"] for response in [*responses, late_response]]
-    assert len(set(cookies)) == 1
-    assert len(redis.values) == 1
+    cookies = [
+        response.cookies.get("ai_platform_auth_context") for response in responses
+    ]
+    published = [cookie for cookie in cookies if cookie]
+    assert published
+    assert len(set(published)) == 1
+
+    late_client = TestClient(create_app())
+    late_client.cookies.set("ai_platform_auth_context", published[0])
+    late_response = late_client.post(
+        "/api/ai/auth/bootstrap",
+        json=bootstrap_request(),
+    )
+    assert late_response.status_code == 200
+    assert "set-cookie" not in late_response.headers
+    assert len(redis.values) == 2
 
 
 @pytest.mark.asyncio
@@ -1550,48 +1573,38 @@ async def test_v2_fake_lua_model_enforces_ttl_consistency_for_bootstrap_rotation
             await action()
 
 
-def test_v1_bootstrap_cannot_downgrade_a_signed_v2_cookie(monkeypatch):
-    """A Web Locks V1 request must never overwrite a migrated V2 cookie."""
-
+def test_v1_bootstrap_requests_are_rejected(monkeypatch):
     redis = FakeAuthRedis()
     install_auth_context_dependencies(monkeypatch, redis)
-    v2_client = TestClient(create_app())
-    v2 = v2_client.post(
-        "/api/ai/auth/bootstrap",
-        json={
-            "nonce": "A" * 43,
-            "protocol_version": 2,
-            "browser_incarnation": "I" * 43,
-            "generation": 1,
-        },
-    )
-    assert v2.status_code == 200, v2.text
-    v2_cookie = v2.cookies["ai_platform_auth_context"]
-    assert v2_cookie.startswith("v2.")
 
-    downgraded = TestClient(create_app()).post(
-        "/api/ai/auth/bootstrap",
-        headers={"Cookie": f"ai_platform_auth_context={v2_cookie}"},
-        json={"nonce": "Z" * 43},
-    )
-    assert downgraded.status_code == 409
-    assert downgraded.json()["detail"] == "auth_context_stale"
-    assert "set-cookie" not in downgraded.headers
-
-    ordinary_v1 = TestClient(create_app()).post(
+    omitted = TestClient(create_app()).post(
         "/api/ai/auth/bootstrap",
         json={"nonce": "Y" * 43},
     )
-    assert ordinary_v1.status_code == 200
-    assert ordinary_v1.cookies["ai_platform_auth_context"].startswith("v1.")
+    explicit = TestClient(create_app()).post(
+        "/api/ai/auth/bootstrap",
+        json={"nonce": "Z" * 43, "protocol_version": 1},
+    )
+
+    assert omitted.status_code == 422
+    assert explicit.status_code == 422
+    assert redis.values == {}
 
 
 def test_v1_matching_context_migrates_without_extending_and_nonmatching_authenticated_v1_fails_closed(monkeypatch):
     redis = FakeAuthRedis()
-    install_auth_context_dependencies(monkeypatch, redis)
+    settings = install_auth_context_dependencies(monkeypatch, redis)
     install_company_login(monkeypatch)
     client = TestClient(create_app())
-    legacy_cookie = bootstrap(client, "M" * 43)
+    legacy_cookie = auth_sessions.auth_context_handle_for_nonce("M" * 43, settings)
+    assert asyncio.run(
+        auth_sessions.bootstrap_auth_context(
+            legacy_cookie,
+            "M" * 43,
+            settings,
+        )
+    ) == "created"
+    client.cookies.set("ai_platform_auth_context", legacy_cookie)
     login = client.post("/api/ai/auth/login", json={"username": "user-a", "password": "test-password"})
     assert login.status_code == 200
     _raw, original_expiry = next(
@@ -1940,53 +1953,6 @@ def test_late_v2_cookie_cannot_begin_login_logout_or_oauth_and_old_commit_is_fen
     assert all("set-cookie" not in response.headers for response in responses)
 
 
-def test_nonce_only_bootstrap_cannot_reissue_an_authenticated_context(monkeypatch):
-    redis = FakeAuthRedis()
-    install_auth_context_dependencies(monkeypatch, redis)
-    install_company_login(monkeypatch)
-    nonce = "N" * 43
-    client_a = TestClient(create_app())
-    context_cookie = bootstrap(client_a, nonce)
-
-    login = client_a.post(
-        "/api/ai/auth/login",
-        json={"username": "user-a", "password": "safe-password"},
-    )
-    assert login.status_code == 200
-
-    client_b = TestClient(create_app())
-    replay = client_b.post("/api/ai/auth/bootstrap", json={"nonce": nonce})
-    assert replay.status_code == 409
-    assert replay.json()["detail"] == "auth_context_rebootstrap_required"
-    assert "set-cookie" not in replay.headers
-    assert client_b.get("/api/ai/auth/me").status_code == 401
-
-    reload = client_a.post("/api/ai/auth/bootstrap", json={"nonce": nonce})
-    assert reload.status_code == 200
-    assert reload.cookies["ai_platform_auth_context"] == context_cookie
-    assert client_a.get("/api/ai/auth/me").json()["user_id"] == "user-a"
-
-    fresh = client_b.post("/api/ai/auth/bootstrap", json={"nonce": "F" * 43})
-    assert fresh.status_code == 200
-    assert fresh.cookies["ai_platform_auth_context"] != context_cookie
-    assert client_b.get("/api/ai/auth/me").status_code == 401
-
-
-def test_nonce_only_bootstrap_cannot_reissue_a_previously_operated_anonymous_context(monkeypatch):
-    redis = FakeAuthRedis()
-    install_auth_context_dependencies(monkeypatch, redis)
-    nonce = "O" * 43
-    client_a = TestClient(create_app())
-    bootstrap(client_a, nonce)
-    assert client_a.post("/api/ai/auth/logout").status_code == 200
-
-    client_b = TestClient(create_app())
-    replay = client_b.post("/api/ai/auth/bootstrap", json={"nonce": nonce})
-    assert replay.status_code == 409
-    assert replay.json()["detail"] == "auth_context_rebootstrap_required"
-    assert "set-cookie" not in replay.headers
-
-
 def test_browser_auth_mutations_without_a_context_fail_closed_without_cookie_mutation(monkeypatch):
     redis = FakeAuthRedis()
     install_auth_context_dependencies(monkeypatch, redis)
@@ -2289,10 +2255,13 @@ async def test_context_and_operation_token_substitution_are_rejected(monkeypatch
 
 def test_redis_unavailable_lost_or_corrupt_context_fails_closed_without_cookie_mutation(monkeypatch):
     redis = FakeAuthRedis()
-    install_auth_context_dependencies(monkeypatch, redis)
+    settings = install_auth_context_dependencies(monkeypatch, redis)
     client = TestClient(create_app())
     redis.available = False
-    unavailable = client.post("/api/ai/auth/bootstrap", json={"nonce": "F" * 43})
+    unavailable = client.post(
+        "/api/ai/auth/bootstrap",
+        json=bootstrap_request("F" * 43),
+    )
     assert unavailable.status_code == 503
     assert "set-cookie" not in unavailable.headers
 
@@ -2301,19 +2270,31 @@ def test_redis_unavailable_lost_or_corrupt_context_fails_closed_without_cookie_m
     redis.values.clear()
     client.cookies.set("ai_platform_auth_context", context_cookie)
     lost = client.get("/api/ai/auth/me")
-    assert lost.status_code == 401
+    assert lost.status_code == 409
+    assert lost.json()["detail"] == "auth_context_stale"
     assert "set-cookie" not in lost.headers
-    rebootstrap = client.post("/api/ai/auth/bootstrap", json={"nonce": "G" * 43})
-    assert rebootstrap.status_code == 200
-    assert rebootstrap.cookies["ai_platform_auth_context"] == context_cookie
+    rebootstrap = client.post(
+        "/api/ai/auth/bootstrap",
+        json=bootstrap_request("G" * 43),
+    )
+    assert rebootstrap.status_code == 409
+    assert rebootstrap.json()["detail"] == "auth_context_stale"
+    assert "set-cookie" not in rebootstrap.headers
 
-    context_key = next(iter(redis.values))
+    client = TestClient(create_app())
+    context_cookie = bootstrap(client, "J" * 43)
+    identity = auth_sessions.parse_auth_context_cookie(context_cookie, settings)
+    assert isinstance(identity, auth_sessions.V2AuthContextIdentity)
+    context_key = auth_sessions._context_key(identity.context_handle)
     _, expiry = redis.values[context_key]
     redis.values[context_key] = ("not-json", expiry)
     corrupt = client.get("/api/ai/auth/me")
     assert corrupt.status_code == 503
     assert corrupt.json()["detail"] == "auth_context_unavailable"
-    corrupt_bootstrap = client.post("/api/ai/auth/bootstrap", json={"nonce": "G" * 43})
+    corrupt_bootstrap = client.post(
+        "/api/ai/auth/bootstrap",
+        json=bootstrap_request("J" * 43),
+    )
     assert corrupt_bootstrap.status_code == 503
     assert "set-cookie" not in corrupt_bootstrap.headers
 
@@ -2340,7 +2321,9 @@ def test_me_rejects_corrupt_numeric_auth_context_state(monkeypatch, field, value
     settings = install_auth_context_dependencies(monkeypatch, redis)
     client = TestClient(create_app())
     context_cookie = bootstrap(client, "Q" * 43)
-    context_key = next(iter(redis.values))
+    identity = auth_sessions.parse_auth_context_cookie(context_cookie, settings)
+    assert isinstance(identity, auth_sessions.V2AuthContextIdentity)
+    context_key = auth_sessions._context_key(identity.context_handle)
     raw, expiry = redis.values[context_key]
     record = json.loads(raw)
     record["principal"] = {
@@ -2357,8 +2340,8 @@ def test_me_rejects_corrupt_numeric_auth_context_state(monkeypatch, field, value
     client.cookies.set("ai_platform_auth_context", context_cookie)
 
     response = client.get("/api/ai/auth/me")
-    assert response.status_code == 503
-    assert response.json()["detail"] == "auth_context_unavailable"
+    assert response.status_code == 409
+    assert response.json()["detail"] == "auth_context_stale"
 
 
 @pytest.mark.asyncio
@@ -2412,7 +2395,7 @@ def test_weak_context_secret_fails_closed_without_cookie_mutation(monkeypatch):
     )
     response = TestClient(create_app()).post(
         "/api/ai/auth/bootstrap",
-        json={"nonce": "H" * 43},
+        json=bootstrap_request("H" * 43),
     )
 
     assert response.status_code == 503

@@ -258,7 +258,7 @@ def _minimal_auth_payload(commit_sha: str, *, image: str, captured_at: str = "20
         "evidence_ref": {
             "result": "ok:true",
             "runtime_checks": {
-                "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+                "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
                 "authenticated_auth_me": {
                     "route": "/api/ai/auth/me",
                     "status": 200,
@@ -352,9 +352,6 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
             "tool_permission": {
                 "status": "passed",
                 "decision_sample_count": 12,
-                "zero_click_write_probe_count": 12,
-                "zero_click_write_410_count": 12,
-                "zero_click_write_unexpected_status_count": 0,
                 "negative_reuse_probe_count": 48,
                 "negative_reuse_denied_count": 48,
                 "negative_reuse_unexpected_successes": 0,
@@ -4612,7 +4609,7 @@ def test_g6_followups_prioritize_s1_memory_controls_over_non_stage_signed_skill_
 def test_auth_rbac_summary_reports_platform_principal_tenant_and_gateway_checks():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
-            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
             "authenticated_auth_me": {
                 "route": "/api/ai/auth/me",
                 "status": 200,
@@ -4660,7 +4657,7 @@ def test_auth_rbac_summary_reports_platform_principal_tenant_and_gateway_checks(
 def test_auth_rbac_summary_keeps_broader_regression_open_without_company_login_audit():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
-            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
             "authenticated_auth_me": {
                 "route": "/api/ai/auth/me",
                 "status": 200,
@@ -4701,7 +4698,7 @@ def test_auth_rbac_summary_keeps_broader_regression_open_without_company_login_a
 def test_auth_rbac_summary_requires_company_login_audit_counts_for_s1_evidence():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
-            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
             "authenticated_auth_me": {
                 "route": "/api/ai/auth/me",
                 "status": 200,
@@ -4745,7 +4742,7 @@ def test_auth_rbac_summary_requires_company_login_audit_counts_for_s1_evidence()
 def test_auth_rbac_summary_accepts_redacted_company_login_audit_without_total_count():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
-            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
             "authenticated_auth_me": {
                 "route": "/api/ai/auth/me",
                 "status": 200,

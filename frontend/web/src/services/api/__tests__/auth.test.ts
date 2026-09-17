@@ -222,7 +222,15 @@ test("subject-changing auth transports compose cancellation with a bounded timeo
   const stubs = installAuthApiBrowserStubs();
   const controller = new AbortController();
   try {
-    await authApi.bootstrapAuthContext("A".repeat(43), controller.signal);
+    await authApi.bootstrapAuthContext(
+      {
+        nonce: "A".repeat(43),
+        protocol_version: 2,
+        browser_incarnation: "I".repeat(43),
+        generation: 1,
+      },
+      controller.signal,
+    );
     await authApi.getCurrentUser({ signal: controller.signal });
     await authApi.login(
       { username: "user@example.com", password: "safe-test" },

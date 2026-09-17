@@ -7,10 +7,11 @@ This contract covers the authenticated frontend Skills and Marketplace surfaces.
 All routes require an authenticated principal. Missing authentication returns `401`. Missing authorization returns `403` with `detail` formatted as `missing_permission:<permission>`.
 
 MCP lifecycle routes are platform-admin gated. Server registry create, update,
-delete, and enablement now persist tenant-scoped lifecycle metadata with
-redacted credential evidence; remaining import, tool-toggle, promote, and
-demote flows still return `409 mcp_lifecycle_contract_not_backed` until their
-governance paths are backed.
+delete, and enablement persist tenant-scoped lifecycle metadata with redacted
+credential evidence. The former compatibility-only routes `POST /api/mcp/import`,
+`PATCH /api/mcp/{name}/tools/{tool_name}`, `POST /api/admin/mcp/{name}/promote`,
+and `POST /api/admin/mcp/{name}/demote` are retired and absent; tool discovery
+and backed server lifecycle routes remain listed below.
 
 Effective permissions are projected from the principal permissions plus admin role expansion:
 
@@ -113,13 +114,6 @@ Tenant Marketplace distribution lifecycle routes are backed for authorized marke
 - `PATCH /api/marketplace/{skill_name}/activate` accepts either `active` or the frontend-compatible `is_active` body field and updates tenant availability.
 - `DELETE /api/marketplace/{skill_name}` disables tenant Marketplace availability without deleting global Skill records.
 
-The following compatibility routes are fail-closed and return
-`409 marketplace_direct_write_contract_not_backed` without reading or mutating
-the Skill catalog, version rows, release policy, or tenant distribution:
-
-- `POST /api/marketplace/`
-- `PUT /api/marketplace/{skill_name}`
-
 The Admin release-management surface under `/api/ai/admin/skills/*` is the only
 authority for immutable version upload, review, promote, rollout policy, and
 rollback. Marketplace routes remain projections and tenant-distribution
@@ -188,31 +182,6 @@ Relay, and runtime connection material is removed from reconciliation persistenc
 
 The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selected-tool exposure, SDK alias mapping, HTTP/SSE transport limits, and runnable acceptance. Command/stdin (`sandbox`) configuration writes are rejected until a governed process adapter exists; existing rows remain readable but do not authorize command execution. Ordinary directory responses with `unavailable_reason` display unavailable state rather than an empty successful catalog.
 
-Explicitly fail-closed follow-up routes:
-
-- `POST /api/mcp/import`
-- `PATCH /api/mcp/{name}/tools/{tool_name}`
-- `POST /api/admin/mcp/{name}/promote`
-- `POST /api/admin/mcp/{name}/demote`
-
-Those follow-up routes require platform admin and then return
-`409 mcp_lifecycle_contract_not_backed`. Tool policy writes remain under
-`/api/ai/admin/tool-policies/*`; ordinary users do not gain MCP server CRUD,
-credential lifecycle, or write-tool bypass authority from this public route set.
-
-## Retired Runtime Tool-Permission Writes
-
-Runtime tool policy is zero-click: it synchronously allows or denies an
-already-authorized tool subject and never creates an approval request. The
-following compatibility writes were deprecated on `2026-07-17` and return
-`410 Gone` without mutating a request, decision, audit, or event:
-
-- `POST /api/ai/runs/{run_id}/tool-permissions/request`
-- `POST /api/ai/runs/{run_id}/tool-permissions/{request_id}/decision`
-- `POST /api/ai/tool-permissions/inbox/{request_id}/decision`
-
-`GET /api/ai/tool-permissions/inbox` remains a redacted historical read;
-pre-existing rows may still terminalize safely. The write routes remain only
-for compatibility. Their earliest physical removal is `2026-08-17`, and
-requires a consumer inventory plus recorded no-call evidence; frontend code
-must not call or depend on them.
+Tool policy writes remain under `/api/ai/admin/tool-policies/*`; ordinary users
+do not gain MCP server CRUD, credential lifecycle, or write-tool bypass
+authority from this public route set.

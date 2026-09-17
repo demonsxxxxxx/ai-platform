@@ -8,56 +8,6 @@ import {
   fetchXlsxPreviewJson,
   shouldUseAuthenticatedDocumentRequest,
 } from "../documentFetchCache.ts";
-import { clearAuthState } from "../../../services/api/tokenManager.ts";
-
-function installAuthBrowserStubs() {
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-  const originalLocalStorage = Object.getOwnPropertyDescriptor(
-    globalThis,
-    "localStorage",
-  );
-  const events: string[] = [];
-  const removedKeys: string[] = [];
-
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: {
-      location: {
-        origin: "https://app.example.test",
-      },
-      dispatchEvent(event: Event) {
-        events.push(event.type);
-        return true;
-      },
-    },
-  });
-  Object.defineProperty(globalThis, "localStorage", {
-    configurable: true,
-    value: {
-      removeItem(key: string) {
-        removedKeys.push(key);
-      },
-    },
-  });
-
-  return {
-    events,
-    removedKeys,
-    restore() {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, "window", originalWindow);
-      } else {
-        delete (globalThis as { window?: Window }).window;
-      }
-      if (originalLocalStorage) {
-        Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-      } else {
-        delete (globalThis as { localStorage?: Storage }).localStorage;
-      }
-    },
-  };
-}
-
 test("fetchDocumentArrayBuffer uses authenticated request for protected platform artifact downloads", async () => {
   clearDocumentFetchCaches();
   const authCalls: Array<string | URL | Request> = [];
@@ -197,34 +147,6 @@ test("fetchDocumentText does not cache protected platform artifact bytes across 
   assert.equal(first, "protected-1");
   assert.equal(second, "protected-2");
   assert.equal(authenticatedCount, 2);
-});
-
-test("clearAuthState clears document fetch caches when tokens are cleared", async () => {
-  clearDocumentFetchCaches();
-  const stubs = installAuthBrowserStubs();
-  let fetchCount = 0;
-
-  try {
-    const first = await fetchDocumentText("/static/cached.txt", {
-      fetchImpl: async () => new Response(`public-${++fetchCount}`),
-    });
-    clearAuthState();
-    const second = await fetchDocumentText("/static/cached.txt", {
-      fetchImpl: async () => new Response(`public-${++fetchCount}`),
-    });
-
-    assert.equal(first, "public-1");
-    assert.equal(second, "public-2");
-    assert.deepEqual(stubs.events, ["auth:logout"]);
-    assert.deepEqual(stubs.removedKeys, [
-      "ai_platform_session_present",
-      "access_token",
-      "refresh_token",
-    ]);
-  } finally {
-    stubs.restore();
-    clearDocumentFetchCaches();
-  }
 });
 
 test("document request selector authenticates only artifact and upload file api URLs", () => {

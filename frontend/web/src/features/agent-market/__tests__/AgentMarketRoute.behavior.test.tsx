@@ -6,6 +6,7 @@ import React from "react";
 
 import { Permission } from "../../../types/auth.ts";
 import type { AgentProfilePublicProjection } from "../../../types/agentProfile.ts";
+import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb.ts";
 
 const enterpriseProfileFields = {
   starter_prompts: ["帮我处理企业任务"] as string[],
@@ -451,6 +452,7 @@ function installDom() {
     configurable: true,
     value: { userAgent: "node", locks: new TestLockManager() },
   });
+  installBrowserAuthTestDb();
   return { document, window: windowTarget };
 }
 
@@ -472,7 +474,11 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     getPinnedModelIds: modelPublicApi.getPinnedModelIds,
     getActiveNotifications: notificationPublicApi.getActive,
   };
-  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.bootstrapAuthContext = async (request) => ({
+    status: "ready",
+    protocol_version: 2,
+    generation: request.generation,
+  });
   authApi.getCurrentUser = authenticated
     ? async () => ({
         id: "user-a",

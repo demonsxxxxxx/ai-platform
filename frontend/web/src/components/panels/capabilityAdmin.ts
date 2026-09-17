@@ -24,20 +24,6 @@ export function isAiAdminUser(
   return user.is_admin === true || isAiAdminRoleUser(user.roles);
 }
 
-export function canManageSharedMarketplace({
-  isOwner,
-  hasMarketplaceAdminPermission,
-  isAiAdmin,
-}: {
-  isOwner: boolean;
-  hasMarketplaceAdminPermission: boolean;
-  isAiAdmin: boolean;
-}): boolean {
-  void isOwner;
-  void hasMarketplaceAdminPermission;
-  return isAiAdmin;
-}
-
 export function canManageMcpLifecycle({
   hasExplicitMcpPermission,
   isAiAdmin,

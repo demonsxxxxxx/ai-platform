@@ -8,10 +8,8 @@ import { resolveSkillCatalogSelection } from "../SkillsPanel/skillCatalogEntries
 
 test("keeps Skill visibility administration server-governed and ordinary catalog projections safe", () => {
   const adminState = resolveSkillsHubGovernance({
-    requestedTab: "skills",
     isAuthenticated: true,
     canReadSkills: false,
-    canReadMarketplace: false,
     effectivePermissions: ["skill:admin"],
     effectivePermissionsKnown: true,
     catalogReadResolved: true,
@@ -21,10 +19,8 @@ test("keeps Skill visibility administration server-governed and ordinary catalog
   assert.equal(adminState.effectivePermissionsSource, "catalog");
 
   const ordinaryState = resolveSkillsHubGovernance({
-    requestedTab: "skills",
     isAuthenticated: true,
     canReadSkills: false,
-    canReadMarketplace: false,
     effectivePermissions: ["skill:read"],
     effectivePermissionsKnown: true,
     catalogReadResolved: true,

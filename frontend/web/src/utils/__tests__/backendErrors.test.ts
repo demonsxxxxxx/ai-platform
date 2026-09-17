@@ -134,14 +134,6 @@ test("translates fail-closed public governance contract codes", () => {
     translateBackendError("skill_import_contract_not_backed", t),
     "translated:backendErrors.skillImportNotBacked",
   );
-  assert.equal(
-    translateBackendError("marketplace_direct_write_contract_not_backed", t),
-    "translated:backendErrors.marketplaceDirectWriteNotBacked",
-  );
-  assert.equal(
-    translateBackendError("mcp_lifecycle_contract_not_backed", t),
-    "translated:backendErrors.mcpLifecycleNotBacked",
-  );
 });
 
 test("projects stable Skill package failures to actionable Skill copy", () => {
@@ -170,8 +162,6 @@ test("the shipped Chinese catalog includes fail-closed governance error copy", (
     "skillFileWriteNotBacked",
     "skillFileDeleteNotBacked",
     "skillImportNotBacked",
-    "marketplaceDirectWriteNotBacked",
-    "mcpLifecycleNotBacked",
     "skillPackageInvalidZip",
     "skillPackageSkillMdRequired",
     "skillPackageMultipleSkills",

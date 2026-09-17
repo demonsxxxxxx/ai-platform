@@ -13,7 +13,6 @@ import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import toast from "react-hot-toast";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
@@ -210,7 +209,6 @@ interface ChatViewProps {
     composer?: ReactNode;
     rightPanel?: ReactNode;
   }>;
-  sessionRouteBasePath?: string;
 }
 
 export function ChatView({
@@ -269,10 +267,8 @@ export function ChatView({
   externalScrollToBottom,
   outlineToggleRef,
   WorkbenchShellComponent,
-  sessionRouteBasePath = "/chat",
 }: ChatViewProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { user } = useAuth();
   const artifactDownloadScopeContext = useMemo(
     () =>
@@ -665,22 +661,6 @@ export function ChatView({
   const isMobileViewport =
     typeof window !== "undefined" ? window.innerWidth < 640 : false;
 
-  const handleForkMessage = useCallback(
-    async (messageId: string) => {
-      if (!sessionId) return;
-      try {
-        const response = await sessionApi.forkMessage(sessionId, messageId);
-        toast.success(t("chat.message.forkSuccess"));
-        navigate(`${sessionRouteBasePath}/${response.session.id}`);
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : t("chat.message.forkFailed"),
-        );
-      }
-    },
-    [navigate, sessionId, sessionRouteBasePath, t],
-  );
-
   const handleOpenWorkspaceFile = useCallback(
     (file: SessionWorkspaceFile) => {
       if (!file.preview_url) {
@@ -785,13 +765,10 @@ export function ChatView({
           <ChatMessage
             message={message}
             artifactDownloadScopeContext={artifactDownloadScopeContext}
-            sessionId={sessionId ?? undefined}
-            runId={currentRunId ?? undefined}
             isLastMessage={index === messages.length - 1}
             activePreview={activePreview}
             latestAutoPreview={latestAutoPreview}
             onOpenPreview={handleOpenPreview}
-            onForkMessage={handleForkMessage}
           />
         }
       >
@@ -802,14 +779,11 @@ export function ChatView({
       </AssistantUiMessageContentContext.Provider>
     ),
     [
-      sessionId,
       artifactDownloadScopeContext,
-      currentRunId,
       messages.length,
       activePreview,
       latestAutoPreview,
       handleOpenPreview,
-      handleForkMessage,
     ],
   );
 

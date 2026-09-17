@@ -782,7 +782,6 @@ async def test_chat_stream_never_turns_bash_text_into_required_capability(
             ("append_message", "msg-required-bash"),
             ("bind_files_to_run", None),
             ("append_event", None),
-            ("create_tool_permission_request", None),
         )
     }
     for name, mock in business.items():
@@ -803,7 +802,6 @@ async def test_chat_stream_never_turns_bash_text_into_required_capability(
 
     assert (await chat_stream(request, principal=principal())).status == "queued"
     business["create_run"].assert_awaited_once()
-    business["create_tool_permission_request"].assert_not_awaited()
     assert "_required_capability_declaration" not in enqueue.await_args.args[0]["input"]
 
 

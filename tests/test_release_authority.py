@@ -38,7 +38,6 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 SANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.opensandbox.yml"
-S72_COLOCATION_COMPOSE = OPENSANDBOX_COMPOSE
 RUNBOOK = ROOT / "docs" / "operations" / "release-operations-runbook.md"
 LEGACY_FRONTEND_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.frontend.yml"
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
@@ -47,7 +46,6 @@ WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
-S72_COLOCATION_COMPOSE_RELATIVE_PATH = OPENSANDBOX_COMPOSE_RELATIVE_PATH
 USTC_APT_MIRRORS = release_authority._normalize_apt_mirror_pair(
     "https://mirrors.ustc.edu.cn/debian", "https://mirrors.ustc.edu.cn/debian-security"
 )
@@ -469,7 +467,7 @@ def _write_provider_compose_files(repo_root: Path) -> tuple[Path, Path, Path]:
     return main, sandbox, direct
 
 
-def _colocation_environment(auth_base: str, user_info_base: str) -> dict[str, str]:
+def _opensandbox_environment(auth_base: str, user_info_base: str) -> dict[str, str]:
     return {
         "EXISTING_AUTH_BASE_URL": auth_base,
         "EXISTING_USER_INFO_BASE_URL": user_info_base,
@@ -490,8 +488,8 @@ def _direct_opensandbox_rendered_config(auth_base: str, user_info_base: str) -> 
             "postgres": {},
             "redis": {},
             "minio": {},
-            "api": {"environment": _colocation_environment(auth_base, user_info_base)},
-            "worker": {"environment": _colocation_environment(auth_base, user_info_base)},
+            "api": {"environment": _opensandbox_environment(auth_base, user_info_base)},
+            "worker": {"environment": _opensandbox_environment(auth_base, user_info_base)},
             "opensandbox-egress-proxy": {
                 "labels": {"ai-platform.release-role": "opensandbox-egress-proxy"},
                 "networks": {
@@ -639,51 +637,9 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
     assert "BEGIN CERTIFICATE" not in example_text and "BEGIN PRIVATE KEY" not in example_text
 
 
-def test_opensandbox_server_publishes_only_the_configured_lifecycle_address():
-    service = (ROOT / "deploy" / "opensandbox" / "opensandbox-s72.service").read_text(
-        encoding="utf-8"
-    )
-    environment = (ROOT / "deploy" / "opensandbox" / "server-s72.env.example").read_text(
-        encoding="utf-8"
-    )
-    config = (ROOT / "deploy" / "opensandbox" / "server-s72.toml.example").read_text(
-        encoding="utf-8"
-    )
-
-    assert "--publish ${OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS}:8080:8080" in service
-    assert "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS', 'OPENSANDBOX_EGRESS_LISTEN_ADDRESS" in service
-    assert "address.is_private" in service
-    assert "address.is_loopback" in service
-    assert "address.is_unspecified" in service
-    assert "addresses[0] != addresses[1]" in service
-    assert "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS=REQUIRED_PRIVATE_NON_EGRESS_IPV4_ADDRESS" in environment
-    assert "OPENSANDBOX_EGRESS_LISTEN_ADDRESS=REQUIRED_PRIVATE_NON_LIFECYCLE_IPV4_ADDRESS" in environment
-    guard = service.split('ExecStartPre=/usr/bin/python3 -c "', 1)[1].split('"\nExecStart=', 1)[0]
-    for lifecycle, egress, accepted in (
-        ("172.19.0.1", "172.18.0.1", True),
-        ("172.18.0.1", "172.18.0.1", False),
-        ("0.0.0.0", "172.18.0.1", False),
-        ("127.0.0.1", "172.18.0.1", False),
-        ("8.8.8.8", "172.18.0.1", False),
-    ):
-        result = subprocess.run(
-            [sys.executable, "-c", guard],
-            env={
-                **os.environ,
-                "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS": lifecycle,
-                "OPENSANDBOX_EGRESS_LISTEN_ADDRESS": egress,
-            },
-            capture_output=True,
-            check=False,
-        )
-        assert (result.returncode == 0) is accepted
-    assert 'host = "0.0.0.0"' in config
-    assert "--publish 127.0.0.1:8080:8080" not in service
-
-
-def test_compose_semantic_preflight_accepts_complete_s72_config_with_operator_auth(monkeypatch, tmp_path):
+def test_compose_semantic_preflight_accepts_complete_opensandbox_config_with_operator_auth(monkeypatch, tmp_path):
     commit = "a" * 40
-    main, colocation = _write_required_provider_compose_files(tmp_path)
+    main, opensandbox = _write_required_provider_compose_files(tmp_path)
     env_file = tmp_path / ".env"
     env_file.write_text(
         "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263\n"
@@ -691,7 +647,7 @@ def test_compose_semantic_preflight_accepts_complete_s72_config_with_operator_au
         encoding="utf-8",
     )
     selection = release_authority.resolve_compose_files(
-        tmp_path, [COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH]
+        tmp_path, [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH]
     )
     commands: list[list[str]] = []
     rendered = json.dumps(
@@ -703,14 +659,14 @@ def test_compose_semantic_preflight_accepts_complete_s72_config_with_operator_au
     release_authority._semantic_compose_config_preflight(["sudo", "-n", "--", "docker"], selection, env_file, commit=commit)
     command = commands[0]
     assert len(commands) == 1 and command[:4] == ["sudo", "-n", "--", "env"]
-    assert command[command.index("compose") :] == ["compose", "-p", release_authority.COMPOSE_PROJECT, "--env-file", str(env_file), "-f", str(main.resolve()), "-f", str(colocation.resolve()), "config", "--format", "json"]
+    assert command[command.index("compose") :] == ["compose", "-p", release_authority.COMPOSE_PROJECT, "--env-file", str(env_file), "-f", str(main.resolve()), "-f", str(opensandbox.resolve()), "config", "--format", "json"]
     for role, suffix in (("AI_PLATFORM_IMAGE", "backend"), ("AI_PLATFORM_FRONTEND_IMAGE", "frontend"), ("SANDBOX_EXECUTOR_IMAGE", "sandbox-executor")):
         assert f"{role}={release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/{suffix}" in command
 
 
 def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_raw_output(monkeypatch, tmp_path):
     commit = "b" * 40
-    main, colocation = _write_required_provider_compose_files(tmp_path)
+    main, opensandbox = _write_required_provider_compose_files(tmp_path)
     env_file = tmp_path / ".env"
     env_file.write_text("SAFE_TEST_FIXTURE=present\n", encoding="utf-8")
     commands: list[list[str]] = []
@@ -724,9 +680,9 @@ def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_ra
     monkeypatch.setattr(release_authority, "_image_record", lambda *args, **kwargs: pytest.fail("image lookup must follow Compose preflight"))
     monkeypatch.setattr(release_authority, "_run", fake_run)
     with pytest.raises(ReleaseAuthorityError, match="^release stage failed: compose-config-preflight$") as exc_info:
-        deploy_clean_commit(tmp_path, commit, docker_cmd="docker", env_file=env_file, replace_known_manual_frontend=False, compose_files=[COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH])
+        deploy_clean_commit(tmp_path, commit, docker_cmd="docker", env_file=env_file, replace_known_manual_frontend=False, compose_files=[COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH])
     assert all(command[-3:] == ["config", "--format", "json"] for command in commands)
-    assert len(commands) == 3 and all(str(main.resolve()) in command and str(colocation.resolve()) in command for command in commands)
+    assert len(commands) == 3 and all(str(main.resolve()) in command and str(opensandbox.resolve()) in command for command in commands)
     assert not any(action in command for command in commands for action in ("build", "up", "rm", "inspect", "tag"))
     event = exc_info.value.stage_events[-1]
     assert event["stage"] == "compose-config-preflight" and event["compose_config_error_category"] == "missing-required-config"
@@ -3167,11 +3123,11 @@ def test_deploy_preserves_exact_two_file_ownership_and_compose_command(monkeypat
 @pytest.mark.parametrize(
     ("prior_overlay_relative", "target_overlay_relative"),
     [
-        (SANDBOX_COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH),
-        (S72_COLOCATION_COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
+        (SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+        (OPENSANDBOX_COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
     ],
 )
-def test_compose_ownership_rejects_sandbox_colocation_selection_change(
+def test_compose_ownership_rejects_sandbox_opensandbox_selection_change(
     tmp_path,
     prior_overlay_relative,
     target_overlay_relative,
@@ -3180,15 +3136,15 @@ def test_compose_ownership_rejects_sandbox_colocation_selection_change(
     release_root = tmp_path / "releases"
     target = release_root / commit
     prior = release_root / "678d3c46"
-    target_main, target_sandbox, target_colocation = _write_provider_compose_files(target)
-    prior_main, prior_sandbox, prior_colocation = _write_provider_compose_files(prior)
+    target_main, target_sandbox, target_opensandbox = _write_provider_compose_files(target)
+    prior_main, prior_sandbox, prior_opensandbox = _write_provider_compose_files(prior)
     target_overlays = {
         SANDBOX_COMPOSE_RELATIVE_PATH: target_sandbox,
-        S72_COLOCATION_COMPOSE_RELATIVE_PATH: target_colocation,
+        OPENSANDBOX_COMPOSE_RELATIVE_PATH: target_opensandbox,
     }
     prior_overlays = {
         SANDBOX_COMPOSE_RELATIVE_PATH: prior_sandbox,
-        S72_COLOCATION_COMPOSE_RELATIVE_PATH: prior_colocation,
+        OPENSANDBOX_COMPOSE_RELATIVE_PATH: prior_opensandbox,
     }
     target_selection = release_authority.resolve_compose_files(
         target,
@@ -3202,7 +3158,7 @@ def test_compose_ownership_rejects_sandbox_colocation_selection_change(
     assert target_main.is_file() and target_overlays[target_overlay_relative].is_file()
 
 
-def test_verified_current_runtime_uses_label_derived_historical_colocation_selection(
+def test_verified_current_runtime_uses_label_derived_historical_opensandbox_selection(
     monkeypatch,
     tmp_path,
 ):
@@ -3211,13 +3167,13 @@ def test_verified_current_runtime_uses_label_derived_historical_colocation_selec
     release_root = tmp_path / "releases"
     target = release_root / target_commit
     prior = release_root / "678d3c46"
-    target_main, _, target_colocation = _write_provider_compose_files(target)
-    prior_main, _, prior_colocation = _write_provider_compose_files(prior)
+    target_main, _, target_opensandbox = _write_provider_compose_files(target)
+    prior_main, _, prior_opensandbox = _write_provider_compose_files(prior)
     target_selection = release_authority.resolve_compose_files(
         target,
-        [COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH],
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
     )
-    prior_config = _compose_config_value(prior_main, prior_colocation)
+    prior_config = _compose_config_value(prior_main, prior_opensandbox)
     parity_calls: list[tuple[Path, str, tuple[str, ...]]] = []
 
     def fake_container_inspect(docker, name):
@@ -3244,13 +3200,13 @@ def test_verified_current_runtime_uses_label_derived_historical_colocation_selec
         docker_cmd="docker",
     )
 
-    assert target_main.is_file() and target_colocation.is_file()
+    assert target_main.is_file() and target_opensandbox.is_file()
     assert current["commit"] == current_commit
     assert parity_calls == [
         (
             prior.resolve(),
             current_commit,
-            (COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH),
+            (COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH),
         )
     ]
 
@@ -3279,14 +3235,14 @@ def test_provider_overlay_transition_rejects_non_allowlisted_selections(
     release_root = tmp_path / "releases"
     target = release_root / commit
     prior = release_root / "678d3c46"
-    target_main, _, target_colocation = _write_provider_compose_files(target)
-    prior_main, prior_sandbox, prior_colocation = _write_provider_compose_files(prior)
+    target_main, _, target_opensandbox = _write_provider_compose_files(target)
+    prior_main, prior_sandbox, prior_opensandbox = _write_provider_compose_files(prior)
     prior_arbitrary = prior_main.with_name("docker-compose.arbitrary.yml")
     prior_arbitrary.write_text("services: {}\n", encoding="utf-8")
     other_root = tmp_path / "other-releases" / "abcdef12"
-    other_main, _, other_colocation = _write_provider_compose_files(other_root)
+    other_main, _, other_opensandbox = _write_provider_compose_files(other_root)
 
-    target_paths = [COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH]
+    target_paths = [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH]
     observed_paths = [prior_main, prior_sandbox]
     if invalid_selection == "base_only_observed":
         observed_paths = [prior_main]
@@ -3295,15 +3251,15 @@ def test_provider_overlay_transition_rejects_non_allowlisted_selections(
     elif invalid_selection == "reordered_observed":
         observed_paths = [prior_sandbox, prior_main]
     elif invalid_selection == "extra_observed":
-        observed_paths = [prior_main, prior_sandbox, prior_colocation]
+        observed_paths = [prior_main, prior_sandbox, prior_opensandbox]
     elif invalid_selection == "missing_observed":
         observed_paths = [prior_main, prior_main.with_name("docker-compose.missing.yml")]
     elif invalid_selection == "duplicate_observed":
         observed_paths = [prior_main, prior_main]
     elif invalid_selection == "escaped_observed":
-        observed_paths = [prior_main, other_colocation]
+        observed_paths = [prior_main, other_opensandbox]
     elif invalid_selection == "non_sibling_observed":
-        observed_paths = [other_main, other_colocation]
+        observed_paths = [other_main, other_opensandbox]
     elif invalid_selection == "target_base_only":
         target_paths = [COMPOSE_RELATIVE_PATH]
 
@@ -3320,7 +3276,7 @@ def test_provider_overlay_transition_rejects_non_allowlisted_selections(
             lambda path: Path(path) == prior_sandbox or original(Path(path)),
         )
 
-    assert target_colocation.is_file()
+    assert target_opensandbox.is_file()
     assert release_authority._compose_ownership_selection(labels, target_selection) is None
 
 
@@ -3341,7 +3297,7 @@ def test_provider_overlay_transition_rejects_project_role_or_manual_identity(
     prior_main, prior_sandbox, _ = _write_provider_compose_files(prior)
     selection = release_authority.resolve_compose_files(
         target,
-        [COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH],
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
     )
     inspected = _owned_container_payload(
         "api",
@@ -3382,15 +3338,15 @@ def test_provider_overlay_transition_requires_one_owned_selection_for_all_roles(
     target = release_root / commit
     prior = release_root / "678d3c46"
     _write_provider_compose_files(target)
-    prior_main, prior_sandbox, prior_colocation = _write_provider_compose_files(prior)
+    prior_main, prior_sandbox, prior_opensandbox = _write_provider_compose_files(prior)
     selection = release_authority.resolve_compose_files(
         target,
-        [COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH],
+        [COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
     )
     configs = {
-        "api": _compose_config_value(prior_main, prior_colocation),
+        "api": _compose_config_value(prior_main, prior_opensandbox),
         "worker": _compose_config_value(prior_main, prior_sandbox),
-        "frontend": _compose_config_value(prior_main, prior_colocation),
+        "frontend": _compose_config_value(prior_main, prior_opensandbox),
     }
 
     def fake_inspect(docker, name):
@@ -3418,9 +3374,9 @@ def test_deploy_rejects_provider_ownership_change_during_preflight_revalidation(
     target = release_root / commit
     prior = release_root / "678d3c46"
     _write_provider_compose_files(target)
-    prior_main, prior_sandbox, prior_colocation = _write_provider_compose_files(prior)
+    prior_main, prior_sandbox, prior_opensandbox = _write_provider_compose_files(prior)
     prior_configs = (
-        _compose_config_value(prior_main, prior_colocation),
+        _compose_config_value(prior_main, prior_opensandbox),
         _compose_config_value(prior_main, prior_sandbox),
     )
     inspect_count = 0
@@ -3485,7 +3441,7 @@ def test_deploy_rejects_provider_ownership_change_during_preflight_revalidation(
             docker_cmd="docker",
             env_file=tmp_path / ".env",
             replace_known_manual_frontend=False,
-            compose_files=[COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH],
+            compose_files=[COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
         )
 
     assert inspect_count == 4
@@ -4017,7 +3973,7 @@ def test_deploy_main_commit_keeps_target_provider_selection_for_final_parity(mon
     _, release_root, env_file = _prepare_managed_release_layout(monkeypatch, tmp_path)
     checkout = release_root / commit
     calls: list[tuple[str, Path, str, tuple[str, ...]]] = []
-    compose_files = (COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH)
+    compose_files = (COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH)
     monkeypatch.setattr(
         "tools.release_authority.materialize_main_checkout",
         lambda root, requested: checkout,
@@ -4054,10 +4010,10 @@ def test_deploy_main_commit_keeps_target_provider_selection_for_final_parity(mon
 @pytest.mark.parametrize(
     ("current_overlay", "target_overlay"),
     [
-        (SANDBOX_COMPOSE_RELATIVE_PATH, S72_COLOCATION_COMPOSE_RELATIVE_PATH),
-        (S72_COLOCATION_COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
+        (SANDBOX_COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH),
+        (OPENSANDBOX_COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH),
     ],
-    ids=["docker-to-colocation", "colocation-to-docker"],
+    ids=["docker-to-opensandbox", "opensandbox-to-docker"],
 )
 def test_auto_flow_rejects_provider_selection_change_before_deploy(
     monkeypatch,
@@ -4068,10 +4024,10 @@ def test_auto_flow_rejects_provider_selection_change_before_deploy(
     commit = "8" * 40
     _, release_root, env_file = _prepare_managed_release_layout(monkeypatch, tmp_path)
     checkout = release_root / commit
-    main, sandbox, colocation = _write_provider_compose_files(checkout)
+    main, sandbox, opensandbox = _write_provider_compose_files(checkout)
     overlays = {
         SANDBOX_COMPOSE_RELATIVE_PATH: sandbox,
-        S72_COLOCATION_COMPOSE_RELATIVE_PATH: colocation,
+        OPENSANDBOX_COMPOSE_RELATIVE_PATH: opensandbox,
     }
     current_config = _compose_config_value(main, overlays[current_overlay])
     deploy_calls: list[tuple[Path, str, tuple[str, ...]]] = []

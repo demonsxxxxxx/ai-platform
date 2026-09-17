@@ -5,7 +5,6 @@ import test from "node:test";
 import {
   PHASE1_CLOSURE_ROUTES,
   PHASE1_COMPOSER_COMMANDS,
-  PHASE1_FAIL_CLOSED_SURFACES,
   PHASE1_FORBIDDEN_VISUAL_MARKERS,
 } from "../components/workbench/phase1ClosureContract";
 import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
@@ -29,10 +28,6 @@ test("phase one closure routes are registered in the active app graph", () => {
   const tabs = source("src/components/layout/AppContent/TabContent.tsx");
 
   for (const route of PHASE1_CLOSURE_ROUTES) {
-    if (route === "/shared/:shareId") {
-      assert.match(app, /path="\/shared\/:shareId"/);
-      continue;
-    }
     assert.match(app, new RegExp(`path="${route.replace("/", "\\/")}`));
   }
 
@@ -57,19 +52,6 @@ test("phase one composer command names are active source concepts", () => {
   assert.match(input, /ComposerChips/);
 });
 
-test("governed phase one write surfaces remain explicit fail-closed states", () => {
-  const serialized = [
-    source("src/components/panels/SkillsHubPanel.tsx"),
-    source("src/components/panels/MarketplacePanel.tsx"),
-    source("src/components/panels/MCPPanel.tsx"),
-    source("src/components/share/ShareUnavailableState.tsx"),
-  ].join("\n");
-
-  for (const surface of PHASE1_FAIL_CLOSED_SURFACES) {
-    assert.match(serialized, new RegExp(surface));
-  }
-});
-
 test("active phase one source avoids forbidden visual and brand markers", () => {
   const active = [
     "index.html",
@@ -78,7 +60,6 @@ test("active phase one source avoids forbidden visual and brand markers", () => 
     "src/components/chat/WelcomePage.tsx",
     "src/components/chat/ChatInput.tsx",
     "src/components/panels/SkillsHubPanel.tsx",
-    "src/components/panels/MarketplacePanel.tsx",
     "src/components/panels/MCPPanel.tsx",
     "src/components/launchpad/LaunchpadPanel.tsx",
   ];

@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 import re
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -723,45 +722,6 @@ def test_lambchat_session_detail_redacts_custom_retired_agent(monkeypatch):
     assert "baoyu-translate" not in str(payload)
     assert "旧自定义翻译" not in str(payload)
 
-
-async def test_lambchat_agent_repository_exposes_only_canonical_agents():
-    from app.repositories import list_lambchat_agents
-
-    class FakeCursor:
-        async def fetchall(self):
-            return []
-
-    class RecordingConnection:
-        def __init__(self):
-            self.executed = []
-
-        async def execute(self, sql, params):
-            self.executed.append((" ".join(sql.split()), params))
-            return FakeCursor()
-
-    conn = RecordingConnection()
-
-    rows = await list_lambchat_agents(conn, tenant_id="default")
-
-    assert rows == []
-    sql, params = conn.executed[-1]
-    assert "agents.id in ('general-agent', 'qa-word-review')" in sql
-    assert "sop-assistant" not in sql
-    assert "agents.status = 'active'" in sql
-    assert "skills.status = 'active'" in sql
-    assert "skill_release_policies.current_version" in sql
-    assert "coalesce(skill_versions.status, 'active') as skill_version_status" in sql
-    assert (
-        "skill_release_policies.previous_version as release_policy_previous_version"
-        in sql
-    )
-    assert (
-        "previous_skill_versions.status as release_policy_previous_version_status"
-        in sql
-    )
-    assert params == ("default",)
-
-
 def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
     model_catalog = AsyncMock(
         return_value={
@@ -780,26 +740,26 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
     )
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.lambchat_compat.list_public_models", model_catalog)
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
     client = TestClient(create_app())
 
     expectations = {
         "/api/auth/oauth/providers": {"registration_enabled": False},
         "/api/auth/permissions": {"groups": list, "all_permissions": list},
-        "/api/agent/models/": {"enabled_count": 1},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
-        "/api/version": {"version": "ai-platform-poc"},
-        "/api/projects": [],
         "/api/notifications/active": {"notifications": []},
         "/api/upload/config": {
             "categories": ["document"],
             "enabled": True,
             "uploadLimits": dict,
         },
-        "/api/tools": {"tools": []},
     }
 
     anonymous_models = client.get("/api/agent/models/available")
     assert anonymous_models.status_code == 401
+    models = client.get("/api/agent/models/available", headers=auth_headers())
+    assert models.status_code == 200
+    assert models.json()["enabled_count"] == 1
 
     for path, expected in expectations.items():
         response = client.get(path)
@@ -928,51 +888,22 @@ def test_lambchat_governed_model_catalog_preserves_raw_ids(
     assert response.json() == governed
 
 
-def test_lambchat_upload_file_endpoint_matches_frontend_contract(monkeypatch, tmp_path):
-    async def fake_upload_platform_file(file, workspace_id, session_id, principal):
-        assert workspace_id == "default"
-        assert session_id is None
-        assert principal.user_id == "user-a"
-        return SimpleNamespace(
-            file_id="file_uploaded",
-            name="sample.docx",
-            storage_key="tenants/default/files/file_uploaded/sample.docx",
-            sha256="abc123",
-            size_bytes=12,
-        )
-
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr(
-        "app.routes.lambchat_compat.upload_platform_file", fake_upload_platform_file
-    )
+def test_retired_lambchat_subroutes_are_absent():
     client = TestClient(create_app())
-    sample = tmp_path / "sample.docx"
-    sample.write_bytes(b"fake-docx")
 
-    with sample.open("rb") as handle:
-        response = client.post(
-            "/api/upload/file?folder=uploads",
-            headers=auth_headers(),
-            files={
-                "file": (
-                    "sample.docx",
-                    handle,
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-            },
-        )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["key"] == "file_uploaded"
-    assert payload["file_id"] == "file_uploaded"
-    assert payload["name"] == "sample.docx"
-    assert payload["type"] == "uploads"
-    assert (
-        payload["mimeType"]
-        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
-    assert payload["size"] == 12
+    for method, path in (
+        ("post", "/api/auth/login"),
+        ("get", "/api/auth/me"),
+        ("post", "/api/auth/refresh"),
+        ("get", "/api/agent/models/"),
+        ("get", "/api/projects"),
+        ("get", "/api/projects/"),
+        ("get", "/api/tools"),
+        ("post", "/api/upload/file"),
+        ("get", "/api/version"),
+        ("post", "/api/chat/sessions/session-a/cancel"),
+    ):
+        assert getattr(client, method)(path).status_code == 404, path
 
 
 def test_lambchat_upload_check_route_is_retired():
@@ -1040,7 +971,7 @@ def test_lambchat_profile_keeps_empty_principal_permissions(monkeypatch):
     )
     client = TestClient(create_app())
 
-    me_response = client.get("/api/auth/me", headers=auth_headers())
+    me_response = client.get("/api/ai/auth/me", headers=auth_headers())
     profile_response = client.get("/api/auth/profile", headers=auth_headers())
 
     assert me_response.status_code == 200

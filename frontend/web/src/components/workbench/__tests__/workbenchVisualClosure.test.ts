@@ -485,27 +485,24 @@ test("skills route selects the ordinary catalog while retaining the admin manage
   assert.match(ordinarySkills, /skills\.available\.fileTypes/);
   assert.doesNotMatch(ordinarySkills, /expected_version|file_count|skill\.content|skill\.files|is_published/);
   assert.equal(zh.skills.available.title, "可用技能");
-  assert.match(resolver, /requiredPermission: "skill:admin" \| "marketplace:admin"/);
+  assert.match(resolver, /requiredPermission: "skill:admin"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);
   assert.match(resolver, /effectivePermissionsSource/);
   assert.match(resolver, /hasAdminPermission/);
   assert.match(resolver, /effectivePermissionsKnown\?: boolean/);
-  assert.match(resolver, /marketplace:admin/);
   assert.match(resolver, /skill:admin/);
 });
 
-test("skills marketplace hub uses one workbench canvas instead of split page backgrounds", () => {
+test("skills hub uses one workbench canvas", () => {
   const hub = read("src/components/panels/SkillsHubPanel.tsx");
   const skillsPanel = read("src/components/panels/SkillsPanel/index.tsx");
   const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
-  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
   const skillCss = read("src/styles/skill.css");
 
   for (const [name, source] of new Map([
     ["SkillsHubPanel", hub],
     ["SkillsPanel", skillsPanel],
-    ["MarketplacePanel", marketplace],
   ])) {
     assert.match(
       source,
@@ -520,32 +517,18 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   }
 
   assert.match(skillsList, /data-skills-catalog-toolbar/);
-  assert.match(marketplace, /data-marketplace-catalog-toolbar/);
   assert.match(skillsList, /skill-catalog-toolbar/);
-  assert.match(marketplace, /skill-catalog-toolbar/);
   assert.match(skillsList, /skill-catalog-toolbar__row/);
-  assert.match(marketplace, /skill-catalog-toolbar__row/);
   assert.match(skillsList, /skill-catalog-toolbar__search/);
-  assert.match(marketplace, /skill-catalog-toolbar__search/);
   assert.match(skillsList, /skill-management-header__actions/);
-  assert.match(marketplace, /skill-catalog-toolbar__actions/);
   assert.match(skillsList, /workbenchSurface\.catalog\.toolbarShell/);
-  assert.match(marketplace, /workbenchSurface\.catalog\.toolbarShell/);
   assert.match(hub, /data-primary-page-scroller/);
-  assert.match(marketplace, /workbenchSurface\.catalog\.content/);
   assert.match(skillsList, /<SkillManagementTable/);
-  assert.match(marketplace, /workbenchSurface\.catalog\.cardGrid/);
   assert.match(skillsList, /workbenchSurface\.catalog\.emptyState/);
-  assert.match(marketplace, /workbenchSurface\.catalog\.emptyState/);
   assert.match(skillsList, /var\(--theme-danger-soft\)/);
-  assert.match(marketplace, /var\(--theme-danger-soft\)/);
   assert.doesNotMatch(skillsList, /auto-grid-cols/);
-  assert.doesNotMatch(marketplace, /auto-grid-cols/);
   assert.doesNotMatch(skillsList, /text-stone-(?:400|500|600|700|800|900)/);
-  assert.doesNotMatch(marketplace, /text-stone-(?:400|500|600|700|800|900)/);
-  assert.doesNotMatch(marketplace, /text-slate-(?:400|500|600|700|800|900)/);
   assert.doesNotMatch(skillsList, /\b(?:bg|text|hover:bg|hover:text)-red-/);
-  assert.doesNotMatch(marketplace, /\b(?:bg|text|hover:bg|hover:text)-red-/);
   assert.doesNotMatch(hub, /data-skills-catalog-sidebar/);
   assert.doesNotMatch(hub, /<aside/);
   assert.doesNotMatch(hub, /showTabSwitcher/);
@@ -571,7 +554,7 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   );
 });
 
-test("skills marketplace action surfaces use semantic workbench state colors", () => {
+test("skills and MCP action surfaces use semantic workbench state colors", () => {
   const batchActionBar = read("src/components/panels/SkillsPanel/BatchActionBar.tsx");
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
@@ -593,7 +576,6 @@ test("reachable catalog pages delegate page backgrounds to workbench surface tok
   const sources = new Map([
     ["SkillsHubPanel", read("src/components/panels/SkillsHubPanel.tsx")],
     ["SkillsPanel", read("src/components/panels/SkillsPanel/index.tsx")],
-    ["MarketplacePanel", read("src/components/panels/MarketplacePanel.tsx")],
     ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
   ]);
 

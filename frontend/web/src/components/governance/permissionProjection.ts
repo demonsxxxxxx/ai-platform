@@ -14,10 +14,6 @@ const inheritedPermissions: Partial<Record<Permission, Permission[]>> = {
     Permission.SKILL_WRITE,
     Permission.SKILL_DELETE,
   ],
-  [Permission.MARKETPLACE_ADMIN]: [
-    Permission.MARKETPLACE_READ,
-    Permission.MARKETPLACE_PUBLISH,
-  ],
 };
 
 export function hasEffectivePermission(

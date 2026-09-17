@@ -9,19 +9,14 @@ function read(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
-test("skills and marketplace surfaces avoid obsolete department availability placeholders", () => {
+test("skills and MCP surfaces avoid obsolete department availability placeholders", () => {
   const skillsHub = read("src/components/panels/SkillsHubPanel.tsx");
-  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
   assert.match(skillsHub, /data-phase1c-surface="skills-hub"/);
-  assert.match(marketplace, /data-phase1c-surface="marketplace"/);
   assert.doesNotMatch(skillsHub, /GroupAvailabilityToggleRow/);
   assert.doesNotMatch(skillsHub, /department-skill-policy/);
-  assert.doesNotMatch(marketplace, /GroupAvailabilityToggleRow/);
-  assert.doesNotMatch(marketplace, /data-marketplace-filter-shell/);
-  assert.doesNotMatch(marketplace, /skills\.marketplace\.departmentAvailability/);
-  for (const source of [skillsHub, marketplace, mcp]) {
+  for (const source of [skillsHub, mcp]) {
     assert.doesNotMatch(source, /skill-theme-shell|glass-shell/);
     assert.match(
       source,
@@ -30,10 +25,9 @@ test("skills and marketplace surfaces avoid obsolete department availability pla
   }
 });
 
-test("skills and marketplace remain catalog shells when backend enablement is unavailable", () => {
+test("skills remain a catalog shell when backend enablement is unavailable", () => {
   const skillsHub = read("src/components/panels/SkillsHubPanel.tsx");
   const skillsPanel = read("src/components/panels/SkillsPanel/index.tsx");
-  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
 
   assert.doesNotMatch(skillsHub, /if\s*\(!enableSkills\)\s*{\s*return/);
   assert.doesNotMatch(skillsPanel, /if\s*\(!enableSkills\)\s*{\s*return/);
@@ -49,51 +43,6 @@ test("skills and marketplace remain catalog shells when backend enablement is un
   assert.match(skillsPanel, /governedUnavailable/);
   assert.match(skillsPanel, /effectivePermissions:\s*actions\.effectivePermissions/);
   assert.doesNotMatch(skillsPanel, /!enableSkills/);
-  assert.match(marketplace, /governedUnavailable/);
-  assert.match(marketplace, /effectivePermissions:\s*marketplaceEffectivePermissions/);
-  assert.match(marketplace, /data-marketplace-catalog-shell/);
-  assert.match(marketplace, /data-marketplace-forbidden-shell/);
-  assert.doesNotMatch(marketplace, /data-marketplace-unavailable-shell/);
-  assert.doesNotMatch(marketplace, /data-marketplace-filter-shell/);
-  assert.doesNotMatch(marketplace, /data-marketplace-placeholder-list/);
-  assert.doesNotMatch(marketplace, /return\s*<WorkbenchUnavailableState/);
-});
-
-test("marketplace no longer renders ordinary-user unavailable placeholders", () => {
-  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
-  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-
-  assert.doesNotMatch(marketplace, /data-marketplace-ordinary-user-copy/);
-  assert.doesNotMatch(marketplace, /marketplacePlaceholderItems/);
-  assert.doesNotMatch(marketplace, /marketplace\.emptyDepartmentCatalog/);
-  assert.doesNotMatch(marketplace, /marketplace\.requestAccess/);
-  for (const source of [
-    JSON.stringify(zh.marketplace),
-    JSON.stringify(zh.skillsHub),
-    JSON.stringify(zh.skills.marketplace),
-  ]) {
-    assert.doesNotMatch(source, /backend authority/i);
-    assert.doesNotMatch(source, /policy placeholders/i);
-    assert.doesNotMatch(source, /projection/i);
-    assert.doesNotMatch(source, /投影/);
-    assert.doesNotMatch(source, /后端合约/);
-  }
-});
-
-test("skills marketplace cards use restrained workbench tiles instead of gradient cards", () => {
-  const baseCard = read("src/components/common/SkillBaseCard.tsx");
-  const marketplaceCard = read(
-    "src/components/panels/MarketplacePanel/SkillCard.tsx",
-  );
-  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
-
-  assert.doesNotMatch(baseCard, /rounded-2xl|rounded-3xl/);
-  assert.doesNotMatch(baseCard, /linear-gradient/);
-  assert.doesNotMatch(baseCard, /scb__banner/);
-  assert.doesNotMatch(marketplaceCard, /nameToGradient/);
-  assert.doesNotMatch(marketplaceCard, /gradient=\{gradient\}/);
-  assert.doesNotMatch(marketplace, /rounded-2xl|rounded-3xl/);
-  assert.match(baseCard, /rounded-lg/);
 });
 
 test("mcp lifecycle governance exposes the backed admin lifecycle within role boundaries", () => {
@@ -124,7 +73,6 @@ test("authenticated admin surfaces avoid legacy glass and heavy modal styling", 
     "src/components/panels/RolesPanel.tsx",
     "src/components/panels/MemoryPanel/index.tsx",
     "src/components/common/ConfirmDialog.tsx",
-    "src/components/common/AboutDialog.tsx",
     "src/components/common/ContactAdminDialog.tsx",
     "src/components/common/SelectionActionPopover.tsx",
     "src/components/panels/SessionSidebar.tsx",
@@ -202,8 +150,7 @@ test("shared workbench support surfaces use enterprise tokens instead of legacy 
   }
 });
 
-test("governed marketplace and MCP hooks fail closed before calling APIs", () => {
-  const marketplaceHook = read("src/hooks/useMarketplace.ts");
+test("governed MCP and Skill hooks fail closed before calling APIs", () => {
   const mcpHook = read("src/hooks/useMcp.ts");
   const toolsHook = read("src/hooks/useTools.ts");
   const skillsHook = read("src/hooks/useSkills.ts");
@@ -211,30 +158,11 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
   const skillCard = read("src/components/skill/SkillCard.tsx");
 
   for (const apiName of [
-    "installSkill",
-    "updateSkill",
-    "openPreview",
-    "readPreviewFile",
-    "activateSkill",
-    "deleteSkill",
-  ]) {
-    assert.match(
-      marketplaceHook,
-      new RegExp(`const ${apiName} = useCallback[\\s\\S]*?if \\(!enabled\\)`),
-      `${apiName} must guard enabled=false before marketplace API calls`,
-    );
-  }
-
-  for (const apiName of [
     "getServer",
     "createServer",
     "updateServer",
     "deleteServer",
     "toggleServer",
-    "importServers",
-    "exportServers",
-    "promoteServer",
-    "demoteServer",
   ]) {
     assert.match(
       mcpHook,
@@ -390,7 +318,7 @@ test("skills phase one backed operations match current public contracts", () => 
   assert.match(skillApi, /\/batch\/delete/);
   assert.match(skillApi, /async toggle/);
   assert.match(skillApi, /\/toggle/);
-  assert.match(skillApi, /async updateFile/);
+  assert.doesNotMatch(skillApi, /async updateFile/);
   assert.match(skillApi, /async uploadZip/);
   assert.match(skillApi, /async adminReviewSkillVersion/);
   assert.match(skillApi, /async adminPromoteSkillVersion/);
@@ -412,52 +340,6 @@ test("skills phase one backed operations match current public contracts", () => 
   assert.match(zipUploadModal, /canSelectZipSkill\([\s\S]*?targetSkillName/);
   assert.match(zipUploadModal, /!skill\.already_exists && !adminRelease/);
   assert.doesNotMatch(skillsPanel, /skillBatchWriteBacked = false/);
-});
-
-test("marketplace keeps catalog distribution controls without a second release writer", () => {
-  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
-  const marketplaceCard = read(
-    "src/components/panels/MarketplacePanel/SkillCard.tsx",
-  );
-  const marketplaceApi = read("src/services/api/marketplace.ts");
-  const marketplaceHook = read("src/hooks/useMarketplace.ts");
-
-  assert.match(marketplace, /Permission\.MARKETPLACE_ADMIN/);
-  assert.match(marketplace, /canInstall/);
-  assert.match(marketplace, /Permission\.SKILL_WRITE/);
-  assert.match(marketplace, /Permission\.MARKETPLACE_READ/);
-  assert.match(marketplace, /effectivePermissions/);
-  assert.match(marketplace, /marketplaceEffectivePermissions/);
-  assert.match(marketplace, /hasEffectiveSkillWrite/);
-  assert.match(marketplace, /hasEffectiveMarketplaceRead/);
-  assert.match(
-    marketplace,
-    /hasAnyPermission\(\[Permission\.SKILL_WRITE\]\)\s*\|\|\s*effectivePermissions\.has\(Permission\.SKILL_WRITE\)/,
-  );
-  assert.match(
-    marketplace,
-    /hasAnyPermission\(\[Permission\.MARKETPLACE_READ\]\)\s*\|\|\s*effectivePermissions\.has\(Permission\.MARKETPLACE_READ\)/,
-  );
-  assert.doesNotMatch(
-    marketplace,
-    /const canWrite =\s*hasAnyPermission\(\[Permission\.MARKETPLACE_PUBLISH\]\)/,
-  );
-  for (const source of [marketplace, marketplaceApi, marketplaceHook]) {
-    assert.doesNotMatch(source, /createAndPublish|updateMarketplaceSkill/);
-  }
-  assert.doesNotMatch(marketplace, /SkillFormSidebar|handleCreate|handleEdit/);
-  assert.doesNotMatch(marketplaceApi, /method:\s*"PUT"/);
-  assert.doesNotMatch(
-    marketplaceApi,
-    /authFetch<MarketplaceSkillResponse>\(`\$\{MARKETPLACE_API\}\/`,\s*\{\s*method:\s*"POST"/,
-  );
-  assert.match(marketplaceApi, /\/install/);
-  assert.match(marketplaceApi, /\/update/);
-  assert.match(marketplaceApi, /\/activate/);
-  assert.match(marketplaceApi, /method:\s*"DELETE"/);
-  assert.match(marketplaceCard, /canInstall/);
-  assert.doesNotMatch(marketplaceCard, /canWrite/);
-  assert.doesNotMatch(marketplaceCard, /onEdit/);
 });
 
 test("role plaza stays reachable without claiming missing backend projection", () => {

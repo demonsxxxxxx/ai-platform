@@ -4,7 +4,6 @@
 export type {
   RatingValue,
   Feedback,
-  FeedbackCreate,
   FeedbackStats,
   FeedbackListResponse,
 } from "./feedback";
@@ -62,13 +61,6 @@ export type {
   SelectedSkillRequest,
   SkillsResponse,
   SkillCreate,
-  MarketplaceSkillResponse,
-  MarketplaceListResponse,
-  MarketplaceSkillFilesResponse,
-  MarketplaceSkillFileResponse,
-  MarketplaceInstallResponse,
-  MarketplaceUpdateResponse,
-  TagsResponse,
 } from "./skill";
 
 export type { AgentOption, AgentThinkingEffort } from "./agentOptions";
@@ -100,22 +92,14 @@ export type {
 export {
   Permission,
   type User,
-  type UserCreate,
   type UserUpdate,
   type UserListResponse,
-  type RegisterResponse,
   type Role,
-  type RoleCreate,
   type RoleListResponse,
-  type RoleUpdate,
   type RoleLimits,
   type LoginRequest,
-  type TokenResponse,
   type TokenPayload,
   type AuthState,
-  type PermissionInfo,
-  type PermissionGroup,
-  type PermissionsResponse,
 } from "./auth";
 
 // ============================================
@@ -130,15 +114,9 @@ export type {
   MCPServerUpdate,
   MCPServerToggleResponse,
   MCPRoleQuota,
-  MCPImportRequest,
-  MCPImportResponse,
-  MCPExportResponse,
-  MCPServerMoveRequest,
-  MCPServerMoveResponse,
   MCPToolInfo,
   MCPToolParamInfo,
   MCPToolDiscoveryResponse,
-  MCPToolToggleResponse,
 } from "./mcp";
 
 // ============================================
@@ -165,20 +143,6 @@ export type {
 } from "./upload";
 
 // ============================================
-// Share Types
-// ============================================
-export type {
-  ShareType,
-  ShareVisibility,
-  SharedSession,
-  ShareCreate,
-  ShareResponse,
-  ShareListResponse,
-  SharedContentOwner,
-  SharedContentResponse,
-} from "./share";
-
-// ============================================
 // Role Governance Types
 // ============================================
 export type {
@@ -197,11 +161,6 @@ export type {
   RoleGovernanceWorkbenchGovernance,
   RoleGovernanceWorkspace,
 } from "./roleGovernance";
-
-// ============================================
-// Version Types
-// ============================================
-export type { VersionInfo } from "./common";
 
 // ============================================
 // Project Types

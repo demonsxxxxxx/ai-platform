@@ -16,13 +16,6 @@ export interface Feedback {
   created_at: string;
 }
 
-export interface FeedbackCreate {
-  session_id: string;
-  run_id: string;
-  rating: RatingValue;
-  comment?: string;
-}
-
 export interface FeedbackStats {
   total_count: number;
   up_count: number;

@@ -80,31 +80,52 @@ async def fake_transaction():
 
 @pytest.fixture(autouse=True)
 def fake_browser_auth_context(monkeypatch):
-    """Keep legacy route tests focused on principal projections, not Redis I/O."""
+    """Keep route tests focused on principal projections, not Redis I/O."""
 
-    from app.auth_sessions import AuthOperation
+    from app.auth_sessions import AuthBootstrapResult, AuthOperation, V2AuthContextIdentity
 
     operations: dict[str, AuthOperation] = {}
     principals: dict[str, dict[str, object] | None] = {}
+    cookie_contexts: dict[str, str] = {}
 
     async def fake_bootstrap(
-        context_handle,
-        _nonce,
+        nonce,
+        incarnation,
+        generation,
+        _supplied_cookie,
         _settings,
-        *,
-        request_has_matching_context=False,
+        **_options,
     ):
-        del request_has_matching_context
+        context_handle = f"v1.{nonce[:43]}"
+        identity = V2AuthContextIdentity(
+            incarnation=incarnation,
+            incarnation_digest="D" * 43,
+            generation=generation,
+            context_handle=context_handle,
+        )
         principals.setdefault(context_handle, None)
-        return "created"
+        return AuthBootstrapResult(
+            status="ready",
+            identity=identity,
+            set_cookie=True,
+            cookie_max_age_seconds=3600,
+        )
 
-    async def fake_begin(context_handle, kind, _settings):
+    def fake_cookie(identity, _settings):
+        cookie = f"v2.{identity.incarnation}.{identity.generation}"
+        cookie_contexts[cookie] = identity.context_handle
+        return cookie
+
+    async def fake_begin(cookie, kind, _settings):
+        context_handle = cookie_contexts[cookie]
         previous = operations.get(context_handle)
         operation = AuthOperation(
             context_handle=context_handle,
             epoch=(previous.epoch if previous else 0) + 1,
             token=f"test-operation-{len(operations) + 1}",
             kind=kind,
+            incarnation_digest="D" * 43,
+            generation=1,
         )
         operations[context_handle] = operation
         return operation
@@ -115,18 +136,27 @@ def fake_browser_auth_context(monkeypatch):
         principals[operation.context_handle] = dict(principal) if principal is not None else None
         return "committed"
 
-    async def fake_principal(context_handle, _settings):
-        return principals.get(context_handle)
+    async def fake_principal(cookie, _settings):
+        return principals.get(cookie_contexts.get(cookie, ""))
 
-    monkeypatch.setattr("app.routes.auth.bootstrap_auth_context", fake_bootstrap)
-    monkeypatch.setattr("app.routes.auth.begin_auth_operation", fake_begin)
+    monkeypatch.setattr("app.routes.auth.bootstrap_auth_context_v2", fake_bootstrap)
+    monkeypatch.setattr("app.routes.auth.auth_context_v2_cookie_for_identity", fake_cookie)
+    monkeypatch.setattr("app.routes.auth.begin_auth_operation_for_cookie", fake_begin)
     monkeypatch.setattr("app.routes.auth.commit_auth_operation", fake_commit)
-    monkeypatch.setattr("app.auth.principal_for_context", fake_principal)
+    monkeypatch.setattr("app.auth.principal_for_cookie", fake_principal)
 
 
 def browser_client() -> TestClient:
     client = TestClient(create_app(), base_url="https://testserver")
-    response = client.post("/api/ai/auth/bootstrap", json={"nonce": "A" * 43})
+    response = client.post(
+        "/api/ai/auth/bootstrap",
+        json={
+            "nonce": "A" * 43,
+            "protocol_version": 2,
+            "browser_incarnation": "I" * 43,
+            "generation": 1,
+        },
+    )
     assert response.status_code == 200
     return client
 
@@ -356,6 +386,7 @@ def test_ad_login_resolves_company_authority_and_retains_jwt_for_mcp(monkeypatch
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.call_existing_user_info", current_user_info)
+    monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.auth._persist_login_principal", noop)
     monkeypatch.setattr("app.routes.auth._store_mcp_login_jwt", fake_store)
 
@@ -770,7 +801,7 @@ def test_company_login_does_not_project_large_enterprise_permissions_into_sessio
     assert me_response.json()["permissions"] == body["permissions"]
 
 
-def test_compat_login_projects_user_info_failure_as_existing_safe_failure(monkeypatch):
+def test_company_login_projects_user_info_failure_as_existing_safe_failure(monkeypatch):
     async def fake_login(username, password):
         return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
 
@@ -782,7 +813,10 @@ def test_compat_login_projects_user_info_failure_as_existing_safe_failure(monkey
     monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
     monkeypatch.setattr("app.routes.auth.call_existing_user_info", failing_user_info)
 
-    response = TestClient(create_app()).post("/api/auth/login", json={"username": "user001", "password": "pw"})
+    response = browser_client().post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+    )
 
     assert response.status_code == 401
     assert response.json() == {"detail": "company_login_failed"}
@@ -814,12 +848,13 @@ def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(
     monkeypatch.setattr("app.routes.auth.ensure_user", noop)
     monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
 
-    client = TestClient(create_app())
-    login_response = client.post("/api/auth/login", json={"username": "dev001", "password": "pw"})
+    client = browser_client()
+    login_response = client.post(
+        "/api/ai/auth/login", json={"user_name": "dev001", "password": "pw"}
+    )
 
     assert login_response.status_code == 200
-    token = login_response.json()["access_token"]
-    me_response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    me_response = client.get("/api/ai/auth/me")
 
     assert me_response.status_code == 200
     body = me_response.json()
@@ -854,15 +889,14 @@ def test_company_login_submitted_username_does_not_bypass_trusted_workid_admin_a
     monkeypatch.setattr("app.routes.auth.ensure_user", noop)
     monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
 
-    client = TestClient(create_app())
+    client = browser_client()
     login_response = client.post(
-        "/api/auth/login",
-        json={"username": "synthetic-admin-login", "password": "synthetic-password"},
+        "/api/ai/auth/login",
+        json={"user_name": "synthetic-admin-login", "password": "synthetic-password"},
     )
 
     assert login_response.status_code == 200
-    token = login_response.json()["access_token"]
-    me_response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    me_response = client.get("/api/ai/auth/me")
 
     assert me_response.status_code == 200
     assert me_response.json()["roles"] == ["user"]
@@ -876,7 +910,10 @@ def test_company_unsuccessful_login_status_returns_401(monkeypatch):
 
     monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
 
-    response = TestClient(create_app()).post("/api/auth/login", json={"username": "user001", "password": "bad"})
+    response = browser_client().post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "bad"},
+    )
 
     assert response.status_code == 401
     assert response.json()["detail"] == "company_login_failed"
@@ -906,12 +943,13 @@ def test_company_developer_login_gets_admin_ai_permissions(monkeypatch):
     monkeypatch.setattr("app.routes.auth.ensure_user", noop)
     monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
 
-    client = TestClient(create_app())
-    login_response = client.post("/api/auth/login", json={"username": "dev001", "password": "pw"})
+    client = browser_client()
+    login_response = client.post(
+        "/api/ai/auth/login", json={"user_name": "dev001", "password": "pw"}
+    )
 
     assert login_response.status_code == 200
-    token = login_response.json()["access_token"]
-    me_response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    me_response = client.get("/api/ai/auth/me")
 
     assert me_response.status_code == 200
     body = me_response.json()
@@ -944,41 +982,12 @@ def test_auth_me_returns_bearer_principal(monkeypatch):
     assert response.json()["is_admin"] is False
 
 
-def test_lambchat_auth_aliases_return_bearer_token(monkeypatch):
-    async def fake_login(username, password):
-        return {"workId": "dev001", "userName": "dev001", "cnName": "Developer"}
-
-    async def fake_user_info(work_id):
-        return {
-            "workid": work_id,
-            "username": None,
-            "roles": ["developer"],
-            "permissions": ["agent:use"],
-        }
-
-    async def noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
-    monkeypatch.setattr("app.routes.auth.get_settings", lambda: auth_settings())
-    monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: auth_settings())
-    monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
-    monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
-    monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.auth.ensure_user", noop)
-    monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
-
+def test_lambchat_auth_aliases_are_absent():
     client = TestClient(create_app())
-    login_response = client.post("/api/auth/login", json={"username": "dev001", "password": "pw"})
 
-    assert login_response.status_code == 200
-    token = login_response.json()["access_token"]
-    assert len(token.split(".")) == 3
-
-    me_response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
-
-    assert me_response.status_code == 200
-    assert me_response.json()["id"] == "dev001"
+    assert client.post("/api/auth/login").status_code == 404
+    assert client.get("/api/auth/me").status_code == 404
+    assert client.post("/api/auth/refresh").status_code == 404
 
 
 def test_lambchat_oauth_providers_disable_registration():

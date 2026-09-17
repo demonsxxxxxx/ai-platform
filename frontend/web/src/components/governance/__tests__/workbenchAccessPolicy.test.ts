@@ -57,5 +57,5 @@ test("path policy covers nested management URLs and leaves public unknown paths 
   assert.equal(canAccessWorkbenchPath(adminUser, "/runs"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/mcp"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/agent-builder"), true);
-  assert.equal(canAccessWorkbenchPath(ordinaryUser, "/shared/example"), true);
+  assert.equal(canAccessWorkbenchPath(ordinaryUser, "/unknown"), true);
 });

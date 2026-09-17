@@ -1611,32 +1611,14 @@ def test_mcp_admin_detail_returns_decrypted_credentials_only_to_admin(monkeypatc
     assert "headers" not in ordinary_detail.json()
 
 
-def test_mcp_lifecycle_route_matrix_fails_closed_after_admin_gate(monkeypatch):
+def test_retired_mcp_lifecycle_routes_are_absent(monkeypatch):
     install_mcp_route_fakes(monkeypatch)
-    client = TestClient(create_app())
+    paths = TestClient(create_app()).get("/openapi.json").json()["paths"]
 
-    non_admin_invalid_name = client.put(
-        "/api/mcp/bad!",
-        json={"enabled": False},
-        headers=headers(),
-    )
-    assert non_admin_invalid_name.status_code == 403
-    assert non_admin_invalid_name.json()["detail"] == "not_ai_admin"
-
-    routes = [
-        ("patch", "/api/mcp/ragflow/tools/ragflow-knowledge-search", {"enabled": False}),
-    ]
-    for method, path, body in routes:
-        if method == "delete":
-            response = client.delete(path, headers=headers(roles="admin"))
-        else:
-            response = getattr(client, method)(
-                path,
-                json=body,
-                headers=headers(roles="admin"),
-            )
-        assert response.status_code == 409
-        assert response.json()["detail"] == "mcp_lifecycle_contract_not_backed"
+    assert "/api/mcp/import" not in paths
+    assert "/api/mcp/{name}/tools/{tool_name}" not in paths
+    assert "/api/admin/mcp/{name}/promote" not in paths
+    assert "/api/admin/mcp/{name}/demote" not in paths
 
 
 @pytest.mark.parametrize(
