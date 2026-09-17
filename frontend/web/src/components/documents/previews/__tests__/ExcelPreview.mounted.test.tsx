@@ -180,14 +180,14 @@ Object.defineProperty(globalThis, "navigator", {
 
 function previewDto() {
   return JSON.stringify({
-    schema_version: "ai-platform.file-preview.v1",
+    schema_version: "ai-platform.file-preview.v2",
     kind: "xlsx_table",
     status: "ready",
     content: {
       sheet_count: 2,
       sheets: [
-        { name: "First", rows: [] },
-        { name: "Second", rows: [] },
+        { name: "First", rows: [], images: [] },
+        { name: "Second", rows: [], images: [] },
       ],
     },
     truncated: false,

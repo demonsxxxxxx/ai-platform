@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
+from app.bootstrap.files import configure_file_preview_services
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.file_preview_contracts import XlsxPreviewResponse
 from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
@@ -1552,7 +1553,7 @@ async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(mo
         "expected_sha256": None,
         "expected_byte_count": len(raw),
     }
-    assert payload["schema_version"] == "ai-platform.file-preview.v1"
+    assert payload["schema_version"] == "ai-platform.file-preview.v2"
     assert payload["kind"] == "xlsx_table"
     assert payload["content"]["sheets"][0]["name"] == "Checks"
     assert "storage_key" not in payload
@@ -1976,8 +1977,16 @@ async def test_preview_input_file_reads_storage_only_after_snapshot_authorizatio
     assert "content-disposition" not in response.headers
 
 
+@pytest.fixture
+def configured_file_preview_services() -> None:
+    configure_file_preview_services()
+
+
 @pytest.mark.asyncio
-async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser(monkeypatch):
+async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser(
+    monkeypatch,
+    configured_file_preview_services,
+):
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Checks"
@@ -2030,7 +2039,10 @@ async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser
 
 
 @pytest.mark.asyncio
-async def test_preview_input_file_returns_a_public_failure_from_the_real_child_parser(monkeypatch):
+async def test_preview_input_file_returns_a_public_failure_from_the_real_child_parser(
+    monkeypatch,
+    configured_file_preview_services,
+):
     raw = b"not an XLSX archive"
 
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):

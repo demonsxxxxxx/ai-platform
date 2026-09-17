@@ -1,5 +1,12 @@
 /* eslint-disable react-refresh/only-export-components */
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+
+import {
+  getExcelGridExtent,
+  resolveExcelImageRect,
+  type ExcelImageRect,
+  type ExcelPreviewImage,
+} from "./excelImageLayout";
 
 const excelPreviewStylesPromise =
   typeof document === "undefined"
@@ -10,7 +17,14 @@ if (excelPreviewStylesPromise) {
   void excelPreviewStylesPromise;
 }
 
-const FILE_PREVIEW_SCHEMA_VERSION = "ai-platform.file-preview.v1";
+const FILE_PREVIEW_SCHEMA_VERSION = "ai-platform.file-preview.v2";
+const MAX_XLSX_SHEETS = 16;
+const MAX_XLSX_ROWS = 100;
+const MAX_XLSX_COLUMNS = 32;
+const MAX_XLSX_IMAGES = 16;
+const MAX_XLSX_IMAGE_BYTES = 512 * 1024;
+const MAX_XLSX_IMAGE_DATA_URL_CHARS = 700_000;
+const MAX_XLSX_IMAGE_TOTAL_BYTES = 2 * 1024 * 1024;
 const XLSX_PREVIEW_FAILURE_CODES = new Set([
   "xlsx_preview_encrypted_unsupported",
   "xlsx_preview_failed",
@@ -39,6 +53,7 @@ export interface XlsxPreviewRow {
 export interface XlsxPreviewSheet {
   name: string;
   rows: XlsxPreviewRow[];
+  images: ExcelPreviewImage[];
 }
 
 export interface XlsxPreviewDto {
@@ -110,6 +125,7 @@ function parsePreviewCell(value: unknown): XlsxPreviewCell {
     !isRecord(value) ||
     !hasOnlyKeys(value, ["column", "kind", "value"]) ||
     !isPositiveInteger(value.column) ||
+    value.column > MAX_XLSX_COLUMNS ||
     !["boolean", "datetime", "number", "text"].includes(
       String(value.kind),
     ) ||
@@ -129,24 +145,161 @@ function parsePreviewRow(value: unknown): XlsxPreviewRow {
     !isRecord(value) ||
     !hasOnlyKeys(value, ["row", "cells"]) ||
     !isPositiveInteger(value.row) ||
-    !Array.isArray(value.cells)
+    value.row > MAX_XLSX_ROWS ||
+    !Array.isArray(value.cells) ||
+    value.cells.length > MAX_XLSX_COLUMNS
   ) {
     throw new Error("invalid_xlsx_preview_dto");
   }
   return { row: value.row, cells: value.cells.map(parsePreviewCell) };
 }
 
-function parsePreviewSheet(value: unknown): XlsxPreviewSheet {
+function parsePreviewAnchor(value: unknown): ExcelPreviewImage["anchor_from"] {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["name", "rows"]) ||
-    typeof value.name !== "string" ||
-    !value.name ||
-    !Array.isArray(value.rows)
+    !hasOnlyKeys(value, ["col", "row", "col_offset_emu", "row_offset_emu"]) ||
+    !isNonNegativeInteger(value.col) ||
+    value.col >= MAX_XLSX_COLUMNS ||
+    !isNonNegativeInteger(value.row) ||
+    value.row >= MAX_XLSX_ROWS ||
+    !isNonNegativeInteger(value.col_offset_emu) ||
+    value.col_offset_emu > 95_250_000 ||
+    !isNonNegativeInteger(value.row_offset_emu) ||
+    value.row_offset_emu > 95_250_000
   ) {
     throw new Error("invalid_xlsx_preview_dto");
   }
-  return { name: value.name, rows: value.rows.map(parsePreviewRow) };
+  return {
+    col: value.col,
+    row: value.row,
+    col_offset_emu: value.col_offset_emu,
+    row_offset_emu: value.row_offset_emu,
+  };
+}
+
+function parsePreviewImageExtent(value: unknown): NonNullable<ExcelPreviewImage["extent"]> {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["width_emu", "height_emu"]) ||
+    !isPositiveInteger(value.width_emu) ||
+    value.width_emu > 95_250_000 ||
+    !isPositiveInteger(value.height_emu) ||
+    value.height_emu > 95_250_000
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+  return { width_emu: value.width_emu, height_emu: value.height_emu };
+}
+
+function decodeBase64ByteLength(encoded: string): number {
+  try {
+    return atob(encoded).length;
+  } catch {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+}
+
+function parsePreviewImage(value: unknown): ExcelPreviewImage {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "id",
+      "name",
+      "description",
+      "mime_type",
+      "data_url",
+      "anchor_from",
+      "anchor_to",
+      "extent",
+      "order",
+    ]) ||
+    typeof value.id !== "string" ||
+    !value.id ||
+    value.id.length > 128 ||
+    typeof value.name !== "string" ||
+    !value.name ||
+    value.name.length > 256 ||
+    typeof value.description !== "string" ||
+    value.description.length > 256 ||
+    !["image/bmp", "image/gif", "image/jpeg", "image/png", "image/webp"].includes(
+      String(value.mime_type),
+    ) ||
+    typeof value.data_url !== "string" ||
+    !isNonNegativeInteger(value.order) ||
+    value.order >= MAX_XLSX_IMAGES
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+
+  const mimeType = value.mime_type as ExcelPreviewImage["mime_type"];
+  const prefix = `data:${mimeType};base64,`;
+  if (!value.data_url.startsWith(prefix)) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+  const encoded = value.data_url.slice(prefix.length);
+  if (
+    !encoded ||
+    encoded.length > MAX_XLSX_IMAGE_DATA_URL_CHARS ||
+    encoded.length % 4 === 1 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+  const decodedByteLength = decodeBase64ByteLength(encoded);
+  if (!decodedByteLength || decodedByteLength > MAX_XLSX_IMAGE_BYTES) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+
+  const anchorFrom = parsePreviewAnchor(value.anchor_from);
+  const anchorTo = value.anchor_to === null ? null : parsePreviewAnchor(value.anchor_to);
+  const extent = value.extent === null ? null : parsePreviewImageExtent(value.extent);
+  if ((anchorTo === null) === (extent === null)) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+  if (
+    anchorTo &&
+    (anchorTo.row < anchorFrom.row ||
+      anchorTo.col < anchorFrom.col ||
+      (anchorTo.row === anchorFrom.row &&
+        anchorTo.row_offset_emu <= anchorFrom.row_offset_emu) ||
+      (anchorTo.col === anchorFrom.col &&
+        anchorTo.col_offset_emu <= anchorFrom.col_offset_emu))
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+
+  return {
+    id: value.id,
+    name: value.name,
+    description: value.description,
+    mime_type: mimeType,
+    data_url: value.data_url,
+    anchor_from: anchorFrom,
+    anchor_to: anchorTo,
+    extent,
+    order: value.order,
+  };
+}
+
+function parsePreviewSheet(value: unknown): XlsxPreviewSheet {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["name", "rows", "images"]) ||
+    typeof value.name !== "string" ||
+    !value.name ||
+    value.name.length > 256 ||
+    !Array.isArray(value.rows) ||
+    value.rows.length > MAX_XLSX_ROWS ||
+    !Array.isArray(value.images) ||
+    value.images.length > MAX_XLSX_IMAGES
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+  return {
+    name: value.name,
+    rows: value.rows.map(parsePreviewRow),
+    images: value.images.map(parsePreviewImage),
+  };
 }
 
 /** Validate the server-owned presentation DTO; no workbook bytes are parsed here. */
@@ -204,10 +357,23 @@ export function parseXlsxPreviewDto(payload: string): XlsxPreviewDto {
     !isRecord(value.content) ||
     !hasOnlyKeys(value.content, ["sheets", "sheet_count"]) ||
     !Array.isArray(value.content.sheets) ||
+    value.content.sheets.length > MAX_XLSX_SHEETS ||
     !isNonNegativeInteger(value.content.sheet_count) ||
+    value.content.sheet_count < value.content.sheets.length ||
     value.error !== null ||
     (value.status === "ready" && value.truncated) ||
     (value.status === "truncated" && !value.truncated)
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+  const sheets = value.content.sheets.map(parsePreviewSheet);
+  const images = sheets.flatMap((sheet) => sheet.images);
+  if (
+    images.length > MAX_XLSX_IMAGES ||
+    images.reduce((total, image) => {
+      const encoded = image.data_url.slice(image.data_url.indexOf(",") + 1);
+      return total + decodeBase64ByteLength(encoded);
+    }, 0) > MAX_XLSX_IMAGE_TOTAL_BYTES
   ) {
     throw new Error("invalid_xlsx_preview_dto");
   }
@@ -215,7 +381,7 @@ export function parseXlsxPreviewDto(payload: string): XlsxPreviewDto {
     ...(value as Omit<XlsxPreviewDto, "content">),
     content: {
       sheet_count: value.content.sheet_count,
-      sheets: value.content.sheets.map(parsePreviewSheet),
+      sheets,
     },
   };
 }
@@ -289,7 +455,11 @@ const ExcelPreview = memo(function ExcelPreview({
   } | null>(null);
   const previewInstanceId = useId();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const gridSurfaceRef = useRef<HTMLDivElement>(null);
   const sheetTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [imageRects, setImageRects] = useState<Map<string, ExcelImageRect>>(
+    () => new Map(),
+  );
   const { progress, hasOverflow } = useScrollIndicator(scrollContainerRef);
 
   const parsedPreview = useMemo(() => {
@@ -310,21 +480,19 @@ const ExcelPreview = memo(function ExcelPreview({
   const currentSheet = sheets[activeSheet];
   const tabPanelId = `${previewInstanceId}-xlsx-preview-table`;
 
-  const totalCols = useMemo(() => {
-    if (!currentSheet) return 0;
-    return currentSheet.rows.reduce(
-      (highest, row) =>
-        Math.max(highest, ...row.cells.map((cell) => cell.column)),
-      0,
-    );
+  const gridExtent = useMemo(() => {
+    if (!currentSheet) return { rows: 0, cols: 0 };
+    return getExcelGridExtent(currentSheet.rows, currentSheet.images);
   }, [currentSheet]);
-
-  const headerRow = currentSheet?.rows[0];
-  const dataRows = currentSheet?.rows.slice(1) ?? [];
+  const totalRows = gridExtent.rows;
+  const totalCols = gridExtent.cols;
+  const headerRow = currentSheet?.rows.find((row) => row.row === 1);
+  const dataRows = currentSheet?.rows.filter((row) => row.row > 1) ?? [];
 
   const getCellValue = useCallback(
     (rowIndex: number, colIndex: number): string => {
-      const cell = currentSheet?.rows[rowIndex]?.cells.find(
+      const row = currentSheet?.rows.find((candidate) => candidate.row === rowIndex + 1);
+      const cell = row?.cells.find(
         (candidate) => candidate.column === colIndex + 1,
       );
       return cell == null ? "" : String(cell.value);
@@ -333,9 +501,44 @@ const ExcelPreview = memo(function ExcelPreview({
   );
 
   const getSheetRowNumber = useCallback(
-    (rowIndex: number): number => currentSheet?.rows[rowIndex]?.row ?? rowIndex + 1,
-    [currentSheet],
+    (rowIndex: number): number => rowIndex + 1,
+    [],
   );
+
+  useLayoutEffect(() => {
+    const surface = gridSurfaceRef.current;
+    if (!surface || !currentSheet || currentSheet.images.length === 0) {
+      setImageRects(new Map());
+      return;
+    }
+
+    const update = () => {
+      const columnStarts = Array.from({ length: totalCols }, (_, index) => {
+        const element = surface.querySelector<HTMLElement>(
+          `[data-excel-column-index="${index}"]`,
+        );
+        return element?.offsetLeft ?? 0;
+      });
+      const rowStarts = Array.from({ length: totalRows }, (_, index) => {
+        const element = surface.querySelector<HTMLElement>(
+          `[data-excel-row-index="${index}"]`,
+        );
+        return element?.offsetTop ?? 0;
+      });
+      const metrics = { columnStarts, rowStarts };
+      const next = new Map<string, ExcelImageRect>();
+      for (const image of currentSheet.images) {
+        const rect = resolveExcelImageRect(image, metrics);
+        if (rect) next.set(image.id, rect);
+      }
+      setImageRects(next);
+    };
+
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(surface);
+    return () => observer.disconnect();
+  }, [currentSheet, totalCols, totalRows]);
 
   const handleCellHover = useCallback((rowIndex: number, colIndex: number) => {
     setHoveredCell({ row: rowIndex, col: colIndex });
@@ -374,7 +577,7 @@ const ExcelPreview = memo(function ExcelPreview({
     );
   }
 
-  const displayRows = currentSheet?.rows.length ?? 0;
+  const displayRows = totalRows;
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-stone-950">
@@ -457,12 +660,17 @@ const ExcelPreview = memo(function ExcelPreview({
       )}
 
       <div id={tabPanelId} role="tabpanel" aria-labelledby={`${previewInstanceId}-xlsx-preview-tab-${activeSheet}`} ref={scrollContainerRef} className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600">
-        <table className="border-collapse w-max min-w-full text-[13px]">
+        <div ref={gridSurfaceRef} className="relative w-max min-w-full">
+          <table className="border-collapse w-max min-w-full text-[13px]">
           <thead>
             <tr className="sticky top-0 z-10">
               <th className="sticky left-0 z-20 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none" />
               {Array.from({ length: totalCols }, (_, index) => (
-                <th key={index} className={`min-w-[60px] sm:min-w-[80px] h-6 px-0 py-0 text-center text-[11px] font-normal text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-600 select-none leading-6 ${hoveredCell?.col === index ? "bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300" : ""}`}>
+                <th
+                  key={index}
+                  data-excel-column-index={index}
+                  className={`min-w-[60px] sm:min-w-[80px] h-6 px-0 py-0 text-center text-[11px] font-normal text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-600 select-none leading-6 ${hoveredCell?.col === index ? "bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300" : ""}`}
+                >
                   {colLabel(index)}
                 </th>
               ))}
@@ -473,7 +681,10 @@ const ExcelPreview = memo(function ExcelPreview({
               const isHeader = rawRowIndex === 0;
               const isRowHovered = hoveredCell && !isHeader && hoveredCell.row === rawRowIndex;
               return (
-                <tr key={currentSheet?.rows[rawRowIndex]?.row ?? rawRowIndex}>
+                <tr
+                  key={rawRowIndex}
+                  data-excel-row-index={rawRowIndex}
+                >
                   <td className={`sticky left-0 z-10 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none tabular-nums leading-6 touch-none [box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.06)] dark:[box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.3)] ${isHeader ? "text-stone-400 dark:text-stone-500" : isRowHovered ? "text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/40" : "text-stone-500 dark:text-stone-400"}`}>
                     {isHeader ? "" : getSheetRowNumber(rawRowIndex)}
                   </td>
@@ -497,7 +708,36 @@ const ExcelPreview = memo(function ExcelPreview({
               );
             })}
           </tbody>
-        </table>
+          </table>
+
+          <div
+            className="absolute inset-0 z-[5] pointer-events-none"
+            aria-label={t("documents.excelImages", { defaultValue: "Worksheet images" })}
+          >
+            {currentSheet?.images.map((image) => {
+              const rect = imageRects.get(image.id);
+              if (!rect) return null;
+              return (
+                <img
+                  key={image.id}
+                  data-excel-embedded-image
+                  src={image.data_url}
+                  alt={image.description || image.name}
+                  className="absolute max-w-none select-none"
+                  style={{
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                    objectFit: "fill",
+                    zIndex: image.order,
+                  }}
+                  draggable={false}
+                />
+              );
+            })}
+          </div>
+        </div>
 
         {displayRows === 0 && (
           <div className="flex flex-col items-center justify-center py-20 text-stone-400 dark:text-stone-500">

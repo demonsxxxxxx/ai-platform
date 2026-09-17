@@ -15,3 +15,10 @@ test("Word preview preserves DOCX table merge attributes", () => {
   assert.match(attributes, /"colspan"/);
   assert.match(attributes, /"rowspan"/);
 });
+
+test("Word preview preserves DOCX image dimensions against global CSS", () => {
+  assert.match(
+    source,
+    /\.docx-preview-content section\.docx img\s*{[^}]*max-width: none;/s,
+  );
+});
