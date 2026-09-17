@@ -95,45 +95,42 @@ function withAuthRequestTimeout(signal?: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
+export class CompanyADLoginError extends Error {
+  constructor() {
+    super("company_ad_login_failed");
+    this.name = "CompanyADLoginError";
+  }
+}
+
 async function fetchCompanyADLogin(
   loginUrl: string,
-  signal: AbortSignal,
-): Promise<{ workid: string; cnname: string; token: string }> {
-  const response = await fetch(loginUrl, {
-    credentials: "include",
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) throw new Error("ad_login_failed");
+  signal?: AbortSignal,
+): Promise<string> {
+  const requestSignal = withAuthRequestTimeout(signal);
+  let response: Response;
+  try {
+    response = await fetch(loginUrl, {
+      credentials: "include",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal: requestSignal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new CompanyADLoginError();
+  }
+  if (!response.ok) throw new CompanyADLoginError();
 
   const payload: unknown = await response.json().catch(() => null);
   const firstResult = Array.isArray(payload) ? payload[0] : null;
-  const workid =
-    firstResult && typeof firstResult === "object"
-      ? (firstResult as { workid?: unknown }).workid
-      : null;
-  const cnname =
-    firstResult && typeof firstResult === "object"
-      ? (firstResult as { cnname?: unknown }).cnname
-      : null;
   const token =
     firstResult && typeof firstResult === "object"
       ? (firstResult as { token?: unknown }).token
       : null;
-  if (
-    typeof workid !== "string" ||
-    !workid.trim() ||
-    typeof token !== "string" ||
-    !token.trim()
-  ) {
-    throw new Error("ad_login_failed");
+  if (typeof token !== "string" || !token.trim()) {
+    throw new CompanyADLoginError();
   }
-  return {
-    workid: workid.trim(),
-    cnname: typeof cnname === "string" && cnname.trim() ? cnname.trim() : workid.trim(),
-    token: token.trim(),
-  };
+  return token.trim();
 }
 
 export const authApi = {
@@ -184,19 +181,25 @@ export const authApi = {
     );
   },
 
-  /** Exchange the browser's Windows-authenticated company JWT for a platform session. */
-  async loginWithAD(loginUrl: string, signal?: AbortSignal): Promise<void> {
-    const requestSignal = withAuthRequestTimeout(signal);
-    const companyLogin = await fetchCompanyADLogin(loginUrl, requestSignal);
+  /** Obtain the browser's Windows-authenticated company JWT. */
+  async fetchCompanyADLogin(
+    loginUrl: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return fetchCompanyADLogin(loginUrl, signal);
+  },
+
+  /** Exchange one company-authenticated JWT for a platform session. */
+  async loginWithAD(companyJwt: string, signal?: AbortSignal): Promise<void> {
     await authFetch<PrincipalResponseWire>(
       `${API_BASE}/api/ai/auth/ad-login`,
       {
         method: "POST",
         skipAuth: true,
         credentials: "include",
-        body: JSON.stringify(companyLogin),
+        body: JSON.stringify({ token: companyJwt }),
         headers: { "Content-Type": "application/json" },
-        signal: requestSignal,
+        signal: withAuthRequestTimeout(signal),
       },
     );
   },

@@ -15,7 +15,7 @@ import { useTheme } from "../../contexts/ThemeContext";
 import { Loading, LoadingSpinner } from "../common/LoadingSpinner";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
 import { ThemeToggle } from "../common/ThemeToggle";
-import { authApi } from "../../services/api";
+import { CompanyADLoginError, authApi } from "../../services/api/auth";
 import { APP_HOME_URL, APP_NAME } from "../../constants";
 import {
   AUTH_REDIRECT_ANIMATION_MS,
@@ -176,8 +176,11 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
           startedRedirect = true;
           beginSuccessRedirect(loginOutcome.value);
         }
-      } catch {
-        // Windows 或 AD 配置不可用时保留账号密码登录。
+      } catch (error) {
+        if (mountedRef.current && error instanceof CompanyADLoginError) {
+          toast.error(t("auth.adLoginFailed", { defaultValue: "免登录失败" }));
+        }
+        // AD 配置或平台登录不可用时保留账号密码登录。
       } finally {
         if (mountedRef.current && !startedRedirect) setIsAttemptingAD(false);
       }

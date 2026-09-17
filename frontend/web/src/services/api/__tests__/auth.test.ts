@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { authApi, buildOAuthLoginUrl } from "../auth.ts";
+import {
+  CompanyADLoginError,
+  authApi,
+  buildOAuthLoginUrl,
+} from "../auth.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 import { ApiRequestError } from "../fetch.ts";
 import {
@@ -123,7 +127,7 @@ test("current-user projection preserves the authenticated tenant and department 
   }
 });
 
-test("AD login exchanges the JWT from the GetADName user array", async () => {
+test("AD login fetches GetADName before exchanging only its JWT", async () => {
   const token = "signed-company-jwt";
   const stubs = installAuthApiBrowserStubs((callIndex) =>
     callIndex === 0
@@ -150,28 +154,44 @@ test("AD login exchanges the JWT from the GetADName user array", async () => {
   );
   const controller = new AbortController();
   try {
-    await authApi.loginWithAD(
+    const companyJwt = await authApi.fetchCompanyADLogin(
       "http://company.test/api/login/GetADName",
       controller.signal,
     );
+    await authApi.loginWithAD(companyJwt, controller.signal);
 
+    assert.equal(companyJwt, token);
     assert.deepEqual(stubs.fetchCalls, [
       "http://company.test/api/login/GetADName",
       "/api/ai/auth/ad-login",
     ]);
     assert.equal(stubs.fetchInit[0].credentials, "include");
     assert.equal(stubs.fetchInit[0].cache, "no-store");
-    const requestSignal = stubs.fetchInit[0].signal as AbortSignal;
-    assert.equal(requestSignal instanceof AbortSignal, true);
-    assert.notEqual(requestSignal, controller.signal);
-    assert.equal(stubs.fetchInit[1].signal, requestSignal);
+    const companySignal = stubs.fetchInit[0].signal as AbortSignal;
+    const exchangeSignal = stubs.fetchInit[1].signal as AbortSignal;
+    assert.equal(companySignal instanceof AbortSignal, true);
+    assert.equal(exchangeSignal instanceof AbortSignal, true);
+    assert.notEqual(companySignal, controller.signal);
+    assert.notEqual(exchangeSignal, companySignal);
     controller.abort();
-    assert.equal(requestSignal.aborted, true);
-    assert.deepEqual(JSON.parse(String(stubs.fetchInit[1].body)), {
-      workid: "ad001",
-      cnname: "AD User",
-      token,
-    });
+    assert.equal(companySignal.aborted, true);
+    assert.equal(exchangeSignal.aborted, true);
+    assert.deepEqual(JSON.parse(String(stubs.fetchInit[1].body)), { token });
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("GetADName failure has one explicit company login error", async () => {
+  const stubs = installAuthApiBrowserStubs({}, 401);
+  try {
+    await assert.rejects(
+      () => authApi.fetchCompanyADLogin("http://company.test/api/login/GetADName"),
+      (error: unknown) => error instanceof CompanyADLoginError,
+    );
+    assert.deepEqual(stubs.fetchCalls, [
+      "http://company.test/api/login/GetADName",
+    ]);
   } finally {
     stubs.restore();
   }
