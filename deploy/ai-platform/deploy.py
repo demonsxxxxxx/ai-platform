@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -159,6 +160,38 @@ def verify_runtime(docker: list[str], image_ids: dict[str, str], before: dict) -
         raise DeploymentError("Worker heartbeat did not advance with stable identity")
 
 
+def validate_model_proxy_bind(config: dict) -> str | None:
+    proxy = config.get("services", {}).get("opensandbox-egress-proxy")
+    if not isinstance(proxy, dict):
+        raise DeploymentError("OpenSandbox model proxy is missing")
+    ports = proxy.get("ports") or []
+    if not ports:
+        return None
+    if len(ports) != 1 or not isinstance(ports[0], dict):
+        raise DeploymentError("internal-test model proxy bind is invalid")
+    port = ports[0]
+    try:
+        address = ipaddress.ip_address(str(port.get("host_ip") or ""))
+        published = int(port.get("published"))
+        target = int(port.get("target"))
+    except (TypeError, ValueError):
+        raise DeploymentError("internal-test model proxy bind is invalid") from None
+    if (
+        address.version != 4
+        or not address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        or published != 18043
+        or target != 8080
+        or str(port.get("protocol") or "tcp").lower() != "tcp"
+    ):
+        raise DeploymentError("internal-test model proxy bind is invalid")
+    return str(address)
+
+
 def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_only: bool = False) -> None:
     if "@@" in COMMIT + BACKEND + FRONTEND:
         raise DeploymentError("use the published deployment package, not the source template")
@@ -166,6 +199,22 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
                "-f", str(package / "compose.yaml"), "-f", str(package / "compose.override.yaml")]
     run([*compose, "config", "--quiet"], "configuration")
     config = json.loads(run([*compose, "config", "--format", "json"], "configuration identity"))
+    model_proxy_bind = validate_model_proxy_bind(config)
+    if model_proxy_bind is not None:
+        bridge_gateway = run(
+            [*docker, "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"],
+            "Docker bridge inspection",
+        )
+        if bridge_gateway != model_proxy_bind:
+            raise DeploymentError("internal-test model proxy bind is not the Docker bridge gateway")
+        expected_proxy_url = f"http://{model_proxy_bind}:18043"
+        if any(
+            config["services"][service].get("environment", {}).get(
+                "OPENSANDBOX_EGRESS_PROXY_URL"
+            ) != expected_proxy_url
+            for service in ("api", "worker")
+        ):
+            raise DeploymentError("internal-test model proxy URL does not match its bridge bind")
     for service in ("api", "worker", "migrate", "workspace-init", "frontend"):
         expected = FRONTEND if service == "frontend" else BACKEND
         if config["services"][service]["image"] != expected:

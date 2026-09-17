@@ -1029,10 +1029,11 @@ class InternalTestOpenSandboxSettings(OpenSandboxSettings):
     sandbox_security_profile = "internal-test"
     sandbox_egress_proof_signing_key = ""
     opensandbox_expected_network_mode = "bridge"
+    opensandbox_egress_proxy_url = "http://host.docker.internal:18043"
     sandbox_callback_base_url = "http://host.docker.internal:8020"
-    openai_base_url = "http://host.docker.internal:18043/openai/v1"
+    openai_base_url = "http://direct-model.invalid/v1"
     openai_api_key = "test-newapi-token"
-    anthropic_base_url = "http://host.docker.internal:18043/anthropic"
+    anthropic_base_url = "http://direct-model.invalid"
     anthropic_auth_token = "test-anthropic-token"
 
 
@@ -2005,81 +2006,58 @@ def test_opensandbox_rejects_local_executor_image_id_outside_exact_internal_test
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_internal_test_forwards_only_provider_credentials(monkeypatch):
+async def test_opensandbox_internal_test_uses_run_bound_proxy_without_provider_credentials(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
 
-    class CredentialForwardingSettings(InternalTestOpenSandboxSettings):
-        opensandbox_internal_test_forward_model_credentials = True
+    class ProxySettings(InternalTestOpenSandboxSettings):
         model_catalog_json = '[{"id":"deepseek-v4-flash","api_key":"catalog-secret"}]'
 
-    settings = CredentialForwardingSettings()
+    settings = ProxySettings()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     lease = await opensandbox_provider().create_or_reuse(request(), workspace())
 
     created = FakeOpenSandbox.created[0]
-    assert created["env"]["OPENAI_BASE_URL"] == settings.openai_base_url
-    assert created["env"]["ANTHROPIC_BASE_URL"] == settings.anthropic_base_url
-    assert created["env"]["OPENAI_API_KEY"] == settings.openai_api_key
-    assert created["env"]["ANTHROPIC_AUTH_TOKEN"] == settings.anthropic_auth_token
+    assert created["env"]["OPENAI_BASE_URL"] == (
+        "http://host.docker.internal:18043/openai/run-a/qat-test-attempt/v1"
+    )
+    assert created["env"]["ANTHROPIC_BASE_URL"] == (
+        "http://host.docker.internal:18043/anthropic/run-a/qat-test-attempt"
+    )
+    assert created["env"]["OPENAI_API_KEY"] == created["env"]["ANTHROPIC_AUTH_TOKEN"]
+    assert created["env"]["OPENAI_API_KEY"] not in {
+        settings.openai_api_key, settings.anthropic_auth_token,
+    }
     assert "ANTHROPIC_API_KEY" not in created["env"]
     assert "MODEL_CATALOG_JSON" not in created["env"]
-    assert settings.openai_api_key not in str(created["metadata"])
-    assert settings.anthropic_auth_token not in str(created["metadata"])
+    assert settings.openai_api_key not in str(created)
+    assert settings.anthropic_auth_token not in str(created)
 
     await opensandbox_provider().stop(lease, reason="internal_test_acceptance")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("attribute", "value"),
+    "value",
     [
-        ("openai_base_url", "http://user:secret@host.docker.internal:18043/openai/v1"),
-        ("anthropic_base_url", "http://host.docker.internal:18043/anthropic?token=secret"),
+        "http://user:secret@host.docker.internal:18043",
+        "http://host.docker.internal:18043/proxy",
+        "http://host.docker.internal:18043?token=secret",
     ],
 )
-async def test_opensandbox_internal_test_rejects_model_base_embedded_credentials(
+async def test_opensandbox_internal_test_rejects_invalid_model_proxy_base(
     monkeypatch,
-    attribute,
     value,
 ):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     settings = InternalTestOpenSandboxSettings()
-    setattr(settings, attribute, value)
+    settings.opensandbox_egress_proxy_url = value
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
     with pytest.raises(
         container_provider.OpenSandboxCapabilityAdmissionError,
-        match="internal-test model base is invalid",
-    ):
-        await opensandbox_provider().create_or_reuse(request(), workspace())
-
-    assert FakeOpenSandbox.created == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("attribute", "value"),
-    [
-        ("openai_base_url", "http://broker.internal/openai/v1/test-newapi-token"),
-        ("anthropic_base_url", "http://test-anthropic-token.broker.internal/anthropic"),
-    ],
-)
-async def test_opensandbox_internal_test_rejects_raw_model_credential_in_model_base(
-    monkeypatch,
-    attribute,
-    value,
-):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    settings = InternalTestOpenSandboxSettings()
-    setattr(settings, attribute, value)
-    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
-
-    with pytest.raises(
-        container_provider.OpenSandboxCapabilityAdmissionError,
-        match="environment contains a raw model credential",
+        match="egress proxy base is invalid",
     ):
         await opensandbox_provider().create_or_reuse(request(), workspace())
 

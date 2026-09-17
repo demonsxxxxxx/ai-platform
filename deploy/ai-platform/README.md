@@ -20,7 +20,8 @@ OpenSandbox configuration has two owners:
 | Configuration | Owner |
 | --- | --- |
 | Lifecycle connection | Application env: production uses `OPENSANDBOX_BASE_URL`; internal-test requires `OPENSANDBOX_DOMAIN` and `OPENSANDBOX_PROTOCOL`. Both require `OPENSANDBOX_API_KEY`. |
-| Workspace and capabilities | Application env: `SANDBOX_WORKSPACE_ROOT`, `SANDBOX_CALLBACK_TOKEN`; production also requires `SANDBOX_EGRESS_PROOF_SIGNING_KEY` and `MODEL_PROXY_INTERNAL_TOKEN`. |
+| Workspace and capabilities | Application env: `SANDBOX_WORKSPACE_ROOT`, `SANDBOX_CALLBACK_TOKEN` and `MODEL_PROXY_INTERNAL_TOKEN`; production also requires `SANDBOX_EGRESS_PROOF_SIGNING_KEY`. |
+| Model connection custody | Both released profiles require `MODEL_CONNECTION_ENCRYPTION_KEY` in API and Worker plus `MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS` when the configured origin is internal. The upstream origin, credential, directory and capacities remain Models-page owned. |
 | Timeouts | Optional application tuning: `OPENSANDBOX_REQUEST_TIMEOUT_SECONDS`, `OPENSANDBOX_TIMEOUT_SECONDS`. |
 | Kernel isolation and host firewall | Host OpenSandbox TOML, Docker `runsc` runtime and network-guard service, prepared once by the host administrator. |
 
@@ -35,8 +36,13 @@ Model connection ownership depends on the selected package:
 
 | Package | Model request configuration |
 | --- | --- |
-| Production | Configure the upstream URL, key and enabled models in the administrator's Models page before running a model. The executor uses the platform proxy, which requires the Run's pinned database connection revision. Environment model URLs and credentials cannot substitute for that binding. |
-| Internal-test | The package enables direct model credential forwarding. `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` supply the executor's direct connection, including when a database model catalog is active. |
+| Production | The executor uses the platform proxy on the isolated OpenSandbox network. |
+| Internal-test | The executor uses the same database-owned platform proxy through `OPENSANDBOX_EGRESS_PROXY_URL`; bind its host port only to the private Docker bridge address named by `OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS`. This profile does not provide production network isolation. |
+
+For both packages, configure the upstream URL, write-only key, enabled models and
+capacities in the administrator's Models page before running a model. Environment
+provider URLs and credentials are omitted from released packages and cannot
+substitute for the Run's pinned database connection revision.
 
 The browser's retained `/settings` address redirects to `/models`. The removed
 generic settings API did not persist or apply submitted values; model changes

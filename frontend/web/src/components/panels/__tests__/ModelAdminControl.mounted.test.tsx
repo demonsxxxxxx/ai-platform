@@ -3,6 +3,7 @@ import test from "node:test";
 import { installTestDom } from "../../../hooks/useAgent/__tests__/testDom.ts";
 import { modelAdminApi } from "../../../services/api/modelAdmin.ts";
 import type { AdminModelEntry, AdminModelState } from "../../../services/api/modelAdmin.ts";
+import { ApiRequestError } from "../../../services/api/fetch.ts";
 
 const dom = installTestDom();
 
@@ -182,6 +183,11 @@ test("Model admin discovery is a draft and only publication changes the active c
       "admin control should mount after the initial projection loads",
     );
     assert.equal(calls.get, 1);
+    assert.match(
+      container.querySelectorAll("[data-model-admin-control]")[0].getAttribute("class") ?? "",
+      /px-4/,
+      "admin controls should keep page-edge padding",
+    );
 
     const keyInput = inputByLabel(container, "模型 API Key");
     await React.act(async () => {
@@ -235,6 +241,24 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.publish[0].models[0].max_output_tokens, 2048);
     assert.match(renderedParagraphText(container), /当前发布版本 4/);
     assert.doesNotMatch(renderedParagraphText(container), /super-secret-key/);
+
+    modelAdminApi.discover = async () => {
+      throw new ApiRequestError(
+        "加载会话失败",
+        422,
+        "model_connection_endpoint_forbidden",
+      );
+    };
+    await React.act(async () => {
+      discoverButton.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    await waitFor(
+      React,
+      () => renderedParagraphText(container).includes("该 API 地址未获平台网络策略授权。"),
+      "model errors should use model-admin copy",
+    );
+    assert.doesNotMatch(renderedParagraphText(container), /加载会话失败/);
   } finally {
     await React.act(async () => {
       root.unmount();
