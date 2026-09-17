@@ -55,6 +55,12 @@ from app.sandbox.domain.workspace_policy import (
 from app.sandbox.domain.workspace_policy import (
     workspace_mutation_allowed as workspace_mutation_allowed,
 )
+from app.sandbox.domain.workspace_policy import (
+    workspace_read_allowed as workspace_read_allowed,
+)
+from app.sandbox.domain.workspace_policy import (
+    workspace_read_name_private as workspace_read_name_private,
+)
 
 
 @dataclass(frozen=True, slots=True)

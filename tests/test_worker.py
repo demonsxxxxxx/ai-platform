@@ -824,10 +824,20 @@ def test_worker_keeps_bash_available_without_required_completion():
     payload = parse_queue_payload(
         base_payload(
             _leased=False,
+            executor_type="claude-agent-worker",
             input={"message": "请执行 Bash 命令 pwd"},
             skill_id="qa-file-reviewer",
             skill_version="hash-qa-file-reviewer",
             skill_manifests=[primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")],
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-existing",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 1,
+                "memory_record_count": 0,
+                "execution_tier": "sdk_only_writing",
+            },
         )
     )
     subjects = worker_module._builtin_capability_subjects(
@@ -840,6 +850,16 @@ def test_worker_keeps_bash_available_without_required_completion():
     assert set(by_identity) == {"Bash", "Write", "Skill"}
     assert by_identity["Bash"]["declared"] is True
     assert by_identity["Bash"]["required_parameter_keys"] == ["command"]
+    sandbox_subjects = worker_module.with_boundary_sandbox_local_tool_subjects(
+        subjects,
+        decision=worker_module._worker_execution_boundary_decision(payload),
+        sandbox_provider="opensandbox",
+    )
+    assert {subject["identity"] for subject in sandbox_subjects} == {
+        "Bash",
+        "Write",
+        "Skill",
+    }
 
     authorization = worker_module.required_tool_authorization_for_run(
         payload=payload,
@@ -1593,7 +1613,16 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
     assert captured["requested_tool_ids"] == ["search-a"]
     assert [
         subject["identity"] for subject in captured["tool_policy_subjects"]
-    ] == ["Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"]
+    ] == [
+        "Read",
+        "Glob",
+        "Grep",
+        "LS",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ]
     bash_subject = next(
         subject
         for subject in captured["tool_policy_subjects"]

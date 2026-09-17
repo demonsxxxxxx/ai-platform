@@ -93,7 +93,7 @@ from app.required_tool_contract import (
     builtin_capability_subjects,
     required_tool_authorization_for_run,
     required_tool_completion_for_run,
-    with_boundary_sandbox_local_tool_subjects,
+    with_boundary_sandbox_local_tool_subjects, with_harness_local_tool_subjects,
 )
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.executor_client import (
@@ -1265,8 +1265,8 @@ async def _reauthorize_worker_capabilities(
                 tuple(decisions),
                 denial,
             )
-        tool_policy_subjects = with_boundary_sandbox_local_tool_subjects(
-            [], decision=_worker_execution_boundary_decision(payload),
+        tool_policy_subjects = with_harness_local_tool_subjects(
+            decision=_worker_execution_boundary_decision(payload),
             sandbox_provider=get_settings().sandbox_container_provider,
         )
         required_tool_decision = required_tool_authorization_for_run(

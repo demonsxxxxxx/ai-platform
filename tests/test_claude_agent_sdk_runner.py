@@ -22,6 +22,7 @@ from app.platform.public_payload import (
     sanitize_public_event_candidate,
 )
 from app.required_tool_contract import (
+    SANDBOX_LOCAL_TOOL_IDENTITIES,
     parse_required_tool_declaration,
     with_sandbox_local_tool_capability_subjects,
 )
@@ -30,6 +31,20 @@ from app.required_tool_contract import (
 @pytest.fixture(autouse=True)
 def synthetic_mcp_sessions(monkeypatch):
     install_mcp_sessions(monkeypatch)
+
+
+def _full_sandbox_local_tool_capability_subjects(
+    existing_subjects,
+    *,
+    sandbox_provider,
+    required_declaration=None,
+):
+    return with_sandbox_local_tool_capability_subjects(
+        existing_subjects,
+        sandbox_provider=sandbox_provider,
+        required_declaration=required_declaration,
+        authorized_sandbox_tool_identities=SANDBOX_LOCAL_TOOL_IDENTITIES,
+    )
 
 
 def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
@@ -575,7 +590,7 @@ async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_li
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
@@ -607,15 +622,26 @@ async def test_sandbox_grep_is_workspace_bounded_and_records_acknowledged_lifecy
     tmp_path,
 ):
     captured, lifecycle_facts = {}, []
+    (tmp_path / "inputs").mkdir()
+    (tmp_path / ".pins").mkdir()
+    (tmp_path / "inputs" / "public.md").write_text("TODO public", encoding="utf-8")
+    (tmp_path / ".pins" / "private.md").write_text("TODO private", encoding="utf-8")
     hook_input = {
         "tool_name": "Grep",
         "tool_use_id": "grep-call-1",
         "tool_input": {
             "pattern": "TODO",
             "path": str(tmp_path),
-            "glob": "*.md",
+            "glob": "**/*.md",
             "-n": True,
         },
+    }
+    post_hook_input = {
+        **hook_input,
+        "tool_response": (
+            "inputs/public.md:1:TODO public\n"
+            ".pins/private.md:1:TODO private"
+        ),
     }
     monkeypatch.setitem(
         sys.modules,
@@ -624,7 +650,7 @@ async def test_sandbox_grep_is_workspace_bounded_and_records_acknowledged_lifecy
             captured,
             hook_invocations=[
                 ("PreToolUse", hook_input, hook_input["tool_use_id"]),
-                ("PostToolUse", hook_input, hook_input["tool_use_id"]),
+                ("PostToolUse", post_hook_input, hook_input["tool_use_id"]),
             ],
         ),
     )
@@ -642,15 +668,21 @@ async def test_sandbox_grep_is_workspace_bounded_and_records_acknowledged_lifecy
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
     )
 
     pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    filtered_output = captured["hook_results"][1][1]["hookSpecificOutput"][
+        "updatedToolOutput"
+    ]
     assert result.error is None
     assert pretool_output["permissionDecision"] == "allow"
+    assert "inputs/public.md:1:TODO public" in filtered_output
+    assert "private.md" not in filtered_output
+    assert "filtered or truncated" in filtered_output
     assert lifecycle_facts == [
         ("grep-call-1", "started"),
         ("grep-call-1", "completed"),
@@ -683,7 +715,7 @@ async def test_sandbox_grep_denies_outside_workspace_path(monkeypatch, tmp_path)
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=_acknowledge_capability_evidence,
@@ -720,7 +752,7 @@ async def test_sandbox_grep_denies_invalid_required_parameter_configuration(
         "tool_use_id": "grep-call-1",
         "tool_input": {},
     }
-    subjects = with_sandbox_local_tool_capability_subjects(
+    subjects = _full_sandbox_local_tool_capability_subjects(
         [], sandbox_provider="opensandbox"
     )
     next(subject for subject in subjects if subject["identity"] == "Grep")[
@@ -792,7 +824,7 @@ async def test_autonomous_sandbox_bash_pretool_denies_unacknowledged_lifecycle(
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=None if callback_outcome == "missing" else acknowledge,
@@ -847,7 +879,7 @@ async def test_autonomous_sandbox_bash_preserves_pretool_narration_on_missing_te
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
@@ -918,7 +950,7 @@ async def test_sandbox_effectful_tool_preserves_inflight_text_without_terminal_l
         cwd=tmp_path,
         skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
@@ -981,7 +1013,7 @@ async def test_sandbox_effectful_tool_streams_before_and_after_verified_lifecycl
         cwd=tmp_path,
         skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
@@ -1052,7 +1084,7 @@ async def test_sandbox_read_only_tool_streams_only_outside_verified_lifecycle(
         cwd=tmp_path,
         skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
@@ -1128,7 +1160,7 @@ async def test_failed_answer_projection_does_not_hide_verified_tool_terminal(
         cwd=tmp_path,
         skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge_lifecycle,
@@ -1193,7 +1225,7 @@ async def test_failed_answer_projection_keeps_skill_and_bash_receipts(
 
     subjects = [
         _skill_subject("qa-review"),
-        *with_sandbox_local_tool_capability_subjects(
+        *_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
     ]
@@ -1271,7 +1303,7 @@ async def test_sandbox_read_only_tool_without_terminal_receipt_fails_closed(
         cwd=tmp_path,
         skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
@@ -1322,7 +1354,7 @@ async def test_sandbox_read_only_tool_denies_unacknowledged_start(
         cwd=tmp_path,
         skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=None if callback_mode == "missing" else acknowledge,
@@ -1371,7 +1403,7 @@ async def test_sandbox_read_only_lifecycle_denial_is_counted_on_sdk_error_termin
         cwd=tmp_path,
         skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
@@ -1453,7 +1485,7 @@ async def test_sandbox_local_tool_denies_missing_or_conflicting_call_id(
         cwd=tmp_path,
         skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
@@ -1509,7 +1541,7 @@ async def test_sandbox_local_tool_call_id_is_redacted_from_terminal_answer(
         cwd=tmp_path,
         skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=acknowledge,
@@ -1552,7 +1584,7 @@ async def test_sandbox_bash_availability_releases_terminal_answer_when_not_invok
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_text=deltas.append,
@@ -1572,7 +1604,7 @@ async def test_prior_mcp_completion_preserves_narration_before_bash_failure_term
     mcp_subject = _subject()
     bash_subject = next(
         subject
-        for subject in with_sandbox_local_tool_capability_subjects(
+        for subject in _full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         )
         if subject["identity"] == "Bash"
@@ -1643,7 +1675,7 @@ async def test_sandbox_bash_fails_closed_without_sdk_hook_matcher(
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="docker"
         ),
     )
@@ -1691,7 +1723,7 @@ async def test_required_sandbox_bash_pretool_denies_unacknowledged_lifecycle(
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [],
             sandbox_provider="opensandbox",
             required_declaration=declaration,
@@ -1745,7 +1777,7 @@ async def test_required_sandbox_bash_preserves_answer_without_terminal_lifecycle
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [],
             sandbox_provider="opensandbox",
             required_declaration=declaration,
@@ -1797,7 +1829,7 @@ async def test_required_sandbox_bash_rejects_duplicate_started_lifecycle(
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [],
             sandbox_provider="opensandbox",
             required_declaration=declaration,
@@ -1856,7 +1888,7 @@ async def test_required_sandbox_bash_releases_only_after_acknowledged_completion
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [],
             sandbox_provider="opensandbox",
             required_declaration=declaration,
@@ -1922,7 +1954,7 @@ async def test_required_sandbox_bash_failure_after_success_preserves_published_p
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [],
             sandbox_provider="opensandbox",
             required_declaration=declaration,
@@ -2340,7 +2372,7 @@ async def test_sdk_records_public_tool_policy_denial_detail(monkeypatch, tmp_pat
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+        tool_policy_subjects=_full_sandbox_local_tool_capability_subjects(
             [], sandbox_provider="opensandbox"
         ),
         on_tool_lifecycle=_acknowledge_capability_evidence,

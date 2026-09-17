@@ -156,3 +156,79 @@ def test_non_skill_tools_keep_strict_parameter_key_authorization():
         "Read",
         {"file_path": "input.txt", "opaque": "not allowed"},
     )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input"),
+    [
+        (
+            "Read",
+            {"file_path": "input.pdf", "offset": 1, "limit": 20, "pages": "1-3"},
+        ),
+        (
+            "Grep",
+            {
+                "pattern": "TODO",
+                "path": "inputs",
+                "-A": 2,
+                "-B": 1,
+                "-C": 3,
+                "-o": True,
+                "type": "py",
+            },
+        ),
+        (
+            "Bash",
+            {"command": "python --version", "timeout": 1000, "description": "version"},
+        ),
+        ("Glob", {"pattern": "inputs/**/*.py", "path": "."}),
+    ],
+)
+def test_builtin_parameter_fallback_uses_the_canonical_sdk_contract(
+    tool_name,
+    tool_input,
+):
+    assert _parameters_match_subject({"identity": tool_name}, tool_name, tool_input)
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["Read", "Glob", "Grep", "Bash"],
+)
+def test_builtin_parameter_fallback_still_rejects_unknown_keys(tool_name):
+    required_input = {
+        "Read": {"file_path": "input.txt"},
+        "Glob": {"pattern": "*.py"},
+        "Grep": {"pattern": "TODO"},
+        "Bash": {"command": "pwd"},
+    }[tool_name]
+
+    assert not _parameters_match_subject(
+        {"identity": tool_name},
+        tool_name,
+        {**required_input, "opaque": "not allowed"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input"),
+    [
+        ("Glob", {}),
+    ],
+)
+def test_foreground_sdk_tools_keep_required_parameters(tool_name, tool_input):
+    assert not _parameters_match_subject({"identity": tool_name}, tool_name, tool_input)
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_input"),
+    [
+        ("Bash", {"command": "pwd", "run_in_background": True}),
+        ("Bash", {"command": "pwd", "dangerouslyDisableSandbox": True}),
+    ],
+)
+def test_bash_background_and_sandbox_bypass_fields_remain_closed(
+    tool_name,
+    tool_input,
+):
+    assert not _parameters_match_subject({"identity": tool_name}, tool_name, tool_input)

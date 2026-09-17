@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.tool_policy import evaluate_tool_policy
+from app.tool_policy import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_session_messages",
@@ -31,50 +31,6 @@ _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
     "stage_context_file_to_workspace": ("file_id",),
     "stage_run_artifact_to_workspace": ("artifact_id",),
 }
-_BUILTIN_PARAMETER_KEYS = {
-    "Read": ("file_path",),
-    "Glob": ("pattern", "path"),
-    "Grep": (
-        "pattern",
-        "path",
-        "glob",
-        "output_mode",
-        "-i",
-        "multiline",
-        "head_limit",
-        "offset",
-        "context",
-        "-A",
-        "-B",
-        "-C",
-        "-n",
-        "-o",
-        "type",
-    ),
-    "LS": ("path",),
-    "Bash": ("command",),
-    "Write": ("file_path", "content"),
-    "Edit": ("file_path", "old_string", "new_string", "replace_all"),
-    "NotebookEdit": (
-        "notebook_path",
-        "new_source",
-        "cell_id",
-        "cell_type",
-        "edit_mode",
-    ),
-    "Agent": ("agent", "prompt", "description"),
-    "WebFetch": ("url", "prompt"),
-    "WebSearch": ("query",),
-    "Skill": ("skill",),
-}
-_BUILTIN_REQUIRED_PARAMETER_KEYS = {
-    "Grep": ("pattern",),
-    "Bash": ("command",),
-    "Write": ("file_path", "content"),
-    "Skill": ("skill",),
-}
-
-
 def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
     """Keep only exact, complete capability subjects authorized by the worker."""
 
@@ -239,7 +195,8 @@ def _authorized_parameter_keys(
         isinstance(item, str) and item for item in configured
     ):
         return set(configured)
-    return set(_BUILTIN_PARAMETER_KEYS.get(tool_name, ()))
+    contract = BUILTIN_TOOL_PARAMETER_CONTRACTS.get(tool_name)
+    return set(contract.allowed_parameter_keys if contract is not None else ())
 
 
 def _delegates_external_mcp_parameters(
@@ -363,7 +320,10 @@ def _parameters_match_subject(
     if required is None and isinstance(schema, dict):
         required = schema.get("required", [])
     if required is None:
-        required = list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ()))
+        contract = BUILTIN_TOOL_PARAMETER_CONTRACTS.get(tool_name)
+        required = list(
+            contract.required_parameter_keys if contract is not None else ()
+        )
     if not isinstance(required, list) or not all(
         isinstance(key, str) and key for key in required
     ):

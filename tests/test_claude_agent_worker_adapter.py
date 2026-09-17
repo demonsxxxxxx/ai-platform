@@ -40,13 +40,14 @@ from app.file_parser_contracts import (
     XLSX_CONTENT_TYPE,
 )
 from app.required_tool_contract import (
-    REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
+    SANDBOX_LOCAL_TOOL_IDENTITIES,
     TOOL_INVOCATION_EVIDENCE_KEY,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     ToolInvocationEvidence,
     parse_required_tool_declaration,
+    with_sandbox_local_tool_capability_subjects,
 )
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import (
@@ -4066,18 +4067,29 @@ async def test_sandbox_dispatch_uses_frozen_epoch_id_across_runs_and_new_adapter
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     runtime_requests = install_sandbox_runtime(monkeypatch)
+    local_subjects = with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="docker",
+        authorized_sandbox_tool_identities=SANDBOX_LOCAL_TOOL_IDENTITIES,
+    )
 
     base_payload = sandbox_writing_payload(
         agent_id="qa-word-review",
         skill_id="qa-file-reviewer",
         file_ids=[],
-        input={"message": "review"},
+        input={
+            "message": "review",
+            "_runtime_tool_policy_subjects": local_subjects,
+        },
     )
     second_payload = sandbox_writing_payload(
         agent_id="qa-word-review",
         skill_id="qa-file-reviewer",
         file_ids=[],
-        input={"message": "continue"},
+        input={
+            "message": "continue",
+            "_runtime_tool_policy_subjects": local_subjects,
+        },
         run_id="run_2",
     )
     await adapter.submit_run(base_payload)
@@ -4099,17 +4111,37 @@ async def test_sandbox_dispatch_uses_frozen_epoch_id_across_runs_and_new_adapter
         assert bash_subjects[0]["command_isolation"] == "sibling-tool-sandbox-v1"
 
 
-def test_sandbox_bash_subject_is_available_without_required_declaration():
+def test_sandbox_runtime_does_not_mint_tools_without_worker_authority():
     subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
         types.SimpleNamespace(input={"message": "请执行 Bash 命令 pwd"}),
         sandbox_provider="opensandbox",
     )
-    bash_subject = next(subject for subject in subjects if subject["identity"] == "Bash")
 
-    assert bash_subject["active"] is True
-    assert bash_subject["write_capable"] is True
-    assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
-    assert REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY not in bash_subject
+    assert subjects == []
+
+
+def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
+    local_subjects = with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="opensandbox",
+        authorized_sandbox_tool_identities=SANDBOX_LOCAL_TOOL_IDENTITIES,
+    )
+    payload = types.SimpleNamespace(
+        input={
+            "_runtime_tool_policy_subjects": [
+                subject
+                for subject in local_subjects
+                if subject["identity"] in {"Bash", "Write"}
+            ]
+        }
+    )
+
+    subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+        payload,
+        sandbox_provider="opensandbox",
+    )
+
+    assert [subject["identity"] for subject in subjects] == ["Bash", "Write"]
 
 
 def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt():
