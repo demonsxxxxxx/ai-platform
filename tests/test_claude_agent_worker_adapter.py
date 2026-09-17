@@ -1406,18 +1406,22 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_materialize_files_rejects_duplicate_basename_before_object_read_or_write(
+async def test_materialize_files_disambiguates_duplicate_basename_in_stage(
     monkeypatch,
     tmp_path,
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    storage_reads = []
+    contents = {
+        "files/a": b"first",
+        "files/b": b"second",
+    }
 
     class FakeStorage:
         def get_bytes_bounded(self, *, storage_key, max_bytes):
-            storage_reads.append((storage_key, max_bytes))
-            raise AssertionError("duplicate basenames must fail before object reads")
+            content = contents[storage_key]
+            assert max_bytes == len(content)
+            return content
 
     @asynccontextmanager
     async def fake_transaction():
@@ -1426,25 +1430,29 @@ async def test_materialize_files_rejects_duplicate_basename_before_object_read_o
     async def fake_get_scoped_context_file(_conn, **kwargs):
         file_id = kwargs["file_id"]
         return {
-            "original_name": "book.xlsx",
-            "content_type": XLSX_CONTENT_TYPE,
-            "size_bytes": 4,
+            "original_name": "book.txt",
+            "content_type": "text/plain",
+            "size_bytes": len(contents[f"files/{'a' if file_id == 'file-a' else 'b'}"]),
             "storage_key": f"files/{'a' if file_id == 'file-a' else 'b'}",
         }
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        fake_get_scoped_context_file,
+    )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
-    with pytest.raises(ValueError, match="context_file_name_conflict"):
-        await adapter._materialize_files(
-            payload(file_ids=["file-a", "file-b"]),
-            workspace,
-        )
+    materialized = await adapter._materialize_files(
+        payload(file_ids=["file-a", "file-b"]),
+        workspace,
+    )
 
-    assert storage_reads == []
-    assert list(workspace.iterdir()) == []
+    assert list(materialized) == ["book.txt", "book (2).txt"]
+    assert materialized.materialized_file_names == ["book.txt", "book (2).txt"]
+    assert (workspace / "inputs" / "book.txt").read_bytes() == b"first"
+    assert (workspace / "inputs" / "book (2).txt").read_bytes() == b"second"
 
 
 @pytest.mark.asyncio
