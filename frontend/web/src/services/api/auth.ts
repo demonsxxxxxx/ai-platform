@@ -69,7 +69,7 @@ async function bootstrapAuthContext(
     credentials: "include",
     body: JSON.stringify(payload),
     headers: { "Content-Type": "application/json" },
-    signal,
+    signal: withAuthRequestTimeout(signal),
   });
 }
 
@@ -100,10 +100,10 @@ export function buildOAuthLoginUrl(provider: string, state?: string): string {
   return `${API_BASE}/api/auth/oauth/${safeProvider}${suffix}`;
 }
 
-const COMPANY_AD_LOGIN_TIMEOUT_MS = 15_000;
+const AUTH_REQUEST_TIMEOUT_MS = 15_000;
 
-function withADLoginTimeout(signal?: AbortSignal): AbortSignal {
-  const timeout = AbortSignal.timeout(COMPANY_AD_LOGIN_TIMEOUT_MS);
+function withAuthRequestTimeout(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(AUTH_REQUEST_TIMEOUT_MS);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
@@ -177,7 +177,7 @@ export const authApi = {
         credentials: "include",
         body: JSON.stringify(credentials),
         headers,
-        signal,
+        signal: withAuthRequestTimeout(signal),
       },
     );
 
@@ -191,14 +191,14 @@ export const authApi = {
       `${API_BASE}/api/ai/auth/ad-login/config`,
       {
         skipAuth: true,
-        signal: withADLoginTimeout(signal),
+        signal: withAuthRequestTimeout(signal),
       },
     );
   },
 
   /** Exchange the browser's Windows-authenticated company JWT for a platform session. */
   async loginWithAD(loginUrl: string, signal?: AbortSignal): Promise<void> {
-    const requestSignal = withADLoginTimeout(signal);
+    const requestSignal = withAuthRequestTimeout(signal);
     const companyLogin = await fetchCompanyADLogin(loginUrl, requestSignal);
     await authFetch<PrincipalResponseWire>(
       `${API_BASE}/api/ai/auth/ad-login`,
@@ -256,7 +256,7 @@ export const authApi = {
       {
         skipAuth: true,
         credentials: "include",
-        signal: options.signal,
+        signal: withAuthRequestTimeout(options.signal),
       },
     );
     return mapPrincipalToUser(principal);
@@ -290,7 +290,7 @@ export const authApi = {
       headers: {
         "Accept-Language": "zh-CN",
       },
-      signal,
+      signal: withAuthRequestTimeout(signal),
     });
     if (response.ok || response.status === 401 || response.status === 403) return;
 
@@ -402,7 +402,7 @@ export const authApi = {
         method: "POST",
         skipAuth: true,
         credentials: "include",
-        signal,
+        signal: withAuthRequestTimeout(signal),
       },
     );
   },
@@ -423,7 +423,7 @@ export const authApi = {
         skipAuth: true,
         credentials: "include",
         body: JSON.stringify({ code, state }),
-        signal,
+        signal: withAuthRequestTimeout(signal),
       },
     );
   },
