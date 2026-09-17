@@ -4,8 +4,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
-import jwt
-from jwt import PyJWTError
 
 from app.auth import (
     COMPANY_AUTHZ_POLICY_VERSION,
@@ -13,6 +11,7 @@ from app.auth import (
     authority_checked_at_now,
     normalize_roles,
 )
+from app.platform.jwt_validation import JwtValidationError, decode_hs256_jwt
 from app.settings import get_settings
 from app.validation import (
     assert_safe_department_authority_id,
@@ -126,15 +125,14 @@ def resolve_company_login_jwt(
         raise CompanyLoginJwtUnavailable()
 
     try:
-        claims = jwt.decode(
+        claims = decode_hs256_jwt(
             company_jwt,
-            secret,
-            algorithms=["HS256"],
+            secret=secret,
             issuer=issuer,
             audience=audience,
-            options={"require": list(_REQUIRED_COMPANY_JWT_CLAIMS)},
+            required_claims=_REQUIRED_COMPANY_JWT_CLAIMS,
         )
-    except PyJWTError:
+    except JwtValidationError:
         raise PrincipalAuthorityDenied() from None
 
     work_id = _required_company_claim(claims, "workid", 128)
