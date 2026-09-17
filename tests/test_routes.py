@@ -1552,7 +1552,7 @@ async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(mo
         "expected_sha256": None,
         "expected_byte_count": len(raw),
     }
-    assert payload["schema_version"] == "ai-platform.file-preview.v1"
+    assert payload["schema_version"] == "ai-platform.file-preview.v2"
     assert payload["kind"] == "xlsx_table"
     assert payload["content"]["sheets"][0]["name"] == "Checks"
     assert "storage_key" not in payload

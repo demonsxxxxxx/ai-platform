@@ -4,10 +4,10 @@ import { LoadingSpinner } from "../common/LoadingSpinner";
 import { ImageViewer } from "../common/ImageViewer";
 import CodeRenderer from "./previews/CodeRenderer";
 import MarkdownRenderer from "./previews/MarkdownRenderer";
-import PptPreview from "./previews/PptPreview";
 import HtmlPreview from "./previews/HtmlPreview";
 
 const PdfPreview = lazy(() => import("./previews/PdfPreview"));
+const PptPreview = lazy(() => import("./previews/PptPreview"));
 const WordPreview = lazy(() => import("./previews/WordPreview"));
 const ExcelPreview = lazy(() => import("./previews/ExcelPreview"));
 const ExcalidrawPreview = lazy(() => import("./previews/ExcalidrawPreview"));
@@ -251,14 +251,17 @@ export default function DocumentPreviewContent({
 
   if (pptFile && (pptUrl || pptxBuffer)) {
     return (
-      <div className="h-full min-h-[400px]">
-        <PptPreview
-          url={pptUrl || ""}
-          arrayBuffer={pptxBuffer}
-          fileName={fileName}
-          t={t}
-        />
-      </div>
+      <Suspense fallback={suspenseFallback}>
+        <div className="h-full min-h-[400px]">
+          <PptPreview
+            url={pptUrl || ""}
+            arrayBuffer={pptxBuffer}
+            fileName={fileName}
+            t={t}
+            onDownload={handleDownload}
+          />
+        </div>
+      </Suspense>
     );
   }
 

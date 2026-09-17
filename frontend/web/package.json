@@ -42,6 +42,7 @@
     "@dicebear/core": "^10.5.0",
     "@dicebear/styles": "^10.4.0",
     "@excalidraw/excalidraw": "^0.18.0",
+    "@jvmr/pptx-to-html": "^1.1.2",
     "@lobehub/fluent-emoji": "^4.1.0",
     "@lobehub/icons": "^5.2.0",
     "@lobehub/icons-static-svg": "^1.84.0",
@@ -54,6 +55,7 @@
     "@xyflow/react": "^12.10.2",
     "buffer": "^6.0.3",
     "clsx": "^2.1.1",
+    "docx-preview": "^0.3.7",
     "dompurify": "^3.3.2",
     "dxf-viewer": "^1.0.47",
     "events": "^3.3.0",
@@ -112,8 +114,7 @@
     "workbox-expiration": "^7.4.1",
     "workbox-precaching": "^7.4.1",
     "workbox-routing": "^7.4.1",
-    "workbox-strategies": "^7.4.1",
-    "xlsx": "^0.18.5"
+    "workbox-strategies": "^7.4.1"
   },
   "engines": {
     "node": ">=22.13.0"

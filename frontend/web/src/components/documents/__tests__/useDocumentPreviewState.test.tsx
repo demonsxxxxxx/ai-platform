@@ -165,7 +165,7 @@ function deferred<T>() {
 
 function xlsxDto(value: string): string {
   return JSON.stringify({
-    schema_version: "ai-platform.file-preview.v1",
+    schema_version: "ai-platform.file-preview.v2",
     kind: "xlsx_table",
     status: "ready",
     content: {
@@ -174,6 +174,7 @@ function xlsxDto(value: string): string {
         {
           name: "Checks",
           rows: [{ row: 1, cells: [{ column: 1, kind: "text", value }] }],
+          images: [],
         },
       ],
     },
