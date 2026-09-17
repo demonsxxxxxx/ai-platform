@@ -38,6 +38,12 @@ from app.sandbox.domain.runtime_diagnostics import (
     runtime_diagnostic_value as runtime_diagnostic_value,
 )
 from app.sandbox.domain.workspace_policy import (
+    opensandbox_collection_entry as opensandbox_collection_entry,
+)
+from app.sandbox.domain.workspace_policy import (
+    opensandbox_listing_matches_file as opensandbox_listing_matches_file,
+)
+from app.sandbox.domain.workspace_policy import (
     PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME as PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME,
 )
 from app.sandbox.domain.workspace_policy import (

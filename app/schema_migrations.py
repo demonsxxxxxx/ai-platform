@@ -37,7 +37,8 @@ STREAM_ONLY_SCHEMA_VERSION = "2026.09.12.1"
 RUN_DIAGNOSTICS_SCHEMA_VERSION = "2026.09.13.1"
 MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION = "2026.09.15.1"
 CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION = "2026.09.15.2"
-TARGET_SCHEMA_VERSION = CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION
+SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION = "2026.09.16.1"
+TARGET_SCHEMA_VERSION = SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = STREAM_ONLY_SCHEMA_VERSION
@@ -177,6 +178,8 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "runtime_executor_url", "text", False),
     ("sandbox_leases", "runtime_workspace_container_path", "text", False),
     ("sandbox_leases", "runtime_handle_verified_at", "timestamptz", False),
+    ("sandbox_leases", "provider_renewed_at", "timestamptz", False),
+    ("sandbox_leases", "provider_expires_at", "timestamptz", False),
     ("sandbox_leases", "executor_status", "text", True),
     ("sandbox_leases", "executor_heartbeat_at", "timestamptz", False),
     ("sandbox_leases", "executor_terminal_json", "jsonb", False),

@@ -14,6 +14,13 @@ from app.sandbox.api import (
 )
 
 
+def normalized_runtime_diagnostics_payload(value: object) -> dict[str, Any]:
+    """Return a private carrier only when executor diagnostics are present."""
+
+    diagnostics = normalize_sdk_runtime_diagnostics(value)
+    return {"runtime_diagnostics": diagnostics} if diagnostics else {}
+
+
 def diagnostic_failure_result(
     error: BaseException | None = None,
     *,

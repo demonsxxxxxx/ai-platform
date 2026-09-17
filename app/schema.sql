@@ -2145,6 +2145,8 @@ create table if not exists sandbox_leases (
   runtime_executor_url text,
   runtime_workspace_container_path text,
   runtime_handle_verified_at timestamptz,
+  provider_renewed_at timestamptz,
+  provider_expires_at timestamptz,
   executor_status text not null default 'pending',
   executor_heartbeat_at timestamptz,
   executor_terminal_json jsonb,
@@ -2176,6 +2178,8 @@ alter table sandbox_leases add column if not exists runtime_container_name text;
 alter table sandbox_leases add column if not exists runtime_executor_url text;
 alter table sandbox_leases add column if not exists runtime_workspace_container_path text;
 alter table sandbox_leases add column if not exists runtime_handle_verified_at timestamptz;
+alter table sandbox_leases add column if not exists provider_renewed_at timestamptz;
+alter table sandbox_leases add column if not exists provider_expires_at timestamptz;
 alter table sandbox_leases add column if not exists executor_status text not null default 'pending';
 alter table sandbox_leases add column if not exists executor_heartbeat_at timestamptz;
 alter table sandbox_leases add column if not exists executor_terminal_json jsonb;
@@ -2196,6 +2200,10 @@ alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconcilia
   check (executor_reconciliation_status in ('waiting_terminal', 'pending', 'claimed', 'retry', 'finalized', 'failed'));
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
+
+-- Rollback for the additive OpenSandbox renewal observations (after callers retire):
+-- alter table sandbox_leases drop column if exists provider_renewed_at;
+-- alter table sandbox_leases drop column if exists provider_expires_at;
 
 -- Rollback for the additive async execution columns:
 -- alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_status;

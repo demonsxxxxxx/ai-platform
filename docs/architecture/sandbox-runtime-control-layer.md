@@ -84,6 +84,15 @@ generation, timestamps, and reconciliation ownership in one migration.
    advance the diagnostic revision twice. The receipt is retained for protocol
    protocol recovery; reconciliation may append its bounded `diagnostics` list,
    but cannot replace the first receipt fields. It is not the administrator query store.
+   A nonterminal OpenSandbox heartbeat verifies the exact provider identity before
+   renewing its remote lifetime. The callback records the SDK's absolute
+   `expires_at` as nullable `sandbox_leases.provider_expires_at`, with
+   `provider_renewed_at`, under the same active Run/Attempt/lease fence; these
+   are provider observations, not substitutes for the platform lease's
+   `expires_at` or an authorization grant. If the SDK provides no valid future
+   receipt, the callback rolls back with the existing disclosure-safe 503.
+   The external renewal and PostgreSQL commit are not atomic: a failed commit
+   can leave the provider alive longer than the platform lease.
 4. A real-provider release takes the scoped lease row lock, calls provider stop,
    and marks released in that transaction. Concurrent release waits and then
    observes the terminal row instead of issuing a duplicate stop. Stop failure
@@ -101,6 +110,11 @@ generation, timestamps, and reconciliation ownership in one migration.
 7. Provider stop exceptions are normalized without leaking provider details.
    Expiry compensation and admin orphan-cleanup failures write tenant-scoped
    audit outcomes while the failed lease remains a reconciliation subject.
+   A lost executor probe keeps the public `sandbox_executor_lost` receipt and
+   stores only classified probe stage, exception type and validated SDK/HTTP
+   facts in Runs-owned private diagnostics. A retry stores a fixed safe lease
+   error code instead of a raw provider exception; absent executor diagnostics
+   never synthesize an `unsupported_schema` observation.
 
 `attempt_id` is the first ownership fence in the initial slice. It does not yet
 replace a general monotonically increasing fencing generation for provider
@@ -142,7 +156,11 @@ Artifact collection traverses ordinary workspace directories regardless of
 whether a Skill selected `output/`, `outputs/**/delivery/`, `tasks/`,
 `artifacts/`, `review/`, or another directory name. It continues to exclude
 inputs, installed Skills, platform/runtime state, debug/audit trees, native-tool
-scratch space, and platform instruction files. The former output-directory
+scratch space, and platform instruction files. OpenSandbox collection validates
+every listed path before classifying it, traverses only ordinary directories,
+and downloads only ordinary files; SDK-classified `symlink` and `other` entries
+are ignored without dereferencing them, while missing or unknown entry types
+fail closed. The former output-directory
 write allowlist and `outputs/**/delivery/`-only collection rule are retired
 together so a permitted write cannot disappear solely because of its path.
 

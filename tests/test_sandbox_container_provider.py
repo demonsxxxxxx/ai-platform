@@ -953,8 +953,9 @@ class FakeOpenSandbox:
             "status": {"state": self.status.state},
         }
 
-    async def renew(self, timeout: timedelta) -> None:
+    async def renew(self, timeout: timedelta) -> SimpleNamespace:
         self.renew_calls.append(timeout)
+        return SimpleNamespace(expires_at=datetime.now(timezone.utc) + timeout)
 
     def kill(self) -> None:
         self.kill_calls += 1
@@ -1158,16 +1159,34 @@ async def test_opensandbox_renew_reconnects_persisted_identity_and_uses_maximum_
     assert FakeOpenSandbox.created[-1]["timeout"] == timedelta(seconds=2402)
 
     restarted_provider = opensandbox_provider()
-    await lifecycle.renew_opensandbox_lifetime(
+    first_expiration = await lifecycle.renew_opensandbox_lifetime(
         restarted_provider, persisted_lease, settings, ttl_seconds=2401
     )
-    await lifecycle.renew_opensandbox_lifetime(
+    second_expiration = await lifecycle.renew_opensandbox_lifetime(
         restarted_provider, persisted_lease, settings, ttl_seconds=2403
     )
 
     sandbox = FakeOpenSandbox.instances[lease.container_id]
+    assert first_expiration > datetime.now(timezone.utc) + timedelta(seconds=2300)
+    assert second_expiration > first_expiration
     assert FakeOpenSandbox.connect_calls[-1]["sandbox_id"] == lease.container_id
     assert sandbox.renew_calls == [timedelta(seconds=2402), timedelta(seconds=2403)]
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_renew_rejects_missing_provider_receipt(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    lifecycle = importlib.import_module("app.runtime.sandbox.providers.opensandbox.startup")
+    FakeOpenSandbox.reset()
+    settings = OpenSandboxSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    monkeypatch.setattr(sandbox, "renew", lambda _timeout: SimpleNamespace(expires_at=None))
+
+    with pytest.raises(container_provider.OpenSandboxUnavailableError, match="receipt is invalid"):
+        await lifecycle.renew_opensandbox_lifetime(provider, lease, settings, ttl_seconds=1801)
 
 
 @pytest.mark.asyncio
@@ -1604,8 +1623,7 @@ def test_opensandbox_workspace_manifest_enforces_upload_file_and_total_bytes(mon
 
 
 @pytest.mark.asyncio
-@requires_secure_opensandbox_transfer
-async def test_opensandbox_collection_rejects_remote_symlink_and_removes_partial_download(monkeypatch, tmp_path):
+async def test_opensandbox_collection_ignores_remote_symlink_and_other_entries(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
@@ -1616,16 +1634,55 @@ async def test_opensandbox_collection_rejects_remote_symlink_and_removes_partial
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(runtime_request, lease_workspace)
     remote_files = FakeOpenSandbox.instances[lease.container_id].files
+    staging_root = tmp_path / "staging"
+    monkeypatch.setattr(container_provider, "_require_secure_workspace_transfer", lambda: None)
+    monkeypatch.setattr(provider, "_temporary_collection_root", lambda _root: staging_root)
+    monkeypatch.setattr(provider, "_publish_collected_workspace_files", lambda *_args: None)
+    monkeypatch.setattr(provider, "_remove_temporary_collection_root", lambda _root: None)
 
-    def symlink_listing(entry):
+    def special_listing(entry):
         if entry.path == "/workspace":
-            return [{"path": "/workspace/output", "type": "directory", "size": 0}]
+            return [
+                {"path": "/workspace/output", "type": "directory", "size": 0},
+                {"path": "/workspace/runtime.sock", "type": "other", "size": 0},
+            ]
         return [{"path": "/workspace/output/escape", "type": "symlink", "size": 0}]
 
-    remote_files.list_directory = symlink_listing
+    remote_files.list_directory = special_listing
+    await provider.collect_workspace(lease, runtime_request, lease_workspace)
+    assert not (local_workspace / "output").exists()
+
+
+def test_opensandbox_collection_rejects_out_of_workspace_symlink_entry():
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    provider = opensandbox_provider()
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="path is invalid"):
+        provider._remote_workspace_entry(
+            {"path": "/outside/private", "type": "symlink", "size": 0},
+            workspace(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_collection_rejects_unknown_remote_entry_type(monkeypatch, tmp_path):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    local_workspace = tmp_path / "workspace"
+    local_workspace.mkdir()
+    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
+    runtime_request = request()
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
+    remote_files = FakeOpenSandbox.instances[lease.container_id].files
+    monkeypatch.setattr(container_provider, "_require_secure_workspace_transfer", lambda: None)
+    remote_files.list_directory = lambda _entry: [
+        {"path": "/workspace/unknown", "type": "device", "size": 0}
+    ]
+
     with pytest.raises(container_provider.ContainerStartFailedError, match="entry is invalid"):
         await provider.collect_workspace(lease, runtime_request, lease_workspace)
-    assert not (local_workspace / "output").exists()
 
 
 @pytest.mark.asyncio

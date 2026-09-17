@@ -81,7 +81,6 @@ from app.runtime.sandbox.contracts import (
     SandboxRuntimeRequest,
 )
 from app.runtime.sandbox.runtime import SandboxRuntime
-from app.sandbox.api import normalize_sdk_runtime_diagnostics
 from app.settings import get_settings
 from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,
@@ -1545,7 +1544,7 @@ class ClaudeAgentWorkerAdapter:
             "capability_evidence": capability_evidence,
             **runtime_tool_evidence.private_payload(),
         }
-        runtime_diagnostics = normalize_sdk_runtime_diagnostics(
+        diagnostic_payload = execution_api.normalized_runtime_diagnostics_payload(
             executor_response.get("runtime_diagnostics")
         )
         failure_result_context = {
@@ -1555,7 +1554,7 @@ class ClaudeAgentWorkerAdapter:
             "allowed_skills": prepared.allowed_skill_names,
             "staged_skills": prepared.staged_skill_names,
             "used_skills": used_skill_names,
-            "runtime_diagnostics": runtime_diagnostics,
+            **diagnostic_payload,
         }
         if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
             turn_diagnostics = _public_sdk_turn_diagnostics(
@@ -1583,7 +1582,7 @@ class ClaudeAgentWorkerAdapter:
                     **common_payload,
                     "sdk_error": selected_capability_error,
                     "sdk_turn_diagnostics": turn_diagnostics,
-                    "runtime_diagnostics": runtime_diagnostics,
+                    **diagnostic_payload,
                 },
             )
         if runtime_status == "accepted":
@@ -1614,7 +1613,7 @@ class ClaudeAgentWorkerAdapter:
                     **common_payload,
                     "sdk_error": error_code,
                     "sdk_turn_diagnostics": turn_diagnostics,
-                    "runtime_diagnostics": runtime_diagnostics,
+                    **diagnostic_payload,
                 },
             )
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
@@ -1656,7 +1655,7 @@ class ClaudeAgentWorkerAdapter:
                     **common_payload,
                     "sdk_error": sdk_error,
                     "sdk_turn_diagnostics": turn_diagnostics,
-                    "runtime_diagnostics": runtime_diagnostics,
+                    **diagnostic_payload,
                 },
             )
 

@@ -81,6 +81,8 @@ from app.platform.sandbox.errors import (
     SandboxRuntimeError,
 )
 from app.sandbox.api import (
+    opensandbox_collection_entry,
+    opensandbox_listing_matches_file,
     workspace_collection_directory_allowed as workspace_directory_allowed,
     workspace_collection_file_allowed as workspace_file_allowed,
 )
@@ -4790,43 +4792,26 @@ class OpenSandboxContainerProvider:
         except Exception as exc:
             raise ContainerStartFailedError("OpenSandbox workspace staging failed") from exc
 
-    @staticmethod
-    def _filesystem_entry_value(entry: Any, name: str) -> Any:
-        if isinstance(entry, dict):
-            if name == "entry_type":
-                return entry.get("entry_type", entry.get("type"))
-            return entry.get(name)
-        if name == "entry_type":
-            return getattr(entry, "entry_type", getattr(entry, "type", None))
-        return getattr(entry, name, None)
-
     def _remote_workspace_entry(
         self,
         entry: Any,
         workspace: WorkspaceLease,
-    ) -> tuple[str, str, int]:
-        raw_path = self._filesystem_entry_value(entry, "path")
-        remote_root = workspace.workspace_container_path.rstrip("/")
-        if not isinstance(raw_path, str) or "\x00" in raw_path or not raw_path.startswith(f"{remote_root}/"):
-            raise ContainerStartFailedError("OpenSandbox workspace collection path is invalid")
-        relative_path = _safe_workspace_relative_path(raw_path[len(remote_root) + 1 :])
-        entry_type = str(self._filesystem_entry_value(entry, "entry_type") or "").lower()
-        if entry_type not in {"file", "directory"}:
-            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid")
+    ) -> tuple[str, str | None, int]:
         try:
-            size = int(self._filesystem_entry_value(entry, "size"))
-        except (TypeError, ValueError) as exc:
-            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid") from exc
-        if size < 0:
-            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid")
-        return relative_path, entry_type, size
+            return opensandbox_collection_entry(
+                entry,
+                workspace.workspace_container_path,
+                safe_relative_path=_safe_workspace_relative_path,
+            )
+        except ValueError as exc:
+            raise ContainerStartFailedError(str(exc)) from exc
 
     async def _list_remote_workspace_directory(
         self,
         filesystem: Any,
         workspace: WorkspaceLease,
         relative_directory: str,
-    ) -> list[tuple[str, str, int]]:
+    ) -> list[tuple[str, str | None, int]]:
         if self._directory_entry_class is None or not hasattr(filesystem, "list_directory"):
             raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
         remote_root = workspace.workspace_container_path.rstrip("/")
@@ -4857,12 +4842,7 @@ class OpenSandboxContainerProvider:
         entry = details.get(remote_path) if isinstance(details, dict) else None
         if entry is None:
             return False
-        entry_type = str(self._filesystem_entry_value(entry, "entry_type") or "").lower()
-        try:
-            size = int(self._filesystem_entry_value(entry, "size"))
-        except (TypeError, ValueError):
-            return False
-        return entry_type == "file" and size == expected_size
+        return opensandbox_listing_matches_file(entry, expected_size)
 
     async def _stream_remote_workspace_file(
         self,
@@ -5147,6 +5127,8 @@ class OpenSandboxContainerProvider:
                     workspace,
                     relative_directory,
                 ):
+                    if entry_type is None:
+                        continue
                     if entry_type == "directory":
                         if not workspace_directory_allowed(relative_path):
                             continue

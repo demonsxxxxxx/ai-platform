@@ -414,7 +414,7 @@ async def test_prior_schema_ledgers_advance_to_current_schema(
 
 
 @pytest.mark.asyncio
-async def test_agent_avatar_schema_ledger_is_upgraded_to_claude_context_cutover():
+async def test_agent_avatar_schema_ledger_is_upgraded_to_current_schema():
     state = SharedMigrationState()
     state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] = "legacy-checksum"
 
@@ -425,7 +425,7 @@ async def test_agent_avatar_schema_ledger_is_upgraded_to_claude_context_cutover(
 
     assert result["status"] == "applied"
     assert state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] == "legacy-checksum"
-    assert state.ledger[schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION] == (
+    assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
         schema_migrations.schema_checksum()
     )
 
@@ -481,11 +481,18 @@ def test_stream_only_schema_change_advances_schema_version():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.15.2"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.16.1"
+    assert (
+        schema_migrations.TARGET_SCHEMA_VERSION
+        == schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION
+    )
+    assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
     assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
-    assert schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
+    assert (
+        schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
+        == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
+    )
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
@@ -606,6 +613,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "int8",
         False,
     ) in schema_migrations.CRITICAL_COLUMNS
+    for name in ("provider_renewed_at", "provider_expires_at"):
+        assert ("sandbox_leases", name, "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     for column in (
         ("revision", "int8"),
         ("base_url", "text"),
@@ -1137,6 +1146,8 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
     for column in (
         "executor_status text",
         "executor_heartbeat_at timestamptz",
+        "provider_renewed_at timestamptz",
+        "provider_expires_at timestamptz",
         "executor_terminal_json jsonb",
         "executor_terminal_received_at timestamptz",
         "executor_reconciliation_context_json jsonb",

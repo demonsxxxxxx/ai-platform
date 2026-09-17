@@ -980,16 +980,82 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
     assert persisted[0][0]["id"] == "lease-a"
     assert isinstance(persisted[0][1].pop("claim_token"), str)
     assert persisted[0][1].pop("run_diagnostics") is None
-    assert persisted[0][1] == {
-        "executor_status": "failed",
-        "terminal_result": {
-            "run_id": "run-a",
-            "status": "failed",
-            "error_code": "sandbox_executor_lost",
-            "error_message": "Sandbox executor stopped responding",
+    terminal_result = persisted[0][1].pop("terminal_result")
+    private = terminal_result.pop("runtime_diagnostics")
+    assert persisted[0][1] == {"executor_status": "failed"}
+    assert terminal_result == {
+        "run_id": "run-a",
+        "status": "failed",
+        "error_code": "sandbox_executor_lost",
+        "error_message": "Sandbox executor stopped responding",
+    }
+    assert private == {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": "sandbox_executor_lost",
+        "failure_source": "executor_probe",
+        "failure_stage": "provider_endpoint",
+        "sdk": {
+            "exception_type": "RuntimeError",
+            "errors": [{"reason": "provider_absent"}],
         },
     }
+    assert "provider-confirmed sandbox loss" not in str(private)
     assert released == []
+
+
+@pytest.mark.asyncio
+async def test_probe_retry_persists_only_safe_error_code(monkeypatch):
+    released = []
+
+    async def claim(_conn, **_kwargs):
+        return [_suspect_lease_row()]
+
+    async def release(_conn, **kwargs):
+        released.append(kwargs)
+        return True
+
+    class Provider:
+        async def executor_control_endpoint(self, _lease, _request):
+            raise RuntimeError("provider credential must never be stored")
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects", claim
+    )
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(
+        "app.executor_reconciler.container_lease_from_persisted_row",
+        lambda _row: SimpleNamespace(provider="fake"),
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler.create_container_provider",
+        lambda _provider_name: Provider(),
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim", release
+    )
+
+    assert await probe_suspect_executor_tasks_once() == 0
+    assert len(released) == 1
+    assert released[0]["error"] == "sandbox_executor_probe_failed"
+
+
+def test_opensandbox_probe_error_facts_keep_only_typed_safe_fields():
+    from opensandbox.exceptions import SandboxApiException, SandboxError
+    from app.runtime.sandbox.providers.opensandbox.startup import opensandbox_probe_error_facts
+
+    error = SandboxApiException(
+        "private provider response",
+        status_code=404,
+        error=SandboxError("DOCKER::SANDBOX_NOT_FOUND", "private error"),
+        request_id="request_2026",
+    )
+    assert opensandbox_probe_error_facts(error) == {
+        "http_status": 404,
+        "request_id": "request_2026",
+    }
+    assert opensandbox_probe_error_facts(RuntimeError("private provider response")) == {}
 
 
 @pytest.mark.asyncio

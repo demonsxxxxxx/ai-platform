@@ -34,6 +34,7 @@ from app.platform.postgres.sandbox_leases import (
     create_sandbox_lease,
     fence_sandbox_lease_release,
     list_expired_active_sandbox_leases,
+    record_opensandbox_renewal_receipt,
     record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
 )
@@ -9753,6 +9754,48 @@ async def test_sandbox_executor_heartbeat_renews_only_unexpired_attempt_lease():
         "run-a",
         "attempt-a",
     )
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_renewal_receipt_is_provider_and_attempt_fenced():
+    class RecordingConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return SingleRowCursor(None)
+
+    conn = RecordingConnection()
+    expiration = datetime.now(timezone.utc) + timedelta(minutes=30)
+    assert await record_opensandbox_renewal_receipt(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        provider_expires_at=expiration,
+    ) is None
+
+    sql, params = conn.calls[0]
+    assert "provider_renewed_at = now()" in sql
+    assert "provider_expires_at = %s" in sql
+    assert "provider = 'opensandbox'" in sql
+    assert "status = 'active'" in sql
+    assert "attempt_id = %s" in sql
+    assert "(expires_at is null or expires_at > now())" in sql
+    assert "executor_terminal_json is null" in sql
+    assert params == (expiration, "lease-a", "tenant-a", "run-a", "attempt-a")
+    with pytest.raises(ValueError, match="timezone_invalid"):
+        await record_opensandbox_renewal_receipt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            lease_id="lease-a",
+            provider_expires_at=datetime.now(),
+        )
+    assert len(conn.calls) == 1
 
 
 @pytest.mark.asyncio
