@@ -46,6 +46,44 @@ _COLLECTION_PRIVATE_FILES = frozenset(
     }
 )
 
+_READ_PRIVATE_FILES = frozenset(
+    name
+    for name in _COLLECTION_PRIVATE_FILES
+    if name != PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME.casefold()
+)
+_READ_PRIVATE_DIRECTORIES = frozenset(
+    name for name in _COLLECTION_PRIVATE_DIRECTORIES if name not in {".claude", "inputs"}
+)
+
+
+def workspace_read_name_private(name: object) -> bool:
+    """Return whether one path component is private to the sandbox runtime."""
+
+    if not isinstance(name, str) or not name:
+        return True
+    lowered = name.casefold()
+    return lowered in _READ_PRIVATE_DIRECTORIES or lowered in _READ_PRIVATE_FILES
+
+
+def workspace_read_allowed(relative_path: str | PurePosixPath) -> bool:
+    """Keep platform-private workspace entries out of SDK read/search results."""
+
+    path = PurePosixPath(relative_path)
+    if path.is_absolute() or any(part in {"", ".."} for part in path.parts):
+        return False
+    if not path.parts:
+        return True
+    lowered = tuple(part.casefold() for part in path.parts)
+    if lowered[0] == ".claude":
+        if len(lowered) < 2 or lowered[1] != "skills":
+            return False
+        searchable_parts = lowered[2:]
+    else:
+        searchable_parts = lowered
+    if any(workspace_read_name_private(part) for part in searchable_parts):
+        return False
+    return not workspace_read_name_private(lowered[-1])
+
 
 def workspace_mutation_allowed(relative_path: str | PurePosixPath) -> bool:
     """Allow Skill writes throughout the workspace except platform-owned roots."""

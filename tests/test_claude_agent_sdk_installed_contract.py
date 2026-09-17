@@ -8,6 +8,7 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
 
     import claude_agent_sdk as sdk
     from claude_agent_sdk.types import (
+        PostToolUseHookSpecificOutput,
         PreToolUseHookSpecificOutput,
         SyncHookJSONOutput,
     )
@@ -25,6 +26,7 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     assert {"matcher", "hooks", "timeout"}.issubset(signature(sdk.HookMatcher).parameters)
     assert "hookSpecificOutput" in SyncHookJSONOutput.__annotations__
     assert "updatedInput" in PreToolUseHookSpecificOutput.__annotations__
+    assert "updatedToolOutput" in PostToolUseHookSpecificOutput.__annotations__
 
     async def hook(_input, _tool_use_id, _context):
         return {}
