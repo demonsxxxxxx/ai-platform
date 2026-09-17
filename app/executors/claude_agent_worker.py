@@ -955,7 +955,7 @@ class ClaudeAgentWorkerAdapter:
             return None, None
         return (
             ContextRetrievalAuthority.for_workspace_transaction(
-                transaction, ObjectStorage(), workspace
+                transaction, ObjectStorage(), workspace, storage_io=run_storage_io
             ),
             ScopedContextRetrievalIdentity(**scope.model_dump()),
         )

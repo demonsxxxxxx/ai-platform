@@ -48,7 +48,7 @@ from app.streaming.api import (
     callback_thinking_summary_to_v4,
 )
 from app.streaming.redis import get_stream_authority
-from app.storage import ObjectStorage
+from app.storage import ObjectStorage, run_storage_io
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -643,7 +643,11 @@ async def executor_context_retrieval_callback(
             "run_id": request.run_id,
             "agent_id": agent_id,
         }
-        retrieval = ContextRetrievalAuthority.for_broker_connection(conn, ObjectStorage())
+        retrieval = ContextRetrievalAuthority.for_broker_connection(
+            conn,
+            ObjectStorage(),
+            storage_io=run_storage_io,
+        )
         try:
             result = await retrieval.execute(request.action, identity, request.arguments)
         except ContextRetrievalInputError as exc:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import base64
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,7 @@ from app.context.file_content import (
 from app.context_manifest import truncate_utf8_text, utf8_token_estimate
 from app.control_plane_contracts import sanitize_public_payload
 from app.path_safety import ensure_creatable_inside
-from app.storage import ObjectStorageSizeLimitError, run_storage_io
+from app.storage import ObjectStorageSizeLimitError
 
 
 class ContextRetrievalDenied(PermissionError):
@@ -301,10 +302,12 @@ class ContextRetrievalAuthority:
         self,
         repository: ContextRetrievalRepository,
         *,
+        storage_io: Callable[..., Awaitable[Any]] = asyncio.to_thread,
         _stage_delivery: Literal["broker_export", "local_workspace"] | None = None,
         _workspace_root: str | Path | None = None,
     ) -> None:
         self._repository = repository
+        self._storage_io = storage_io
         self._stage_delivery = _stage_delivery
         self._workspace_root = str(_workspace_root) if _workspace_root is not None else None
 
@@ -321,9 +324,12 @@ class ContextRetrievalAuthority:
         cls,
         conn: Any,
         storage: Any,
+        *,
+        storage_io: Callable[..., Awaitable[Any]],
     ) -> ContextRetrievalAuthority:
         return cls(
             RepositoryContextRetrievalRepository(conn, storage=storage),
+            storage_io=storage_io,
             _stage_delivery="broker_export",
         )
 
@@ -341,9 +347,12 @@ class ContextRetrievalAuthority:
         transaction_factory: Callable[[], AbstractAsyncContextManager[Any]],
         storage: Any,
         workspace_root: str | Path,
+        *,
+        storage_io: Callable[..., Awaitable[Any]],
     ) -> ContextRetrievalAuthority:
         return cls(
             TransactionalContextRetrievalRepository(transaction_factory, storage=storage),
+            storage_io=storage_io,
             _stage_delivery="local_workspace",
             _workspace_root=workspace_root,
         )
@@ -811,7 +820,7 @@ class ContextRetrievalAuthority:
         *,
         max_bytes: int | None = None,
     ) -> bytes:
-        return await run_storage_io(
+        return await self._storage_io(
             self._repository.read_storage_bytes,
             row,
             max_bytes=max_bytes,
