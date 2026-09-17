@@ -24,10 +24,6 @@ export interface Message {
   runId?: string;
   // Server-authorized catalog label retained after Skill selection is accepted.
   lockedSkillLabel?: string;
-  // 用户对该消息的反馈 (从 feedback API 加载)
-  feedback?: import("./feedback").RatingValue;
-  // 反馈 ID
-  feedbackId?: string;
   // 是否被取消
   cancelled?: boolean;
 }

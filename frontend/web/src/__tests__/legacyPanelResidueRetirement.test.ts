@@ -15,16 +15,7 @@ const memoryRootKeys = {
 
 const retainedKeys = {
   users: ["user"],
-  feedback: [
-    "alreadySubmitted",
-    "commentPlaceholder",
-    "negative",
-    "positive",
-    "pressEnter",
-    "submit",
-    "submitFailed",
-    "submitSuccess",
-  ],
+  feedback: [],
   notification: [
     "dismiss",
     "noNotifications",
@@ -93,7 +84,7 @@ function assertSubset(
 
 test("retired legacy panel clients and barrel exports are absent", () => {
   const barrel = source("src/services/api.ts");
-  for (const client of ["user", "settings", "health", "notification"]) {
+  for (const client of ["user", "settings", "health", "notification", "feedback"]) {
     assert.equal(
       existsSync(join(root, `src/services/api/${client}.ts`)),
       false,
@@ -107,10 +98,14 @@ test("retired legacy panel clients and barrel exports are absent", () => {
   for (const activeClient of [
     "src/services/api/notificationPublic.ts",
     "src/services/api/workbench.ts",
-    "src/services/api/feedback.ts",
   ]) {
     assert.equal(existsSync(join(root, activeClient)), true, activeClient);
   }
+  assert.equal(existsSync(join(root, "src/types/feedback.ts")), false);
+  assert.doesNotMatch(
+    source("src/types/index.ts"),
+    /\bFeedback(?:ListResponse|Stats)?\b|\bRatingValue\b/,
+  );
 });
 
 test("retired legacy memory service is absent while ai-platform memory APIs remain", () => {
@@ -228,7 +223,7 @@ test("legacy panel locale residue keeps only audited active keys", () => {
       source(`src/i18n/locales/${locale}.json`),
     ) as Record<string, unknown> & {
       users: Record<string, unknown>;
-      feedback: Record<string, unknown>;
+      feedback?: Record<string, unknown>;
       notification: Record<string, unknown>;
       seo: Record<string, unknown>;
       mcp: { card: Record<string, unknown> };
@@ -238,10 +233,11 @@ test("legacy panel locale residue keeps only audited active keys", () => {
       assert.equal(Object.hasOwn(messages, namespace), false, `${locale}:${namespace}`);
     }
     assert.equal(Object.hasOwn(messages.seo, "landing"), false, `${locale}:seo.landing`);
+    assert.equal(Object.hasOwn(messages, "feedback"), false, `${locale}:feedback`);
 
     const actual = {
       users: sortedKeys(messages.users),
-      feedback: sortedKeys(messages.feedback),
+      feedback: messages.feedback ? sortedKeys(messages.feedback) : [],
       notification: sortedKeys(messages.notification),
       mcpCard: sortedKeys(messages.mcp.card),
     };
