@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+import time
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
+import jwt
 import pytest
 
 from app.auth import (
@@ -61,12 +63,38 @@ EXPECTED_COMPANY_ADMIN_PERMISSIONS = EXPECTED_COMPANY_USER_PERMISSIONS + [
 ]
 
 
+COMPANY_JWT_SECRET = "test-company-login-jwt-secret-at-least-32-bytes"
+COMPANY_JWT_ISSUER = "test-company-login"
+COMPANY_JWT_AUDIENCE = "test-ai-platform"
+
+
+def company_login_jwt(**overrides):
+    now = int(time.time())
+    payload = {
+        "workid": "ad001",
+        "username": "ad.user",
+        "cnname": "AD User",
+        "depart": "研发一部",
+        "role": "user",
+        "iat": now,
+        "nbf": now,
+        "exp": now + 300,
+        "iss": COMPANY_JWT_ISSUER,
+        "aud": COMPANY_JWT_AUDIENCE,
+    }
+    payload.update(overrides)
+    return jwt.encode(payload, COMPANY_JWT_SECRET, algorithm="HS256")
+
+
 def auth_settings(**overrides):
     values = {
         "ai_session_secret": "test-session-secret-with-at-least-32-bytes",
         "ai_session_max_age_seconds": 28800,
         "ai_session_cookie_secure": False,
         "company_authority_freshness_seconds": 900,
+        "company_login_jwt_secret": COMPANY_JWT_SECRET,
+        "company_login_jwt_issuer": COMPANY_JWT_ISSUER,
+        "company_login_jwt_audience": COMPANY_JWT_AUDIENCE,
         "default_tenant_id": "default",
     }
     values.update(overrides)
@@ -359,19 +387,11 @@ def test_company_credential_handoff_requires_an_authenticated_principal():
     assert "credential" not in response.text
 
 
-def test_ad_login_resolves_company_authority_and_retains_jwt_for_mcp(monkeypatch):
-    token = "company.jwt.signature"
-    observed = {}
+def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch):
+    token = company_login_jwt()
 
-    async def current_user_info(work_id):
-        observed["work_id"] = work_id
-        return {
-            "workid": work_id,
-            "username": work_id,
-            "cnname": "AD User",
-            "department": "研发一部",
-            "role": "user",
-        }
+    async def unexpected_user_info(_work_id):
+        raise AssertionError("AD JWT login must not requery company user info")
 
     async def noop(*args, **kwargs):
         del args, kwargs
@@ -385,16 +405,13 @@ def test_ad_login_resolves_company_authority_and_retains_jwt_for_mcp(monkeypatch
     settings = auth_settings()
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
-    monkeypatch.setattr("app.routes.auth.call_existing_user_info", current_user_info)
+    monkeypatch.setattr("app.routes.auth.call_existing_user_info", unexpected_user_info)
     monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.auth._persist_login_principal", noop)
     monkeypatch.setattr("app.routes.auth._store_mcp_login_jwt", fake_store)
 
     client = browser_client()
-    response = client.post(
-        "/api/ai/auth/ad-login",
-        json={"workid": "ad001", "cnname": "AD User", "token": token},
-    )
+    response = client.post("/api/ai/auth/ad-login", json={"token": token})
 
     assert response.status_code == 200
     expected_principal = {
@@ -408,26 +425,86 @@ def test_ad_login_resolves_company_authority_and_retains_jwt_for_mcp(monkeypatch
         "is_admin": False,
         "source": "company-login",
         "authz_policy_version": COMPANY_AUTHZ_POLICY_VERSION,
-        "authority_source": "company-user-info",
+        "authority_source": "company-login-jwt",
         "authority_checked_at": response.json()["authority_checked_at"],
     }
     assert response.json() == expected_principal
     current_response = client.get("/api/ai/auth/me")
     assert current_response.status_code == 200
     assert current_response.json() == expected_principal
-    assert observed == {"work_id": "ad001"}
     assert stored == {"user_id": "ad001", "jwt": token}
 
 
-def test_ad_login_rejects_browser_supplied_authority_fields():
+def test_ad_login_rejects_invalid_company_jwt(monkeypatch):
+    settings = auth_settings()
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
+    token = jwt.encode(
+        {
+            "workid": "admin001",
+            "username": "admin001",
+            "cnname": "Forged Admin",
+            "depart": "研发一部",
+            "role": "admin",
+            "iat": int(time.time()),
+            "nbf": int(time.time()),
+            "exp": int(time.time()) + 300,
+            "iss": COMPANY_JWT_ISSUER,
+            "aud": COMPANY_JWT_AUDIENCE,
+        },
+        "different-company-login-secret-at-least-32-bytes",
+        algorithm="HS256",
+    )
+
+    response = browser_client().post("/api/ai/auth/ad-login", json={"token": token})
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "company_login_failed"}
+
+
+@pytest.mark.parametrize(
+    "claim_overrides",
+    [
+        {"exp": 0},
+        {"nbf": int(time.time()) + 3600},
+        {"iss": "other-company-login"},
+        {"aud": "other-ai-platform"},
+        {"role": None},
+    ],
+    ids=("expired", "not-yet-valid", "wrong-issuer", "wrong-audience", "missing-role"),
+)
+def test_ad_login_rejects_invalid_company_jwt_claims(monkeypatch, claim_overrides):
+    settings = auth_settings()
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
+
     response = browser_client().post(
+        "/api/ai/auth/ad-login",
+        json={"token": company_login_jwt(**claim_overrides)},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "company_login_failed"}
+
+
+def test_ad_login_fails_closed_without_verification_configuration(monkeypatch):
+    settings = auth_settings(company_login_jwt_secret="")
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
+
+    response = browser_client().post(
+        "/api/ai/auth/ad-login",
+        json={"token": company_login_jwt()},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "company_login_verification_unavailable"}
+
+
+def test_ad_login_rejects_browser_supplied_identity_fields():
+    response = TestClient(create_app()).post(
         "/api/ai/auth/ad-login",
         json={
             "workid": "ad001",
             "cnname": "AD User",
-            "token": "company.jwt.signature",
-            "department": "admin",
-            "role": "admin",
+            "token": company_login_jwt(),
         },
     )
 

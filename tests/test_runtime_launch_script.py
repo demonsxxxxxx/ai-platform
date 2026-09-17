@@ -53,7 +53,7 @@ def env_example_values(env_example_text: str) -> dict[str, str]:
     }
 
 
-def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
+def test_company_auth_requires_operator_managed_endpoints_and_api_only_jwt_verification():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
     env_values = env_example_values(env_example_text)
@@ -62,6 +62,19 @@ def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
         service = compose_service_text(compose_text, service_name)
         assert "EXISTING_AUTH_BASE_URL: ${EXISTING_AUTH_BASE_URL:?set EXISTING_AUTH_BASE_URL}" in service
         assert "EXISTING_USER_INFO_BASE_URL: ${EXISTING_USER_INFO_BASE_URL:?set EXISTING_USER_INFO_BASE_URL}" in service
+    api_service = compose_service_text(compose_text, "api")
+    worker_service = compose_service_text(compose_text, "worker")
+    for name in (
+        "COMPANY_LOGIN_JWT_SECRET",
+        "COMPANY_LOGIN_JWT_ISSUER",
+        "COMPANY_LOGIN_JWT_AUDIENCE",
+    ):
+        assert f"{name}: ${{{name}:?set {name}}}" in api_service
+        assert name not in worker_service
+        assert name in env_values
+    assert env_values["COMPANY_LOGIN_JWT_SECRET"] == ""
+    assert env_values["COMPANY_LOGIN_JWT_ISSUER"]
+    assert env_values["COMPANY_LOGIN_JWT_AUDIENCE"]
     assert "10.56.0.25" not in compose_text
     assert env_values["EXISTING_AUTH_BASE_URL"] == "http://10.56.0.25:7263"
     assert env_values["EXISTING_USER_INFO_BASE_URL"] == "http://10.56.0.25:5166"

@@ -16,6 +16,15 @@ user-info authority. Ordinary clients cannot choose them. A trusted gateway may
 inject principal headers only with the configured shared secret. Production
 startup rejects an absent secret or the frontend POC header path.
 
+Windows login first obtains the company-signed JWT from `GetADName`. AI Platform
+accepts only that JWT, verifies its HS256 signature, issuer, audience, and
+lifetime, and projects the signed `workid`, `username`, `cnname`, `depart`, and
+`role` claims into platform authority. It does not trust browser-supplied
+identity fields or repeat the PermissionMS user-info lookup already performed by
+`GetADName`. The superseded AD request shape and login-time requery have no
+compatibility owner and are removed atomically; password login and Worker
+current-authority revalidation continue to use the existing user-info endpoint.
+
 [ADR 0007](../adr/0007-fixed-browser-authentication-day.md) owns the browser
 authentication lifetime: signed token, server authentication context and company
 authority freshness use one absolute, non-sliding 86,400-second day. Policy/source
