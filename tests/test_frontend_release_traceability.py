@@ -586,6 +586,12 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     runtime_dockerfile = dockerfile.split(f"FROM {nginx_base} AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
     nginx_template = Path("frontend/web/nginx.conf.template").read_text(encoding="utf-8")
+    health_proxy = nginx_template.split("location = /api/ai/health {", 1)[1].split(
+        "    }", 1
+    )[0]
+    auth_proxy = nginx_template.split("location ~ ^/api/(?:ai/)?auth/ {", 1)[1].split(
+        "    }", 1
+    )[0]
     compose_overlay = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     runtime_compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     provenance_script = Path("frontend/web/scripts/write-build-provenance.mjs").read_text(encoding="utf-8")
@@ -671,6 +677,12 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "proxy_pass ${AI_PLATFORM_API_UPSTREAM}" in nginx_template
     assert "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT}" in nginx_template
     assert "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT}" in nginx_template
+    assert "proxy_connect_timeout 1s;" in health_proxy
+    assert "proxy_read_timeout 3s;" in health_proxy
+    assert "proxy_send_timeout 3s;" in health_proxy
+    assert "proxy_connect_timeout 3s;" in auth_proxy
+    assert "proxy_read_timeout 15s;" in auth_proxy
+    assert "proxy_send_timeout 15s;" in auth_proxy
     assert "proxy_request_buffering off" in nginx_template
     assert 'location = /sw.js' in nginx_template
     assert 'location = /index.html' in nginx_template

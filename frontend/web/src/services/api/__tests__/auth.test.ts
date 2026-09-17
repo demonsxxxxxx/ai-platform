@@ -218,7 +218,7 @@ test("current-user hydration returns owned 401 without legacy refresh or logout 
   }
 });
 
-test("subject-changing auth transports forward their operation abort signal", async () => {
+test("subject-changing auth transports compose cancellation with a bounded timeout", async () => {
   const stubs = installAuthApiBrowserStubs();
   const controller = new AbortController();
   try {
@@ -239,10 +239,17 @@ test("subject-changing auth transports forward their operation abort signal", as
     await authApi.logout(controller.signal);
 
     assert.equal(stubs.fetchInit.length, 6);
+    const requestSignals = stubs.fetchInit.map(
+      (init) => init.signal as AbortSignal,
+    );
     assert.equal(
-      stubs.fetchInit.every((init) => init.signal === controller.signal),
+      requestSignals.every(
+        (signal) => signal instanceof AbortSignal && signal !== controller.signal,
+      ),
       true,
     );
+    controller.abort();
+    assert.equal(requestSignals.every((signal) => signal.aborted), true);
   } finally {
     stubs.restore();
   }

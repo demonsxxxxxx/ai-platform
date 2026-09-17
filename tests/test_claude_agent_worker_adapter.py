@@ -4151,8 +4151,19 @@ def test_worker_constructs_context_retrieval_authority_from_existing_scope(monke
 
     class AuthorityFactory:
         @staticmethod
-        def for_workspace_transaction(transaction_factory, storage_adapter, workspace_root):
-            captured["factory"] = (transaction_factory, storage_adapter, workspace_root)
+        def for_workspace_transaction(
+            transaction_factory,
+            storage_adapter,
+            workspace_root,
+            *,
+            storage_io,
+        ):
+            captured["factory"] = (
+                transaction_factory,
+                storage_adapter,
+                workspace_root,
+                storage_io,
+            )
             return authority
 
     monkeypatch.setattr(claude_agent_worker, "ContextRetrievalAuthority", AuthorityFactory)
@@ -4182,7 +4193,12 @@ def test_worker_constructs_context_retrieval_authority_from_existing_scope(monke
     assert scope is not None
     assert identity is not None
     assert identity.__dict__ == scope.model_dump()
-    assert captured["factory"] == (claude_agent_worker.transaction, storage, tmp_path)
+    assert captured["factory"] == (
+        claude_agent_worker.transaction,
+        storage,
+        tmp_path,
+        claude_agent_worker.run_storage_io,
+    )
 
 
 

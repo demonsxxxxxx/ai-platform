@@ -32,6 +32,31 @@ server {
         try_files /ai-platform-build-provenance.json =404;
     }
 
+    location = /api/ai/health {
+        proxy_pass ${AI_PLATFORM_API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 1s;
+        proxy_read_timeout 3s;
+        proxy_send_timeout 3s;
+    }
+
+    location ~ ^/api/(?:ai/)?auth/ {
+        proxy_pass ${AI_PLATFORM_API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 15s;
+        proxy_send_timeout 15s;
+    }
+
     location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
         proxy_pass ${AI_PLATFORM_API_UPSTREAM};
         proxy_http_version 1.1;
