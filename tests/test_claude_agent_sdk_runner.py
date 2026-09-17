@@ -548,7 +548,10 @@ async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_li
     hook_input = {
         "tool_name": "Bash",
         "tool_use_id": "bash-call-1",
-        "tool_input": {"command": "python --version"},
+        "tool_input": {
+            "command": "python --version",
+            "description": "inspect the sandbox",
+        },
     }
     monkeypatch.setitem(
         sys.modules,
@@ -705,54 +708,6 @@ async def test_sandbox_grep_denies_outside_workspace_path(monkeypatch, tmp_path)
         "skill_invocations": 0,
         "public_projection_omissions": 0,
     }
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_required_keys", [None, "pattern", {"pattern": True}])
-async def test_sandbox_grep_denies_invalid_required_parameter_configuration(
-    monkeypatch,
-    tmp_path,
-    invalid_required_keys,
-):
-    captured = {}
-    hook_input = {
-        "tool_name": "Grep",
-        "tool_use_id": "grep-call-1",
-        "tool_input": {},
-    }
-    subjects = with_sandbox_local_tool_capability_subjects(
-        [], sandbox_provider="opensandbox"
-    )
-    next(subject for subject in subjects if subject["identity"] == "Grep")[
-        "required_parameter_keys"
-    ] = invalid_required_keys
-    monkeypatch.setitem(
-        sys.modules,
-        "claude_agent_sdk",
-        _fake_sdk(
-            captured,
-            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
-        ),
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_sdk_runner.get_settings",
-        _sandbox_brokered_settings,
-    )
-
-    result = await run_claude_agent_sdk(
-        prompt="search the workspace",
-        cwd=tmp_path,
-        skill_id=None,
-        execution_policy="sandbox_brokered",
-        tool_policy_subjects=subjects,
-        on_tool_lifecycle=_acknowledge_capability_evidence,
-    )
-
-    assert (
-        captured["hook_results"][0][1]["hookSpecificOutput"]["permissionDecision"]
-        == "deny"
-    )
-    assert result.turn_diagnostics["counters"]["tool_policy_denials"] == 1
 
 
 @pytest.mark.asyncio

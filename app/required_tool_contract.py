@@ -852,12 +852,12 @@ def _builtin_subject(
     identity: str,
     active: bool,
     distributed: bool,
-    allowed_parameter_keys: list[str],
-    required_parameter_keys: list[str],
+    allowed_parameter_keys: list[str] | None,
+    required_parameter_keys: list[str] | None,
     allowed_skill_names: list[str],
     profile: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    return {
+    subject = {
         "identity": identity,
         "declared_identities": [identity],
         "registered": True,
@@ -869,13 +869,16 @@ def _builtin_subject(
         "parameters_authorized": True,
         "risk_level": "low" if identity in {"Read", "Glob", "Grep", "LS", "Skill"} else "high",
         "write_capable": identity not in {"Read", "Glob", "Grep", "LS", "Skill"},
-        "allowed_parameter_keys": list(allowed_parameter_keys),
-        "required_parameter_keys": list(required_parameter_keys),
         "allowed_skill_names": list(allowed_skill_names),
         "execution_strategy": str((profile or {}).get("strategy") or "sdk_restricted"),
         "command_isolation": str((profile or {}).get("command_isolation") or "none"),
         "workspace_contract": str((profile or {}).get("workspace_contract") or ""),
     }
+    if allowed_parameter_keys is not None:
+        subject["allowed_parameter_keys"] = list(allowed_parameter_keys)
+    if required_parameter_keys is not None:
+        subject["required_parameter_keys"] = list(required_parameter_keys)
+    return subject
 
 
 def with_sandbox_local_tool_capability_subjects(
@@ -907,13 +910,12 @@ def with_sandbox_local_tool_capability_subjects(
         ):
             raise RequiredToolContractError("required_tool_declaration_mismatch")
     for identity in SANDBOX_LOCAL_TOOL_IDENTITIES:
-        allowed_keys, required_keys = _BUILTIN_CAPABILITY_PARAMETERS[identity]
         subject = _builtin_subject(
             identity=identity,
             active=True,
             distributed=True,
-            allowed_parameter_keys=allowed_keys,
-            required_parameter_keys=required_keys,
+            allowed_parameter_keys=None,
+            required_parameter_keys=None,
             allowed_skill_names=[],
             profile={
                 "strategy": SANDBOX_FULL_LOCAL,
@@ -925,6 +927,7 @@ def with_sandbox_local_tool_capability_subjects(
                 "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
             },
         )
+        subject["parameter_validation"] = "sdk"
         if (
             required_declaration is not None
             and identity == CANONICAL_REQUIRED_TOOL_IDENTITY

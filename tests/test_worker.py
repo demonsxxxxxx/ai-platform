@@ -1599,12 +1599,9 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
         for subject in captured["tool_policy_subjects"]
         if subject["identity"] == "Bash"
     )
-    assert bash_subject["allowed_parameter_keys"] == [
-        "command",
-        "timeout",
-        "description",
-    ]
-    assert bash_subject["required_parameter_keys"] == ["command"]
+    assert bash_subject["parameter_validation"] == "sdk"
+    assert "allowed_parameter_keys" not in bash_subject
+    assert "required_parameter_keys" not in bash_subject
     assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
 
 
