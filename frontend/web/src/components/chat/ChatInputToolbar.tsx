@@ -1,9 +1,17 @@
-import { useRef, useCallback, useEffect, useState } from "react";
-import { ArrowUp, Square, Lock } from "lucide-react";
+import { useRef, useCallback, useEffect } from "react";
+import {
+  ArrowUp,
+  Boxes,
+  ChevronDown,
+  Lock,
+  Paperclip,
+  Square,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FeatureMenu, type FeaturePanel } from "../selectors/FeatureMenu";
 import { AgentOptionButton } from "./AgentOptionButton";
-import type { AgentOption, FileCategory, UploadLimitsBytes } from "../../types";
+import type { ModelOption } from "../../services/api/modelPublic";
+import type { AgentOption, FileCategory } from "../../types";
 
 export interface ChatInputToolbarProps {
   activePanel: FeaturePanel;
@@ -16,11 +24,14 @@ export interface ChatInputToolbarProps {
   totalToolsCount: number;
   enabledSkillsCount: number;
   totalSkillsCount: number;
+  availableModels: ModelOption[];
+  currentModelId?: string;
+  onSelectModel?: (modelId: string, modelValue: string) => void;
+  showModelSelector?: boolean;
   agentOptions?: Record<string, AgentOption>;
   agentOptionValues?: Record<string, boolean | string | number>;
   onToggleAgentOption?: (key: string, value: boolean | string | number) => void;
   uploadCategories: FileCategory[];
-  uploadLimitsBytes: UploadLimitsBytes | null;
   uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
   onFileCommandReady?: (openFileCommand: () => void) => void;
   onStopClick: () => void;
@@ -45,11 +56,14 @@ export function ChatInputToolbar({
   totalToolsCount,
   enabledSkillsCount,
   totalSkillsCount,
+  availableModels,
+  currentModelId,
+  onSelectModel,
+  showModelSelector = false,
   agentOptions,
   agentOptionValues,
   onToggleAgentOption,
   uploadCategories,
-  uploadLimitsBytes,
   uploadFiles,
   onFileCommandReady,
   onStopClick,
@@ -57,43 +71,74 @@ export function ChatInputToolbar({
 }: ChatInputToolbarProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedFileCategory, setSelectedFileCategory] =
-    useState<FileCategory | null>(null);
+  const currentModel = availableModels.find(
+    (model) => model.id === currentModelId,
+  );
+  const attachmentAccept = uploadCategories
+    .map((category) => FILE_CATEGORY_ACCEPT[category])
+    .join(",");
 
-  const handleFileCategorySelect = useCallback((category: FileCategory) => {
-    setSelectedFileCategory(category);
-    if (fileInputRef.current) {
-      fileInputRef.current.accept = FILE_CATEGORY_ACCEPT[category];
-      fileInputRef.current.click();
-    }
+  const openFilePicker = useCallback(() => {
+    fileInputRef.current?.click();
   }, []);
 
   useEffect(() => {
     if (!onFileCommandReady) return;
-    onFileCommandReady(() => {
-      const fallbackCategory = uploadCategories[0];
-      if (!fallbackCategory) return;
-      handleFileCategorySelect(fallbackCategory);
-    });
-  }, [handleFileCategorySelect, onFileCommandReady, uploadCategories]);
+    onFileCommandReady(openFilePicker);
+  }, [onFileCommandReady, openFilePicker]);
 
   const handleFileInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (!files || files.length === 0) return;
-      uploadFiles(files, selectedFileCategory || undefined);
+      uploadFiles(files);
       e.target.value = "";
     },
-    [uploadFiles, selectedFileCategory],
+    [uploadFiles],
   );
 
   return (
-      <div className="mx-0.5 flex max-w-full flex-nowrap justify-between px-2 py-1.5">
-      <div className="flex items-center gap-1 sm:gap-2 self-end flex-1 min-w-0 overflow-x-auto no-scrollbar">
+    <div className="flex min-h-11 max-w-full items-end justify-between gap-2 px-3 pb-2 pt-1">
+      <div className="min-w-0 flex-1">
+        {showModelSelector && onSelectModel && availableModels.length > 0 ? (
+          <button
+            type="button"
+            data-composer-model-trigger
+            onClick={() =>
+              onActivePanelChange(activePanel === "model" ? null : "model")
+            }
+            className={`flex h-9 w-full min-w-0 max-w-[min(20rem,55vw)] items-center gap-2 rounded-lg border px-2.5 text-sm font-medium transition-colors sm:w-fit ${
+              activePanel === "model"
+                ? "border-[var(--theme-primary)] bg-[var(--theme-primary-light)] text-[var(--theme-primary)]"
+                : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] hover:border-[var(--theme-ring)]"
+            }`}
+            aria-label={t(
+              "composerCommand.modelSelector.title",
+              "选择模型",
+            )}
+            aria-expanded={activePanel === "model"}
+          >
+            <Boxes size={17} className="shrink-0" />
+            <span className="truncate">
+              {currentModel?.label ??
+                t("composerCommand.modelSelector.title", "选择模型")}
+            </span>
+            <ChevronDown
+              size={15}
+              className={`shrink-0 text-[var(--theme-text-secondary)] transition-transform ${
+                activePanel === "model" ? "rotate-180" : ""
+              }`}
+            />
+          </button>
+        ) : null}
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1">
         <input
           ref={fileInputRef}
           type="file"
           multiple
+          accept={attachmentAccept}
           className="hidden"
           onChange={handleFileInputChange}
         />
@@ -105,9 +150,6 @@ export function ChatInputToolbar({
           totalToolsCount={totalToolsCount}
           enabledSkillsCount={enabledSkillsCount}
           totalSkillsCount={totalSkillsCount}
-          uploadCategories={uploadCategories}
-          uploadLimitsBytes={uploadLimitsBytes}
-          onFileCategorySelect={handleFileCategorySelect}
         />
         {agentOptions?.enable_thinking?.options?.length && onToggleAgentOption ? (
           <AgentOptionButton
@@ -120,9 +162,18 @@ export function ChatInputToolbar({
             onChange={(value) => onToggleAgentOption("enable_thinking", value)}
           />
         ) : null}
-      </div>
+        {uploadCategories.length > 0 ? (
+          <button
+            type="button"
+            className="chat-tool-btn"
+            onClick={openFilePicker}
+            aria-label={t("chat.attachFile", "添加附件")}
+            title={t("chat.attachFile", "添加附件")}
+          >
+            <Paperclip size={19} />
+          </button>
+        ) : null}
 
-      <div className="self-end flex space-x-1.5 flex-shrink-0">
         {!canSend ? (
           <button
             type="button"

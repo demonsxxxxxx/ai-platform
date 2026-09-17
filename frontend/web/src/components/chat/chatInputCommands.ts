@@ -227,6 +227,17 @@ function isCompleteCommandWord(
   return firstToken === command;
 }
 
+export function clearModelCommandDraft(
+  input: string,
+  availability: CommandPanelAvailability,
+  commandsEnabled: boolean,
+): string {
+  if (!commandsEnabled) return input;
+  return parseComposerCommand(input, availability)?.command === "model"
+    ? ""
+    : input;
+}
+
 export function resolveComposerCommandDraft(
   input: string,
   availability: CommandPanelAvailability,

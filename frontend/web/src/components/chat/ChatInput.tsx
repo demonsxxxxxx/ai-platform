@@ -26,6 +26,7 @@ import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
 import { ChatInputAttachments } from "./ChatInputAttachments";
 import {
   parseComposerCommand,
+  clearModelCommandDraft,
   resolveComposerCommandDraft,
   resolveSlashCommandMenu,
   type ComposerCommandPanel,
@@ -243,7 +244,6 @@ export const ChatInput = memo(function ChatInput({
 
   const {
     uploadFiles,
-    uploadLimitsBytes,
     validateCount,
     cancelUpload,
     clearUploads,
@@ -790,13 +790,26 @@ export const ChatInput = memo(function ChatInput({
     (modelId: string, modelValue: string) => {
       onSelectModel?.(modelId, modelValue);
       dispatchComposerSelection({ type: "remove", id: `unavailable:model` });
-      setInput("");
+      setInput((current) =>
+        clearModelCommandDraft(
+          current,
+          commandPanelAvailability,
+          !disableSlashCommands,
+        ),
+      );
       setActivePanel(null);
       setCommandSearchSeed(null);
       closeSlashMenu();
       requestAnimationFrame(scheduleTextareaResize);
     },
-    [closeSlashMenu, onSelectModel, scheduleTextareaResize, setInput],
+    [
+      closeSlashMenu,
+      commandPanelAvailability,
+      disableSlashCommands,
+      onSelectModel,
+      scheduleTextareaResize,
+      setInput,
+    ],
   );
 
   const handleRemoveComposerSelection = useCallback(
@@ -923,7 +936,7 @@ export const ChatInput = memo(function ChatInput({
               </div>
             )}
 
-            <LibreChatComposerRegion region="textarea">
+            <LibreChatComposerRegion region="textarea" className="col-span-2">
               <div className="relative">
                 <LibreChatComposerTextarea
                   ref={textareaRef}
@@ -949,7 +962,7 @@ export const ChatInput = memo(function ChatInput({
               </div>
             </LibreChatComposerRegion>
 
-            <LibreChatComposerRegion region="toolbar" className="min-w-0">
+            <LibreChatComposerRegion region="toolbar" className="col-span-2 min-w-0">
               <ChatInputToolbar
                 activePanel={activePanel}
                 onActivePanelChange={handlePanelChange}
@@ -961,11 +974,14 @@ export const ChatInput = memo(function ChatInput({
                 totalToolsCount={totalToolsCount}
                 enabledSkillsCount={enabledSkillsCount}
                 totalSkillsCount={totalSkillsCount}
+                availableModels={availableModels}
+                currentModelId={currentModelId}
+                onSelectModel={onSelectModel}
+                showModelSelector={disableSlashCommands}
                 agentOptions={agentOptions}
                 agentOptionValues={agentOptionValues}
                 onToggleAgentOption={onToggleAgentOption}
                 uploadCategories={uploadCategories}
-                uploadLimitsBytes={uploadLimitsBytes}
                 uploadFiles={uploadFiles}
                 onFileCommandReady={(openFileCommand) => {
                   openFileCommandRef.current = openFileCommand;

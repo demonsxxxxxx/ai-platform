@@ -39,7 +39,7 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
 
   assert.doesNotMatch(text, /hero-card|gradient-orb|nested-card/);
   assert.doesNotMatch(text, /rounded-3xl/);
-  assert.match(text, /rounded-\[1\.5rem\]|border-radius:\s*1\.5rem/);
+  assert.match(text, /rounded-\[1\.25rem\]|border-radius:\s*1\.25rem/);
   assert.doesNotMatch(tabContent, /max-w-4xl|sm:max-w-5xl|lg:max-w-6xl/);
   assert.match(tabContent, /data-authenticated-workbench-page/);
 });
@@ -642,7 +642,7 @@ test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
   const composer = read("src/librechat-ui/Composer.tsx");
   assert.match(css, /\.chat-input-container/);
-  assert.match(css, /min-height:\s*56px/);
+  assert.match(css, /min-height:\s*112px/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
   assert.match(composer, /grid-cols-\[minmax\(0,1fr\)_auto\]/);
   assert.match(css, /\.composer-command-surface/);
