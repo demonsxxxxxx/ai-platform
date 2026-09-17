@@ -1305,7 +1305,7 @@ export function ChatAppContent({
       onNewSession={handleNewSessionWithReset}
       allowNewSessionAction={agentWorkspace !== undefined}
       newSessionActionLabel={agentWorkspace ? "开始新任务" : undefined}
-      availableModels={filteredModels}
+      availableModels={agentWorkspace ? null : filteredModels}
       currentModelId={currentModelId}
       onSelectModel={handleSelectModel}
       sessionId={sessionId}

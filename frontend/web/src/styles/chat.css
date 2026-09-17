@@ -16,8 +16,8 @@
 }
 
 .chat-input-container {
-  border-radius: 1.5rem;
-  min-height: 56px;
+  border-radius: 1.25rem;
+  min-height: 112px;
   max-height: min(52dvh, 420px);
   overflow: hidden;
   box-shadow:

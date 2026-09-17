@@ -17,7 +17,11 @@ test("composer exposes the backed model panel", () => {
   const modelPanel = read("src/components/chat/ComposerModelPanel.tsx");
 
   assert.match(modelPanel, /data-composer-model-panel/);
-  assert.match(modelPanel, /ModelOption/);
+  assert.match(modelPanel, /data-composer-model-option/);
+  assert.match(modelPanel, /\[data-composer-model-trigger\]/);
+  assert.match(modelPanel, /<Bot size=\{18\}/);
+  assert.doesNotMatch(modelPanel, /data-composer-model-provider/);
+  assert.doesNotMatch(modelPanel, /model\.provider/);
   assert.match(modelPanel, /onSelectModel\(model\.id,\s*model\.value\)/);
 });
 
@@ -36,11 +40,11 @@ test("model projections flow from app content into chat input", () => {
 
   assert.match(
     chatApp,
-    /availableModels=\{\s*agentConversationControlsLocked\s*\?\s*\[\]\s*:\s*filteredModels\s*\?\?\s*\[\]\s*\}/,
+    /availableModels=\{filteredModels \?\? \[\]\}/,
   );
   assert.match(
     chatApp,
-    /availableModels=\{agentConversationControlsLocked \? null : filteredModels\}/,
+    /availableModels=\{agentWorkspace \? null : filteredModels\}/,
   );
   assert.match(chatApp, /reconcileCurrentModelSelection\(\{/);
   assert.match(chatApp, /currentModelId=\{currentModelId\}/);
@@ -54,14 +58,24 @@ test("model projections flow from app content into chat input", () => {
   assert.match(chatView, /onSelectModel,/);
 });
 
-test("chat input opens the model selector without exposing a composer context selector", () => {
+test("chat input exposes the existing model panel from a visible composer control", () => {
   const input = read("src/components/chat/ChatInput.tsx");
+  const toolbar = read("src/components/chat/ChatInputToolbar.tsx");
   const selectors = read("src/components/chat/ChatInputSelectors.tsx");
 
   assert.match(input, /availableModels\s*=\s*\[\]/);
   assert.match(input, /currentModelId/);
   assert.match(input, /onSelectModel/);
   assert.match(input, /models:\s*!!availableModels\?\.length && !!onSelectModel/);
+  assert.match(input, /availableModels=\{availableModels\}/);
+  assert.match(input, /onSelectModel=\{onSelectModel\}/);
+  assert.match(input, /showModelSelector=\{disableSlashCommands\}/);
+  assert.match(toolbar, /showModelSelector && onSelectModel/);
+  assert.match(toolbar, /data-composer-model-trigger/);
+  assert.match(
+    toolbar,
+    /onActivePanelChange\(activePanel === "model" \? null : "model"\)/,
+  );
   assert.match(input, /dispatchComposerSelection\(\{ type: "clear-kind", kind: "model" \}\)/);
   assert.doesNotMatch(input, /id:\s*`model:\$\{currentModelId\}`/);
   assert.match(input, /handleSelectModelChip/);
@@ -79,6 +93,16 @@ test("composer source contains no context command or unavailable context chip fl
   assert.doesNotMatch(commands, /labelKey:\s*"composerCommand\.context/);
   assert.doesNotMatch(input, /handleComposerCommandShortcut/);
   assert.doesNotMatch(input, /<ComposerCommandHintBar/);
+});
+
+test("composer separates task input from its bottom action row", () => {
+  const input = read("src/components/chat/ChatInput.tsx");
+  const toolbar = read("src/components/chat/ChatInputToolbar.tsx");
+
+  assert.match(input, /region="textarea" className="col-span-2"/);
+  assert.match(input, /region="toolbar" className="col-span-2 min-w-0"/);
+  assert.match(toolbar, /<Paperclip size=\{19\}/);
+  assert.match(toolbar, /accept=\{attachmentAccept\}/);
 });
 
 test("removing the model chip is local-only and does not silently switch models", () => {
@@ -175,7 +199,11 @@ test("governed selector primary controls use theme foreground contrast", () => {
       /bg-\[var\(--theme-primary\)\]\s+text-white/,
       path,
     );
-    assert.match(source, /text-\[var\(--theme-primary-foreground\)\]/, path);
+    assert.match(
+      source,
+      /text-\[var\(--theme-primary-foreground\)\]|bg-\[var\(--theme-primary-light\)\]\s+text-\[var\(--theme-primary\)\]/,
+      path,
+    );
   }
 });
 
