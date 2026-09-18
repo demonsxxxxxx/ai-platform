@@ -480,6 +480,7 @@ class ExecutorTerminalResult(BaseModel):
     answer_receipt: AssistantAnswerReceipt | None = None
     error_code: str | None = Field(default=None, max_length=256)
     error_message: str | None = Field(default=None, max_length=4_096)
+    provider_session_final_sequence: int | None = Field(default=None, ge=1, strict=True)
 
     @field_validator("answer_receipt", mode="before")
     @classmethod
@@ -518,6 +519,7 @@ _EXECUTOR_TERMINAL_RECEIPT_FIELDS = frozenset(
         "run_id",
         "message",
         "answer_receipt",
+        "provider_session_final_sequence",
         "error_code",
         "error_message",
         "executor_model_latency_ms",

@@ -215,6 +215,7 @@ def test_terminal_receipt_drops_private_and_unknown_fields_and_enforces_total_bu
             "run_id": "run-a",
             "error_code": "executor_failed",
             "error_message": "Executor failed",
+            "provider_session_final_sequence": 5,
             "runtime_diagnostics": {"tool_input": {"token": "private"}},
             "unexpected": {"prompt": "private"},
             "sdk_turn_diagnostics": {
@@ -228,6 +229,7 @@ def test_terminal_receipt_drops_private_and_unknown_fields_and_enforces_total_bu
     receipt = executor_terminal_receipt_payload(result)
 
     assert receipt["executor_model_latency_ms"] == 123
+    assert receipt["provider_session_final_sequence"] == 5
     assert "runtime_diagnostics" not in receipt
     assert "runtime_diagnostics" not in str(receipt["sdk_turn_diagnostics"])
     assert "unexpected" not in receipt
@@ -242,6 +244,19 @@ def test_terminal_receipt_drops_private_and_unknown_fields_and_enforces_total_bu
     )
     with pytest.raises(ValueError, match="executor_terminal_receipt_too_large"):
         executor_terminal_receipt_payload(oversized)
+
+
+@pytest.mark.parametrize("value", [0, True, "5"])
+def test_terminal_callback_rejects_invalid_provider_session_final_sequence(value):
+    with pytest.raises(ValidationError):
+        ExecutorTerminalResult.model_validate(
+            {
+                "status": "completed",
+                "run_id": "run-a",
+                "message": "done",
+                "provider_session_final_sequence": value,
+            }
+        )
 
 
 def test_terminal_callback_serializes_large_answer_as_a_bounded_receipt():
