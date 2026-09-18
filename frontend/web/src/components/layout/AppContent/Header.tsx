@@ -43,6 +43,7 @@ interface HeaderProps {
   allowNewSessionAction?: boolean;
   newSessionActionLabel?: string;
   chatIdentity?: ReactNode;
+  showUserMenu?: boolean;
 }
 
 export function Header({
@@ -59,6 +60,7 @@ export function Header({
   allowNewSessionAction = true,
   newSessionActionLabel,
   chatIdentity,
+  showUserMenu = true,
 }: HeaderProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -67,12 +69,17 @@ export function Header({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
   const [activeNotifCount, setActiveNotifCount] = useState(0);
+  const [menuPositionOverride, setMenuPositionOverride] = useState<{
+    top: number;
+    right: number;
+  } | null>(null);
 
   const getMenuPosition = useCallback(() => {
+    if (menuPositionOverride) return menuPositionOverride;
     const rect = mobileMenuBtnRef.current?.getBoundingClientRect();
     if (!rect) return { top: 52, right: 12 };
     return { top: rect.bottom + 4, right: window.innerWidth - rect.right };
-  }, []);
+  }, [menuPositionOverride]);
 
   const refreshNotifCount = useCallback(() => {
     notificationPublicApi
@@ -85,6 +92,16 @@ export function Header({
   }, [refreshNotifCount]);
   const mobileMenuBtnRef = useRef<HTMLButtonElement>(null);
   const mobileMenuPanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleExternalMenuOpen = (event: Event) => {
+      const detail = (event as CustomEvent<{ top: number; right: number }>).detail;
+      setMenuPositionOverride(detail);
+      setMobileMenuOpen(true);
+    };
+    window.addEventListener("workbench-menu-open", handleExternalMenuOpen);
+    return () => window.removeEventListener("workbench-menu-open", handleExternalMenuOpen);
+  }, []);
 
   // Close mobile menu on outside click
   useEffect(() => {
@@ -182,12 +199,16 @@ export function Header({
           )}
         </div>
 
-        <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-          {/* Overflow menu (unified for all screen sizes) */}
-          <div className="relative">
+        {showUserMenu ? (
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+            <div className="relative">
+            {/* Overflow menu (unified for all screen sizes) */}
             <button
               ref={mobileMenuBtnRef}
-              onClick={() => setMobileMenuOpen((v) => !v)}
+              onClick={() => {
+                setMenuPositionOverride(null);
+                setMobileMenuOpen((v) => !v);
+              }}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] transition-colors"
               title={t("common.menu")}
             >
@@ -301,10 +322,11 @@ export function Header({
                 </div>,
                 document.body,
               )}
-          </div>
+            </div>
 
-          <UserMenu />
-        </div>
+            <UserMenu />
+          </div>
+        ) : null}
       </header>
 
       <NotificationDialog

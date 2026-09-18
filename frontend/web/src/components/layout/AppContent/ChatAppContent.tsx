@@ -51,6 +51,7 @@ import {
   countEnabledSkills,
   resolveComposerSkillsAvailability,
 } from "./skillAvailability";
+import { AgentConversationPanel } from "../../../features/agent-market/AgentConversationPanel";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
@@ -1321,6 +1322,17 @@ export function ChatAppContent({
           />
         ) : undefined
       }
+      contentSidebar={
+        agentWorkspace && agentWorkspaceSessionSource ? (
+          <AgentConversationPanel
+            currentSessionId={sessionId}
+            onNewSession={handleNewSessionWithReset}
+            onSelectSession={handleSelectSessionAndClose}
+            source={agentWorkspaceSessionSource}
+          />
+        ) : undefined
+      }
+      showHeaderUserMenu={!agentWorkspace}
       sidebar={
         <SessionSidebar
           ref={sidebarRef}
@@ -1342,11 +1354,15 @@ export function ChatAppContent({
           agentWorkspace={
             agentWorkspace
               ? {
+                  agent_id: agentWorkspace.agent_id,
+                  avatar_ref: agentWorkspace.avatar_ref,
+                  avatar_seed: agentWorkspace.avatar_seed,
                   name: agentWorkspace.name,
                   description: agentWorkspace.description,
                 }
               : undefined
           }
+          agentHistoryInMainPanel={agentWorkspace !== undefined}
           navigationOnly={agentWorkspace === undefined}
         />
       }

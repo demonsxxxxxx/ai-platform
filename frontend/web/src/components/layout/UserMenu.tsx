@@ -6,7 +6,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
 
 /** Compact account menu for the authenticated workbench shell. */
-export function UserMenu() {
+export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
   const { t } = useTranslation();
   const { logout, user } = useAuth();
   const [showMenu, setShowMenu] = useState(false);
@@ -33,11 +33,11 @@ export function UserMenu() {
     if (buttonRef.current && !isMobile) {
       const rect = buttonRef.current.getBoundingClientRect();
       setMenuPosition({
-        top: rect.bottom + 8,
-        right: window.innerWidth - rect.right,
+        top: showLabel ? rect.top - (menuRef.current?.offsetHeight || 120) - 8 : rect.bottom + 8,
+        right: showLabel ? window.innerWidth - rect.left - 240 : window.innerWidth - rect.right,
       });
     }
-  }, [isMobile]);
+  }, [isMobile, showLabel]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -140,9 +140,10 @@ export function UserMenu() {
         data-user-menu-trigger
         aria-label={displayName}
         onClick={() => setShowMenu((open) => !open)}
-        className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-lg transition-all hover:ring-2 hover:ring-[var(--theme-primary-light)] active:scale-95"
+        className={`flex h-8 items-center gap-2 overflow-hidden rounded-lg transition-all hover:ring-2 hover:ring-[var(--theme-primary-light)] active:scale-95 ${showLabel ? "min-w-0 px-1" : "w-8 justify-center"}`}
       >
         {renderAvatar("size-5")}
+        {showLabel ? <span className="truncate text-xs font-medium text-[var(--theme-text)]">{displayName}</span> : null}
       </button>
 
       {showMenu &&
