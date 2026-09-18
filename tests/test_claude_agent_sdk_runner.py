@@ -482,7 +482,8 @@ async def _acknowledge_capability_evidence(_evidence):
 @pytest.mark.parametrize(
     ("thinking_effort", "expected_thinking", "expected_effort"),
     [
-        ("off", None, None),
+        ("auto", {"type": "adaptive", "display": "omitted"}, None),
+        ("off", {"type": "adaptive", "display": "omitted"}, None),
         *[
             (level, {"type": "adaptive", "display": "omitted"}, level)
             for level in ("low", "medium", "high")
@@ -521,7 +522,7 @@ async def test_sdk_thinking_options_follow_the_run_preference(
 
 
 @pytest.mark.asyncio
-async def test_sdk_off_does_not_publish_an_unexpected_thinking_block(
+async def test_sdk_auto_does_not_publish_an_unexpected_thinking_block(
     monkeypatch,
     tmp_path,
 ):
@@ -544,8 +545,8 @@ async def test_sdk_off_does_not_publish_an_unexpected_thinking_block(
         prompt="answer",
         cwd=tmp_path,
         skill_id=None,
-        thinking_effort="off",
-        run_id="run-thinking-off",
+        thinking_effort="auto",
+        run_id="run-thinking-auto",
         attempt_id="attempt-1",
         on_agent_event=lambda batch: published.extend(batch) or True,
     )

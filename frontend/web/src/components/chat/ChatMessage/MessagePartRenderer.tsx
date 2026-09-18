@@ -30,7 +30,7 @@ import {
   LsItem,
   GlobItem,
 } from "./ToolCallItem";
-import { ThinkingBlock, SubagentBlock, SandboxItem } from "./SubagentBlocks";
+import { SubagentBlock, SandboxItem } from "./SubagentBlocks";
 import { TodoBlock } from "./TodoBlock";
 import { SummaryItem } from "./SummaryItem";
 import { PublicExecutionProcess } from "./PublicExecutionProcess";
@@ -243,11 +243,7 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "thinking") {
-    return (
-      <ThinkingBlock
-        isStreaming={isStreaming && isLast && part.isStreaming}
-      />
-    );
+    return null;
   }
 
   if (part.type === "subagent") {

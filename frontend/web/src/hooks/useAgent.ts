@@ -2127,7 +2127,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         requestedThinkingEffort === "medium" ||
         requestedThinkingEffort === "high"
           ? requestedThinkingEffort
-          : "off";
+          : "auto";
       // A new user submission replaces the parent run before it can mutate
       // optimistic transcript state or issue its POST. This fences a pending
       // retry/resume owner from starting while the next chat admission is open.

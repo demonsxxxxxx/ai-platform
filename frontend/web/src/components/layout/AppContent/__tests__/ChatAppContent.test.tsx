@@ -544,7 +544,7 @@ test("first submissions preserve Thinking after binding while reusing the conver
       coordinator: submissionCoordinator,
       submissionKey: JSON.stringify({ content: "第二问", fileIds: [] }),
       ensureConversation,
-      agentOptions: { enable_thinking: "off" },
+      agentOptions: { enable_thinking: "auto" },
       submitMessage,
     }),
     { status: "accepted" },
@@ -553,7 +553,7 @@ test("first submissions preserve Thinking after binding while reusing the conver
   assert.equal(createCalls, 1);
   assert.equal(bindCalls, 1);
   assert.deepEqual(submittedSessionIds, ["session-agent", "session-agent"]);
-  assert.deepEqual(submittedThinkingLevels, ["high", "off"]);
+  assert.deepEqual(submittedThinkingLevels, ["high", "auto"]);
 });
 
 test("a failed first submission retries on the same bound Agent conversation", async () => {

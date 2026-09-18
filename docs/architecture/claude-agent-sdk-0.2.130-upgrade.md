@@ -112,22 +112,25 @@ instantiates the stream and terminal message types.
 
 ## Change Contract: hidden model Thinking content
 
-- **Owner and scope:** Execution independently maps the Run preference to SDK
-  `effort` and `thinking.display`; Chat presentation owns the status-only view.
-  `off/low/medium/high` effort semantics and model selection remain unchanged.
-- **Behavior:** enabled thinking uses adaptive mode with `display=omitted`.
-  The runner does not publish returned `ThinkingBlock` text, and both frontend
-  rendering paths replace historical reasoning bodies with only a generic
-  thinking status. Ordinary answer `TextBlock` content remains unchanged.
-- **Compatibility and retirement:** no wire or schema field is added. Existing
-  `claude_sdk_thinking_summary` and `thinking.*` readers remain only for
-  callbacks or persisted history produced before the release; they no longer
-  authorize displaying their body. Remove that compatibility transport after
-  deployed executors have crossed the release and retained old events have
-  expired under the owning lifecycle policy.
-- **Acceptance:** tests prove effort remains selected, SDK display is omitted,
-  an unexpected Thinking block creates no public event, and live plus historical
-  frontend parts contain no supplied reasoning text.
+- **Owner and scope:** Execution maps the Run preference to SDK `effort` and
+  `thinking.display`; Chat presentation does not expose model thinking.
+  `auto/low/medium/high` are the canonical effort values; legacy `off` inputs
+  normalize to `auto`. Model selection remains unchanged.
+- **Behavior:** every level uses adaptive thinking with `display=omitted`, so the
+  model may reason internally without returning Thinking text. The runner does
+  not publish returned `ThinkingBlock` text, and both frontend rendering paths
+  drop thinking parts entirely. Only ordinary answer `TextBlock` content enters
+  the answer projection.
+- **Compatibility and retirement:** no new wire or schema field is added.
+  Existing `claude_sdk_thinking_summary` and `thinking.*` readers remain only
+  for callbacks or persisted history produced before the release; the current
+  Chat UI does not display their body or status. Remove that compatibility
+  transport after deployed executors have crossed the release and retained old
+  events have expired under the owning lifecycle policy.
+- **Acceptance:** tests prove every level uses adaptive thinking with omitted
+  display, `auto` sends no explicit effort, an unexpected Thinking block creates
+  no public answer event, and live plus historical frontend parts contain no
+  rendered thinking content.
 - **Stop conditions:** any need to expose model Thinking text again, alter effort
   semantics, infer Thinking from ordinary answer text, or change SSE/Run terminal
   authority requires a revised contract.

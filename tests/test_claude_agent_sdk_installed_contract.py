@@ -63,6 +63,7 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         session_store_flush="eager",
         max_turns=12,
         max_thinking_tokens=128,
+        thinking={"type": "adaptive", "display": "omitted"},
         effort="high",
         hooks={"PostToolUse": [matcher]},
         include_partial_messages=True,
@@ -102,6 +103,8 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     assert options.setting_sources == ["project"]
     assert options.session_store is session_store
     assert options.session_store_flush == "eager"
+    assert options.thinking == {"type": "adaptive", "display": "omitted"}
+    assert options.effort == "high"
     assert assistant.content[0].text == "partial"
     assert event.event["type"] == "message_start"
     assert result.terminal_reason == "completed"

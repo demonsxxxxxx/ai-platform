@@ -21,7 +21,7 @@ export const THINKING_LEVEL_COLOR: Record<
   string,
   { border: string; bg: string; text: string }
 > = {
-  off: {
+  auto: {
     border: "transparent",
     bg: "transparent",
     text: "var(--theme-text-secondary)",
@@ -40,10 +40,5 @@ export const THINKING_LEVEL_COLOR: Record<
     border: "color-mix(in srgb, #fb923c 40%, transparent)",
     bg: "color-mix(in srgb, #fb923c 10%, transparent)",
     text: "#fb923c",
-  },
-  max: {
-    border: "color-mix(in srgb, #f472b6 40%, transparent)",
-    bg: "color-mix(in srgb, #f472b6 10%, transparent)",
-    text: "#f472b6",
   },
 };

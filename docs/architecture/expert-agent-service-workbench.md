@@ -153,17 +153,17 @@ the browser.
   presentation.
 - **Reached invariants:** profile Skill/MCP/model authority remains unchanged;
   the existing platform-governed shared model selector remains available;
-  caller-supplied server control metadata remains stripped; `off` sends no SDK
-  Thinking option and publishes no SDK Thinking block; enabled levels use the SDK
-  0.2.130 adaptive-thinking contract with summarized display; private signatures
-  and provider-internal reasoning remain outside public events.
-- **Acceptance:** `off`, `low`, `medium`, and `high` survive admission and
-  reach the SDK exactly once; `max` and other unsupported values fail before
-  persistence; Agent workspaces expose the selected level through the visible
-  composer toolbar while keeping Skill and MCP controls locked and preserving
-  the established platform-governed model selector; Chinese requests instruct both the final answer and public Thinking summaries to use
-  Simplified Chinese; fixed labels are Chinese without rewriting model-produced
-  summaries.
+  caller-supplied server control metadata remains stripped; `auto` enables SDK
+  adaptive thinking without an explicit effort, while `low`, `medium`, and
+  `high` send the selected effort. Every level uses `display=omitted`, no SDK
+  Thinking block is published, and private signatures and provider-internal
+  reasoning remain outside public events.
+- **Acceptance:** `auto`, `low`, `medium`, and `high` survive admission and
+  reach the SDK exactly once; legacy `off` normalizes to `auto`; `max` and other
+  unsupported values fail before persistence. Agent workspaces expose the
+  selected level through the visible composer toolbar while keeping Skill and
+  MCP controls locked and preserving the established platform-governed model
+  selector; Chinese requests keep the final answer in Simplified Chinese.
 - **Regression proof:** focused tests cover profile admission, trust-boundary
   validation, sandbox transport, all SDK effort levels, Agent workspace option
   composition, and public display fallbacks. Local evidence cannot prove gateway,

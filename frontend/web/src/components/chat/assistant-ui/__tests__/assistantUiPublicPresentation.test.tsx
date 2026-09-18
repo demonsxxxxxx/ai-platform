@@ -8,6 +8,7 @@ import { createRoot } from "react-dom/client";
 import type { MessagePart } from "../../../../types";
 import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
 import { MessageWorkActivity } from "../../ChatMessage/MessageWorkActivity";
+import { getVisibleMessageParts } from "../../ChatMessage/messagePartVisibility";
 import {
   closePersistentToolPanel,
   getPersistentToolPanelState,
@@ -59,6 +60,16 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     public_reasoning: true,
     isStreaming: true,
   };
+  const workTool: Extract<MessagePart, { type: "tool" }> = {
+    type: "tool",
+    id: "tool-public-0",
+    name: "读取已授权文件",
+    args: {},
+    status: "started",
+    isPending: true,
+    public_operation_id: "operation-public-0",
+    public_category: "read",
+  };
   const renderMessage = (isStreaming: boolean, parts: MessagePart[]) =>
     createElement(MessageWorkActivity, {
       messageId: "message-work-details",
@@ -78,7 +89,17 @@ test("chat work disclosure collapses on completion and keeps answer content outs
 
   try {
     act(() => {
-      root.render(renderMessage(true, [thinking]));
+      root.render(renderMessage(true, getVisibleMessageParts([thinking])));
+    });
+    assert.equal(
+      container.querySelector("[data-message-work-details-toggle]"),
+      null,
+    );
+    assert.equal(container.querySelector("[data-public-thinking]"), null);
+    assert.doesNotMatch(container.textContent || "", /工作中|公开思考摘要/);
+
+    act(() => {
+      root.render(renderMessage(true, [workTool]));
     });
     let toggle = container.querySelector(
       "[data-message-work-details-toggle]",
@@ -86,15 +107,11 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     assert.equal(toggle.getAttribute("aria-expanded"), "true");
     assert.equal(toggle.hasAttribute("aria-label"), false);
     assert.match(toggle.textContent || "", /工作中.*全部收起/s);
-    assert.equal(
-      container.querySelector("[data-public-thinking] button")?.getAttribute("aria-expanded"),
-      null,
-    );
 
     act(() => {
       root.render(
         renderMessage(false, [
-          { ...thinking, isStreaming: false },
+          { ...workTool, status: "completed", success: true, isPending: false },
           { type: "text", content: "最终正文保持可见" },
           {
             type: "tool",
@@ -121,10 +138,7 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     controlledIds.forEach((id) => {
       assert.equal(dom.window.document.getElementById(id)?.hidden, true);
     });
-    assert.equal(
-      container.querySelector("[data-public-thinking] button")?.getAttribute("aria-expanded"),
-      null,
-    );
+    assert.equal(container.querySelector("[data-public-thinking]"), null);
     const answer = [...container.querySelectorAll("p")].find((node) =>
       node.textContent?.includes("最终正文保持可见"),
     );
@@ -136,11 +150,6 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     controlledIds.forEach((id) => {
       assert.equal(dom.window.document.getElementById(id)?.hidden, false);
     });
-    const thinkingButton = container.querySelector(
-      "[data-public-thinking] button",
-    ) as HTMLButtonElement;
-    act(() => activateNativeButton(thinkingButton, " "));
-    assert.equal(thinkingButton.getAttribute("aria-expanded"), null);
     assert.doesNotMatch(container.textContent || "", /公开思考摘要/);
   } finally {
     closePersistentToolPanel();

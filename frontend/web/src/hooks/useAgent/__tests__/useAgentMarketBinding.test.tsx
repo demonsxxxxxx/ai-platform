@@ -475,7 +475,7 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
 
     assert.equal(submissions.length, 2);
     assert.equal(submissions[0]?.[11], "high");
-    assert.equal(submissions[1]?.[11], "off");
+    assert.equal(submissions[1]?.[11], "auto");
     for (const submission of submissions) {
       assert.equal(submission[1], "session-agent");
       assert.equal(submission[2], undefined, "model/Prompt options must be omitted");
