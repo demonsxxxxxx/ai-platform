@@ -8,6 +8,7 @@ import { createRoot } from "react-dom/client";
 
 import {
   adminRunsApi,
+  readAdminRunDeepLinkScope,
   type AdminRunDiagnosticsResponse,
   type AdminRunDetailResponse,
   type AdminRunSummary,
@@ -16,7 +17,11 @@ import {
   buildAdminRunEventDiagnostics,
   buildAdminRunMonitorView,
 } from "../adminRunTimeline";
-import { filterAdminRuns, RunMonitorPanel, summarizeAdminRuns } from "../RunMonitorPanel";
+import {
+  filterAdminRuns,
+  RunMonitorPanel,
+  summarizeAdminRuns,
+} from "../RunMonitorPanel";
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 2_000) => {
   const startedAt = Date.now();
@@ -134,6 +139,13 @@ test("Run Monitor filters only the explicitly projected Run identities", () => {
     "run_failed",
   ]);
   assert.deepEqual(summarizeAdminRuns(runs), { queued: 0, running: 1, failed: 1 });
+});
+
+test("Run Monitor reads user and Run deep-link scope", () => {
+  assert.deepEqual(readAdminRunDeepLinkScope("?user_id=user%2Fa&run_id=run%2Fa"), {
+    userId: "user/a",
+    runId: "run/a",
+  });
 });
 
 test("Run Monitor mounts recent Worker state and renders only authorized diagnostics", async () => {

@@ -286,16 +286,46 @@ export interface AdminRunDetailResponse {
   sandbox_leases: AdminSandboxLease[];
 }
 
-export function buildAdminRunsUrl(limit = 50): string {
-  const params = new URLSearchParams({ limit: String(limit) });
+export interface AdminRunListOptions {
+  limit?: number;
+  userId?: string;
+  status?: string;
+}
+
+export function readAdminRunDeepLinkScope(search?: string): {
+  userId: string | null;
+  runId: string | null;
+} {
+  const params = new URLSearchParams(
+    search ?? (typeof window === "undefined" ? "" : window.location.search),
+  );
+  return {
+    userId: params.get("user_id")?.trim() || null,
+    runId: params.get("run_id")?.trim() || null,
+  };
+}
+
+function normalizeListOptions(
+  options: number | AdminRunListOptions,
+): AdminRunListOptions {
+  return typeof options === "number" ? { limit: options } : options;
+}
+
+export function buildAdminRunsUrl(
+  options: number | AdminRunListOptions = {},
+): string {
+  const normalized = normalizeListOptions(options);
+  const params = new URLSearchParams({ limit: String(normalized.limit ?? 50) });
+  if (normalized.userId) params.set("user_id", normalized.userId);
+  if (normalized.status) params.set("status", normalized.status);
   return `/api/ai/admin/runs?${params.toString()}`;
 }
 
 export async function fetchAdminRuns(
-  limit = 50,
+  options: number | AdminRunListOptions = {},
   client: AdminRunsApiClient = defaultClient,
 ): Promise<AdminRunListResponse> {
-  return client.request<AdminRunListResponse>(buildAdminRunsUrl(limit), {
+  return client.request<AdminRunListResponse>(buildAdminRunsUrl(options), {
     method: "GET",
   });
 }

@@ -18,6 +18,7 @@ import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import {
   adminRunsApi,
+  readAdminRunDeepLinkScope,
   type AdminQueueInsight,
   type AdminRunDiagnosticsResponse,
   type AdminRunDetailResponse,
@@ -938,10 +939,11 @@ function MobileRunList({
 }
 
 export function RunMonitorPanel() {
+  const scope = useMemo(() => readAdminRunDeepLinkScope(), []);
   const [runs, setRuns] = useState<AdminRunSummary[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(scope.runId);
   const [detail, setDetail] = useState<AdminRunDetailResponse | null>(null);
   const [diagnostics, setDiagnostics] = useState<AdminRunDiagnosticsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -956,7 +958,7 @@ export function RunMonitorPanel() {
   const listRequestSequence = useRef(0);
   const detailRequestSequence = useRef(0);
   const diagnosticsRequestSequence = useRef(0);
-  const selectedRunIdRef = useRef<string | null>(null);
+  const selectedRunIdRef = useRef<string | null>(scope.runId);
   const refreshButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -1010,7 +1012,10 @@ export function RunMonitorPanel() {
     if (initial) setIsLoading(true);
     else setIsRefreshing(true);
     try {
-      const response = await adminRunsApi.list(RUN_LIMIT);
+      const response = await adminRunsApi.list({
+        limit: RUN_LIMIT,
+        userId: scope.userId ?? undefined,
+      });
       if (requestId !== listRequestSequence.current) return;
       setRuns(response.runs ?? []);
       setLoadError(null);
@@ -1029,7 +1034,7 @@ export function RunMonitorPanel() {
         setIsRefreshing(false);
       }
     }
-  }, [loadDetail, loadDiagnostics]);
+  }, [loadDetail, loadDiagnostics, scope.userId]);
 
   useEffect(() => {
     void loadRuns(true);
@@ -1140,6 +1145,20 @@ export function RunMonitorPanel() {
           </span>
         }
       />
+
+      {scope.userId ? (
+        <div
+          data-run-monitor-user-scope={scope.userId}
+          className="mx-4 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-info-soft)] px-3 py-2 text-xs text-[var(--theme-text-secondary)]"
+        >
+          <span>
+            当前仅查看用户 <strong className="font-mono text-[var(--theme-text)]">{scope.userId}</strong> 的运行
+          </span>
+          <a className="font-medium text-[var(--theme-primary)] hover:underline" href="/runs">
+            清除用户范围
+          </a>
+        </div>
+      ) : null}
 
       <section
         aria-label="Worker 运行摘要"
