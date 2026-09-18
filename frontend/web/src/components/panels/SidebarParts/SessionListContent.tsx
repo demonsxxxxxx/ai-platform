@@ -9,11 +9,13 @@ import {
   Bot,
   Cpu,
   Activity,
+  Settings,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
-import { LoadingSpinner } from "../../common/LoadingSpinner";
 import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
+import { UserMenu } from "../../layout/UserMenu";
+import { LoadingSpinner } from "../../common/LoadingSpinner";
 import type { BackendSession } from "../../../services/api";
 import {
   formatUnreadCount,
@@ -31,6 +33,7 @@ import { LibreChatPanelSection } from "../../../librechat-ui/Panel";
 import {
   canAccessWorkbenchItem,
 } from "../../governance/workbenchAccessPolicy";
+import type { AgentProfileAvatarRef } from "../../../types/agentProfile";
 import { isAiAdminUser } from "../capabilityAdmin";
 
 export interface SessionActions {
@@ -61,9 +64,13 @@ interface SessionListContentProps {
   isChatsCollapsed: boolean;
   onToggleChatsCollapsed: () => void;
   agentWorkspace?: {
+    agent_id?: string;
+    avatar_ref?: AgentProfileAvatarRef;
+    avatar_seed?: string;
     name: string;
     description: string;
   };
+  agentHistoryInMainPanel?: boolean;
   hideSessionDiscovery?: boolean;
   navigationOnly?: boolean;
   showSessionHistory?: boolean;
@@ -87,6 +94,7 @@ export function SessionListContent({
   isChatsCollapsed,
   onToggleChatsCollapsed,
   agentWorkspace,
+  agentHistoryInMainPanel = false,
   hideSessionDiscovery = false,
   navigationOnly = false,
   showSessionHistory = false,
@@ -260,31 +268,14 @@ export function SessionListContent({
         </button>
       </div>
 
-      {agentWorkspace ? (
-        <section
-          data-agent-workspace-identity
-          className="mx-2 border-b border-[var(--theme-border)]/70 px-2 pb-3 pt-1"
-        >
-          <p className="text-xs font-medium text-[var(--theme-primary)]">
-            专家工作区
-          </p>
-          <h2 className="mt-1 truncate text-sm font-semibold text-[var(--theme-text)]">
-            {agentWorkspace.name}
-          </h2>
-          {agentWorkspace.description ? (
-            <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-              {agentWorkspace.description}
-            </p>
-          ) : null}
-        </section>
-      ) : null}
-
       {/* Primary navigation */}
       <div
         data-workbench-primary-nav
         className="flex flex-col gap-2 px-2 pb-2 pt-2"
       >
-        {!navigationOnly ? <div className="space-y-1">
+        {!navigationOnly ? <div
+          className={agentHistoryInMainPanel ? "space-y-1 xl:hidden" : "space-y-1"}
+        >
           <button
             onClick={onNewSession}
             className="sidebar-nav-btn group flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm font-medium transition-colors focus:outline-none"
@@ -318,7 +309,9 @@ export function SessionListContent({
         </div> : null}
 
         {!navigationOnly ? (
-          <div className="h-px bg-[var(--theme-border)]/70" />
+          <div
+            className={agentHistoryInMainPanel ? "h-px bg-[var(--theme-border)]/70 xl:hidden" : "h-px bg-[var(--theme-border)]/70"}
+          />
         ) : null}
 
         <LibreChatPanelSection group="tasks" label={t("sidebar.tasks")}>
@@ -370,7 +363,9 @@ export function SessionListContent({
         ref={onSetScrollEl}
         data-workbench-session-region
         data-sidebar-scroll
-        className="flex-1 overflow-y-auto border-t border-[var(--theme-border)]/70 px-2 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className={`flex-1 overflow-y-auto border-t border-[var(--theme-border)]/70 px-2 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
+          agentWorkspace && agentHistoryInMainPanel ? "xl:hidden" : ""
+        }`}
       >
         <div className="flex flex-col gap-px">
           {hasHistory || isLoading ? (
@@ -490,6 +485,31 @@ export function SessionListContent({
           ) : null}
         </div>
       </div> : <div className="flex-1" data-workbench-navigation-spacer />}
+
+      {agentWorkspace ? (
+        <div className="mt-auto flex items-center justify-between border-t border-[var(--theme-border)] px-3 py-3">
+          <div className="min-w-0 flex-1"><UserMenu showLabel /></div>
+          <button
+            aria-label="设置"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              window.dispatchEvent(
+                new CustomEvent("workbench-menu-open", {
+                  detail: {
+                    top: Math.max(8, rect.top - 220),
+                    right: window.innerWidth - rect.right,
+                  },
+                }),
+              );
+            }}
+            title="设置"
+            type="button"
+          >
+            <Settings aria-hidden="true" size={17} />
+          </button>
+        </div>
+      ) : null}
 
     </div>
   );

@@ -396,7 +396,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 初始化：检查现有 token 并获取用户信息
   useEffect(() => {
     mountedRef.current = true;
-    if (isDevAuthPreviewRequested() && !getAccessToken()) {
+    if (isDevAuthPreviewRequested()) {
+      clearTokens();
       setToken("dev-auth-preview");
       setUser(DEV_AUTH_PREVIEW_USER);
       setDynamicPermissions(Object.values(Permission));
