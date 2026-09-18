@@ -22,6 +22,38 @@ from app.platform.postgres.limits import (
 )
 
 
+_LEGACY_AGENT_SESSION_TITLE_SELECT_SQL = (
+    "coalesce(legacy_first_user.title, sessions.title) as title"
+)
+_LEGACY_AGENT_SESSION_TITLE_JOIN_SQL = """left join lateral (
+          select left(
+            btrim(
+              translate(
+                messages.content,
+                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
+                '     '
+              )
+            ),
+            32
+          ) as title
+          from messages
+          where sessions.title_source = 'initial'
+            and sessions.title = profile.name
+            and messages.tenant_id = sessions.tenant_id
+            and messages.session_id = sessions.id
+            and messages.role = 'user'
+            and btrim(
+              translate(
+                messages.content,
+                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
+                '     '
+              )
+            ) <> ''
+          order by messages.created_at asc, messages.id asc
+          limit 1
+        ) legacy_first_user on true"""
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -135,12 +167,13 @@ async def list_authorized_sessions(
     user_id: str,
 ) -> list[dict[str, Any]]:
     cursor = await conn.execute(
-        """
-        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title, sessions.purpose,
+        f"""
+        select sessions.id, sessions.workspace_id, sessions.agent_id,
+               {_LEGACY_AGENT_SESSION_TITLE_SELECT_SQL}, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
                session_agent.default_skill_id as agent_default_skill_id,
-               (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill,
+               (profile.skill_set @> '[{{"skill_id": "baoyu-translate"}}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
                profile.starter_prompts as agent_profile_starter_prompts,
@@ -156,6 +189,7 @@ async def list_authorized_sessions(
          and profile.agent_id = sessions.agent_id
          and profile.revision = sessions.admitted_agent_profile_revision
          and profile.content_hash = sessions.admitted_agent_profile_hash
+        {_LEGACY_AGENT_SESSION_TITLE_JOIN_SQL}
         where sessions.tenant_id = %s
           and sessions.user_id = %s
           and sessions.status = 'active'
@@ -477,7 +511,7 @@ async def list_authorized_agent_conversations(
     result = await conn.execute(
         f"""
         select sessions.id, sessions.workspace_id, sessions.agent_id,
-               coalesce(legacy_first_user.title, sessions.title) as title, sessions.purpose,
+               {_LEGACY_AGENT_SESSION_TITLE_SELECT_SQL}, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
                (profile.skill_set @> '[{{"skill_id": "baoyu-translate"}}]'::jsonb) as agent_profile_has_retired_skill,
@@ -493,33 +527,7 @@ async def list_authorized_agent_conversations(
          and profile.agent_id = sessions.agent_id
          and profile.revision = sessions.admitted_agent_profile_revision
          and profile.content_hash = sessions.admitted_agent_profile_hash
-        left join lateral (
-          select left(
-            btrim(
-              translate(
-                messages.content,
-                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
-                '     '
-              )
-            ),
-            32
-          ) as title
-          from messages
-          where sessions.title_source = 'initial'
-            and sessions.title = profile.name
-            and messages.tenant_id = sessions.tenant_id
-            and messages.session_id = sessions.id
-            and messages.role = 'user'
-            and btrim(
-              translate(
-                messages.content,
-                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
-                '     '
-              )
-            ) <> ''
-          order by messages.created_at asc, messages.id asc
-          limit 1
-        ) legacy_first_user on true
+        {_LEGACY_AGENT_SESSION_TITLE_JOIN_SQL}
         where sessions.tenant_id = %s
           and sessions.user_id = %s
           and sessions.agent_id = %s
