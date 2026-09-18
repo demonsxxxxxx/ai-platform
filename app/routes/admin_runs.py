@@ -6,13 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
-from app.models import AdminRunDetailResponse, AdminRunListResponse, RunControlResponse
+from app.models import RunControlResponse
 from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
 from app.runs.api import (
+    AdminRunDetailResponse,
+    AdminRunListResponse,
     AdminRunDiagnosticsResponse,
     RunCancellationUseCase,
     RunDiagnosticsService,
-    assemble_admin_model_output,
+    build_admin_worker_execution,
 )
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
@@ -98,6 +100,9 @@ async def _remove_cancelled_queue_payloads(
 
 async def attach_live_queue_context(run: dict, *, tenant_id: str, queue_insight: dict | None = None) -> dict:
     enriched = dict(run)
+    enriched["execution_kind"] = enriched.get("execution_kind") or "skill"
+    enriched.setdefault("queue_position", None)
+    enriched.setdefault("queue_insight", None)
     enriched["error_code"] = sanitize_public_text(enriched.get("error_code")) or None
     enriched["error_message"] = sanitize_public_text(enriched.get("error_message"))
     status = enriched.get("status")
@@ -143,7 +148,7 @@ async def admin_run_list(
         await attach_live_queue_context(row, tenant_id=principal.tenant_id, queue_insight=queue_insight)
         for row in rows
     ]
-    return AdminRunListResponse(runs=rows, limit=limit)
+    return {"runs": rows, "limit": limit}
 
 
 @router.post("/admin/runs/{run_id}/cancel", response_model=RunControlResponse, response_model_exclude={"queue_position", "queue_insight"})
@@ -317,12 +322,22 @@ async def admin_run_detail(
         raise HTTPException(status_code=404, detail="run_not_found")
     detail = dict(detail)
     detail["run"] = dict(detail["run"])
-    detail["run"]["model_output"] = assemble_admin_model_output(
+    detail["worker_execution"] = build_admin_worker_execution(
         detail.get("events", []),
         sanitize_text=sanitize_public_text,
     )
+    detail["run"]["model_output"] = detail["worker_execution"]["response"]
     detail["run"] = await attach_live_queue_context(detail["run"], tenant_id=principal.tenant_id)
-    return AdminRunDetailResponse.model_validate(detail)
+    for collection in (
+        "events",
+        "steps",
+        "artifacts",
+        "sandbox_leases",
+        "skill_snapshots",
+        "audit",
+    ):
+        detail.setdefault(collection, [])
+    return detail
 
 
 @router.get(

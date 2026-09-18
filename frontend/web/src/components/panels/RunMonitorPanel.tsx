@@ -18,6 +18,7 @@ import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import {
   adminRunsApi,
+  readAdminRunDeepLinkScope,
   type AdminQueueInsight,
   type AdminRunDiagnosticsResponse,
   type AdminRunDetailResponse,
@@ -54,6 +55,7 @@ const STATUS_LABELS: Record<string, string> = {
   failed: "失败",
   cancelled: "已取消",
   cancel_requested: "取消中",
+  denied: "已拒绝",
 };
 
 const STATUS_TONES: Record<string, string> = {
@@ -69,6 +71,8 @@ const STATUS_TONES: Record<string, string> = {
     "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-[var(--theme-border)]",
   cancel_requested:
     "bg-[var(--theme-warning-soft)] text-[var(--theme-warning)] ring-[var(--theme-warning-ring)]",
+  denied:
+    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)] ring-[var(--theme-danger-ring)]",
 };
 
 const QUEUE_REASON_LABELS: Record<string, string> = {
@@ -152,6 +156,26 @@ function durationLabel(run: AdminRunSummary, now = Date.now()): string {
   if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`;
   const hours = Math.floor(minutes / 60);
   return `${hours} 小时 ${minutes % 60} 分`;
+}
+
+function durationMillisecondsLabel(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "";
+  if (value < 1_000) return `${Math.round(value)} 毫秒`;
+  const seconds = Math.round(value / 1_000);
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+function byteSizeLabel(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "-";
+  if (value < 1_024) return `${value} B`;
+  if (value < 1_048_576) return `${(value / 1_024).toFixed(1)} KB`;
+  return `${(value / 1_048_576).toFixed(1)} MB`;
+}
+
+function stepOutput(step: AdminRunDetailResponse["steps"][number]): string {
+  const output = step.payload?.output;
+  return typeof output === "string" ? output.trim() : "";
 }
 
 function latestQueueInsight(runs: AdminRunSummary[]): AdminQueueInsight | null {
@@ -347,6 +371,12 @@ function RunDetail({
   const monitorView = detail
     ? buildAdminRunMonitorView(detail.run, detail.events, diagnostics)
     : null;
+  const workerExecution = detail?.worker_execution ?? {
+    response: monitorView?.modelOutput ?? "",
+    actions: [],
+    model: {},
+  };
+  const artifacts = detail?.artifacts ?? [];
   const eventDiagnostics = monitorView?.eventDiagnostics ?? [];
   const diagnosticPageCount = Math.max(
     1,
@@ -370,7 +400,7 @@ function RunDetail({
       <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3">
         <div className="min-w-0">
           <p className="text-xs font-medium text-[var(--theme-text-secondary)]">
-            Worker 请求详情
+            Worker 执行详情
           </p>
           <h2 className="truncate font-mono text-sm font-semibold text-[var(--theme-text)]">
             {detail?.run.run_id ?? "正在读取"}
@@ -403,21 +433,16 @@ function RunDetail({
         </div>
       ) : detail ? (
         <div className="divide-y divide-[var(--theme-border)]">
-          <section className="p-4">
+          <section className="p-4" data-worker-execution-result>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-xs font-semibold text-[var(--theme-text)]">
-                请求身份
+                执行结果
               </h3>
               <StatusBadge status={detail.run.status} />
             </div>
-            <dl className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-              <IdentityField label="Chat / Session ID" value={detail.run.session_id} />
-              <IdentityField label="Trace ID" value={detail.run.trace_id} />
-              <IdentityField label="用户 ID" value={detail.run.user_id} />
-              <IdentityField label="工作区" value={detail.run.workspace_id} />
-              <IdentityField label="专家" value={detail.run.agent_id} />
-              <IdentityField label="Skill" value={detail.run.skill_id} />
-            </dl>
+            <p className="mt-2 text-sm font-medium text-[var(--theme-text)]">
+              {monitorView?.currentAction}
+            </p>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
                 <span className="text-[var(--theme-text-tertiary)]">开始</span>
@@ -440,48 +465,137 @@ function RunDetail({
                 ) : null}
               </div>
             ) : null}
+            <details className="mt-4 rounded-md border border-[var(--theme-border)] px-3 py-2">
+              <summary className="cursor-pointer text-xs font-medium text-[var(--theme-text-secondary)]">
+                请求与追踪信息
+              </summary>
+              <dl className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                <IdentityField label="Chat / Session ID" value={detail.run.session_id} />
+                <IdentityField label="Trace ID" value={detail.run.trace_id} />
+                <IdentityField label="用户 ID" value={detail.run.user_id} />
+                <IdentityField label="工作区" value={detail.run.workspace_id} />
+                <IdentityField label="专家" value={detail.run.agent_id} />
+                <IdentityField label="Skill" value={detail.run.skill_id} />
+              </dl>
+            </details>
           </section>
 
-          <RunDiagnosticsSection
-            diagnostics={diagnostics}
-            loading={diagnosticsLoading}
-            error={diagnosticsError}
-          />
-
-          <section className="p-4">
-            <h3 className="text-xs font-semibold text-[var(--theme-text)]">运行概览</h3>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-3">
-                <span className="text-[11px] text-[var(--theme-text-tertiary)]">当前状态</span>
-                <div className="mt-1.5">
-                  <StatusBadge status={monitorView?.currentStatus ?? detail.run.status} />
-                </div>
-              </div>
-              <div className="min-w-0 rounded-md bg-[var(--theme-bg-sidebar)] p-3">
-                <span className="text-[11px] text-[var(--theme-text-tertiary)]">当前动作</span>
-                <p className="mt-1.5 truncate text-xs font-medium text-[var(--theme-text)]" title={monitorView?.currentAction}>
-                  {monitorView?.currentAction}
-                </p>
-              </div>
+          <section className="p-4" data-worker-execution-content>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="text-xs font-semibold text-[var(--theme-text)]">
+                Worker 执行内容
+              </h3>
+              <span className="text-[11px] text-[var(--theme-text-tertiary)]">
+                {[
+                  typeof workerExecution.model.turn_count === "number"
+                    ? `模型 ${workerExecution.model.turn_count} 轮`
+                    : null,
+                  durationMillisecondsLabel(workerExecution.model.duration_ms),
+                ].filter(Boolean).join(" · ") || "公开执行记录"}
+              </span>
             </div>
+
             <div className="mt-3 rounded-md border border-[var(--theme-border)] p-3">
-              <div className="flex items-center justify-between gap-2">
-                <h4 className="text-xs font-semibold text-[var(--theme-text)]">公开输出</h4>
-                {monitorView?.modelOutput ? (
-                  <span className="text-[11px] text-[var(--theme-text-tertiary)]">由公开事件重组</span>
-                ) : null}
-              </div>
-              {monitorView?.modelOutput ? (
-                <p className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-[var(--theme-text-secondary)]">
-                  {monitorView.modelOutput}
+              <h4 className="text-xs font-semibold text-[var(--theme-text)]">
+                Worker 返回
+              </h4>
+              {workerExecution.response ? (
+                <p className="mt-2 max-h-80 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-[var(--theme-text-secondary)]">
+                  {workerExecution.response}
                 </p>
               ) : (
-                <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">暂无模型输出</p>
+                <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">
+                  未记录可展示的 Worker 返回
+                </p>
               )}
             </div>
+
+            {workerExecution.actions.length ? (
+              <div className="mt-3">
+                <h4 className="text-xs font-semibold text-[var(--theme-text)]">
+                  执行动作 ({workerExecution.actions.length})
+                </h4>
+                <ol className="mt-2 space-y-2">
+                  {workerExecution.actions.map((action) => (
+                    <li
+                      key={action.ordinal}
+                      className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--theme-text)]">
+                          {action.ordinal}. {action.label}
+                        </span>
+                        <StatusBadge status={action.status} />
+                      </div>
+                      {[action.category, durationMillisecondsLabel(action.duration_ms)]
+                        .filter(Boolean)
+                        .length ? (
+                        <p className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
+                          {[action.category, durationMillisecondsLabel(action.duration_ms)]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      ) : null}
+                      {action.input_summary ? (
+                        <p className="mt-1.5 text-xs leading-5 text-[var(--theme-text-secondary)]">
+                          执行：{action.input_summary}
+                        </p>
+                      ) : null}
+                      {action.result_summary ? (
+                        <p className="mt-1 text-xs leading-5 text-[var(--theme-text)]">
+                          返回：{action.result_summary}
+                        </p>
+                      ) : null}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
+
+            {artifacts.length ? (
+              <div className="mt-3">
+                <h4 className="text-xs font-semibold text-[var(--theme-text)]">
+                  有效产物 ({artifacts.length})
+                </h4>
+                <ul className="mt-2 space-y-2">
+                  {artifacts.map((artifact) => (
+                    <li
+                      key={artifact.artifact_id}
+                      className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5"
+                    >
+                      <p className="break-words text-xs font-medium text-[var(--theme-text)]">
+                        {artifact.label}
+                      </p>
+                      <p className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
+                        {[artifact.artifact_type, artifact.content_type, byteSizeLabel(artifact.size_bytes)]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </section>
 
-          <section className="p-4">
+          <details className="p-4">
+            <summary className="cursor-pointer text-xs font-semibold text-[var(--theme-text)]">
+              执行诊断与处理证据
+            </summary>
+            <div className="-mx-4 -mb-4 mt-3 border-t border-[var(--theme-border)]">
+              <RunDiagnosticsSection
+                diagnostics={diagnostics}
+                loading={diagnosticsLoading}
+                error={diagnosticsError}
+              />
+            </div>
+          </details>
+
+          <details className="p-4">
+            <summary className="cursor-pointer text-xs font-semibold text-[var(--theme-text)]">
+              原始事件与关键阶段
+            </summary>
+            <div className="mt-3">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <div>
                 <h3 className="text-xs font-semibold text-[var(--theme-text)]">事件诊断</h3>
@@ -609,13 +723,14 @@ function RunDetail({
             ) : (
               <p className="mt-3 text-xs text-[var(--theme-text-tertiary)]">暂无可展示的关键阶段</p>
             )}
-          </section>
+            </div>
+          </details>
 
-          <section className="p-4">
-            <h3 className="text-xs font-semibold text-[var(--theme-text)]">
-              执行步骤 <span className="font-normal text-[var(--theme-text-tertiary)]">({detail.steps.length})</span>
-            </h3>
-            {detail.steps.length ? (
+          {detail.steps.length ? (
+            <section className="p-4">
+              <h3 className="text-xs font-semibold text-[var(--theme-text)]">
+                执行步骤 <span className="font-normal text-[var(--theme-text-tertiary)]">({detail.steps.length})</span>
+              </h3>
               <div className="mt-3 space-y-2">
                 {detail.steps.map((step, index) => (
                   <div
@@ -626,6 +741,11 @@ function RunDetail({
                       <p className="truncate text-xs font-medium text-[var(--theme-text)]">
                         {step.title ?? step.step_kind ?? "执行步骤"}
                       </p>
+                      {stepOutput(step) ? (
+                        <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--theme-text-secondary)]">
+                          返回：{stepOutput(step)}
+                        </p>
+                      ) : null}
                       <p className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
                         {dateTime(step.started_at)} · {durationLabel({
                           ...detail.run,
@@ -640,17 +760,13 @@ function RunDetail({
                   </div>
                 ))}
               </div>
-            ) : (
-              <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">
-                暂无执行步骤
-              </p>
-            )}
-          </section>
+            </section>
+          ) : null}
 
-          <section className="p-4">
-            <h3 className="text-xs font-semibold text-[var(--theme-text)]">
-              沙箱租约 <span className="font-normal text-[var(--theme-text-tertiary)]">({detail.sandbox_leases.length})</span>
-            </h3>
+          <details className="p-4">
+            <summary className="cursor-pointer text-xs font-semibold text-[var(--theme-text)]">
+              沙箱租约 ({detail.sandbox_leases.length})
+            </summary>
             {detail.sandbox_leases.length ? (
               <div className="mt-3 space-y-2">
                 {detail.sandbox_leases.map((lease, index) => (
@@ -675,7 +791,7 @@ function RunDetail({
                 此运行没有沙箱租约
               </p>
             )}
-          </section>
+          </details>
         </div>
       ) : null}
     </aside>
@@ -823,10 +939,11 @@ function MobileRunList({
 }
 
 export function RunMonitorPanel() {
+  const scope = useMemo(() => readAdminRunDeepLinkScope(), []);
   const [runs, setRuns] = useState<AdminRunSummary[]>([]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(scope.runId);
   const [detail, setDetail] = useState<AdminRunDetailResponse | null>(null);
   const [diagnostics, setDiagnostics] = useState<AdminRunDiagnosticsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -841,7 +958,7 @@ export function RunMonitorPanel() {
   const listRequestSequence = useRef(0);
   const detailRequestSequence = useRef(0);
   const diagnosticsRequestSequence = useRef(0);
-  const selectedRunIdRef = useRef<string | null>(null);
+  const selectedRunIdRef = useRef<string | null>(scope.runId);
   const refreshButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -895,7 +1012,10 @@ export function RunMonitorPanel() {
     if (initial) setIsLoading(true);
     else setIsRefreshing(true);
     try {
-      const response = await adminRunsApi.list(RUN_LIMIT);
+      const response = await adminRunsApi.list({
+        limit: RUN_LIMIT,
+        userId: scope.userId ?? undefined,
+      });
       if (requestId !== listRequestSequence.current) return;
       setRuns(response.runs ?? []);
       setLoadError(null);
@@ -914,7 +1034,7 @@ export function RunMonitorPanel() {
         setIsRefreshing(false);
       }
     }
-  }, [loadDetail, loadDiagnostics]);
+  }, [loadDetail, loadDiagnostics, scope.userId]);
 
   useEffect(() => {
     void loadRuns(true);
@@ -1025,6 +1145,20 @@ export function RunMonitorPanel() {
           </span>
         }
       />
+
+      {scope.userId ? (
+        <div
+          data-run-monitor-user-scope={scope.userId}
+          className="mx-4 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-info-soft)] px-3 py-2 text-xs text-[var(--theme-text-secondary)]"
+        >
+          <span>
+            当前仅查看用户 <strong className="font-mono text-[var(--theme-text)]">{scope.userId}</strong> 的运行
+          </span>
+          <a className="font-medium text-[var(--theme-primary)] hover:underline" href="/runs">
+            清除用户范围
+          </a>
+        </div>
+      ) : null}
 
       <section
         aria-label="Worker 运行摘要"

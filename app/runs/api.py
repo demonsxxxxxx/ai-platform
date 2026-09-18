@@ -1,7 +1,16 @@
 """Public in-process contracts owned by the Runs bounded context."""
 
 from app.runs.application.admin_run_monitor import (
-    assemble_admin_model_output as assemble_admin_model_output,
+    build_admin_worker_execution as build_admin_worker_execution,
+)
+from app.runs.domain.admin_projection import (
+    AdminRunDetailResponse as AdminRunDetailResponse,
+)
+from app.runs.domain.admin_projection import (
+    AdminRunListResponse as AdminRunListResponse,
+)
+from app.runs.domain.admin_projection import (
+    AdminRunSummaryResponse as AdminRunSummaryResponse,
 )
 from app.runs.application.diagnostics import (
     RunDiagnosticsService as RunDiagnosticsService,

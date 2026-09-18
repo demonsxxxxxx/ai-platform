@@ -1338,48 +1338,6 @@ class ChatSubmissionPreLedgerAbsenceResponse(BaseModel):
     state: Literal["absent_before_ledger"] = "absent_before_ledger"
 
 
-class AdminRunSummaryResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    session_id: str
-    user_id: str | None = None
-    workspace_id: str
-    status: str
-    agent_id: str
-    execution_kind: Literal["harness_chat", "skill"] = RUN_EXECUTION_KIND_SKILL
-    skill_id: str | None = None
-    created_at: Any | None = None
-    queued_at: Any | None = None
-    started_at: Any | None = None
-    finished_at: Any | None = None
-    cancel_requested_at: Any | None = None
-    cancel_requested_by: str | None = None
-    error_code: str | None = None
-    error_message: str | None = None
-    queue_position: int | None = None
-    queue_insight: dict[str, Any] | None = None
-
-
-class AdminRunListResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    runs: list[AdminRunSummaryResponse] = Field(default_factory=list)
-    limit: int
-
-
-class AdminRunDetailResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run: dict[str, Any]
-    events: list[dict[str, Any]] = Field(default_factory=list)
-    steps: list[dict[str, Any]] = Field(default_factory=list)
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
-    sandbox_leases: list[dict[str, Any]] = Field(default_factory=list)
-    skill_snapshots: list[dict[str, Any]] = Field(default_factory=list)
-    audit: list[dict[str, Any]] = Field(default_factory=list)
-
-
 class PublicSkillResponse(BaseModel):
     """User-facing skill catalog item for the Phase 1 Skills surface."""
 

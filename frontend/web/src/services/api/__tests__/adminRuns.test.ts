@@ -30,6 +30,25 @@ test("admin Runs list uses the bounded tenant-scoped administrator endpoint", as
   ]);
 });
 
+test("admin Runs list binds a user scope for deep-linked diagnostics", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client: AdminRunsApiClient = {
+    async request<T>(url: string, init?: RequestInit): Promise<T> {
+      calls.push({ url, init });
+      return { runs: [], limit: 50 } as T;
+    },
+  };
+
+  await fetchAdminRuns({ limit: 50, userId: "user/a", status: "failed" }, client);
+
+  assert.deepEqual(calls, [
+    {
+      url: "/api/ai/admin/runs?limit=50&user_id=user%2Fa&status=failed",
+      init: { method: "GET" },
+    },
+  ]);
+});
+
 test("admin Run detail encodes the Run identity and remains read only", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const client: AdminRunsApiClient = {
