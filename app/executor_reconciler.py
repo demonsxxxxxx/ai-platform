@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from app import repositories
+from app.context.api import ProviderSessionConflictError, ProviderSessionContinuityError
 from app.db import transaction
 from app.execution.api import restored_sandbox_run_payload
 from app.executors.base import ExecutorResult, RunPayload
@@ -156,13 +157,19 @@ def _permanent_reconciliation_error(
 
 
 def _reconciliation_error_code(exc: Exception) -> str:
-    if isinstance(exc, PermanentExecutorReconciliationError):
+    if isinstance(
+        exc,
+        (PermanentExecutorReconciliationError, ProviderSessionContinuityError),
+    ):
         return exc.code
     return type(exc).__name__
 
 
 def _reconciliation_failure_is_terminal(exc: Exception) -> bool:
-    return isinstance(exc, PermanentExecutorReconciliationError)
+    return isinstance(exc, PermanentExecutorReconciliationError) or (
+        isinstance(exc, ProviderSessionConflictError)
+        and exc.code.startswith("provider_session_terminal_")
+    )
 
 
 def _context_payload(

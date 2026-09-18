@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.context.api import ProviderSessionConflictError
 from app.executor_reconciler import (
     PermanentExecutorReconciliationError,
     SandboxReconciliationStopError,
@@ -1723,12 +1724,33 @@ async def test_probe_terminal_receipt_is_claim_fenced_when_receipt_matches():
     assert len(statements) == 2
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected_error"),
+    [
+        (
+            PermanentExecutorReconciliationError(
+                "executor_reconciliation_run_payload_invalid"
+            ),
+            "executor_reconciliation_run_payload_invalid",
+        ),
+        (
+            ProviderSessionConflictError(
+                "provider_session_terminal_receipt_invalid"
+            ),
+            "provider_session_terminal_receipt_invalid",
+        ),
+        (
+            ProviderSessionConflictError(
+                "provider_session_terminal_coverage_invalid"
+            ),
+            "provider_session_terminal_coverage_invalid",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_reconciler_terminalizes_explicit_permanent_failure(monkeypatch):
-    failure = PermanentExecutorReconciliationError(
-        "executor_reconciliation_run_payload_invalid"
-    )
-    expected_error = "executor_reconciliation_run_payload_invalid"
+async def test_reconciler_terminalizes_explicit_permanent_failure(
+    monkeypatch, failure, expected_error
+):
     finished = []
     retried = []
     row = _lease_row()
