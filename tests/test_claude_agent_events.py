@@ -827,6 +827,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
@@ -852,14 +853,13 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         for candidate in candidates
     ]
     assert candidate_types == [
-        "message.started",
-        "message.delta",
         "policy.checking",
         "policy.allowed",
         "tool.started",
         "tool.completed",
         "subagent.started",
         "subagent.completed",
+        "message.started",
         "message.delta",
         "message.completed",
         "model.completed",
@@ -870,7 +870,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         if isinstance(candidate, ClaudeAgentEventCandidate)
         and candidate.event_type == "message.delta"
     ]
-    assert deltas == ["safe ", "answer"]
+    assert deltas == ["safe answer"]
     _assert_sandbox_answer_receipt(result, candidates, "safe answer")
     assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
     assert all(isinstance(candidate, ClaudeAgentEventCandidate) for candidate in candidates)
@@ -885,7 +885,9 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
 
 @pytest.mark.asyncio
-async def test_runner_continues_ordinary_stream_past_previous_publication_bound(monkeypatch):
+async def test_runner_ignores_ordinary_stream_and_publishes_structured_terminal_answer(
+    monkeypatch,
+):
     import claude_agent_sdk as sdk
 
     monkeypatch.setattr(
@@ -907,7 +909,8 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
     )
     published: list[str] = []
     candidates = []
-    answer = "a " * 131_073
+    streamed_answer = "a " * 131_073
+    answer = "structured final answer"
 
     async def query_fn(*, prompt, options):
         del prompt, options
@@ -920,7 +923,7 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
                 "content_block": {"type": "text"},
             },
         )
-        for index, offset in enumerate(range(0, len(answer), 4_096)):
+        for index, offset in enumerate(range(0, len(streamed_answer), 4_096)):
             yield sdk.StreamEvent(
                 uuid=f"stream-delta-{index}",
                 session_id="sdk-session",
@@ -929,7 +932,7 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
                     "index": 0,
                     "delta": {
                         "type": "text_delta",
-                        "text": answer[offset : offset + 4_096],
+                        "text": streamed_answer[offset : offset + 4_096],
                     },
                 },
             )
@@ -946,7 +949,8 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
             num_turns=1,
             session_id="sdk-session",
             stop_reason="end_turn",
-            result=answer,
+            result=streamed_answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     async def on_text(value: str) -> None:
@@ -1017,6 +1021,7 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     async def on_text(value: str):
@@ -1091,6 +1096,7 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
@@ -1154,6 +1160,7 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     task = asyncio.create_task(
@@ -1228,6 +1235,7 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     task = asyncio.create_task(
@@ -1263,11 +1271,11 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
 @pytest.mark.parametrize(
     "answer",
     [
-        "a" * 262_144,
-        "é" * 262_144,
-        "a" * 262_145,
+        "a" * 199_999,
+        "é" * 199_999,
+        "a" * 200_000,
     ],
-    ids=["ascii", "multibyte", "max-plus-one"],
+    ids=["ascii", "multibyte", "max"],
 )
 async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_boundaries(
     monkeypatch, answer
@@ -1335,6 +1343,7 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
