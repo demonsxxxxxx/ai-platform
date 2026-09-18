@@ -21,10 +21,16 @@ class ClaudeMcpRegistration:
         self.sdk_names: dict[str, str] = {}
         self.server_aliases: dict[str, str] = {}
         self.selected: dict[str, set[str]] = {}
-        server_aliases = {"ai-platform-context": "ai-platform-context"}
+        server_aliases = {
+            "ai-platform-context": "ai-platform-context",
+            "ai-platform-response": "ai-platform-response",
+        }
         for identity, subject in subjects.items():
             server = subject.get("mcp_server")
-            if not identity.startswith("mcp__") or server == "ai-platform-context":
+            if not identity.startswith("mcp__") or server in {
+                "ai-platform-context",
+                "ai-platform-response",
+            }:
                 continue
             if server not in configs:
                 raise ValueError("mcp_server_configuration_missing")

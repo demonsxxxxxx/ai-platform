@@ -170,6 +170,24 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
     assert "source_file_id" not in str(card)
     assert "storage_key" not in str(card)
 
+    selected = artifact_card(
+        {
+            "id": "artifact-selected",
+            "artifact_type": "document",
+            "label": "customer-summary.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "storage_key": "tenants/private/customer-summary.docx",
+            "size_bytes": 18,
+            "manifest_version": "ai-platform.artifact-manifest.v1",
+            "manifest_json": {"delivery_scope": "assistant_response"},
+            "created_at": None,
+        },
+        principal=principal(),
+    )
+    assert selected["label"] == "customer-summary.docx"
+    assert selected["manifest"] == {}
+    assert "delivery_scope" not in str(selected)
+
     admin_step = run_step_response(
         {
             "id": "step-a",

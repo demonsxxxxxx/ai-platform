@@ -35,6 +35,13 @@ _PUBLIC_LANGUAGE_INSTRUCTION = (
 )
 
 
+_RESPONSE_FILES_INSTRUCTION = (
+    "Before the final answer, call attach_file once for every generated file that the final "
+    "answer should return. Unattached files stay private. Do not present local workspace paths "
+    "as downloadable deliverables.\n"
+)
+
+
 class CurrentRequestTooLargeError(ValueError):
     """The accepted current request cannot be represented without data loss."""
 
@@ -249,7 +256,8 @@ def build_skill_prompt(
         "The platform-assigned work directory is the current working directory and is "
         "available as AI_PLATFORM_WORK_DIR. Use it as the only workspace for generated "
         "files; use relative paths and never "
-        "write into the installed Skill directory. Return a concise execution summary."
+        "write into the installed Skill directory. Return a concise execution summary.\n"
+        f"{_RESPONSE_FILES_INSTRUCTION}"
         f"{render_authorized_skill_catalog_prompt(authorized_skill_catalog)}"
         f"{context_pack_prompt_section(context_pack)}"
     )
@@ -286,6 +294,7 @@ def build_harness_chat_prompt(
         f"{files_text}\n\n"
         "Use only platform-authorized context and tools. If a context tool stages a file, "
         "use the platform-assigned current working directory (AI_PLATFORM_WORK_DIR) for "
-        "generated files and return a concise response."
+        "generated files and return a concise response.\n"
+        f"{_RESPONSE_FILES_INSTRUCTION}"
         f"{context_pack_prompt_section(context_pack)}"
     )

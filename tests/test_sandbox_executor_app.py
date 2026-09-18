@@ -3068,7 +3068,7 @@ json.dump(
     {key: os.environ.get(key) for key in ("ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "AI_PLATFORM_EXECUTOR_AUTH_TOKEN", "UNRELATED_SECRET")},
     (output / "child-env.json").open("w", encoding="utf-8"),
 )
-shutil.copyfile(sys.argv[1], output / "translated.docx")
+shutil.copyfile(sys.argv[1], output / "source_reviewed.docx")
 """,
         encoding="utf-8",
     )
@@ -3086,6 +3086,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
+    assert response.json()["response_files"] == ["output/source_reviewed.docx"]
     assert json.loads((workspace / "output" / "child-env.json").read_text(encoding="utf-8")) == {
         "ANTHROPIC_AUTH_TOKEN": None,
         "OPENAI_API_KEY": None,
@@ -3108,7 +3109,7 @@ from pathlib import Path
 output = Path(sys.argv[2])
 output.mkdir(parents=True, exist_ok=True)
 (output / "selected-input.txt").write_text(Path(sys.argv[1]).name, encoding="utf-8")
-shutil.copyfile(sys.argv[1], output / "translated.docx")
+shutil.copyfile(sys.argv[1], output / "z_reviewed.docx")
 """,
         encoding="utf-8",
     )
@@ -3122,6 +3123,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
+    assert response.json()["response_files"] == ["output/z_reviewed.docx"]
     assert (workspace / "output" / "selected-input.txt").read_text(encoding="utf-8") == "z.docx"
 
 

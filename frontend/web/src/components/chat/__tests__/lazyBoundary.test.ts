@@ -61,13 +61,3 @@ test("chat preview hosts do not statically import heavy preview panels", () => {
   assert.match(revealPreviewHost, /LazyDocumentPreview/);
   assert.match(revealPreviewHost, /LazyProjectPreview/);
 });
-
-test("project reveal items keep ProjectPreview behind a lazy wrapper", () => {
-  const source = readSource("./ChatMessage/items/ProjectRevealItem.tsx");
-
-  assert.doesNotMatch(
-    source,
-    /import\s+ProjectPreview\s+from\s+"..\/..\/..\/documents\/previews\/ProjectPreview";/,
-  );
-  assert.match(source, /LazyProjectPreview/);
-});

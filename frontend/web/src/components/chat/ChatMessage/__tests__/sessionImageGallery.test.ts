@@ -25,7 +25,7 @@ function encodeRepeated(value: string, times: number): string {
   return encoded;
 }
 
-test("collects session images from attachments, markdown, and individual reveal_file cards in message order", () => {
+test("collects session images from attachments and markdown in message order", () => {
   const messages: Message[] = [
     createMessage({
       id: "user-1",
@@ -97,22 +97,13 @@ test("collects session images from attachments, markdown, and individual reveal_
         "chart",
         "conversation",
       ],
-      [
-        "assistant-1:part:1:reveal-file",
-        "/api/ai/artifacts/generated/download",
-        "generated.png",
-        "reveal-file",
-      ],
     ],
   );
 
   assert.equal(items.filter((item) => item.group === "conversation").length, 2);
-  assert.equal(items.filter((item) => item.group === "reveal-file").length, 1);
 });
 
-test("filters unsafe reveal_file images from the session gallery", () => {
-  const encodedRunsPath = encodeRepeated(".claude/runs/run-1/secret.png", 4);
-  const encodedRunsUrl = encodeRepeated(".claude/runs/run-1/secret.png", 5);
+test("ignores legacy reveal tool payloads in the session gallery", () => {
   const messages: Message[] = [
     createMessage({
       id: "assistant-1",
@@ -122,79 +113,18 @@ test("filters unsafe reveal_file images from the session gallery", () => {
           type: "tool",
           name: "reveal_file",
           success: true,
-          args: { path: "/workspace/http.png" },
-          result: JSON.stringify({
-            key: "revealed/http-image",
-            url: "http://cdn.example.com/http.png",
-            name: "http.png",
-            type: "image",
-            mimeType: "image/png",
-            size: 56,
-            _meta: { path: "/workspace/http.png" },
-          }),
-        },
-        {
-          type: "tool",
-          name: "reveal_file",
-          success: true,
-          args: { path: `/workspace/${encodedRunsPath}` },
-          result: JSON.stringify({
-            key: `revealed/${encodedRunsPath}`,
-            url: `/api/ai/artifacts/${encodedRunsUrl}/download`,
-            name: "secret.png",
-            type: "image",
-            mimeType: "image/png",
-            size: 12,
-            _meta: { path: `/workspace/${encodedRunsPath}` },
-          }),
-        },
-        {
-          type: "tool",
-          name: "reveal_file",
-          success: true,
           args: { path: "/workspace/api-image.png" },
           result: JSON.stringify({
-            key: "revealed/api-image",
             url: "/api/ai/artifacts/api-image/download",
             name: "api-image.png",
-            type: "image",
             mimeType: "image/png",
-            size: 64,
-            _meta: { path: "/workspace/api-image.png" },
-          }),
-        },
-        {
-          type: "tool",
-          name: "reveal_file",
-          success: true,
-          args: { path: "/workspace/https-image.png" },
-          result: JSON.stringify({
-            type: "file_reveal",
-            file: {
-              path: "/workspace/https-image.png",
-              s3_url: "https://cdn.example.com/https-image.png",
-              s3_key: "revealed/https-image",
-              size: 128,
-            },
           }),
         },
       ],
     }),
   ];
 
-  const items = collectSessionImageGalleryItems(messages);
-
-  assert.deepEqual(
-    items.map((item) => [item.id, item.src, item.alt, item.group]),
-    [
-      [
-        "assistant-1:part:2:reveal-file",
-        "/api/ai/artifacts/api-image/download",
-        "api-image.png",
-        "reveal-file",
-      ],
-    ],
-  );
+  assert.deepEqual(collectSessionImageGalleryItems(messages), []);
 });
 
 test("filters unsafe markdown, html, and attachment image urls from the session gallery", () => {
@@ -274,10 +204,6 @@ test("conversation image entry points use the session gallery when available", (
     new URL("../UserMessageBubble.tsx", import.meta.url),
     "utf8",
   );
-  const fileRevealSource = readFileSync(
-    new URL("../items/FileRevealItem.tsx", import.meta.url),
-    "utf8",
-  );
 
   assert.match(markdownSource, /useSessionImageGallery/);
   assert.match(markdownSource, /sessionImageGallery\?\.openImage/);
@@ -292,38 +218,19 @@ test("conversation image entry points use the session gallery when available", (
     readFileSync(new URL("../sessionImageGallery.tsx", import.meta.url), "utf8"),
     /useSafeAttachmentImageSrc/,
   );
-  assert.match(fileRevealSource, /useSessionImageGallery/);
-  assert.match(fileRevealSource, /sessionImageGallery\?\.openImage/);
-  assert.match(fileRevealSource, /useSafeAttachmentObjectUrl/);
-  assert.doesNotMatch(fileRevealSource, /src=\{parsed\.s3Url\}/);
-  assert.match(fileRevealSource, /group:\s*"reveal-file"/);
-  assert.match(fileRevealSource, /parseFileRevealPreviewData/);
-  assert.doesNotMatch(fileRevealSource, /interface FileRevealResultNew/);
-  assert.doesNotMatch(fileRevealSource, /JSON\.parse\(jsonStr\)/);
 });
 
-test("session image count includes reveal_file cards but not the RevealArtifactsSummary gallery", () => {
+test("session image gallery ignores legacy reveal payloads", () => {
   const sessionGallerySource = readFileSync(
     new URL("../sessionImageGallery.tsx", import.meta.url),
     "utf8",
   );
-  const revealSummarySource = readFileSync(
-    new URL("../RevealArtifactsSummary.tsx", import.meta.url),
-    "utf8",
-  );
 
+  assert.doesNotMatch(sessionGallerySource, /reveal_file/);
+  assert.doesNotMatch(sessionGallerySource, /parseFileRevealPreviewData/);
   assert.doesNotMatch(sessionGallerySource, /RevealArtifactsSummary/);
   assert.doesNotMatch(sessionGallerySource, /collectRevealArtifacts/);
-  assert.doesNotMatch(sessionGallerySource, /buildRevealArtifactTree/);
-  assert.doesNotMatch(
-    sessionGallerySource,
-    /getRevealArtifactImagePreviewItems/,
-  );
   assert.doesNotMatch(sessionGallerySource, /from "\.\/revealArtifacts"/);
-
-  assert.doesNotMatch(revealSummarySource, /useSessionImageGallery/);
-  assert.doesNotMatch(revealSummarySource, /SessionImageGalleryProvider/);
-  assert.doesNotMatch(revealSummarySource, /sessionImageGallery/);
 });
 
 test("markdown protected platform links are not rendered as raw anchors", () => {

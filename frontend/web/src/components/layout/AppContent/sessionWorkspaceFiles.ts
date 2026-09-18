@@ -1,10 +1,8 @@
 import type {
-  SessionArtifactFile,
-  SessionArtifactFilesResponse,
   SessionInputFile,
   SessionInputFilesResponse,
 } from "../../../services/api";
-import type { MessageAttachment } from "../../../types";
+import type { ArtifactPart, Message, MessageAttachment, MessagePart } from "../../../types";
 
 export type SessionWorkspaceFilesStatus =
   | "idle"
@@ -46,17 +44,17 @@ function inputWorkspaceFile(file: SessionInputFile): SessionWorkspaceFile {
   };
 }
 
-function artifactWorkspaceFile(file: SessionArtifactFile): SessionWorkspaceFile {
+function artifactWorkspaceFile(file: ArtifactPart): SessionWorkspaceFile {
   return {
-    key: `artifact:${file.id}`,
-    id: file.id,
+    key: `artifact:${file.artifact_id}`,
+    id: file.artifact_id,
     source: "artifact",
-    name: file.file_name,
-    mime_type: file.mime_type ?? "application/octet-stream",
-    size_bytes: file.file_size,
-    preview_url: file.preview_url,
-    download_url: file.download_url,
-    created_at: file.created_at,
+    name: file.label,
+    mime_type: file.content_type || "application/octet-stream",
+    size_bytes: file.size_bytes,
+    preview_url: file.preview_url ?? null,
+    download_url: file.download_url ?? null,
+    created_at: file.created_at ?? null,
   };
 }
 
@@ -86,38 +84,50 @@ function exactInputFiles(
     : null;
 }
 
-function exactArtifactFiles(
-  sessionId: string,
-  result: PromiseSettledResult<SessionArtifactFilesResponse>,
-): SessionArtifactFile[] | null {
-  return result.status === "fulfilled" && result.value.session_id === sessionId
-    ? result.value.files
-    : null;
-}
-
-/** Build the file-only panel projection from independently authorized sources. */
+/** Build the file-only panel projection from the authorized input source. */
 export function projectSessionWorkspaceFiles(
   sessionId: string,
   inputResult: PromiseSettledResult<SessionInputFilesResponse>,
-  artifactResult: PromiseSettledResult<SessionArtifactFilesResponse>,
 ): SessionWorkspaceProjection {
   const inputFiles = exactInputFiles(sessionId, inputResult);
-  const artifactFiles = exactArtifactFiles(sessionId, artifactResult);
-  const sourcesReady = Number(inputFiles !== null) + Number(artifactFiles !== null);
-  const filesByKey = new Map<string, SessionWorkspaceFile>();
-  inputFiles?.forEach((file) => {
-    const projected = inputWorkspaceFile(file);
-    filesByKey.set(projected.key, projected);
-  });
-  artifactFiles?.forEach((file) => {
-    const projected = artifactWorkspaceFile(file);
-    filesByKey.set(projected.key, projected);
-  });
   return {
     session_id: sessionId,
     inputFiles: inputFiles ?? [],
+    files: (inputFiles ?? []).map(inputWorkspaceFile).sort(compareWorkspaceFiles),
+    status: inputFiles === null ? "error" : "ready",
+  };
+}
+
+function collectArtifactParts(
+  parts: readonly MessagePart[] | undefined,
+  filesByKey: Map<string, SessionWorkspaceFile>,
+): void {
+  for (const part of parts ?? []) {
+    if (part.type === "artifact") {
+      const projected = artifactWorkspaceFile(part);
+      filesByKey.set(projected.key, projected);
+    } else if (part.type === "subagent") {
+      collectArtifactParts(part.parts, filesByKey);
+    }
+  }
+}
+
+/** Add only structured files bound to assistant responses. */
+export function projectAssistantResponseFiles(
+  projection: SessionWorkspaceProjection,
+  messages: readonly Message[],
+): SessionWorkspaceProjection {
+  const filesByKey = new Map(
+    projection.files.map((file) => [file.key, file] as const),
+  );
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      collectArtifactParts(message.parts, filesByKey);
+    }
+  }
+  return {
+    ...projection,
     files: [...filesByKey.values()].sort(compareWorkspaceFiles),
-    status: sourcesReady === 2 ? "ready" : sourcesReady === 1 ? "partial" : "error",
   };
 }
 

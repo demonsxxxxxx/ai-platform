@@ -21,8 +21,6 @@ import { MarkdownContent } from "./MarkdownContent";
 import { formatFileSize, getFileTypeInfo } from "../../documents/utils";
 import {
   ToolCallItem,
-  FileRevealItem,
-  ProjectRevealItem,
   ReadFileItem,
   EditFileItem,
   WriteFileItem,
@@ -36,7 +34,6 @@ import { SummaryItem } from "./SummaryItem";
 import { PublicExecutionProcess } from "./PublicExecutionProcess";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
-import { createToolPartAnchorId } from "./messagePartAnchors";
 import {
   getOrdinaryUserToolPermissionPresentation,
 } from "./toolPermissionCardState";
@@ -56,8 +53,6 @@ export function MessagePartRenderer({
   partIndex,
   isStreaming,
   isLast,
-  allowAutoPreview,
-  activePreview,
   onOpenPreview,
   artifactDownloadScope,
   withinWorkDetails,
@@ -67,8 +62,6 @@ export function MessagePartRenderer({
   partIndex?: number;
   isStreaming?: boolean;
   isLast: boolean;
-  allowAutoPreview?: boolean;
-  activePreview?: RevealPreviewRequest | null;
   onOpenPreview?: (
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
@@ -77,10 +70,6 @@ export function MessagePartRenderer({
   withinWorkDetails?: boolean;
 }) {
   const { t } = useTranslation();
-  const toolPartAnchorId =
-    messageId !== undefined && partIndex !== undefined
-      ? createToolPartAnchorId(messageId, partIndex)
-      : undefined;
 
   if (part.type === "text") {
     return (
@@ -129,45 +118,8 @@ export function MessagePartRenderer({
         />
       );
     }
-    // Detect reveal_file tool, use dedicated component
-    if (part.name === "reveal_file") {
-      return (
-        <div
-          id={toolPartAnchorId}
-          className="scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/80 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.25)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/60 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.12)]"
-        >
-          <FileRevealItem
-            args={part.args}
-            result={part.result}
-            success={part.success}
-            isPending={part.isPending}
-            cancelled={part.cancelled}
-            allowAutoPreview={allowAutoPreview}
-            activePreview={activePreview}
-            onOpenPreview={onOpenPreview}
-          />
-        </div>
-      );
-    }
-    // Detect reveal_project tool, use dedicated component
-    if (part.name === "reveal_project") {
-      return (
-        <div
-          id={toolPartAnchorId}
-          className="scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/80 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.25)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/60 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.12)]"
-        >
-          <ProjectRevealItem
-            args={part.args}
-            result={part.result}
-            success={part.success}
-            isPending={part.isPending}
-            cancelled={part.cancelled}
-            allowAutoPreview={allowAutoPreview}
-            activePreview={activePreview}
-            onOpenPreview={onOpenPreview}
-          />
-        </div>
-      );
+    if (part.name === "reveal_file" || part.name === "reveal_project") {
+      return null;
     }
     // Detect edit_file tool, use dedicated component
     if (part.name === "edit_file") {

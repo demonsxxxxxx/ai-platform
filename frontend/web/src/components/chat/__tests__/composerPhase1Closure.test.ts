@@ -235,14 +235,6 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
       read("src/components/chat/ChatMessage/MessagePartRenderer.tsx"),
     ],
     [
-      "FileRevealItem",
-      read("src/components/chat/ChatMessage/items/FileRevealItem.tsx"),
-    ],
-    [
-      "ProjectRevealItem",
-      read("src/components/chat/ChatMessage/items/ProjectRevealItem.tsx"),
-    ],
-    [
       "ToolResultPanel",
       read("src/components/chat/ChatMessage/items/ToolResultPanel.tsx"),
     ],

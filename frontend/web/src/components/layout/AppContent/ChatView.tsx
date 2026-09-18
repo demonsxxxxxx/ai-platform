@@ -83,9 +83,6 @@ import type {
   SelectedSkillTaskState,
 } from "../../../hooks/useSelectedSkillTask";
 import type { RevealPreviewRequest } from "../../chat/ChatMessage/items/revealPreviewData";
-import { clearFileRevealAutoOpenState } from "../../chat/ChatMessage/items/fileRevealAutoOpen";
-import { clearProjectRevealAutoOpenState } from "../../chat/ChatMessage/items/projectRevealAutoOpen";
-import { getLatestChatAutoPreviewTarget } from "../../chat/ChatMessage/autoPreviewEligibility";
 import {
   createActiveRevealPreviewState,
   markRevealPreviewInteracted,
@@ -113,6 +110,7 @@ import {
   createArtifactDownloadScopeContext,
 } from "../../chat/ChatMessage/items/artifactDownloadRegistry";
 import {
+  projectAssistantResponseFiles,
   projectSessionWorkspaceFiles,
   sessionWorkspaceFileToAttachment,
   sessionWorkspaceProjectionForRender,
@@ -304,9 +302,13 @@ export function ChatView({
       files: [],
       status: "idle",
     });
-  const visibleWorkspaceProjection = sessionWorkspaceProjectionForRender(
-    workspaceProjection,
-    sessionId,
+  const visibleWorkspaceProjection = useMemo(
+    () =>
+      projectAssistantResponseFiles(
+        sessionWorkspaceProjectionForRender(workspaceProjection, sessionId),
+        messages,
+      ),
+    [messages, sessionId, workspaceProjection],
   );
   const sessionRunning = isSessionRunning(messages, isLoading);
   const hasVisibleStreamingMessage = messages.some(
@@ -419,19 +421,18 @@ export function ChatView({
             status: "loading",
           },
     );
-    void Promise.allSettled([
-      sessionApi.getInputFiles(sessionId),
-      sessionApi.getArtifactFiles(sessionId),
-    ]).then(([inputResult, artifactResult]) => {
-      if (!current) return;
-      setWorkspaceProjection(
-        projectSessionWorkspaceFiles(sessionId, inputResult, artifactResult),
-      );
-    });
+    void Promise.allSettled([sessionApi.getInputFiles(sessionId)]).then(
+      ([inputResult]) => {
+        if (!current) return;
+        setWorkspaceProjection(
+          projectSessionWorkspaceFiles(sessionId, inputResult),
+        );
+      },
+    );
     return () => {
       current = false;
     };
-  }, [sessionId, currentRunId, messages.length, attachments.length]);
+  }, [sessionId, attachments.length]);
 
   const displayMessages = useMemo(
     () =>
@@ -643,21 +644,11 @@ export function ChatView({
 
   useEffect(() => {
     dismissedPreviewKeysRef.current.clear();
-    clearFileRevealAutoOpenState();
-    clearProjectRevealAutoOpenState();
     clearSidebarHistory();
     setActiveRevealPreviewState(null);
     closePersistentToolPanel();
   }, [sessionId]);
 
-  const latestAutoPreview = useMemo(
-    () =>
-      getLatestChatAutoPreviewTarget({
-        messages,
-        suppressAutoPreview: false,
-      }),
-    [messages],
-  );
   const isMobileViewport =
     typeof window !== "undefined" ? window.innerWidth < 640 : false;
 
@@ -766,8 +757,6 @@ export function ChatView({
             message={message}
             artifactDownloadScopeContext={artifactDownloadScopeContext}
             isLastMessage={index === messages.length - 1}
-            activePreview={activePreview}
-            latestAutoPreview={latestAutoPreview}
             onOpenPreview={handleOpenPreview}
           />
         }
@@ -781,8 +770,6 @@ export function ChatView({
     [
       artifactDownloadScopeContext,
       messages.length,
-      activePreview,
-      latestAutoPreview,
       handleOpenPreview,
     ],
   );

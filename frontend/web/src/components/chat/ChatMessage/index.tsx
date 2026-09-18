@@ -14,17 +14,12 @@ import { MarkdownContent } from "./MarkdownContent";
 import { ToolCallItem } from "./ToolCallItem";
 import { UserMessageBubble } from "./UserMessageBubble";
 import { createMessagePartRenderKeys, MessagePartRenderer } from "./MessagePartRenderer";
-import { RevealArtifactsSummary } from "./RevealArtifactsSummary";
 import { AssistantAvatar } from "./AssistantAvatar";
 import { CollapsiblePill } from "../../common/CollapsiblePill";
 import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { ModelIconImg } from "../../agent/modelIcon.tsx";
 import { shouldCloseTokenDetailsPopover } from "./tokenDetailsPopoverGuards";
 import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
-import {
-  shouldAllowAutoPreviewForPart,
-  type AutoPreviewTarget,
-} from "./autoPreviewEligibility";
 import { getVisibleMessageParts } from "./messagePartVisibility";
 import { MessageWorkActivity } from "./MessageWorkActivity";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
@@ -71,8 +66,6 @@ interface ChatMessageProps {
   message: Message;
   artifactDownloadScopeContext?: ArtifactDownloadScopeContext;
   isLastMessage?: boolean;
-  activePreview?: RevealPreviewRequest | null;
-  latestAutoPreview?: AutoPreviewTarget | null;
   onOpenPreview?: (
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
@@ -244,8 +237,6 @@ export const ChatMessage = memo(function ChatMessage({
   message,
   artifactDownloadScopeContext,
   isLastMessage,
-  activePreview,
-  latestAutoPreview,
   onOpenPreview,
 }: ChatMessageProps) {
   const { t } = useTranslation();
@@ -351,22 +342,11 @@ export const ChatMessage = memo(function ChatMessage({
                     partIndex={index}
                     isStreaming={message.isStreaming}
                     isLast={index === visibleParts.length - 1}
-                    activePreview={activePreview}
                     onOpenPreview={onOpenPreview}
                     artifactDownloadScope={artifactDownloadScope}
                     withinWorkDetails={withinWorkDetails}
-                    allowAutoPreview={shouldAllowAutoPreviewForPart({
-                      messageId: message.id,
-                      partIndex: index,
-                      latestAutoPreview: latestAutoPreview ?? null,
-                    })}
                   />
                 )}
-              />
-              <RevealArtifactsSummary
-                parts={visibleParts}
-                isStreaming={message.isStreaming}
-                onOpenPreview={onOpenPreview}
               />
             </div>
           ) : (
