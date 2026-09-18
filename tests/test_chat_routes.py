@@ -4516,7 +4516,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert submitted_request.session_id == (
             "ses-profile-lock-order" if restored_continuation else None
         )
-        assert submitted_request.agent_options == {"enable_thinking": "off"}
+        assert submitted_request.agent_options == {"enable_thinking": "auto"}
         assert submitted_request.disabled_skills == []
         assert submitted_request.selected_mcp_tool_ids == []
         return AgentProfileAdmission(
@@ -5138,7 +5138,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         submitted_request = kwargs["submitted_request"]
         assert kwargs["query_agent_id"] == "agt_support"
         assert submitted_request.session_id == "ses_profile_first"
-        assert submitted_request.agent_options == {"enable_thinking": "off"}
+        assert submitted_request.agent_options == {"enable_thinking": "auto"}
         assert submitted_request.disabled_skills == []
         assert submitted_request.selected_mcp_tool_ids == []
         return AgentProfileAdmission(

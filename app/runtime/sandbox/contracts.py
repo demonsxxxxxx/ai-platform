@@ -227,7 +227,7 @@ class SandboxRuntimeRequest(BaseModel):
     browser_enabled: bool = False
     model: str
     model_token_limits: ModelTokenLimits | None = None
-    thinking_effort: str = "off"
+    thinking_effort: str = "auto"
     model_gateway: Literal["new-api"] = "new-api"
     permissions: list[str] = Field(default_factory=list)
     resource_limits: dict[str, Any] = Field(default_factory=dict)

@@ -41,8 +41,9 @@ def test_control_plane_versions_are_stable():
     assert CONTEXT_SNAPSHOT_SCHEMA_VERSION == "ai-platform.context-snapshot.v1"
 
 
-def test_run_thinking_effort_omits_off_and_attaches_enabled_level():
+def test_run_thinking_effort_omits_auto_and_attaches_explicit_level():
     assert attach_run_thinking_effort({"message": "hello"}, None) == {"message": "hello"}
+    assert attach_run_thinking_effort({}, {"enable_thinking": "off"}) == {}
     assert attach_run_thinking_effort({}, {"enable_thinking": "high"}) == {
         "_thinking_effort": "high"
     }

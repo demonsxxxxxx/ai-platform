@@ -468,7 +468,7 @@ test("builds the selector-free Agent App run URL and deduplicated file body", ()
       message: "Review this",
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: ["file-a"],
-      thinking_effort: "off",
+      thinking_effort: "auto",
       user_timezone: "Asia/Shanghai",
     },
   );
@@ -495,7 +495,7 @@ test("omits unfinished Agent App attachments without a server file id", () => {
       message: "Review this",
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: [],
-      thinking_effort: "off",
+      thinking_effort: "auto",
     },
   );
 });

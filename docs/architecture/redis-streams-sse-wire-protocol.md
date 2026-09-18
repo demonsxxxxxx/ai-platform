@@ -147,24 +147,17 @@ The closed transport controls are `stream.open`, `stream.heartbeat`,
 `trace_ref`; they do not consume business order. `stream.gap` always requests
 `reload_durable_state`, and `stream.end` references the observed terminal event.
 
-Provider-internal reasoning that is not returned as public summarized thinking,
-raw SDK objects, commands, arguments, outputs, credentials, paths, storage keys,
-private trace values, and unclassified objects are prohibited. The Claude SDK is
-configured with `thinking.display = summarized`. The Runner accepts only the exact
-SDK `ThinkingBlock` type and extracts only `ThinkingBlock.thinking`; `signature`
-never enters the callback contract. Each complete summary is sanitized before
-transport as one internal callback fact. The callback authority derives the
-opaque `thinking_id` and creates bounded `thinking.delta` chunks between
-`thinking.started` and `thinking.completed`, so caller-supplied public deltas
-cannot bypass whole-summary sanitization. Sensitive fragments are redacted while
-the remaining public summary is preserved. Legacy empty or fixed-summary
-thinking payloads remain replayable, but new rows do not synthesize fixed
-reasoning text. Agent progress
-carries only fixed server-owned phase messages. Tool input and result summaries
-are fixed lifecycle text derived from the validated public display name;
-callback-supplied arbitrary summary text fails closed. The strict event-specific
-projector applies identity, byte, depth, and count bounds before a canonical
-public row can be committed.
+Provider-internal reasoning, raw SDK objects, commands, arguments, outputs,
+credentials, paths, storage keys, private trace values, and unclassified objects
+are prohibited. The Claude SDK is configured with
+`thinking.display = omitted`, and the Runner excludes `ThinkingBlock` content
+from both the answer and callback projections. Legacy `thinking.*` payloads
+remain replayable for compatibility, but current execution does not create them
+and current Chat renderers do not display them. Agent progress carries only fixed
+server-owned phase messages. Tool input and result summaries are fixed lifecycle
+text derived from the validated public display name; callback-supplied arbitrary
+summary text fails closed. The strict event-specific projector applies identity,
+byte, depth, and count bounds before a canonical public row can be committed.
 
 ## Key and stream incarnation
 

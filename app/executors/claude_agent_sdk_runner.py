@@ -1354,7 +1354,7 @@ async def run_claude_agent_sdk(
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
-    thinking_effort: str = "off",
+    thinking_effort: str = "auto",
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
     if (model_max_input_tokens is None) != (model_max_output_tokens is None) or any(
@@ -2838,12 +2838,11 @@ async def run_claude_agent_sdk(
     sdk_system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
     if system_prompt:
         sdk_system_prompt["append"] = system_prompt
-    thinking_options: dict[str, Any] = {}
-    if thinking_effort != "off":
-        thinking_options = {
-            "thinking": {"type": "adaptive", "display": "omitted"},
-            "effort": thinking_effort,
-        }
+    thinking_options: dict[str, Any] = {
+        "thinking": {"type": "adaptive", "display": "omitted"}
+    }
+    if thinking_effort != "auto":
+        thinking_options["effort"] = thinking_effort
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         model=model_id

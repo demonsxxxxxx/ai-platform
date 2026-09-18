@@ -126,7 +126,7 @@ test("renders historical sandbox readiness duration without requiring details", 
   assert.match(markup, /用时 850毫秒/);
 });
 
-test("renders thinking status without model reasoning content", () => {
+test("does not render thinking parts", () => {
   const completed = renderToStaticMarkup(
     createElement(MessagePartRenderer, {
       isLast: true,
@@ -144,19 +144,15 @@ test("renders thinking status without model reasoning content", () => {
       isStreaming: true,
       part: {
         type: "thinking",
-        content: "正在核对公开证据",
+        content: "正在核对证据",
         public_reasoning: true,
         isStreaming: true,
       } satisfies Extract<MessagePart, { type: "thinking" }>,
     }),
   );
 
-  assert.match(completed, /data-public-thinking/);
-  assert.doesNotMatch(completed, /aria-expanded/);
-  assert.doesNotMatch(completed, /公开思考摘要/);
-  assert.doesNotMatch(streaming, /aria-expanded/);
-  assert.doesNotMatch(streaming, /正在核对公开证据/);
-  assert.doesNotMatch(streaming, /data-persistent-tool-panel/);
+  assert.equal(completed, "");
+  assert.equal(streaming, "");
 });
 
 test("renders binary lifecycle as a status row without a progress bar", async () => {

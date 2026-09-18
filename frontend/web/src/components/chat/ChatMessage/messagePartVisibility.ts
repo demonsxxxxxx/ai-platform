@@ -6,7 +6,6 @@ const ACTIONABLE_RUN_STATUS_PATTERN =
 
 const WORK_ACTIVITY_TYPES: ReadonlySet<MessagePart["type"]> = new Set([
   "sandbox",
-  "thinking",
   "tool",
   "subagent",
   "execution_step",
@@ -20,6 +19,9 @@ export function isWorkActivityPart(part: MessagePart): boolean {
 }
 
 export function isVisibleMessagePart(part: MessagePart): boolean {
+  if (part.type === "thinking") {
+    return false;
+  }
   if (part.type !== "run_status") {
     return true;
   }
