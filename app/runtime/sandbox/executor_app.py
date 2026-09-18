@@ -2356,6 +2356,9 @@ async def _default_executor_runner(
         "message": str(getattr(sdk_result, "message", "") or ""),
         "answer_receipt": getattr(sdk_result, "answer_receipt", None),
         "response_files": list(getattr(sdk_result, "response_files", []) or []),
+        "response_file_descriptors": list(
+            getattr(sdk_result, "response_file_descriptors", []) or []
+        ),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
         "provider_session_final_sequence": getattr(sdk_result, "provider_final_sequence", None),
@@ -3305,6 +3308,7 @@ def create_executor_app(
             "message",
             "answer_receipt",
             "response_files",
+            "response_file_descriptors",
             "sdk_usage",
             "sdk_used",
             "sdk_received_structured_terminal",

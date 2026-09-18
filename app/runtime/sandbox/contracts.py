@@ -470,6 +470,58 @@ class ExecutorTaskDispatchReceipt(BaseModel):
         return assert_safe_id(value, str(info.field_name))
 
 
+class ResponseFileDescriptor(BaseModel):
+    """Presentation metadata for one explicitly declared response file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_path: str = Field(max_length=1_024)
+    display_name: str | None = Field(default=None, max_length=255)
+    role: Literal["primary", "supporting"] | None = None
+    description: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("source_path")
+    @classmethod
+    def validate_source_path(cls, value: str) -> str:
+        if not value or "\x00" in value:
+            raise ValueError("response_file_path_invalid")
+        path = PurePosixPath(value.replace("\\", "/"))
+        windows_path = PureWindowsPath(value)
+        if (
+            path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or any(part in {"", ".", ".."} for part in value.replace("\\", "/").split("/"))
+        ):
+            raise ValueError("response_file_path_invalid")
+        return path.as_posix()
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if (
+            not normalized
+            or "\x00" in normalized
+            or "/" in normalized
+            or "\\" in normalized
+            or normalized in {".", ".."}
+        ):
+            raise ValueError("response_file_display_name_invalid")
+        return normalized
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if "\x00" in value:
+            raise ValueError("response_file_description_invalid")
+        return value.strip() or None
+
+
 class ExecutorTerminalResult(BaseModel):
     """Authoritative terminal response returned through the callback channel."""
 
@@ -480,6 +532,10 @@ class ExecutorTerminalResult(BaseModel):
     message: str = Field(default="", max_length=200_000)
     answer_receipt: AssistantAnswerReceipt | None = None
     response_files: list[str] = Field(default_factory=list, max_length=128)
+    response_file_descriptors: list[ResponseFileDescriptor] | None = Field(
+        default=None,
+        max_length=128,
+    )
     error_code: str | None = Field(default=None, max_length=256)
     error_message: str | None = Field(default=None, max_length=4_096)
     provider_session_final_sequence: int | None = Field(default=None, ge=1, strict=True)
@@ -527,6 +583,12 @@ class ExecutorTerminalResult(BaseModel):
                 raise ValueError(
                     "successful terminal result must contain either a message or answer receipt"
                 )
+            if self.response_file_descriptors and [
+                item.source_path for item in self.response_file_descriptors
+            ] != self.response_files:
+                raise ValueError(
+                    "response file descriptors must match response files"
+                )
         else:
             if self.answer_receipt is not None:
                 raise ValueError(
@@ -535,6 +597,10 @@ class ExecutorTerminalResult(BaseModel):
             if self.response_files:
                 raise ValueError(
                     "failed or cancelled terminal result must not contain response files"
+                )
+            if self.response_file_descriptors:
+                raise ValueError(
+                    "failed or cancelled terminal result must not contain response file descriptors"
                 )
             if not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
                 raise ValueError("failed or cancelled terminal result requires structured error fields")
@@ -548,6 +614,7 @@ _EXECUTOR_TERMINAL_RECEIPT_FIELDS = frozenset(
         "message",
         "answer_receipt",
         "response_files",
+        "response_file_descriptors",
         "provider_session_final_sequence",
         "error_code",
         "error_message",

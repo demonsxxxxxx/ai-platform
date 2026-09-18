@@ -567,7 +567,17 @@ async def _collect_workspace_and_convert_result(
     provider = _container_provider_for_lease(lease)
     collection_error: Exception | None = None
     try:
-        await provider.collect_workspace(lease, request, workspace)
+        raw_response_files = terminal_result.get("response_files", [])
+        if not isinstance(raw_response_files, list) or not all(
+            isinstance(path, str) for path in raw_response_files
+        ):
+            raise ValueError("executor response file selection is invalid")
+        await provider.collect_workspace(
+            lease,
+            request,
+            workspace,
+            raw_response_files,
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - converted into a controlled terminal result.

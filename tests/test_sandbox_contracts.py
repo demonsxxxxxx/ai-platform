@@ -700,3 +700,49 @@ def test_terminal_callback_normalizes_response_files_and_rejects_unsafe_paths():
                 "response_files": ["output/report.docx", "output\\report.docx"],
             }
         )
+
+
+def test_terminal_callback_preserves_bounded_response_file_descriptors():
+    result = ExecutorTerminalResult.model_validate(
+        {
+            "status": "completed",
+            "run_id": "run-a",
+            "message": "answer",
+            "response_files": ["output/report.txt"],
+            "response_file_descriptors": [
+                {
+                    "source_path": "output\\report.txt",
+                    "display_name": "报告.txt",
+                    "role": "primary",
+                    "description": "最终报告",
+                }
+            ],
+        }
+    )
+
+    assert result.response_file_descriptors is not None
+    assert result.response_file_descriptors[0].source_path == "output/report.txt"
+    assert executor_terminal_receipt_payload(result)["response_file_descriptors"] == [
+        {
+            "source_path": "output/report.txt",
+            "display_name": "报告.txt",
+            "role": "primary",
+            "description": "最终报告",
+        }
+    ]
+
+    with pytest.raises(
+        ValidationError,
+        match="response file descriptors must match response files",
+    ):
+        ExecutorTerminalResult.model_validate(
+            {
+                "status": "completed",
+                "run_id": "run-a",
+                "message": "answer",
+                "response_files": ["output/report.txt"],
+                "response_file_descriptors": [
+                    {"source_path": "output/other.txt"}
+                ],
+            }
+        )

@@ -4,12 +4,12 @@ import hashlib
 import threading
 import zipfile
 import xml.etree.ElementTree as ElementTree
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from xml.parsers import expat
 
-from app.sandbox.api import workspace_collection_file_allowed
+from app.sandbox.api import workspace_delivery_file_allowed
 
 _MAX_WORKSPACE_ARTIFACT_FILES = 128
 _MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
@@ -151,6 +151,8 @@ def collect_workspace_artifacts(
     artifact_factory: Callable[..., Any],
     storage_factory: Callable[[], Any],
     ensure_inside: Callable[[Path, Path, str], None],
+    response_file_descriptors: Iterable[Mapping[str, object]] | None = None,
+    allowed_skill_names: Iterable[str] = (),
     storage_scope: str = "",
     abandoned: threading.Event | None = None,
     reserve_storage: Callable[[str], str] | None = None,
@@ -159,7 +161,26 @@ def collect_workspace_artifacts(
     selected_paths = list(response_files)
     if len(selected_paths) > _MAX_WORKSPACE_ARTIFACT_FILES:
         raise ValueError("workspace artifacts exceed the file count limit")
-    candidates: list[Path] = []
+    descriptors = list(response_file_descriptors or ())
+    descriptor_by_path: dict[str, Mapping[str, object]] = {}
+    for descriptor in descriptors:
+        if not isinstance(descriptor, Mapping):
+            raise ValueError("response file descriptor is invalid")
+        raw_source_path = descriptor.get("source_path")
+        if not isinstance(raw_source_path, str):
+            raise ValueError("response file descriptor is invalid")
+        source_path = raw_source_path.replace("\\", "/")
+        if source_path in descriptor_by_path:
+            raise ValueError("response file descriptor is duplicated")
+        descriptor_by_path[source_path] = descriptor
+    normalized_selected_paths = [
+        path.replace("\\", "/") if isinstance(path, str) else path
+        for path in selected_paths
+    ]
+    if descriptors and list(descriptor_by_path) != normalized_selected_paths:
+        raise ValueError("response file descriptors do not match response files")
+
+    candidates: list[tuple[Path, Mapping[str, object] | None]] = []
     seen_candidates: set[Path] = set()
     total_bytes = 0
     workspace_root = workspace.resolve(strict=True)
@@ -173,7 +194,10 @@ def collect_workspace_artifacts(
             or windows_path.is_absolute()
             or windows_path.drive
             or any(part in {"", ".", ".."} for part in raw_path.replace("\\", "/").split("/"))
-            or not workspace_collection_file_allowed(relative)
+            or not workspace_delivery_file_allowed(
+                relative,
+                allowed_skill_names=allowed_skill_names,
+            )
         ):
             raise ValueError("response file path is invalid")
         item = workspace_root
@@ -202,21 +226,52 @@ def collect_workspace_artifacts(
         if total_bytes > _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES:
             raise ValueError("workspace artifacts exceed the total byte limit")
         seen_candidates.add(resolved)
-        candidates.append(resolved)
+        candidates.append((resolved, descriptor_by_path.get(relative.as_posix())))
 
-    for path in candidates:
+    for path, _descriptor in candidates:
         if artifact_type(path.name) == "result_docx" and not valid_docx_artifact(path):
             raise ValueError("response DOCX file is invalid")
-    if set(required_artifact_types) - {artifact_type(path.name) for path in candidates}:
+    if set(required_artifact_types) - {artifact_type(path.name) for path, _ in candidates}:
         return []
 
     artifacts: list[Any] = []
     try:
-        for index, path in enumerate(candidates, start=1):
+        for index, (path, descriptor) in enumerate(candidates, start=1):
             if abandoned is not None and abandoned.is_set():
                 raise RuntimeError("workspace artifact collection abandoned")
             content_type = artifact_content_type(path.name)
             kind = artifact_type(path.name)
+            display_name = path.name
+            delivery_role: str | None = None
+            delivery_description: str | None = None
+            if descriptor is not None:
+                raw_display_name = descriptor.get("display_name")
+                if raw_display_name is not None:
+                    if (
+                        not isinstance(raw_display_name, str)
+                        or not raw_display_name.strip()
+                        or len(raw_display_name) > 255
+                        or "\x00" in raw_display_name
+                        or "/" in raw_display_name
+                        or "\\" in raw_display_name
+                        or raw_display_name in {".", ".."}
+                    ):
+                        raise ValueError("response file display name is invalid")
+                    display_name = raw_display_name.strip()
+                raw_role = descriptor.get("role")
+                if raw_role is not None:
+                    if raw_role not in {"primary", "supporting"}:
+                        raise ValueError("response file role is invalid")
+                    delivery_role = str(raw_role)
+                raw_description = descriptor.get("description")
+                if raw_description is not None:
+                    if (
+                        not isinstance(raw_description, str)
+                        or len(raw_description) > 2_000
+                        or "\x00" in raw_description
+                    ):
+                        raise ValueError("response file description is invalid")
+                    delivery_description = raw_description.strip() or None
             content = path.read_bytes()
             content_digest = hashlib.sha256(content).hexdigest()
             scoped_path = f"reconciliations/{storage_scope}/" if storage_scope else ""
@@ -235,7 +290,7 @@ def collect_workspace_artifacts(
             artifacts.append(
                 artifact_factory(
                     artifact_type=kind,
-                    label=artifact_label(path.name, kind),
+                    label=artifact_label(display_name, kind),
                     content_type=content_type,
                     storage_key=stored.storage_key,
                     size_bytes=stored.size_bytes,
@@ -243,6 +298,16 @@ def collect_workspace_artifacts(
                         "source_executor": source_executor,
                         "workspace_output": path.relative_to(workspace_root).as_posix(),
                         "delivery_scope": "assistant_response",
+                        **(
+                            {"delivery_role": delivery_role}
+                            if delivery_role is not None
+                            else {}
+                        ),
+                        **(
+                            {"delivery_description": delivery_description}
+                            if delivery_description is not None
+                            else {}
+                        ),
                     },
                     provisional_cleanup_id=provisional_cleanup_id,
                 )

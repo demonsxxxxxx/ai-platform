@@ -918,6 +918,68 @@ def test_collect_workspace_artifacts_uploads_only_selected_response_files(
     assert len(stored) == 2
 
 
+def test_collect_workspace_artifacts_accepts_only_authorized_skill_output_deliverables(
+    monkeypatch, tmp_path
+):
+    workspace = tmp_path / "workspace"
+    skill_root = workspace / ".claude" / "skills" / "reporting"
+    skill_output = skill_root / "output"
+    skill_output.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("private instructions", encoding="utf-8")
+    (skill_output / "report.txt").write_text("report", encoding="utf-8")
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            return StoredObject(
+                storage_key=storage_key,
+                sha256="hash",
+                size_bytes=len(content),
+            )
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    adapter = ClaudeAgentWorkerAdapter()
+    run_payload = payload(
+        skill_id=None,
+        skill_manifests=[],
+        execution_kind="harness_chat",
+        schema_version="ai-platform.run-payload.v2",
+    )
+
+    artifacts = adapter._collect_workspace_artifacts(
+        run_payload,
+        workspace,
+        response_files=[".claude/skills/reporting/output/report.txt"],
+        response_file_descriptors=[
+            {
+                "source_path": ".claude/skills/reporting/output/report.txt",
+                "display_name": "年度报告.txt",
+                "role": "primary",
+                "description": "最终报告",
+            }
+        ],
+        allowed_skill_names=["reporting"],
+    )
+
+    assert artifacts[0].label == "年度报告.txt"
+    assert artifacts[0].manifest["delivery_role"] == "primary"
+    assert artifacts[0].manifest["delivery_description"] == "最终报告"
+    assert artifacts[0].manifest["workspace_output"] == (
+        ".claude/skills/reporting/output/report.txt"
+    )
+
+    for rejected in (
+        ".claude/skills/reporting/SKILL.md",
+        ".claude/skills/other/output/report.txt",
+    ):
+        with pytest.raises(ValueError, match="response file path is invalid"):
+            adapter._collect_workspace_artifacts(
+                run_payload,
+                workspace,
+                response_files=[rejected],
+                allowed_skill_names=["reporting"],
+            )
+
+
 def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_files_generic(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     delivery = workspace / "outputs" / "delivery"
@@ -4140,9 +4202,7 @@ def test_sandbox_runtime_does_not_mint_tools_without_worker_authority():
         sandbox_provider="opensandbox",
     )
 
-    assert [subject["identity"] for subject in subjects] == [
-        "mcp__ai-platform-response__attach_file"
-    ]
+    assert subjects == []
 
 
 def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
@@ -4167,7 +4227,6 @@ def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
     )
 
     assert [subject["identity"] for subject in subjects] == [
-        "mcp__ai-platform-response__attach_file",
         "Bash",
         "Write",
     ]
@@ -4204,7 +4263,6 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
         "Skill",
         "mcp__ai-platform-context__read_run_artifact",
         "mcp__ai-platform-context__stage_run_artifact_to_workspace",
-        "mcp__ai-platform-response__attach_file",
     ]
     assert subjects[1]["allowed_parameter_keys"] == ["artifact_id", "max_bytes"]
     assert subjects[2]["write_capable"] is True

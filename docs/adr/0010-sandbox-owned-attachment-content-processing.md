@@ -41,7 +41,7 @@ upload/storage
   -> atomically materialized read-only inputs/
   -> file metadata manifest
   -> selected Agent/Skill reads original bytes in Sandbox
-  -> Agent selects zero or more final-response files with `attach_file`
+  -> SDK structured output declares zero or more final-response files
   -> bounded collection of exactly those selected files
 ```
 
@@ -138,16 +138,25 @@ Output: final response plus zero or more explicitly selected response files.
 
 ### A7. Bounded response-file collection
 
-Before its final answer, the Agent calls the private `attach_file` tool once for
-each generated file that should be returned. The terminal receipt carries the
-ordered, deduplicated `response_files` paths. The artifact collector validates
-and uploads exactly those paths; it does not enumerate or scan the workspace.
-Path confinement, protected-root exclusion, symlink rejection, per-file limits,
-total output limits, filename safety, and artifact authorization remain
-platform-owned. An unattached workspace file remains private and is discarded
-with the attempt.
+The Claude Agent SDK final `ResultMessage.structured_output` is the publication
+boundary. Its server-owned JSON schema contains the user-facing `answer` and an
+ordered `deliverables` list. Each deliverable declares a relative `source_path`
+and may include a display name, primary/supporting role, and description. The
+executor validates every declared path while the Sandbox is still alive and
+derives the terminal receipt's ordered, deduplicated `response_files` allowlist.
 
-Owner: response-file selection tool, terminal receipt, and artifact collector.
+The Sandbox provider transfers exactly that allowlist and the artifact collector
+validates and uploads exactly those paths; neither enumerates the workspace.
+Ordinary collectible workspace files are allowed. For compatibility with staged
+Skills, an authorized Skill may also declare a file below its exact
+`.claude/skills/<skill>/output/` directory. Other `.claude` content, including
+`SKILL.md`, scripts, and references, remains private. Path confinement, protected
+roots, symlink rejection, per-file limits, total output limits, filename safety,
+and artifact authorization remain platform-owned. An undeclared workspace file
+remains private and is discarded with the attempt.
+
+Owner: SDK structured-output contract, terminal receipt, Sandbox provider, and
+artifact collector.
 
 Output: zero or more authorized artifacts marked for assistant-response delivery.
 

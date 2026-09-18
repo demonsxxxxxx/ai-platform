@@ -856,8 +856,20 @@ class SandboxRuntime:
             if cleanup_timed_out:
                 await stop_and_release_owned("executor_cleanup_timeout")
             else:
+                raw_response_files = response.get("response_files", [])
+                if not isinstance(raw_response_files, list) or not all(
+                    isinstance(path, str) for path in raw_response_files
+                ):
+                    raise ContainerStartFailedError(
+                        "Sandbox response file selection is invalid"
+                    )
                 collection_started = True
-                await self.provider.collect_workspace(lease, request, workspace)
+                await self.provider.collect_workspace(
+                    lease,
+                    request,
+                    workspace,
+                    raw_response_files,
+                )
                 collection_succeeded = True
         except BaseException as exc:
             validation_rejected = validation_started and not validation_succeeded

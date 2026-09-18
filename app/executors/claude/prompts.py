@@ -36,9 +36,10 @@ _PUBLIC_LANGUAGE_INSTRUCTION = (
 
 
 _RESPONSE_FILES_INSTRUCTION = (
-    "Before the final answer, call attach_file once for every generated file that the final "
-    "answer should return. Unattached files stay private. Do not present local workspace paths "
-    "as downloadable deliverables.\n"
+    "Return the final response through the configured structured output. Put the user-facing "
+    "answer in `answer` and list only final user deliverables in `deliverables`. Each "
+    "`source_path` must be relative to the workspace. Do not list temporary, intermediate, "
+    "cache, log, or diagnostic files. Files omitted from `deliverables` stay private.\n"
 )
 
 
