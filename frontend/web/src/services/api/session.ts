@@ -351,7 +351,7 @@ export function buildAgentAppRunBody({
   attachments,
   submissionId,
   userTimezone,
-  thinkingEffort = "off",
+  thinkingEffort = "auto",
 }: {
   message: string;
   attachments?: MessageAttachment[];

@@ -107,25 +107,22 @@ test("external message conversion preserves public subagent identity and parent 
   }]);
 });
 
-test("external message conversion keeps stable ids and redacts unvalidated reasoning content", () => {
+test("external message conversion drops thinking parts", () => {
   const converted = toAssistantUiMessage({
     id: "message-1",
     role: "assistant",
     content: "answer",
     timestamp: new Date("2026-01-01T00:00:00Z"),
     parts: [
-      { type: "thinking", content: "public model reasoning", isStreaming: true },
+      { type: "thinking", content: "private model reasoning", isStreaming: true },
       { type: "text", content: "answer" },
     ],
   });
   assert.equal(converted.id, "message-1");
-  assert.deepEqual(converted.content, [
-    { type: "reasoning", text: "思考中", status: { type: "running" } },
-    { type: "text", text: "answer" },
-  ]);
+  assert.deepEqual(converted.content, [{ type: "text", text: "answer" }]);
 });
 
-test("external message conversion hides model reasoning content", () => {
+test("external message conversion drops messages containing only thinking parts", () => {
   const converted = toAssistantUiMessage({
     id: "message-public-thinking",
     role: "assistant",
@@ -134,40 +131,18 @@ test("external message conversion hides model reasoning content", () => {
     parts: [
       {
         type: "thinking",
-        content: "Analyzing the request",
+        content: "private model reasoning",
         public_reasoning: true,
         isStreaming: true,
       },
       {
         type: "thinking",
-        content: "Analysis step completed",
-        public_reasoning: true,
-        isStreaming: false,
-      },
-      {
-        type: "thinking",
-        content: "Compare the public evidence before answering.",
+        content: "another private block",
         public_reasoning: true,
         isStreaming: false,
       },
     ],
   });
 
-  assert.deepEqual(converted.content, [
-    {
-      type: "reasoning",
-      text: "思考中",
-      status: { type: "running" },
-    },
-    {
-      type: "reasoning",
-      text: "已思考",
-      status: { type: "complete" },
-    },
-    {
-      type: "reasoning",
-      text: "已思考",
-      status: { type: "complete" },
-    },
-  ]);
+  assert.equal(converted.content, "");
 });

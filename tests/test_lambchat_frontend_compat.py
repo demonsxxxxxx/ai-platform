@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.models import ChatStreamRequest
+from app.models import AgentAppRunRequest, ChatStreamRequest
 from app.repositories import append_message as real_append_message
 from app.repositories import (
     list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs,
@@ -580,13 +580,37 @@ def test_chat_stream_request_accepts_lambchat_body_shape():
     assert request.enabled_skills == ["general-chat"]
 
 
-@pytest.mark.parametrize("effort", ["off", "low", "medium", "high"])
-def test_chat_stream_request_accepts_supported_thinking_effort(effort):
+@pytest.mark.parametrize(
+    ("effort", "expected"),
+    [
+        ("auto", "auto"),
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("off", "auto"),
+    ],
+)
+def test_chat_stream_request_normalizes_supported_thinking_effort(effort, expected):
     request = ChatStreamRequest.model_validate(
         {"message": "hello", "agent_options": {"enable_thinking": effort}}
     )
 
-    assert request.agent_options == {"enable_thinking": effort}
+    assert request.agent_options == {"enable_thinking": expected}
+
+
+def test_agent_app_run_request_defaults_to_auto_and_normalizes_legacy_off():
+    base = {
+        "message": "hello",
+        "submission_id": "12345678-1234-4678-9234-567812345678",
+    }
+
+    assert AgentAppRunRequest.model_validate(base).thinking_effort == "auto"
+    assert (
+        AgentAppRunRequest.model_validate(
+            {**base, "thinking_effort": "off"}
+        ).thinking_effort
+        == "auto"
+    )
 
 
 @pytest.mark.parametrize("effort", ["max", "extreme"])

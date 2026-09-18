@@ -10,7 +10,6 @@ import {
 test("classifies every work activity without hiding answers, artifacts, or actionable status", () => {
   for (const type of [
     "sandbox",
-    "thinking",
     "tool",
     "subagent",
     "execution_step",
@@ -20,7 +19,13 @@ test("classifies every work activity without hiding answers, artifacts, or actio
   ] as const) {
     assert.equal(isWorkActivityPart({ type } as MessagePart), true, type);
   }
-  for (const type of ["text", "artifact", "run_status", "tool_permission"] as const) {
+  for (const type of [
+    "text",
+    "thinking",
+    "artifact",
+    "run_status",
+    "tool_permission",
+  ] as const) {
     assert.equal(isWorkActivityPart({ type } as MessagePart), false, type);
   }
 });
@@ -112,15 +117,13 @@ test("groups only contiguous execution steps without rewriting ordered parts", (
     "execution_process",
     "text",
     "execution_process",
-    "thinking",
-    "execution_process",
   ]);
   assert.deepEqual(parts, [firstStep, parts[1], secondStep, parts[3], thirdStep]);
   assert.deepEqual(
     visible
       .filter((part): part is Extract<MessagePart, { type: "execution_process" }> => part.type === "execution_process")
       .map((part) => part.steps.map((step) => step.step_id)),
-    [["step-first"], ["step-second"], ["step-third"]],
+    [["step-first"], ["step-second", "step-third"]],
   );
 });
 test("keeps user-actionable run status cards visible", () => {

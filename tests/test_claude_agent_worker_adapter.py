@@ -5037,7 +5037,7 @@ async def test_sdk_runner_keeps_authorized_skill_available_without_forced_invoca
     assert result.error is None
     assert captured["max_turns"] == 12
     assert "effort" not in captured
-    assert "thinking" not in captured
+    assert captured["thinking"] == {"type": "adaptive", "display": "omitted"}
     assert captured["session_id"] == "existing-sdk-session"
     assert captured["skills"] == ["qa-file-reviewer"]
     assert "Skill" in captured["tools"]

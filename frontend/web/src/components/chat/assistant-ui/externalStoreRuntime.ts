@@ -34,11 +34,7 @@ function convertPart(part: MessagePart, index: number): AssistantUiContentPart |
     case "text":
       return { type: "text", text: part.content };
     case "thinking":
-      return {
-        type: "reasoning",
-        text: part.isStreaming ? "思考中" : "已思考",
-        status: part.isStreaming ? { type: "running" } : { type: "complete" },
-      };
+      return null;
     case "tool": {
       const data = definedData({
         category: part.public_operation_id ? part.public_category : undefined,

@@ -2,7 +2,7 @@ from typing import Annotated, Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import (
-    AfterValidator, AliasChoices,
+    AfterValidator, AliasChoices, BeforeValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -17,7 +17,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
-    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, validate_thinking_agent_options,
+    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, normalize_thinking_effort, validate_thinking_agent_options,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import AgentProfileAvatarRef
@@ -350,7 +350,7 @@ class AgentAppRunRequest(BaseModel):
     submission_id: UUID
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     user_timezone: str | None = Field(default=None, max_length=128)
-    thinking_effort: ThinkingEffort = "off"
+    thinking_effort: Annotated[ThinkingEffort, BeforeValidator(normalize_thinking_effort)] = "auto"
 
     @field_validator("file_ids")
     @classmethod

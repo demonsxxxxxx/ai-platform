@@ -12,7 +12,6 @@ import {
   XCircle,
   Ban,
   ChevronRight,
-  Brain,
   Users,
   Box,
   Loader2,
@@ -330,38 +329,6 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
 // ==========================================
 // Utility
 // ==========================================
-
-// Thinking status only. Model reasoning content is intentionally not rendered.
-export function ThinkingBlock({
-  isStreaming,
-}: {
-  isStreaming?: boolean;
-}) {
-  const { t } = useTranslation();
-  const status: CollapsibleStatus = isStreaming ? "loading" : "success";
-
-  return (
-    <div data-public-thinking>
-      <CollapsiblePill
-        key={isStreaming ? "streaming" : "complete"}
-        status={status}
-        icon={
-          <Brain
-            size={12}
-            className="shrink-0 text-stone-500 dark:text-stone-400"
-          />
-        }
-        label={
-          isStreaming ? t("chat.message.thinking") : t("chat.message.thought")
-        }
-        variant="thinking"
-        animatedDots={isStreaming}
-        expandable={false}
-        formatLabel={false}
-      />
-    </div>
-  );
-}
 
 // Subagent Block - compact card, content always in sidebar panel
 export function SubagentBlock({
