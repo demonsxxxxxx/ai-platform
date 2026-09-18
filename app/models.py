@@ -1372,6 +1372,7 @@ class AdminRunDetailResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run: dict[str, Any]
+    worker_execution: dict[str, Any]
     events: list[dict[str, Any]] = Field(default_factory=list)
     steps: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)

@@ -12,7 +12,7 @@ from app.runs.api import (
     AdminRunDiagnosticsResponse,
     RunCancellationUseCase,
     RunDiagnosticsService,
-    assemble_admin_model_output,
+    build_admin_worker_execution,
 )
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
@@ -317,10 +317,11 @@ async def admin_run_detail(
         raise HTTPException(status_code=404, detail="run_not_found")
     detail = dict(detail)
     detail["run"] = dict(detail["run"])
-    detail["run"]["model_output"] = assemble_admin_model_output(
+    detail["worker_execution"] = build_admin_worker_execution(
         detail.get("events", []),
         sanitize_text=sanitize_public_text,
     )
+    detail["run"]["model_output"] = detail["worker_execution"]["response"]
     detail["run"] = await attach_live_queue_context(detail["run"], tenant_id=principal.tenant_id)
     return AdminRunDetailResponse.model_validate(detail)
 

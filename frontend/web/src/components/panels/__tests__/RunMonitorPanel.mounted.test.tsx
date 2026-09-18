@@ -184,6 +184,27 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         text: "PRIVATE_RESULT_MARKER",
       },
     },
+    worker_execution: {
+      response: "WORKER_EFFECTIVE_RESPONSE",
+      actions: [
+        {
+          ordinal: 1,
+          label: "Read",
+          category: "read",
+          status: "succeeded",
+          input_summary: "读取 3 个文件",
+          result_summary: "已识别 2 个问题",
+          duration_ms: 1200,
+          started_at: "2026-04-01T09:00:02Z",
+          finished_at: "2026-04-01T09:00:03Z",
+        },
+      ],
+      model: {
+        turn_count: 3,
+        duration_ms: 2400,
+        stop_category: "completed",
+      },
+    },
     events: [
       ...Array.from({ length: 21 }, (_, index) => ({
         event_id: `event-message-${index}`,
@@ -209,8 +230,19 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         title: null,
         step_kind: "worker_setup",
         status: "succeeded",
+        payload: { output: "步骤返回摘要" },
         started_at: "2026-04-01T09:00:02Z",
         finished_at: "2026-04-01T09:00:03Z",
+      },
+    ],
+    artifacts: [
+      {
+        artifact_id: "artifact-a",
+        artifact_type: "document",
+        label: "审核结果.docx",
+        content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size_bytes: 2048,
+        created_at: "2026-04-01T09:00:04Z",
       },
     ],
     sandbox_leases: [
@@ -438,6 +470,12 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(container.textContent ?? "", /trace-a/);
     assert.match(container.textContent ?? "", /worker_setup/);
     assert.match(container.textContent ?? "", /lease-a/);
+    assert.match(container.textContent ?? "", /Worker 执行内容/);
+    assert.match(container.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
+    assert.match(container.textContent ?? "", /读取 3 个文件/);
+    assert.match(container.textContent ?? "", /已识别 2 个问题/);
+    assert.match(container.textContent ?? "", /步骤返回摘要/);
+    assert.match(container.textContent ?? "", /审核结果\.docx/);
     assert.match(container.textContent ?? "", /执行诊断/);
     assert.match(container.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
     assert.match(container.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);

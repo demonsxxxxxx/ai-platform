@@ -225,8 +225,40 @@ export interface AdminRunStep {
   title?: string | null;
   step_kind?: string | null;
   status?: string | null;
+  payload?: Record<string, unknown>;
   started_at?: string | null;
   finished_at?: string | null;
+}
+
+export interface AdminRunArtifact {
+  artifact_id: string;
+  artifact_type: string;
+  label: string;
+  content_type: string;
+  size_bytes: number;
+  created_at?: string | null;
+}
+
+export interface AdminWorkerExecutionAction {
+  ordinal: number;
+  label: string;
+  category: string;
+  status: string;
+  input_summary: string;
+  result_summary: string;
+  duration_ms: number | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface AdminWorkerExecution {
+  response: string;
+  actions: AdminWorkerExecutionAction[];
+  model: {
+    turn_count?: number | null;
+    duration_ms?: number | null;
+    stop_category?: string | null;
+  };
 }
 
 export interface AdminSandboxLease {
@@ -247,8 +279,10 @@ export interface AdminRunListResponse {
 
 export interface AdminRunDetailResponse {
   run: AdminRunSummary;
+  worker_execution?: AdminWorkerExecution;
   events: AdminRunEvent[];
   steps: AdminRunStep[];
+  artifacts?: AdminRunArtifact[];
   sandbox_leases: AdminSandboxLease[];
 }
 
