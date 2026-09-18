@@ -146,22 +146,38 @@ def collect_workspace_artifacts(
     run_id: str,
     source_executor: str,
     workspace: Path,
-    response_files: Iterable[str],
+    response_files: Any,
     required_artifact_types: Iterable[str],
     artifact_factory: Callable[..., Any],
     storage_factory: Callable[[], Any],
     ensure_inside: Callable[[Path, Path, str], None],
-    response_file_descriptors: Iterable[Mapping[str, object]] | None = None,
-    allowed_skill_names: Iterable[str] = (),
+    response_file_descriptors: Any = None,
+    allowed_skill_names: Any = (),
     storage_scope: str = "",
     abandoned: threading.Event | None = None,
     reserve_storage: Callable[[str], str] | None = None,
 ) -> list[Any]:
     storage = storage_factory()
-    selected_paths = list(response_files)
+    selected_paths = (
+        response_files
+        if isinstance(response_files, list)
+        and all(isinstance(path, str) for path in response_files)
+        else []
+    )
     if len(selected_paths) > _MAX_WORKSPACE_ARTIFACT_FILES:
         raise ValueError("workspace artifacts exceed the file count limit")
-    descriptors = list(response_file_descriptors or ())
+    descriptors = (
+        response_file_descriptors
+        if isinstance(response_file_descriptors, list)
+        and all(isinstance(item, Mapping) for item in response_file_descriptors)
+        else []
+    )
+    authorized_skill_names = (
+        allowed_skill_names
+        if isinstance(allowed_skill_names, list)
+        and all(isinstance(name, str) for name in allowed_skill_names)
+        else []
+    )
     descriptor_by_path: dict[str, Mapping[str, object]] = {}
     for descriptor in descriptors:
         if not isinstance(descriptor, Mapping):
@@ -196,7 +212,7 @@ def collect_workspace_artifacts(
             or any(part in {"", ".", ".."} for part in raw_path.replace("\\", "/").split("/"))
             or not workspace_delivery_file_allowed(
                 relative,
-                allowed_skill_names=allowed_skill_names,
+                allowed_skill_names=authorized_skill_names,
             )
         ):
             raise ValueError("response file path is invalid")

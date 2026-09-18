@@ -82,8 +82,8 @@ from app.platform.sandbox.errors import (
 )
 from app.sandbox.api import (
     opensandbox_collection_entry,
+    opensandbox_delivery_paths,
     opensandbox_listing_matches_file,
-    workspace_delivery_file_allowed,
 )
 from app.execution_boundary import (
     GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
@@ -4787,30 +4787,6 @@ class OpenSandboxContainerProvider:
         except ValueError as exc:
             raise ContainerStartFailedError(str(exc)) from exc
 
-    async def _list_remote_workspace_directory(
-        self,
-        filesystem: Any,
-        workspace: WorkspaceLease,
-        relative_directory: str,
-    ) -> list[tuple[str, str | None, int]]:
-        if self._directory_entry_class is None or not hasattr(filesystem, "list_directory"):
-            raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
-        remote_root = workspace.workspace_container_path.rstrip("/")
-        path = remote_root if not relative_directory else f"{remote_root}/{relative_directory}"
-        raw_entries = await _maybe_await(
-            filesystem.list_directory(self._directory_entry_class(path=path, depth=1))
-        )
-        if not isinstance(raw_entries, list):
-            raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
-        if len(raw_entries) > _OPENSANDBOX_COLLECT_MAX_FILES + _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
-            raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
-        entries = [self._remote_workspace_entry(entry, workspace) for entry in raw_entries]
-        expected_parent = PurePosixPath(relative_directory)
-        for relative_path, _entry_type, _size in entries:
-            if PurePosixPath(relative_path).parent != expected_parent:
-                raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
-        return entries
-
     async def _remote_file_matches_listing(
         self,
         filesystem: Any,
@@ -5089,46 +5065,23 @@ class OpenSandboxContainerProvider:
 
         staging_root: Path | None = None
         try:
-            if isinstance(response_files, (str, bytes)):
-                raise ContainerStartFailedError(
-                    "OpenSandbox workspace collection selection is invalid"
+            try:
+                normalized_paths, remote_paths = opensandbox_delivery_paths(
+                    response_files,
+                    remote_root=workspace.workspace_container_path,
+                    allowed_skill_names=_authorized_staged_skill_names(request),
+                    safe_relative_path=_safe_workspace_relative_path,
+                    max_files=_OPENSANDBOX_COLLECT_MAX_FILES,
                 )
-            declared_paths = list(response_files)
-            if len(declared_paths) > _OPENSANDBOX_COLLECT_MAX_FILES:
-                raise ContainerStartFailedError(
-                    "workspace artifacts exceed the file count limit"
-                )
-            if not declared_paths:
+            except ValueError as exc:
+                raise ContainerStartFailedError(str(exc)) from exc
+            if not normalized_paths:
                 return
             _require_secure_workspace_transfer()
             sandbox = await self._workspace_transfer_sandbox(lease, request, workspace)
             filesystem = getattr(sandbox, "files", None)
             if filesystem is None or not hasattr(filesystem, "get_file_info"):
                 raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
-            selected_file_paths: set[str] = set()
-            remote_paths: list[str] = []
-            normalized_paths: list[str] = []
-            allowed_skill_names = _authorized_staged_skill_names(request)
-            remote_root = workspace.workspace_container_path.rstrip("/")
-            for raw_path in declared_paths:
-                if not isinstance(raw_path, str):
-                    raise ContainerStartFailedError(
-                        "OpenSandbox workspace collection selection is invalid"
-                    )
-                relative_path = _safe_workspace_relative_path(raw_path)
-                if (
-                    relative_path in selected_file_paths
-                    or not workspace_delivery_file_allowed(
-                        relative_path,
-                        allowed_skill_names=allowed_skill_names,
-                    )
-                ):
-                    raise ContainerStartFailedError(
-                        "OpenSandbox workspace collection selection is invalid"
-                    )
-                selected_file_paths.add(relative_path)
-                normalized_paths.append(relative_path)
-                remote_paths.append(f"{remote_root}/{relative_path}")
             raw_details = await _maybe_await(filesystem.get_file_info(remote_paths))
             if not isinstance(raw_details, dict):
                 raise ContainerStartFailedError(

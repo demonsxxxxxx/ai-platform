@@ -1663,9 +1663,7 @@ class ClaudeAgentWorkerAdapter:
             payload,
             prepared.workspace,
             response_files=executor_response.get("response_files", []),
-            response_file_descriptors=executor_response.get(
-                "response_file_descriptors", []
-            ),
+            response_file_descriptors=executor_response.get("response_file_descriptors"),
             allowed_skill_names=prepared.staged_skill_names,
             storage_scope=storage_scope,
             abandoned=abandoned,
@@ -1777,8 +1775,7 @@ class ClaudeAgentWorkerAdapter:
         workspace: Path,
         *,
         response_files: Any,
-        response_file_descriptors: Any = None,
-        allowed_skill_names: Any = None,
+        response_file_descriptors: Any = None, allowed_skill_names: Any = None,
         storage_scope: str = "",
         abandoned: threading.Event | None = None,
         reserve_storage: Callable[[str], str] | None = None,
@@ -1790,24 +1787,9 @@ class ClaudeAgentWorkerAdapter:
             run_id=payload.run_id,
             source_executor=self.executor_type,
             workspace=workspace,
-            response_files=(
-                response_files
-                if isinstance(response_files, list)
-                and all(isinstance(path, str) for path in response_files)
-                else []
-            ),
-            response_file_descriptors=(
-                response_file_descriptors
-                if isinstance(response_file_descriptors, list)
-                and all(isinstance(item, dict) for item in response_file_descriptors)
-                else []
-            ),
-            allowed_skill_names=(
-                allowed_skill_names
-                if isinstance(allowed_skill_names, list)
-                and all(isinstance(name, str) for name in allowed_skill_names)
-                else []
-            ),
+            response_files=response_files,
+            response_file_descriptors=response_file_descriptors,
+            allowed_skill_names=allowed_skill_names,
             required_artifact_types=_required_artifact_types(payload),
             artifact_factory=ArtifactManifest,
             storage_factory=ObjectStorage,

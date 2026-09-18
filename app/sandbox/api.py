@@ -64,6 +64,9 @@ from app.sandbox.domain.workspace_policy import (
 from app.sandbox.domain.workspace_policy import (
     workspace_read_name_private as workspace_read_name_private,
 )
+from app.sandbox.domain.workspace_delivery import (
+    opensandbox_delivery_paths as opensandbox_delivery_paths,
+)
 
 
 @dataclass(frozen=True, slots=True)
