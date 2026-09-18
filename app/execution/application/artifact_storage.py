@@ -5,7 +5,7 @@ import threading
 import zipfile
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from xml.parsers import expat
 
@@ -134,19 +134,8 @@ def artifact_type(filename: str) -> str:
     return "runtime_file"
 
 
-def artifact_label(filename: str, kind: str) -> str:
-    if kind == "result_docx":
-        return "Word 文件"
-    if kind == "result_json":
-        return "结果 JSON"
-    if kind == "report_txt":
-        return "详细报告"
+def artifact_label(filename: str, _kind: str) -> str:
     return filename
-
-
-def _is_user_workspace_file(path: Path, workspace: Path) -> bool:
-    """Keep collection rooted in the platform workspace and exclude internals."""
-    return workspace_collection_file_allowed(path.relative_to(workspace).as_posix())
 
 
 def collect_workspace_artifacts(
@@ -157,6 +146,7 @@ def collect_workspace_artifacts(
     run_id: str,
     source_executor: str,
     workspace: Path,
+    response_files: Iterable[str],
     required_artifact_types: Iterable[str],
     artifact_factory: Callable[..., Any],
     storage_factory: Callable[[], Any],
@@ -166,57 +156,63 @@ def collect_workspace_artifacts(
     reserve_storage: Callable[[str], str] | None = None,
 ) -> list[Any]:
     storage = storage_factory()
-    output_dirs: list[Path] = [workspace]
-    legacy_output = workspace / "output"
-    if legacy_output.is_dir():
-        ensure_inside(workspace, legacy_output, "workspace output must stay inside the run workspace")
-        output_dirs.append(legacy_output)
-    outputs_root = workspace / "outputs"
-    if outputs_root.is_dir():
-        ensure_inside(workspace, outputs_root, "workspace output must stay inside the run workspace")
-        for delivery_dir in sorted(outputs_root.rglob("delivery")):
-            if delivery_dir.is_symlink():
-                raise ValueError("workspace output must not contain symlinks")
-            if delivery_dir.is_dir():
-                ensure_inside(outputs_root, delivery_dir, "workspace artifact must stay inside output directory")
-                output_dirs.append(delivery_dir)
+    selected_paths = list(response_files)
+    if len(selected_paths) > _MAX_WORKSPACE_ARTIFACT_FILES:
+        raise ValueError("workspace artifacts exceed the file count limit")
     candidates: list[Path] = []
     seen_candidates: set[Path] = set()
     total_bytes = 0
-    for output_dir in output_dirs:
-        for item in sorted(output_dir.rglob("*")):
+    workspace_root = workspace.resolve(strict=True)
+    for raw_path in selected_paths:
+        if not isinstance(raw_path, str) or not raw_path or "\x00" in raw_path:
+            raise ValueError("response file path is invalid")
+        relative = PurePosixPath(raw_path.replace("\\", "/"))
+        windows_path = PureWindowsPath(raw_path)
+        if (
+            relative.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or any(part in {"", ".", ".."} for part in raw_path.replace("\\", "/").split("/"))
+            or not workspace_collection_file_allowed(relative)
+        ):
+            raise ValueError("response file path is invalid")
+        item = workspace_root
+        for part in relative.parts:
+            item /= part
             if item.is_symlink():
                 raise ValueError("workspace output must not contain symlinks")
-            if not item.is_file():
-                continue
-            if not _is_user_workspace_file(item, workspace):
-                continue
-            ensure_inside(workspace, item, "workspace artifact must stay inside run workspace")
-            resolved = item.resolve(strict=False)
-            if resolved in seen_candidates:
-                continue
-            size_bytes = item.stat().st_size
-            if size_bytes > _MAX_WORKSPACE_ARTIFACT_FILE_BYTES:
-                raise ValueError("workspace artifact exceeds the per-file byte limit")
-            total_bytes += size_bytes
-            if total_bytes > _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES:
-                raise ValueError("workspace artifacts exceed the total byte limit")
-            if len(candidates) >= _MAX_WORKSPACE_ARTIFACT_FILES:
-                raise ValueError("workspace artifacts exceed the file count limit")
-            seen_candidates.add(resolved)
-            candidates.append(item)
+        try:
+            resolved = item.resolve(strict=True)
+            resolved.relative_to(workspace_root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError("response file is unavailable") from exc
+        if not resolved.is_file():
+            raise ValueError("response file is unavailable")
+        ensure_inside(
+            workspace,
+            resolved,
+            "workspace artifact must stay inside run workspace",
+        )
+        if resolved in seen_candidates:
+            raise ValueError("response file path is duplicated")
+        size_bytes = resolved.stat().st_size
+        if size_bytes > _MAX_WORKSPACE_ARTIFACT_FILE_BYTES:
+            raise ValueError("workspace artifact exceeds the per-file byte limit")
+        total_bytes += size_bytes
+        if total_bytes > _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES:
+            raise ValueError("workspace artifacts exceed the total byte limit")
+        seen_candidates.add(resolved)
+        candidates.append(resolved)
 
-    valid_candidates = [
-        path
-        for path in candidates
-        if artifact_type(path.name) != "result_docx" or valid_docx_artifact(path)
-    ]
-    if set(required_artifact_types) - {artifact_type(path.name) for path in valid_candidates}:
+    for path in candidates:
+        if artifact_type(path.name) == "result_docx" and not valid_docx_artifact(path):
+            raise ValueError("response DOCX file is invalid")
+    if set(required_artifact_types) - {artifact_type(path.name) for path in candidates}:
         return []
 
     artifacts: list[Any] = []
     try:
-        for index, path in enumerate(valid_candidates, start=1):
+        for index, path in enumerate(candidates, start=1):
             if abandoned is not None and abandoned.is_set():
                 raise RuntimeError("workspace artifact collection abandoned")
             content_type = artifact_content_type(path.name)
@@ -245,7 +241,8 @@ def collect_workspace_artifacts(
                     size_bytes=stored.size_bytes,
                     manifest={
                         "source_executor": source_executor,
-                        "workspace_output": path.relative_to(workspace).as_posix(),
+                        "workspace_output": path.relative_to(workspace_root).as_posix(),
+                        "delivery_scope": "assistant_response",
                     },
                     provisional_cleanup_id=provisional_cleanup_id,
                 )

@@ -318,11 +318,17 @@ def _ordinary_artifact_card(row: dict[str, object]) -> dict[str, object]:
     artifact_type = _public_artifact_type(row.get("artifact_type"))
     content_type = _public_artifact_content_type(row.get("content_type"))
     xlsx_identity = xlsx_preview_identity_from_metadata(row)
+    manifest = row.get("manifest_json") if isinstance(row.get("manifest_json"), dict) else {}
+    label = (
+        public_text_or_fallback(row.get("label"), artifact_type)
+        if manifest.get("delivery_scope") == "assistant_response"
+        else artifact_type
+    )
     return {
         "id": artifact_id,
         "artifact_id": artifact_id,
         "artifact_type": artifact_type,
-        "label": artifact_type,
+        "label": label,
         "content_type": content_type,
         "size_bytes": _bounded_nonnegative_int(row.get("size_bytes")),
         "download_url": artifact_download_url(artifact_id),

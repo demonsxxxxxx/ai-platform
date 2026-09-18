@@ -522,7 +522,9 @@ def _selected_capability_evidence(request):
         ("mcp", subject["identity"])
         for subject in request.tool_policy_subjects
         if subject.get("mcp_server")
-        and not str(subject.get("identity") or "").startswith("mcp__ai-platform-context__")
+        and not str(subject.get("identity") or "").startswith(
+            ("mcp__ai-platform-context__", "mcp__ai-platform-response__")
+        )
     )
     evidence = []
     for index, (kind, identity) in enumerate(identities):
@@ -825,7 +827,9 @@ def test_collect_workspace_artifacts_rejects_symlinked_output(monkeypatch, tmp_p
     adapter = ClaudeAgentWorkerAdapter()
 
     with pytest.raises(ValueError, match="symlink"):
-        adapter._collect_workspace_artifacts(payload(), workspace)
+        adapter._collect_workspace_artifacts(
+            payload(), workspace, response_files=["output/linked-secret.txt"]
+        )
 
     assert stored == []
 
@@ -854,6 +858,7 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
     artifacts = adapter._collect_workspace_artifacts(
         payload(skill_id="ctd-32s73-stability-template-fill"),
         workspace,
+        response_files=["outputs/run-002-ctd-fill/delivery/filled.docx"],
     )
 
     assert len(artifacts) == 1
@@ -869,7 +874,7 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
     ]
 
 
-def test_collect_workspace_artifacts_scans_platform_workspace_and_excludes_internals(
+def test_collect_workspace_artifacts_uploads_only_selected_response_files(
     monkeypatch, tmp_path
 ):
     workspace = tmp_path / "workspace"
@@ -903,16 +908,14 @@ def test_collect_workspace_artifacts_scans_platform_workspace_and_excludes_inter
     artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
         payload(skill_id=None, skill_manifests=[], execution_kind="harness_chat", schema_version="ai-platform.run-payload.v2"),
         workspace,
+        response_files=["report.docx", "outputs/job/facts.json"],
     )
 
     assert [artifact.manifest["workspace_output"] for artifact in artifacts] == [
-        "artifacts/notes.txt",
-        "outputs/job/facts.json",
         "report.docx",
-        "review/draft.txt",
-        "tasks/result.txt",
+        "outputs/job/facts.json",
     ]
-    assert len(stored) == 5
+    assert len(stored) == 2
 
 
 def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_files_generic(monkeypatch, tmp_path):
@@ -942,22 +945,30 @@ def test_collect_workspace_artifacts_assigns_safe_mime_types_and_keeps_unknown_f
             schema_version="ai-platform.run-payload.v2",
         ),
         workspace,
+        response_files=[
+            "outputs/delivery/report.pdf",
+            "outputs/delivery/chart.png",
+            "outputs/delivery/page.html",
+            "outputs/delivery/script.js",
+            "outputs/delivery/vector.svg",
+            "outputs/delivery/payload.unknown",
+        ],
     )
 
     assert [artifact.content_type for artifact in artifacts] == [
+        "application/pdf",
         "image/png",
         "application/octet-stream",
         "application/octet-stream",
-        "application/pdf",
         "application/octet-stream",
         "application/octet-stream",
     ]
     assert artifacts[1].artifact_type == "runtime_file"
     assert [content_type for _storage_key, content_type in stored] == [
+        "application/pdf",
         "image/png",
         "application/octet-stream",
         "application/octet-stream",
-        "application/pdf",
         "application/octet-stream",
         "application/octet-stream",
     ]
@@ -993,7 +1004,11 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfStored)
 
     with pytest.raises(ValueError, match=expected_error):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(payload(), workspace)
+        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+            payload(),
+            workspace,
+            response_files=[f"outputs/delivery/{name}" for name in files],
+        )
 
 
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
@@ -1018,10 +1033,11 @@ def test_collect_workspace_artifacts_validates_required_docx(monkeypatch, tmp_pa
     artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
         payload(skill_id=skill_id),
         workspace,
+        response_files=["output/document.docx"],
     )
 
     assert [artifact.artifact_type for artifact in artifacts] == ["result_docx"]
-    assert artifacts[0].label == "Word 文件"
+    assert artifacts[0].label == "document.docx"
     assert stored[0][1] == content
 
 
@@ -1040,12 +1056,12 @@ def test_collect_workspace_artifacts_rejects_fake_required_docx_before_upload(
         def put_bytes(self, **_kwargs):
             raise AssertionError("invalid required artifacts must not be uploaded")
 
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfStored)
-
-    assert ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id=skill_id),
-        workspace,
-    ) == []
+    with pytest.raises(ValueError, match="response DOCX file is invalid"):
+        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+            payload(skill_id=skill_id),
+            workspace,
+            response_files=["output/document.docx"],
+        )
 
 
 @pytest.mark.parametrize(
@@ -1130,12 +1146,12 @@ def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
         def put_bytes(self, **_kwargs):
             raise AssertionError("malformed required artifacts must not be uploaded")
 
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
-
-    assert ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id="qa-file-reviewer"),
-        workspace,
-    ) == []
+    with pytest.raises(ValueError, match="response DOCX file is invalid"):
+        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+            payload(skill_id="qa-file-reviewer"),
+            workspace,
+            response_files=["output/document.docx"],
+        )
 
 
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
@@ -1157,12 +1173,12 @@ def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_uplo
         def put_bytes(self, **_kwargs):
             raise AssertionError("oversized required artifacts must not be uploaded")
 
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
-
-    assert ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id=skill_id),
-        workspace,
-    ) == []
+    with pytest.raises(ValueError, match="response DOCX file is invalid"):
+        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+            payload(skill_id=skill_id),
+            workspace,
+            response_files=["output/document.docx"],
+        )
 
 
 def test_artifact_storage_keys_are_content_addressed_within_attempt_scope(
@@ -1193,17 +1209,20 @@ def test_artifact_storage_keys_are_content_addressed_within_attempt_scope(
     first = adapter._collect_workspace_artifacts(
         run_payload,
         workspace,
+        response_files=["output/result.txt"],
         storage_scope="attempt-a",
     )[0]
     repeated = adapter._collect_workspace_artifacts(
         run_payload,
         workspace,
+        response_files=["output/result.txt"],
         storage_scope="attempt-a",
     )[0]
     artifact_path.write_text("second", encoding="utf-8")
     changed = adapter._collect_workspace_artifacts(
         run_payload,
         workspace,
+        response_files=["output/result.txt"],
         storage_scope="attempt-a",
     )[0]
 
@@ -1242,6 +1261,7 @@ def test_collect_workspace_artifacts_reserves_durable_cleanup_before_upload(monk
             schema_version="ai-platform.run-payload.v2",
         ),
         workspace,
+        response_files=["output/result.txt"],
         storage_scope="claim-a",
         reserve_storage=reserve,
     )
@@ -1280,6 +1300,7 @@ def test_collect_workspace_artifacts_leaves_abandoned_reserved_write_for_durable
                 schema_version="ai-platform.run-payload.v2",
             ),
             workspace,
+            response_files=["output/result.txt"],
             storage_scope="attempt-a",
             abandoned=abandoned,
             reserve_storage=lambda _storage_key: "art_cleanup_receipt",
@@ -1316,6 +1337,7 @@ def test_collect_workspace_artifacts_cleans_up_partial_upload(monkeypatch, tmp_p
                 schema_version="ai-platform.run-payload.v2",
             ),
             workspace,
+            response_files=["output/a.txt", "output/b.json"],
         )
 
     assert len(deleted) == 1
@@ -3733,6 +3755,7 @@ async def test_sandbox_projection_omission_keeps_worker_success_and_artifact(
         return {
             "status": "completed",
             "message": "",
+            "response_files": ["output/result.txt"],
             "answer_receipt": {
                 "schema_version": "ai-platform.assistant-answer-receipt.v1",
                 "message_id": "msg_answer_1482",
@@ -4117,7 +4140,9 @@ def test_sandbox_runtime_does_not_mint_tools_without_worker_authority():
         sandbox_provider="opensandbox",
     )
 
-    assert subjects == []
+    assert [subject["identity"] for subject in subjects] == [
+        "mcp__ai-platform-response__attach_file"
+    ]
 
 
 def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
@@ -4141,7 +4166,11 @@ def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
         sandbox_provider="opensandbox",
     )
 
-    assert [subject["identity"] for subject in subjects] == ["Bash", "Write"]
+    assert [subject["identity"] for subject in subjects] == [
+        "mcp__ai-platform-response__attach_file",
+        "Bash",
+        "Write",
+    ]
 
 
 def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt():
@@ -4175,6 +4204,7 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
         "Skill",
         "mcp__ai-platform-context__read_run_artifact",
         "mcp__ai-platform-context__stage_run_artifact_to_workspace",
+        "mcp__ai-platform-response__attach_file",
     ]
     assert subjects[1]["allowed_parameter_keys"] == ["artifact_id", "max_bytes"]
     assert subjects[2]["write_capable"] is True

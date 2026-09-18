@@ -41,7 +41,8 @@ upload/storage
   -> atomically materialized read-only inputs/
   -> file metadata manifest
   -> selected Agent/Skill reads original bytes in Sandbox
-  -> bounded output/artifact collection
+  -> Agent selects zero or more final-response files with `attach_file`
+  -> bounded collection of exactly those selected files
 ```
 
 The platform passes a file only after it has established that the current run
@@ -133,17 +134,22 @@ external attachment transmission therefore remain prohibited.
 
 Owner: selected Agent/Skill.
 
-Output: response and/or collected run artifacts.
+Output: final response plus zero or more explicitly selected response files.
 
-### A7. Bounded artifact collection
+### A7. Bounded response-file collection
 
-Artifact enumeration, per-file limits, total output limits, filename safety,
-and artifact authorization remain platform-owned. No input parsing limit is
-repurposed as an output limit.
+Before its final answer, the Agent calls the private `attach_file` tool once for
+each generated file that should be returned. The terminal receipt carries the
+ordered, deduplicated `response_files` paths. The artifact collector validates
+and uploads exactly those paths; it does not enumerate or scan the workspace.
+Path confinement, protected-root exclusion, symlink rejection, per-file limits,
+total output limits, filename safety, and artifact authorization remain
+platform-owned. An unattached workspace file remains private and is discarded
+with the attempt.
 
-Owner: artifact collector.
+Owner: response-file selection tool, terminal receipt, and artifact collector.
 
-Output: authorized bounded artifacts only.
+Output: zero or more authorized artifacts marked for assistant-response delivery.
 
 ## Removed Responsibilities
 
@@ -158,7 +164,8 @@ execution path:
   relationship, encryption, and archive-structure admission checks;
 - PDF parsing, decryption, page-limit, and active-content admission checks;
 - the Agent-facing parsed-content retrieval path;
-- parser-specific admission failures such as `xlsx_cell_limit_exceeded`.
+- parser-specific admission failures such as `xlsx_cell_limit_exceeded`;
+- broad workspace artifact enumeration and directory-name-based delivery rules.
 
 The former execution parser is not reachable from run dispatch, runtime staging,
 or the Sandbox SDK boundary after this cutover. Issue #1273 removes its dead

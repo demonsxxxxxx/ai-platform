@@ -1393,6 +1393,11 @@ def _controlled_file_skill_command(
     return command, None
 
 
+def _controlled_reviewed_docx_relative_path(input_path: Path) -> str:
+    stem = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "_", input_path.stem).strip(" ._")
+    return f"output/{stem or 'document'}_reviewed.docx"
+
+
 def _controlled_runner_environment(workspace_root: Path) -> dict[str, str]:
     workspace = workspace_root.resolve(strict=True)
     home = workspace / ".home"
@@ -1721,10 +1726,19 @@ async def _run_selected_authorized_file_skill(
             error_code="capability_callback_not_acknowledged",
             capability_evidence=[],
         )
+    response_file = _controlled_reviewed_docx_relative_path(Path(command[2]))
+    if _resolved_workspace_file(workspace_root, workspace_root / response_file) is None:
+        return _controlled_skill_result(
+            status="failed",
+            message="Selected file Skill did not produce its final response file",
+            error_code="controlled_skill_output_missing",
+            capability_evidence=capability_evidence,
+        )
     return {
         "status": "completed",
         "message": stdout.decode("utf-8", errors="replace").strip()
         or "Controlled file Skill completed.",
+        "response_files": [response_file],
         "sdk_used": False,
         "executor_mode": "platform_controlled_runner",
         "used_skills": [skill_id],
@@ -2341,6 +2355,7 @@ async def _default_executor_runner(
         "status": "completed" if used_sdk and not error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
         "answer_receipt": getattr(sdk_result, "answer_receipt", None),
+        "response_files": list(getattr(sdk_result, "response_files", []) or []),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
         "provider_session_final_sequence": getattr(sdk_result, "provider_final_sequence", None),
@@ -3289,6 +3304,7 @@ def create_executor_app(
         for key in (
             "message",
             "answer_receipt",
+            "response_files",
             "sdk_usage",
             "sdk_used",
             "sdk_received_structured_terminal",

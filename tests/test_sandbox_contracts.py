@@ -376,6 +376,7 @@ def test_probe_and_callback_canonical_failure_results_are_identical():
     ) == callback.terminal_result.model_dump(mode="json", exclude_none=True) == {
         **raw_result,
         "message": "",
+        "response_files": [],
     }
 
 
@@ -663,5 +664,39 @@ def test_callback_event_rejects_unknown_typed_agent_event_type():
                         "payload": {},
                     }
                 ],
+            }
+        )
+
+
+def test_terminal_callback_normalizes_response_files_and_rejects_unsafe_paths():
+    result = ExecutorTerminalResult.model_validate(
+        {
+            "status": "completed",
+            "run_id": "run-a",
+            "message": "answer",
+            "response_files": ["output\\report.docx", "charts/result.png"],
+        }
+    )
+    assert result.response_files == ["output/report.docx", "charts/result.png"]
+    assert executor_terminal_receipt_payload(result)["response_files"] == result.response_files
+
+    for path in ("../secret.txt", "/tmp/secret.txt", "C:\\secret.txt", "output/./report.docx"):
+        with pytest.raises(ValidationError, match="response_file_path_invalid"):
+            ExecutorTerminalResult.model_validate(
+                {
+                    "status": "completed",
+                    "run_id": "run-a",
+                    "message": "answer",
+                    "response_files": [path],
+                }
+            )
+
+    with pytest.raises(ValidationError, match="response_file_path_duplicate"):
+        ExecutorTerminalResult.model_validate(
+            {
+                "status": "completed",
+                "run_id": "run-a",
+                "message": "answer",
+                "response_files": ["output/report.docx", "output\\report.docx"],
             }
         )

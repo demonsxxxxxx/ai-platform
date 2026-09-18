@@ -1662,6 +1662,7 @@ class ClaudeAgentWorkerAdapter:
         artifacts = self._collect_workspace_artifacts(
             payload,
             prepared.workspace,
+            response_files=executor_response.get("response_files", []),
             storage_scope=storage_scope,
             abandoned=abandoned,
             reserve_storage=reserve_storage,
@@ -1771,6 +1772,7 @@ class ClaudeAgentWorkerAdapter:
         payload: RunPayload,
         workspace: Path,
         *,
+        response_files: Any,
         storage_scope: str = "",
         abandoned: threading.Event | None = None,
         reserve_storage: Callable[[str], str] | None = None,
@@ -1782,6 +1784,12 @@ class ClaudeAgentWorkerAdapter:
             run_id=payload.run_id,
             source_executor=self.executor_type,
             workspace=workspace,
+            response_files=(
+                response_files
+                if isinstance(response_files, list)
+                and all(isinstance(path, str) for path in response_files)
+                else []
+            ),
             required_artifact_types=_required_artifact_types(payload),
             artifact_factory=ArtifactManifest,
             storage_factory=ObjectStorage,

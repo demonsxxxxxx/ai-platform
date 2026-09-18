@@ -12,8 +12,6 @@ export { WriteFileItem } from "./items/WriteFileItem";
 export { GrepItem } from "./items/GrepItem";
 export { LsItem } from "./items/LsItem";
 export { GlobItem } from "./items/GlobItem";
-export { FileRevealItem } from "./items/FileRevealItem";
-export { ProjectRevealItem } from "./items/ProjectRevealItem";
 
 const PUBLIC_CATEGORY_LABELS: Readonly<Record<string, string>> = {
   skill: "使用 Skill",

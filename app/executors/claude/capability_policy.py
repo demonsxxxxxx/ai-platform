@@ -17,6 +17,8 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "search_memory",
 )
 _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
+_SDK_INTERNAL_RESPONSE_TOOLS = ("attach_file",)
+_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX = "mcp__ai-platform-response__"
 _SKILL_INPUT_MAX_BYTES = 64 * 1024
 _SKILL_INPUT_MAX_DEPTH = 16
 _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
@@ -51,6 +53,16 @@ def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
                 if (
                     not identity.startswith(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX)
                     or internal_tool not in _SDK_INTERNAL_CONTEXT_TOOLS
+                ):
+                    continue
+                tool_name = internal_tool
+            elif server_id == "ai-platform-response":
+                internal_tool = identity.removeprefix(
+                    _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX
+                )
+                if (
+                    not identity.startswith(_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+                    or internal_tool not in _SDK_INTERNAL_RESPONSE_TOOLS
                 ):
                     continue
                 tool_name = internal_tool
@@ -117,7 +129,7 @@ class CapabilityExecutionPlan:
             if (
                 not isinstance(server_id, str)
                 or not server_id
-                or server_id == "ai-platform-context"
+                or server_id in {"ai-platform-context", "ai-platform-response"}
                 or not isinstance(tool_name, str)
                 or not tool_name
                 or identity != f"mcp__{server_id}__{tool_name}"
@@ -174,6 +186,28 @@ def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, 
     return subjects
 
 
+def internal_response_tool_policy_subjects() -> list[dict[str, Any]]:
+    """Build the private platform tool that binds files to the final response."""
+
+    return [
+        {
+            "identity": f"{_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX}attach_file",
+            "mcp_server": "ai-platform-response",
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+            "risk_level": "medium",
+            "write_capable": True,
+            "allowed_parameter_keys": ["path"],
+            "required_parameter_keys": ["path"],
+        }
+    ]
+
+
 def _extract_skill_names_from_tool_input(
     tool_input: Any,
     allowed_skill_names: set[str],
@@ -211,7 +245,7 @@ def _delegates_external_mcp_parameters(
         and isinstance(identity, str)
         and isinstance(server_id, str)
         and bool(server_id)
-        and server_id != "ai-platform-context"
+        and server_id not in {"ai-platform-context", "ai-platform-response"}
         and isinstance(mcp_tool, str)
         and bool(mcp_tool)
         and identity == f"mcp__{server_id}__{mcp_tool}"

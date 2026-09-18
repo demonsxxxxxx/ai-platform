@@ -155,6 +155,24 @@ test("does not render thinking parts", () => {
   assert.equal(streaming, "");
 });
 
+test("does not render legacy reveal tool payloads", () => {
+  for (const name of ["reveal_file", "reveal_project"]) {
+    const markup = renderToStaticMarkup(
+      createElement(MessagePartRenderer, {
+        isLast: true,
+        part: {
+          type: "tool",
+          name,
+          args: { path: "/workspace/private" },
+          result: { url: "/api/ai/artifacts/legacy/download" },
+          success: true,
+        } satisfies Extract<MessagePart, { type: "tool" }>,
+      }),
+    );
+    assert.equal(markup, "");
+  }
+});
+
 test("renders binary lifecycle as a status row without a progress bar", async () => {
   const markup = renderToStaticMarkup(
     createElement(MessagePartRenderer, {

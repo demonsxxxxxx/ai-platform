@@ -870,6 +870,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
         assert protocol_failure is None
         expected_result = {**terminal_result}
         expected_result.setdefault("message", "")
+        expected_result.setdefault("response_files", [])
         assert persisted[0][1] == {
             "executor_status": expected_executor_status,
             "terminal_result": expected_result,

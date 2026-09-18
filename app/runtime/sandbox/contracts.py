@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from ipaddress import ip_address
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -478,6 +479,7 @@ class ExecutorTerminalResult(BaseModel):
     run_id: str
     message: str = Field(default="", max_length=200_000)
     answer_receipt: AssistantAnswerReceipt | None = None
+    response_files: list[str] = Field(default_factory=list, max_length=128)
     error_code: str | None = Field(default=None, max_length=256)
     error_message: str | None = Field(default=None, max_length=4_096)
     provider_session_final_sequence: int | None = Field(default=None, ge=1, strict=True)
@@ -486,6 +488,28 @@ class ExecutorTerminalResult(BaseModel):
     @classmethod
     def validate_answer_receipt(cls, value: object):
         return None if value is None else AssistantAnswerReceipt.model_validate(value)
+
+    @field_validator("response_files")
+    @classmethod
+    def validate_response_files(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            if not isinstance(value, str) or not value or len(value) > 1024 or "\x00" in value:
+                raise ValueError("response_file_path_invalid")
+            path = PurePosixPath(value.replace("\\", "/"))
+            windows_path = PureWindowsPath(value)
+            if (
+                path.is_absolute()
+                or windows_path.is_absolute()
+                or windows_path.drive
+                or any(part in {"", ".", ".."} for part in value.replace("\\", "/").split("/"))
+            ):
+                raise ValueError("response_file_path_invalid")
+            canonical = path.as_posix()
+            if canonical in normalized:
+                raise ValueError("response_file_path_duplicate")
+            normalized.append(canonical)
+        return normalized
 
     @field_validator("run_id")
     @classmethod
@@ -508,6 +532,10 @@ class ExecutorTerminalResult(BaseModel):
                 raise ValueError(
                     "failed or cancelled terminal result must not contain an answer receipt"
                 )
+            if self.response_files:
+                raise ValueError(
+                    "failed or cancelled terminal result must not contain response files"
+                )
             if not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
                 raise ValueError("failed or cancelled terminal result requires structured error fields")
         return self
@@ -519,6 +547,7 @@ _EXECUTOR_TERMINAL_RECEIPT_FIELDS = frozenset(
         "run_id",
         "message",
         "answer_receipt",
+        "response_files",
         "provider_session_final_sequence",
         "error_code",
         "error_message",

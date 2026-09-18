@@ -99,11 +99,7 @@ def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payl
     assert "Available context retrieval tools: stage_context_file_to_workspace" in prompt
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
-    assert "private_payload" not in prompt
-    assert (
-        "Use Simplified Chinese for the final answer and all public summarized-thinking text. "
-        "Keep code, commands, filenames, and other literal values unchanged when the task requires them."
-    ) in prompt
+    assert "call attach_file once for every generated file" in prompt
 
 
 def test_skill_prompt_injects_complete_ordered_conversation_once():

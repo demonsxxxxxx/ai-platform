@@ -9,6 +9,7 @@ from tests.support.claude_mcp import install_mcp_sessions
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
+    _build_response_files_mcp_server,
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
 )
@@ -72,6 +73,47 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_response_file_tool_selects_only_existing_public_workspace_files(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "output").mkdir(parents=True)
+    (workspace / "output" / "final.txt").write_text("final", encoding="utf-8")
+    (workspace / "inputs").mkdir()
+    (workspace / "inputs" / "source.txt").write_text("private", encoding="utf-8")
+    captured = {}
+
+    def sdk_tool(name, _description, _schema):
+        def decorate(function):
+            function.name = name
+            return function
+
+        return decorate
+
+    sdk = types.SimpleNamespace(
+        tool=sdk_tool,
+        create_sdk_mcp_server=lambda name, **kwargs: captured.update(
+            name=name, **kwargs
+        )
+        or captured,
+    )
+    response_files = []
+
+    server = _build_response_files_mcp_server(
+        sdk,
+        workspace=workspace,
+        response_files=response_files,
+    )
+    accepted = await captured["tools"][0]({"path": "output/final.txt"})
+    duplicate = await captured["tools"][0]({"path": "output/final.txt"})
+    rejected = await captured["tools"][0]({"path": "inputs/source.txt"})
+
+    assert server is captured
+    assert response_files == ["output/final.txt"]
+    assert "attached" in accepted["content"][0]["text"]
+    assert "attached" in duplicate["content"][0]["text"]
+    assert rejected["is_error"] is True
 
 
 def _settings():

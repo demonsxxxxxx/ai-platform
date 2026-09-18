@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from inspect import isawaitable
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from app.context_manifest import available_context_retrieval_tools, truncate_utf8_text
@@ -34,12 +34,15 @@ from app.executors.claude.capability_policy import (
     CapabilityExecutionPlan,
     _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
     _SDK_INTERNAL_CONTEXT_TOOLS,
+    _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX,
+    _SDK_INTERNAL_RESPONSE_TOOLS,
     _authorized_parameter_keys as _authorized_parameter_keys,
     _canonical_tool_policy_subjects,
     _extract_skill_names_from_tool_input,
     _mcp_server_options,
     _parameters_match_subject,
     internal_context_tool_policy_subjects,
+    internal_response_tool_policy_subjects,
 )
 from app.executors.claude.prompts import (
     build_skill_prompt as build_skill_prompt,
@@ -71,6 +74,7 @@ from app.sandbox.api import (
     normalize_sdk_runtime_diagnostics,
     runtime_diagnostic_text as _runtime_diagnostic_text,
     runtime_diagnostic_value as _runtime_diagnostic_value,
+    workspace_collection_file_allowed,
     workspace_mutation_allowed,
     workspace_read_allowed,
     workspace_read_name_private,
@@ -91,14 +95,16 @@ def runtime_tool_policy_subjects(
     context_manifest: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     value = payload.input.get("_runtime_tool_policy_subjects")
+    internal_prefixes = (
+        _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
+        _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX,
+    )
     subjects = (
         [
             dict(item)
             for item in value
             if isinstance(item, dict)
-            and not str(item.get("identity") or "").startswith(
-                "mcp__ai-platform-context__"
-            )
+            and not str(item.get("identity") or "").startswith(internal_prefixes)
         ]
         if isinstance(value, list)
         else []
@@ -108,6 +114,7 @@ def runtime_tool_policy_subjects(
             available_context_retrieval_tools(context_manifest)
         )
     )
+    subjects.extend(internal_response_tool_policy_subjects())
     return subjects
 
 
@@ -230,6 +237,7 @@ class ClaudeAgentSdkRunResult:
     turn_diagnostics: dict[str, Any] = field(default_factory=dict)
     runtime_diagnostics: dict[str, Any] = field(default_factory=dict)
     capability_evidence: list[dict[str, str]] = field(default_factory=list)
+    response_files: list[str] = field(default_factory=list)
     provider_final_sequence: int | None = None
 
 
@@ -819,6 +827,89 @@ def _build_context_retrieval_mcp_server(
             )
             if tool.name in selected_tool_names
         ],
+    )
+
+
+
+def _response_file_path(workspace: Path, raw_path: object) -> str | None:
+    if (
+        not isinstance(raw_path, str)
+        or not raw_path
+        or len(raw_path) > 1024
+        or "\x00" in raw_path
+    ):
+        return None
+    normalized = raw_path.replace("\\", "/")
+    relative = PurePosixPath(normalized)
+    windows_path = PureWindowsPath(raw_path)
+    if (
+        relative.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or any(part in {"", ".", ".."} for part in raw_path.replace("\\", "/").split("/"))
+        or not workspace_collection_file_allowed(relative)
+    ):
+        return None
+    try:
+        root = workspace.resolve(strict=True)
+        candidate = root
+        for part in relative.parts:
+            candidate /= part
+            if candidate.is_symlink():
+                return None
+        resolved = candidate.resolve(strict=True)
+        canonical = resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not resolved.is_file() or not workspace_collection_file_allowed(canonical.as_posix()):
+        return None
+    return canonical.as_posix()
+
+
+def _build_response_files_mcp_server(
+    sdk: object,
+    *,
+    workspace: Path,
+    response_files: list[str],
+):
+    sdk_tool = getattr(sdk, "tool", None)
+    create_server = getattr(sdk, "create_sdk_mcp_server", None)
+    if sdk_tool is None or create_server is None:
+        return None
+
+    @sdk_tool(
+        "attach_file",
+        "Attach one generated workspace file to the final assistant response.",
+        {"path": str},
+    )
+    async def attach_file(args):
+        tool_args = args if isinstance(args, dict) else {}
+        path = _response_file_path(workspace, tool_args.get("path"))
+        if path is None:
+            return _context_retrieval_tool_error(
+                "response_file_invalid", action="response.attach_file"
+            )
+        if path not in response_files:
+            if len(response_files) >= 128:
+                return _context_retrieval_tool_error(
+                    "response_file_limit_exceeded", action="response.attach_file"
+                )
+            response_files.append(path)
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {"attached": path}, ensure_ascii=False, separators=(",", ":")
+                    ),
+                }
+            ]
+        }
+
+    return create_server(
+        "ai-platform-response",
+        version="1.0.0",
+        tools=[attach_file],
     )
 
 
@@ -1690,12 +1781,21 @@ async def run_claude_agent_sdk(
         and identity.removeprefix(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX)
         in _SDK_INTERNAL_CONTEXT_TOOLS
     ]
+    requested_internal_response_tools = [
+        identity.removeprefix(_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+        for identity in authorized_subjects
+        if identity.startswith(_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+        and identity.removeprefix(_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+        in _SDK_INTERNAL_RESPONSE_TOOLS
+    ]
+    if tool_policy_subjects is None:
+        requested_internal_response_tools = list(_SDK_INTERNAL_RESPONSE_TOOLS)
     if sandbox_brokered:
         for identity in list(authorized_subjects):
-            if not identity.startswith(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX):
-                continue
-            tool_name = identity.removeprefix(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX)
-            authorized_subjects.pop(identity, None)
+            if identity.startswith(
+                (_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX, _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+            ):
+                authorized_subjects.pop(identity, None)
     full_access = _full_access_requested(settings) and not sandbox_brokered
     permission_mode = (
         "dontAsk"
@@ -1747,6 +1847,31 @@ async def run_claude_agent_sdk(
                 sdk_errors="selected_skill_not_authorized",
             ),
         )
+    response_files: list[str] = []
+    response_files_server = (
+        _build_response_files_mcp_server(
+            sdk,
+            workspace=cwd,
+            response_files=response_files,
+        )
+        if requested_internal_response_tools
+        else None
+    )
+    if (
+        requested_internal_response_tools
+        and response_files_server is None
+        and tool_policy_subjects is not None
+    ):
+        error_code = _SDK_TOOL_ADMISSION_FAILED
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True,
+            error=error_code,
+            turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code,
+                failure_source="response_files_registration",
+            ),
+        )
     context_retrieval_registration_error: str | None = None
     context_retrieval_registration_exception: BaseException | None = None
     try:
@@ -1796,14 +1921,35 @@ async def run_claude_agent_sdk(
         if context_retrieval_server is not None
         else {}
     )
+    internal_response_subjects = (
+        {
+            str(subject["identity"]): subject
+            for subject in internal_response_tool_policy_subjects()
+            if str(subject["identity"]).removeprefix(
+                _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX
+            )
+            in requested_internal_response_tools
+        }
+        if response_files_server is not None
+        else {}
+    )
+    internal_platform_subjects = {
+        **internal_context_subjects,
+        **internal_response_subjects,
+    }
     if sandbox_brokered:
-        for identity in internal_context_subjects:
+        for identity in internal_platform_subjects:
             if identity not in allowed_tools:
                 allowed_tools.append(identity)
     if context_retrieval_server is not None and not sandbox_brokered:
         for tool_name in internal_context_tools:
             if tool_name not in allowed_tools:
                 allowed_tools.append(tool_name)
+    if response_files_server is not None and not sandbox_brokered:
+        for tool_name in requested_internal_response_tools:
+            identity = f"{_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX}{tool_name}"
+            if identity not in allowed_tools:
+                allowed_tools.append(identity)
     disallowed_tools = (
         []
         if sandbox_brokered
@@ -1837,6 +1983,8 @@ async def run_claude_agent_sdk(
         not sandbox_brokered or internal_context_subjects
     ):
         mcp_servers["ai-platform-context"] = context_retrieval_server
+    if response_files_server is not None and internal_response_subjects:
+        mcp_servers["ai-platform-response"] = response_files_server
     capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         tool_policy_subjects,
         available_skill_identities=allowed_skill_names,
@@ -1892,6 +2040,7 @@ async def run_claude_agent_sdk(
         if kind in {"skill", "mcp"}
     }
     private_capability_tokens.update(mcp_registration.aliases)
+    private_capability_tokens.update(internal_response_subjects)
     private_capability_tokens.update(
         identity
         for identity in authorized_subjects
@@ -2254,7 +2403,7 @@ async def run_claude_agent_sdk(
         return None
 
     declared_tool_identities = (
-        set(authorized_subjects) | set(internal_context_subjects)
+        set(authorized_subjects) | set(internal_platform_subjects)
         if sandbox_brokered
         else {
             (
@@ -2282,13 +2431,13 @@ async def run_claude_agent_sdk(
             if str(tool_name or "") == "Skill" and isinstance(tool_input, dict)
             else []
         )
-        subject = internal_context_subjects.get(identity) or authorized_subjects.get(
+        subject = internal_platform_subjects.get(identity) or authorized_subjects.get(
             identity
         )
         if sandbox_brokered:
             subject_tool_name = (
                 identity.rsplit("__", 1)[-1]
-                if identity in internal_context_subjects
+                if identity in internal_platform_subjects
                 else identity
             )
             parameters_authorized = bool(subject) and _parameters_match_subject(
@@ -2463,7 +2612,7 @@ async def run_claude_agent_sdk(
         if decision.allowed:
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
-            subject = internal_context_subjects.get(
+            subject = internal_platform_subjects.get(
                 identity
             ) or authorized_subjects.get(identity)
             if (
@@ -2552,7 +2701,7 @@ async def run_claude_agent_sdk(
                     )
                     if capability_evidence_acknowledged is not True:
                         break
-            elif identity in internal_context_subjects:
+            elif identity in internal_platform_subjects:
                 capability_evidence_acknowledged = await record_tool_lifecycle(
                     tool_name="MCP",
                     tool_call_id=resolved_tool_call_id,
@@ -2648,7 +2797,7 @@ async def run_claude_agent_sdk(
                 failure=hook_input if lifecycle_phase == "failed" else None,
             )
             evidence_acknowledged = False
-            if identity in internal_context_subjects:
+            if identity in internal_platform_subjects:
                 evidence_acknowledged = await record_tool_lifecycle(
                     tool_name="MCP",
                     tool_call_id=call_id,
@@ -2688,7 +2837,7 @@ async def run_claude_agent_sdk(
         call_id = canonical_tool_call_id(tool_call_id) or ""
         if not call_id:
             return
-        if identity in internal_context_subjects:
+        if identity in internal_platform_subjects:
             if governed_builtin_invocation_states.get(("MCP", call_id)) == "started":
                 await record_tool_lifecycle(
                     tool_name="MCP", tool_call_id=call_id, lifecycle="failed"
@@ -2803,7 +2952,7 @@ async def run_claude_agent_sdk(
             )
         if (
             any(identity.startswith("mcp__") for identity in authorized_subjects)
-            or internal_context_subjects
+            or internal_platform_subjects
         ):
             post_tool_hooks.append(
                 HookMatcher(matcher="mcp__*", hooks=[mcp_tool_hook("completed")])
@@ -3305,6 +3454,7 @@ async def run_claude_agent_sdk(
             used_skills_source="executor_hook" if used_skill_names else "",
             turn_diagnostics=turn_diagnostics(terminal_error),
             capability_evidence=list(capability_evidence),
+            response_files=list(response_files) if terminal_error is None else [],
             provider_final_sequence=(provider_session_store.final_sequence
                                      if terminal_error is None and provider_session_store is not None else None),
             runtime_diagnostics=(
