@@ -1863,7 +1863,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           }
 
           let streamingMessageId: string | null = null;
-          if (keepRunRecoverable && historyCurrentRunId) {
+          if (
+            keepRunRecoverable &&
+            historyCurrentRunId &&
+            !isCancelRequested
+          ) {
             const prepared = prepareMessagesForRunningRun(
               reconstructedMessages,
               historyCurrentRunId,
