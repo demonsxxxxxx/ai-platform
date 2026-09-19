@@ -8,18 +8,22 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from app.execution.api import RunModelSelection
 from app.execution.application import model_selection
-from app.execution.application.model_control_plane import ModelControlPlaneService
-from app.execution.infrastructure import model_legacy_catalog, model_upstream as client
+from app.execution.application.model_control_plane import (
+    ModelControlPlaneService,
+    _runtime_proxy_headers,
+)
+from app.execution.domain.model_catalog import normalize_model_token_limits, platform_model_id
+from app.execution.infrastructure import model_upstream as client
 from app.execution.infrastructure.model_management import (
     activate_connection_and_sync,
     get_run_connection,
-    platform_model_id,
+    publish_models,
     resolve_run_model,
 )
 from app.execution.infrastructure.model_security import (
@@ -41,7 +45,6 @@ from app.runtime.sandbox.callback_tokens import (
     derive_callback_token,
 )
 from app.execution.transport import model_management as model_routes
-from app.model_catalog import build_model_catalog, resolve_model_selection
 from app.runs.infrastructure.postgres import (
     bind_run_model,
     inherit_run_model,
@@ -66,6 +69,28 @@ def _attempt_capability_verifier(secret: str):
     return verify
 
 
+def test_catalog_capacity_pair_and_anthropic_proxy_contract():
+    assert normalize_model_token_limits(32000, 2048) == (32000, 2048)
+    for pair in ((32000, None), (True, 2048), (0, 2048), (10_000_001, 2048)):
+        with pytest.raises(ValueError):
+            normalize_model_token_limits(*pair)
+
+    headers = {
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "interleaved-thinking-2025-05-14,claude-code-20250219,claude-code-20250219",
+    }
+    normalized = _runtime_proxy_headers("anthropic", "v1/messages", headers)
+    assert normalized["anthropic-beta"] == "claude-code-20250219,interleaved-thinking-2025-05-14"
+    for invalid in (
+        {"anthropic-version": "2024-01-01"},
+        {"anthropic-version": "2023-06-01", "anthropic-beta": "unknown-beta"},
+        {"anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219,"},
+        {"anthropic-version": "2023-06-01", "anthropic-beta": "effort-2025-11-24"},
+    ):
+        with pytest.raises(PermissionError):
+            _runtime_proxy_headers("anthropic", "v1/messages/count_tokens", invalid)
+
+
 def test_model_transport_maps_missing_write_only_key_to_validation_error() -> None:
     error = model_routes._translate_control_plane_error(
         ValueError("model_connection_api_key_required")
@@ -73,12 +98,106 @@ def test_model_transport_maps_missing_write_only_key_to_validation_error() -> No
 
     assert error.status_code == 422
     assert error.detail == "model_connection_api_key_required"
+    conflict = model_routes._translate_control_plane_error(
+        ValueError("model_catalog_revision_conflict")
+    )
+    assert (conflict.status_code, conflict.detail) == (
+        409, "model_catalog_revision_conflict"
+    )
+    for code in ("model_capacity_pair_required", "max_input_tokens_invalid", "max_output_tokens_invalid"):
+        mapped = model_routes._translate_control_plane_error(ValueError(code))
+        assert (mapped.status_code, mapped.detail) == (422, code)
+    for budget in (True, 0, 10_000_001, "32000"):
+        with pytest.raises(ValidationError):
+            model_routes.ModelPublicationEntry(
+                id="mdl_gpt", value="openai/gpt-5", display_name="GPT-5",
+                enabled=True, is_default=True, order=1,
+                max_input_tokens=budget, max_output_tokens=2048,
+            )
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_identity() -> None:
+    upstream_ids = ["openai/gpt-5"]
+    publications = []
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    class Repository:
+        async def active_connection(self, _conn, **_kwargs):
+            return None
+
+        async def connection_projection(self, _conn):
+            return {"revision": None}
+
+        async def admin_models(self, _conn):
+            return [{
+                "id": platform_model_id("openai/gpt-5"), "value": "openai/gpt-5",
+                "label": "Existing GPT", "provider": "compatible", "enabled": True,
+                "available": False, "is_default": True, "order": 9,
+                "max_input_tokens": 32000, "max_output_tokens": 2048,
+            }]
+
+        async def publish_models(self, _conn, **kwargs):
+            publications.append(kwargs)
+            return 1, kwargs["models"]
+
+    class Security:
+        def validate(self, base_url, **_kwargs):
+            return SimpleNamespace(base_url=base_url)
+
+        def fingerprint(self, _api_key):
+            return "synthetic-fingerprint"
+
+    class Upstream:
+        def request(self, **_kwargs):
+            return b"synthetic-catalog"
+
+        def parse_model_ids(self, _body):
+            return list(upstream_ids)
+
+    service = ModelControlPlaneService(
+        transaction_factory=fake_transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_connection_encryption_key=_key(),
+            model_connection_allowed_internal_hosts="",
+        ),
+        repository=Repository(), security=Security(), upstream=Upstream(),
+        attempt_capability_verifier=lambda **_kwargs: True,
+    )
+    candidate = await service.discover(
+        base_url="https://gateway.example", api_key="synthetic-secret"
+    )
+    assert publications == []
+    assert candidate["models"][0]["label"] == "Existing GPT"
+    assert candidate["models"][0]["order"] == 1
+    entry = {
+        "id": candidate["models"][0]["id"], "value": "openai/gpt-5",
+        "display_name": "GPT-5", "enabled": True, "is_default": True,
+        "order": 1, "max_input_tokens": 32000, "max_output_tokens": 2048,
+    }
+    upstream_ids[:] = ["different-model"]
+    with pytest.raises(ValueError, match="model_catalog_discovery_changed"):
+        await service.publish(
+            base_url="https://gateway.example", api_key="synthetic-secret",
+            expected_revision=None, models=[entry], actor_user_id="admin-user",
+        )
+    assert publications == []
+    upstream_ids[:] = ["openai/gpt-5"]
+    published = await service.publish(
+        base_url="https://gateway.example", api_key="synthetic-secret",
+        expected_revision=None, models=[entry], actor_user_id="admin-user",
+    )
+    assert published["revision"] == 1
+    assert publications[0]["models"] == [entry]
 
 
 def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) -> None:
     principal = SimpleNamespace(user_id="admin-user")
     authorized = {"value": True}
-    configure_calls: list[dict[str, object]] = []
+    calls: list[tuple[str, dict[str, object]]] = []
 
     async def require_principal() -> SimpleNamespace:
         return principal
@@ -87,16 +206,15 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
         async def admin_projection(self) -> dict[str, object]:
             return {"connection": None, "models": []}
 
-        async def configure_connection(self, **kwargs) -> dict[str, object]:
-            configure_calls.append(kwargs)
-            return {"connection": {"configured": True}, "models": []}
+        async def discover(self, **kwargs) -> dict[str, object]:
+            calls.append(("discover", kwargs))
+            return {"connection": None, "base_url": kwargs["base_url"], "models": []}
 
-    service = _Service()
-    monkeypatch.setattr(
-        model_routes,
-        "configured_model_control_plane",
-        lambda: service,
-    )
+        async def publish(self, **kwargs) -> dict[str, object]:
+            calls.append(("publish", kwargs))
+            return {"connection": {"revision": 2}, "models": []}
+
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: _Service())
     app = FastAPI()
     app.include_router(
         model_routes.build_model_management_router(
@@ -105,113 +223,56 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
         ),
         prefix="/api/ai",
     )
-
-    credential_marker = "controlled-write-only-value"
-    legacy_marker = "deprecated-write-only-value"
-    camel_legacy_marker = "deprecated-camel-write-only-value"
-    unknown_marker = "unknown-write-only-value"
-    catalog_marker = "catalog-write-only-value"
-    oversized_marker = "oversized-write-only-value"
+    entry = {
+        "id": "mdl_gpt", "value": "openai/gpt-5", "display_name": "GPT-5",
+        "enabled": True, "is_default": True, "order": 1,
+        "max_input_tokens": 32000, "max_output_tokens": 2048,
+    }
     with TestClient(app) as client:
         accepted = client.get("/api/ai/admin/models")
-        configured = client.put(
-            "/api/ai/admin/models/connection",
-            json={
-                "base_url": "https://gateway.example",
-                "credential": credential_marker,
-            },
-        )
-        rejected_legacy_field = client.put(
-            "/api/ai/admin/models/connection",
-            json={"base_url": "https://gateway.example", "api_key": legacy_marker},
-        )
-        rejected_camel_legacy_field = client.put(
-            "/api/ai/admin/models/connection",
-            json={"base_url": "https://gateway.example", "apiKey": camel_legacy_marker},
-        )
-        rejected_unknown_field = client.put(
-            "/api/ai/admin/models/connection",
-            json={"base_url": "https://gateway.example", "credentail": unknown_marker},
-        )
-        rejected_legacy_without_base = client.put(
-            "/api/ai/admin/models/connection",
-            json={"api_key": legacy_marker},
-        )
-        rejected_unknown_with_invalid_base = client.put(
-            "/api/ai/admin/models/connection",
-            json={"base_url": 7, "credentail": unknown_marker},
-        )
-        rejected_credential_without_base = client.put(
-            "/api/ai/admin/models/connection",
-            json={"credential": credential_marker},
-        )
-        rejected_oversized_credential = client.put(
-            "/api/ai/admin/models/connection",
-            json={
-                "base_url": "https://gateway.example",
-                "credential": oversized_marker + ("x" * 4097),
-            },
-        )
-        rejected_catalog_field = client.patch(
-            "/api/ai/admin/models/mdl_gpt",
-            json={"api_key": catalog_marker},
-        )
+        found = client.post("/api/ai/admin/models/discover", json={
+            "base_url": "https://gateway.example", "credential": "synthetic-secret",
+        })
+        published = client.post("/api/ai/admin/models/publish", json={
+            "base_url": "https://gateway.example", "credential": "synthetic-secret",
+            "expected_revision": 1, "models": [entry],
+        })
+        invalid = client.post("/api/ai/admin/models/publish", json={
+            "base_url": "https://gateway.example", "models": [{**entry, "max_input_tokens": True}],
+        })
+        forbidden_field = client.post("/api/ai/admin/models/discover", json={
+            "base_url": "https://gateway.example", "api_key": "synthetic-secret",
+        })
+        unknown_key = client.post("/api/ai/admin/models/publish", json={
+            "base_url": "https://gateway.example", "credentail": "synthetic-secret",
+            "models": [entry],
+        })
+        retired = client.put("/api/ai/admin/models/connection", json={
+            "base_url": "https://gateway.example", "credential": "synthetic-secret",
+        })
         authorized["value"] = False
-        denied = client.get("/api/ai/admin/models")
+        denied = client.post("/api/ai/admin/models/discover", json={
+            "base_url": "https://gateway.example", "credential": "synthetic-secret",
+        })
 
     assert accepted.status_code == 200
-    assert accepted.json() == {"connection": None, "models": []}
-    assert configured.status_code == 200
-    assert credential_marker not in configured.text
-    assert configure_calls == [
-        {
-            "base_url": "https://gateway.example",
-            "api_key": credential_marker,
-            "actor_user_id": "admin-user",
-        }
-    ]
-    assert rejected_legacy_field.status_code == 422
-    assert rejected_legacy_field.json() == {
-        "detail": "model_connection_credential_field_invalid"
-    }
-    assert legacy_marker not in rejected_legacy_field.text
-    assert rejected_camel_legacy_field.status_code == 422
-    assert rejected_camel_legacy_field.json() == {
-        "detail": "model_connection_credential_field_invalid"
-    }
-    assert camel_legacy_marker not in rejected_camel_legacy_field.text
-    assert rejected_unknown_field.status_code == 422
-    assert rejected_unknown_field.json() == {
-        "detail": "model_connection_request_invalid"
-    }
-    assert unknown_marker not in rejected_unknown_field.text
-    assert rejected_legacy_without_base.status_code == 422
-    assert rejected_legacy_without_base.json() == {
-        "detail": "model_connection_credential_field_invalid"
-    }
-    assert legacy_marker not in rejected_legacy_without_base.text
-    assert rejected_unknown_with_invalid_base.status_code == 422
-    assert rejected_unknown_with_invalid_base.json() == {
-        "detail": "model_connection_request_invalid"
-    }
-    assert unknown_marker not in rejected_unknown_with_invalid_base.text
-    assert rejected_credential_without_base.status_code == 422
-    assert rejected_credential_without_base.json() == {
-        "detail": "model_connection_endpoint_invalid"
-    }
-    assert credential_marker not in rejected_credential_without_base.text
-    assert rejected_oversized_credential.status_code == 422
-    assert rejected_oversized_credential.json() == {
-        "detail": "model_connection_credential_field_invalid"
-    }
-    assert oversized_marker not in rejected_oversized_credential.text
-    assert rejected_catalog_field.status_code == 422
-    assert rejected_catalog_field.json() == {
-        "detail": "model_catalog_patch_request_invalid"
-    }
-    assert catalog_marker not in rejected_catalog_field.text
+    assert found.status_code == 200
+    assert published.status_code == 200
+    assert invalid.status_code == 422
+    assert forbidden_field.status_code == 422
+    assert unknown_key.json() == {"detail": "model_publication_request_invalid"}
+    assert retired.status_code == 404
     assert denied.status_code == 403
-    assert denied.json() == {"detail": "model_admin_required"}
+    assert all("synthetic-secret" not in response.text for response in (
+        found, published, invalid, forbidden_field, unknown_key, retired, denied
+    ))
+    assert calls == [
+        ("discover", {"base_url": "https://gateway.example", "api_key": "synthetic-secret"}),
+        ("publish", {
+            "base_url": "https://gateway.example", "api_key": "synthetic-secret",
+            "expected_revision": 1, "models": [entry], "actor_user_id": "admin-user",
+        }),
+    ]
 
 
 def test_model_api_key_encryption_is_revision_bound_and_never_plaintext() -> None:
@@ -340,6 +401,8 @@ async def test_load_run_model_snapshot_locks_exact_run_for_dispatch() -> None:
                 "model_id": "model-public",
                 "model_value": "openai/gpt-5",
                 "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
             }
         ]
     )
@@ -357,6 +420,8 @@ async def test_load_run_model_snapshot_locks_exact_run_for_dispatch() -> None:
         "model_id": "model-public",
         "model_value": "openai/gpt-5",
         "model_gateway_revision": 7,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
     }
 
 
@@ -371,6 +436,8 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         model_id="model-public",
         model_value="openai/gpt-5",
         connection_revision=7,
+        max_input_tokens=32000,
+        max_output_tokens=2048,
     )
 
     sql, params = conn.calls[0]
@@ -381,31 +448,41 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         "model-public",
         "openai/gpt-5",
         7,
+        32000,
+        2048,
         "tenant-a",
         "run-child",
     )
 
 
 @pytest.mark.asyncio
-async def test_bind_run_model_accepts_legacy_snapshot_without_gateway_revision() -> None:
+async def test_bind_run_model_rejects_missing_capacity_before_write() -> None:
     conn = _RunModelMutationConnection([{"id": "run-child"}])
+    with pytest.raises(ValueError, match="run_model_capacity_invalid"):
+        await bind_run_model(
+            conn, tenant_id="tenant-a", run_id="run-child", model_id="model-public",
+            model_value="openai/gpt-5", connection_revision=7,
+            max_input_tokens=None, max_output_tokens=2048,
+        )
+    assert not conn.calls
 
-    await bind_run_model(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-child",
-        model_id="legacy-default",
-        model_value="legacy-default",
-        connection_revision=None,
-    )
 
-    assert conn.calls[0][1] == (
-        "legacy-default",
-        "legacy-default",
-        None,
-        "tenant-a",
-        "run-child",
-    )
+@pytest.mark.asyncio
+async def test_bind_run_model_rejects_invalid_revision_before_write() -> None:
+    for revision in (True, 0, -1, "7"):
+        conn = _RunModelMutationConnection([{"id": "run-child"}])
+        with pytest.raises(ValueError, match="run_model_binding_invalid"):
+            await bind_run_model(
+                conn,
+                tenant_id="tenant-a",
+                run_id="run-child",
+                model_id="model-public",
+                model_value="openai/gpt-5",
+                connection_revision=revision,
+                max_input_tokens=32000,
+                max_output_tokens=2048,
+            )
+        assert not conn.calls
 
 
 @pytest.mark.asyncio
@@ -420,6 +497,8 @@ async def test_bind_run_model_fails_when_run_snapshot_update_does_not_match() ->
             model_id="model-public",
             model_value="openai/gpt-5",
             connection_revision=7,
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
 
@@ -431,6 +510,8 @@ async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child(
                 "model_id": "model-public",
                 "model_value": "openai/gpt-5",
                 "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
             },
             {
                 "status": "queued",
@@ -458,6 +539,8 @@ async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child(
         "model-public",
         "openai/gpt-5",
         7,
+        32000,
+        2048,
         "tenant-a",
         "run-child",
     )
@@ -465,86 +548,17 @@ async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child(
 
 @pytest.mark.parametrize("operation", ["copy", "retry", "resume"])
 @pytest.mark.asyncio
-async def test_inherit_run_model_modernizes_legacy_descendants(operation: str) -> None:
-    child_run_id = f"run-{operation}"
+async def test_inherit_run_model_rejects_legacy_source_without_capacity(operation: str) -> None:
     conn = _RunModelMutationConnection(
         [
-            {
-                "model_id": None,
-                "model_value": None,
-                "model_gateway_revision": None,
-                "input_json": {
-                    "model_id": "legacy-default",
-                    "model_value": "openai/gpt-5",
-                },
-            },
-            {
-                "status": "queued",
-                "copied_from_run_id": "run-source",
-                "model_id": None,
-                "model_value": None,
-                "model_gateway_revision": None,
-            },
-            {"id": child_run_id},
+            {"model_id": "model-public", "model_value": "openai/gpt-5", "model_gateway_revision": 7,
+             "max_input_tokens": None, "max_output_tokens": None},
+            {"status": "queued", "copied_from_run_id": "run-source", "model_id": None,
+             "model_value": None, "model_gateway_revision": None},
         ]
     )
-
-    await inherit_run_model(
-        conn,
-        tenant_id="tenant-a",
-        source_run_id="run-source",
-        child_run_id=child_run_id,
-    )
-
-    assert "input_json" in conn.calls[0][0]
-    assert "for update" in conn.calls[0][0].lower()
-    assert conn.calls[2][1] == (
-        "legacy-default",
-        "openai/gpt-5",
-        None,
-        "tenant-a",
-        child_run_id,
-    )
-
-
-@pytest.mark.parametrize(
-    "input_json",
-    [
-        None,
-        {},
-        {"model_id": "legacy-default"},
-        {"model_id": "bad model", "model_value": "openai/gpt-5"},
-        {"model_id": "legacy-default", "model_value": " openai/gpt-5"},
-    ],
-)
-@pytest.mark.asyncio
-async def test_inherit_run_model_rejects_invalid_legacy_queue_pair(input_json) -> None:
-    conn = _RunModelMutationConnection(
-        [
-            {
-                "model_id": None,
-                "model_value": None,
-                "model_gateway_revision": None,
-                "input_json": input_json,
-            },
-            {
-                "status": "queued",
-                "copied_from_run_id": "run-source",
-                "model_id": None,
-                "model_value": None,
-                "model_gateway_revision": None,
-            },
-        ]
-    )
-
-    with pytest.raises(ValueError, match="run_model_source_legacy_invalid"):
-        await inherit_run_model(
-            conn,
-            tenant_id="tenant-a",
-            source_run_id="run-source",
-            child_run_id="run-child",
-        )
-
+    with pytest.raises(ValueError, match="run_model_capacity_missing"):
+        await inherit_run_model(conn, tenant_id="tenant-a", source_run_id="run-source", child_run_id=f"run-{operation}")
     assert len(conn.calls) == 2
 
 
@@ -579,17 +593,22 @@ async def test_inherit_run_model_rejects_child_from_a_different_source() -> None
 
 
 class _ActivationConnection:
-    def __init__(self, *, existing_rows=None):
+    def __init__(self, *, existing_rows=None, active_revision=2):
         self.calls = []
         self.existing_rows = existing_rows or []
+        self.active_revision = active_revision
 
     async def execute(self, sql, params=None):
         self.calls.append((sql, params))
         normalized = " ".join(sql.split())
+        if normalized.startswith("select revision from model_gateway_revisions where active"):
+            return _Cursor(row={"revision": self.active_revision} if self.active_revision else None)
         if "coalesce(max(revision), 0) + 1" in normalized:
             return _Cursor(row={"revision": 3})
         if normalized.startswith("select model_id, upstream_model_id from model_catalog_entries"):
             return _Cursor(rows=self.existing_rows)
+        if normalized.startswith("update model_catalog_entries set display_name"):
+            return _Cursor(row={"model_id": params[6]})
         if normalized.startswith("select model_id, upstream_model_id, display_name, provider"):
             now = datetime.now(timezone.utc)
             return _Cursor(
@@ -612,7 +631,7 @@ class _ActivationConnection:
 
 
 @pytest.mark.asyncio
-async def test_sync_rejects_platform_identity_collision_before_mutating_enabled_default_entry() -> None:
+async def test_connection_activation_rejects_platform_identity_collision_before_mutating_enabled_default_entry() -> None:
     platform_id = platform_model_id("legacy/provider-model")
     conn = _ActivationConnection(
         existing_rows=[
@@ -676,6 +695,33 @@ async def test_sync_rejects_platform_identity_collision_before_mutating_enabled_
     )
 
 
+@pytest.mark.asyncio
+async def test_publication_checks_revision_before_changing_gateway_and_writes_one_catalog() -> None:
+    entry = {
+        "id": platform_model_id("openai/gpt-5"), "value": "openai/gpt-5",
+        "display_name": "GPT-5", "enabled": True, "is_default": True,
+        "order": 1, "max_input_tokens": 32000, "max_output_tokens": 2048,
+    }
+    kwargs = {
+        "models": [entry], "base_url": "https://gateway.example",
+        "api_key": "activation-secret", "key_fingerprint": "0123456789abcdef",
+        "encryption_key": _key(), "actor_user_id": "admin-user",
+        "upstream_model_ids": ["openai/gpt-5"],
+    }
+    conn = _ActivationConnection()
+    with pytest.raises(ValueError, match="model_catalog_revision_conflict"):
+        await publish_models(conn, expected_revision=1, **kwargs)
+    assert not any("insert into model_gateway_revisions" in sql for sql, _ in conn.calls)
+
+    conn = _ActivationConnection()
+    revision, _ = await publish_models(conn, expected_revision=2, **kwargs)
+    assert revision == 3
+    applied = [params for sql, params in conn.calls
+               if "update model_catalog_entries" in sql and "set display_name" in sql]
+    assert applied == [("GPT-5", True, True, 1, 32000, 2048,
+                        platform_model_id("openai/gpt-5"), "openai/gpt-5", 3)]
+
+
 class _ResolveConnection:
     def __init__(self, *, row):
         self.row = row
@@ -703,10 +749,11 @@ class _RunConnection:
 
     async def execute(self, sql, params=None):
         self.calls.append((sql, params))
-        run_id, attempt_id, model_value = params
+        run_id, attempt_id, lease_attempt_id, model_value = params
         matches_current_lease = (
             run_id == "run_123"
             and attempt_id == self.lease_attempt_id
+            and lease_attempt_id == self.lease_attempt_id
             and model_value == "openai/gpt-5"
             and self.lease_status == "active"
             and not self.released
@@ -721,6 +768,9 @@ class _RunConnection:
                     "revision-secret", revision=4, encoded_key=_key()
                 ),
                 "key_fingerprint": "sha256:example",
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
+                "conversation_mode": "native_resume",
             }
         return _Cursor(row=row)
 
@@ -732,6 +782,8 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
             "connection_revision": 9,
             "model_id": "mdl_public",
             "upstream_model_id": "openai/gpt-5",
+            "max_input_tokens": 32000,
+            "max_output_tokens": 2048,
         }
     )
 
@@ -745,6 +797,7 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
     assert selection.model_id == "mdl_public"
     assert selection.model_value == "openai/gpt-5"
     assert selection.connection_revision == 9
+    assert (selection.max_input_tokens, selection.max_output_tokens) == (32000, 2048)
     assert len(conn.calls) == 2
     assert "pg_advisory_xact_lock_shared" in conn.calls[0][0]
     model_query, params = conn.calls[1]
@@ -755,77 +808,33 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
 
 
 @pytest.mark.asyncio
-async def test_run_model_resolution_preserves_legacy_path_until_control_plane_is_active() -> None:
+async def test_run_model_resolution_without_gateway_returns_none() -> None:
     conn = _ResolveConnection(row=None)
-    assert await resolve_run_model(conn, model_id="legacy", model_value="legacy") is None
+    assert await resolve_run_model(conn, model_id="mdl_public", model_value="openai/gpt-5") is None
     assert len(conn.calls) == 2
 
 
 @pytest.mark.asyncio
-async def test_chat_model_resolution_uses_environment_default_until_control_plane_is_active(monkeypatch) -> None:
-    settings = SimpleNamespace(
-        model_catalog_json="",
-        llm_gateway_provider="",
-        claude_agent_model="legacy-default",
-        anthropic_model="",
-        openai_model="",
-        default_model_id="",
-    )
-    monkeypatch.setattr(
-        model_legacy_catalog,
-        "upstream_model_cache_snapshot",
-        lambda: ([], None),
-    )
-    legacy_catalog = model_legacy_catalog.LegacyModelCatalogAdapter(
-        settings_provider=lambda: settings,
-        build_catalog=build_model_catalog,
-        resolve_selection=resolve_model_selection,
-    )
-
+async def test_chat_model_resolution_fails_without_governed_connection() -> None:
     conn = _ResolveConnection(row=None)
-    selection = await model_selection.resolve_chat_model_selection(
-        conn,
-        selection=None,
-        resolve_governed_model=resolve_run_model,
-        resolve_legacy_model=legacy_catalog,
-    )
-
+    with pytest.raises(ValueError, match="model_connection_not_configured"):
+        await model_selection.resolve_chat_model_selection(
+            conn, selection=None, resolve_governed_model=resolve_run_model,
+        )
     assert "pg_advisory_xact_lock_shared" in conn.calls[0][0]
-    assert selection == RunModelSelection(
-        model_id="legacy-default",
-        model_value="legacy-default",
-        connection_revision=None,
-    )
 
 
-def test_legacy_catalog_resolves_value_only_selection_when_catalog_id_differs(monkeypatch) -> None:
-    settings = SimpleNamespace()
-    monkeypatch.setattr(
-        model_legacy_catalog,
-        "upstream_model_cache_snapshot",
-        lambda: ([], None),
-    )
-    observed: list[str] = []
-
-    def resolve_selection(selector, _settings, *, upstream_ids=None):
-        observed.append(selector)
-        assert upstream_ids is None
-        if selector != "openai/gpt-5":
-            raise ValueError("unknown")
-        return {"id": "mdl_public", "value": "openai/gpt-5"}
-
-    legacy_catalog = model_legacy_catalog.LegacyModelCatalogAdapter(
-        settings_provider=lambda: settings,
-        build_catalog=lambda _settings: {"default_model_id": "mdl_default"},
-        resolve_selection=resolve_selection,
-    )
-
-    assert legacy_catalog.resolve({"value": "openai/gpt-5"}) == RunModelSelection(
-        model_id="mdl_public",
-        model_value="openai/gpt-5",
-        connection_revision=None,
-    )
-    assert observed == ["openai/gpt-5"]
+@pytest.mark.asyncio
+async def test_run_model_resolution_rejects_missing_capacity() -> None:
+    conn = _ResolveConnection(row={
+        "connection_revision": 9,
+        "model_id": "mdl_public",
+        "upstream_model_id": "openai/gpt-5",
+        "max_input_tokens": None,
+        "max_output_tokens": None,
+    })
+    with pytest.raises(ValueError, match="model_capacity_missing"):
+        await resolve_run_model(conn, model_id="mdl_public", model_value="openai/gpt-5")
 
 
 @pytest.mark.asyncio
@@ -860,7 +869,10 @@ async def test_run_connection_lookup_requires_active_status_and_exact_model_valu
     assert "sandbox_leases.status = 'active'" in sql
     assert "sandbox_leases.released_at is null" in sql
     assert "sandbox_leases.expires_at > now()" in sql
-    assert params == ("run_123", "attempt_123", "openai/gpt-5")
+    assert "run_attempts.execution_spec_schema_version = 'ai-platform.execution-spec.v2'" in sql
+    assert "run_attempts.execution_spec_json->>'model_max_input_tokens' = runs.max_input_tokens::text" in sql
+    assert connection.conversation_mode == "native_resume"
+    assert params == ("run_123", "attempt_123", "attempt_123", "openai/gpt-5")
 
 
 @pytest.mark.asyncio
@@ -902,7 +914,7 @@ async def test_run_connection_lookup_fails_closed_without_current_exact_attempt(
     assert "join sandbox_leases" in sql
     assert "sandbox_leases.run_id = runs.id" in sql
     assert "sandbox_leases.tenant_id = runs.tenant_id" in sql
-    assert params == ("run_123", attempt_id, "openai/gpt-5")
+    assert params == ("run_123", attempt_id, attempt_id, "openai/gpt-5")
 
 
 def test_runtime_proxy_streams_incrementally_and_replaces_untrusted_credentials(monkeypatch) -> None:
@@ -1016,6 +1028,347 @@ def test_runtime_proxy_rejects_redirect_without_following(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_proxy_transport_rejects_duplicate_anthropic_headers_before_service(monkeypatch) -> None:
+    class ForbiddenService:
+        async def proxy(self, **_kwargs):
+            raise AssertionError("duplicate header reached model service")
+
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: ForbiddenService())
+    for duplicate in (b"anthropic-version", b"anthropic-beta"):
+        async def receive():
+            return {"type": "http.request", "body": b'{}', "more_body": False}
+
+        request = Request(
+            {
+                "type": "http", "method": "POST", "path": "/api/ai/internal/model-proxy/anthropic/v1/messages",
+                "query_string": b"beta=true", "headers": [(duplicate, b"value"), (duplicate, b"value")],
+                "server": ("api", 8020),
+            }, receive,
+        )
+        with pytest.raises(HTTPException) as rejected:
+            await model_routes.proxy_model_request(
+                "anthropic", "v1/messages", request,
+                x_ai_platform_run_id="run-a", x_ai_platform_attempt_id="attempt-a",
+                x_ai_platform_internal_token="synthetic-internal",
+                x_ai_platform_model_authorization="", x_ai_platform_model_api_key="",
+            )
+        assert (rejected.value.status_code, rejected.value.detail) == (403, "model_proxy_header_duplicate")
+
+
+@pytest.mark.asyncio
+async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
+    captured = {}
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def connection(_conn, **_kwargs):
+        return SimpleNamespace(
+            base_url="https://gateway.example", api_key="synthetic-key",
+            max_input_tokens=32000, max_output_tokens=2048, conversation_mode="empty_start",
+        )
+
+    class FakeStream:
+        status = 200
+        content_type = "application/json"
+
+        def body(self):
+            return iter([b"{}"])
+
+    def open_stream(**kwargs):
+        captured.update(kwargs)
+        return FakeStream()
+
+    def request(**kwargs):
+        captured["count"] = kwargs
+        return SimpleNamespace(status=200, body=b'{"input_tokens": 12}')
+
+    service = ModelControlPlaneService(
+        transaction_factory=fake_transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_proxy_internal_token="synthetic-internal",
+            model_connection_encryption_key="synthetic-encryption",
+            model_connection_allowed_internal_hosts="",
+        ),
+        repository=SimpleNamespace(run_connection=connection),
+        security=SimpleNamespace(),
+        upstream=SimpleNamespace(open_stream=open_stream, request=request),
+        attempt_capability_verifier=lambda **_kwargs: True,
+    )
+    fields = {
+        "body": b'{"model":"model-a","max_tokens":512,"messages":[]}', "run_id": "run-a", "attempt_id": "attempt-a",
+        "internal_token": "synthetic-internal", "model_proxy_capability": "synthetic-capability",
+    }
+    await service.proxy(
+        provider="anthropic", upstream_path="v1/messages", query="beta=true",
+        headers={"anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219"},
+        **fields,
+    )
+    assert captured["query"] == "beta=true"
+    assert captured["headers"]["anthropic-beta"] == "claude-code-20250219"
+    assert captured["path"] == "/v1/messages"
+    assert captured["count"]["path"] == "/v1/messages/count_tokens"
+    assert captured["count"]["max_response_bytes"] == 8192
+    for invalid_query in ("Beta=true", "beta=true&beta=true", "beta%3Dtrue"):
+        captured.clear()
+        with pytest.raises(PermissionError, match="model_proxy_query_not_allowed"):
+            await service.proxy(
+                provider="anthropic", upstream_path="v1/messages", query=invalid_query,
+                headers={"anthropic-version": "2023-06-01"}, **fields,
+            )
+        assert captured == {}
+
+    captured.clear()
+    count_response = await service.proxy(
+        provider="anthropic", upstream_path="v1/messages/count_tokens", query="beta=true",
+        headers={"anthropic-version": "2023-06-01", "anthropic-beta": "token-counting-2024-11-01"},
+        **{**fields, "body": b'{"model":"model-a","messages":[]}'},
+    )
+    assert captured["count"]["path"] == "/v1/messages/count_tokens"
+    assert count_response.status == 200
+    assert json.loads(b"".join(count_response.body)) == {"input_tokens": 12}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_messages_recount_each_request_and_fail_closed_on_invalid_budget():
+    counts = iter([10, 32001, 32001])
+    count_bodies = []
+    forwarded = []
+    mode = "platform_bootstrap"
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def connection(_conn, **_kwargs):
+        return SimpleNamespace(
+            base_url="https://gateway.example", api_key="synthetic-key",
+            max_input_tokens=32000, max_output_tokens=2048, conversation_mode=mode,
+        )
+
+    def count(**kwargs):
+        count_bodies.append(json.loads(kwargs["body"]))
+        return SimpleNamespace(status=200, body=json.dumps({"input_tokens": next(counts)}).encode())
+
+    def forward(**kwargs):
+        forwarded.append(kwargs)
+        return SimpleNamespace(status=200, content_type="application/json", body=lambda: iter([b"{}"] ))
+
+    service = ModelControlPlaneService(
+        transaction_factory=transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_proxy_internal_token="synthetic-internal",
+            model_connection_encryption_key="synthetic-encryption",
+            model_connection_allowed_internal_hosts="",
+        ),
+        repository=SimpleNamespace(run_connection=connection), security=SimpleNamespace(),
+        upstream=SimpleNamespace(request=count, open_stream=forward),
+        attempt_capability_verifier=lambda **_kwargs: True,
+    )
+    fields = dict(provider="anthropic", upstream_path="v1/messages", query="beta=true",
+                  headers={"anthropic-version": "2023-06-01"}, run_id="run-a", attempt_id="attempt-a",
+                  internal_token="synthetic-internal", model_proxy_capability="synthetic-capability")
+    payload = {"model": "model-a", "system": "current policy", "messages": [{"role": "user", "content": "read it"}],
+               "tools": [{"name": "Read"}], "thinking": {"type": "disabled"}, "stream": True, "max_tokens": 512}
+    await service.proxy(body=json.dumps(payload).encode(), **fields)
+    assert count_bodies == [{key: payload[key] for key in ("model", "system", "messages", "tools", "thinking")}]
+    with pytest.raises(ValueError, match="context_bootstrap_input_too_large"):
+        await service.proxy(body=json.dumps({**payload, "messages": [{"role": "user", "content": "tool output"}]}).encode(), **fields)
+    assert len(forwarded) == 1
+    mode = "native_resume"
+    native_response = await service.proxy(body=json.dumps(payload).encode(), **fields)
+    assert native_response.status == 400
+    assert json.loads(b"".join(native_response.body)) == {
+        "type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long"},
+    }
+    assert len(forwarded) == 1
+    for output in (True, 2049, 0):
+        with pytest.raises(ValueError, match="model_proxy_max_tokens_invalid"):
+            await service.proxy(body=json.dumps({**payload, "max_tokens": output}).encode(), **fields)
+    assert len(count_bodies) == 3
+
+    def invalid_count(**_kwargs):
+        return SimpleNamespace(status=503, body=b'{}')
+
+    service._upstream = SimpleNamespace(request=invalid_count, open_stream=forward)
+    with pytest.raises(RuntimeError, match="model_proxy_count_tokens_unavailable"):
+        await service.proxy(body=json.dumps(payload).encode(), **fields)
+    assert len(forwarded) == 1
+
+    def malformed_count(**_kwargs):
+        return SimpleNamespace(status=200, body=b'{"input_tokens":true}')
+
+    service._upstream = SimpleNamespace(request=malformed_count, open_stream=forward)
+    with pytest.raises(RuntimeError, match="model_proxy_count_tokens_invalid"):
+        await service.proxy(body=json.dumps(payload).encode(), **fields)
+    assert len(forwarded) == 1
+
+
+@pytest.mark.asyncio
+async def test_anthropic_count_tokens_404_uses_bounded_local_fallback_only():
+    forwarded = []
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def connection(_conn, **_kwargs):
+        return SimpleNamespace(
+            base_url="https://gateway.example", api_key="synthetic-key",
+            max_input_tokens=5000, max_output_tokens=2048, conversation_mode="empty_start",
+        )
+
+    def missing_count(**_kwargs):
+        return SimpleNamespace(status=404, content_type="application/json", body=b'{}')
+
+    def forward(**kwargs):
+        forwarded.append(kwargs)
+        return SimpleNamespace(
+            status=200, content_type="application/json", body=lambda: iter([b"{}"]),
+        )
+
+    service = ModelControlPlaneService(
+        transaction_factory=transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_proxy_internal_token="synthetic-internal",
+            model_connection_encryption_key="synthetic-encryption",
+            model_connection_allowed_internal_hosts="",
+        ),
+        repository=SimpleNamespace(run_connection=connection), security=SimpleNamespace(),
+        upstream=SimpleNamespace(request=missing_count, open_stream=forward),
+        attempt_capability_verifier=lambda **_kwargs: True,
+    )
+    fields = dict(
+        query="beta=true", headers={"anthropic-version": "2023-06-01"},
+        run_id="run-a", attempt_id="attempt-a", internal_token="synthetic-internal",
+        model_proxy_capability="synthetic-capability",
+    )
+    message_body = b'{"model":"model-a","max_tokens":512,"messages":[]}'
+    response = await service.proxy(
+        provider="anthropic", upstream_path="v1/messages", body=message_body, **fields,
+    )
+    assert response.status == 200 and len(forwarded) == 1
+
+    count_body = b'{"model":"model-a","messages":[]}'
+    response = await service.proxy(
+        provider="anthropic", upstream_path="v1/messages/count_tokens",
+        body=count_body, **fields,
+    )
+    assert response.status == 200
+    assert json.loads(b"".join(response.body)) == {"input_tokens": len(count_body) + 4096}
+
+    service._upstream = SimpleNamespace(
+        request=lambda **_kwargs: SimpleNamespace(status=200, body=b'{"input_tokens":true}'),
+        open_stream=forward,
+    )
+    with pytest.raises(RuntimeError, match="model_proxy_count_tokens_invalid"):
+        await service.proxy(
+            provider="anthropic", upstream_path="v1/messages/count_tokens",
+            body=count_body, **fields,
+        )
+
+    for status, error in (
+        (401, "model_proxy_count_tokens_failed"),
+        (429, "model_proxy_count_tokens_unavailable"),
+        (500, "model_proxy_count_tokens_failed"),
+    ):
+        service._upstream = SimpleNamespace(
+            request=lambda status=status, **_kwargs: SimpleNamespace(
+                status=status, body=b'{}',
+            ),
+            open_stream=forward,
+        )
+        with pytest.raises(RuntimeError, match=error):
+            await service.proxy(
+                provider="anthropic", upstream_path="v1/messages/count_tokens",
+                body=count_body, **fields,
+            )
+
+    service._upstream = SimpleNamespace(request=missing_count, open_stream=forward)
+
+    async def low_capacity_connection(_conn, **_kwargs):
+        value = await connection(_conn, **_kwargs)
+        value.max_input_tokens = 4096
+        return value
+
+    service._repository = SimpleNamespace(run_connection=low_capacity_connection)
+    with pytest.raises(ValueError, match="context_bootstrap_input_too_large"):
+        await service.proxy(
+            provider="anthropic", upstream_path="v1/messages", body=message_body, **fields,
+        )
+    assert len(forwarded) == 1
+
+
+@pytest.mark.asyncio
+async def test_stateless_context_summary_uses_frozen_run_budget_and_no_tools():
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def preparation(_conn, *, run_id, encryption_key):
+        assert run_id == "run-a" and encryption_key == _key()
+        return SimpleNamespace(model_value="claude-custom", max_input_tokens=32000,
+                               max_output_tokens=2048, base_url="https://gateway.example",
+                               api_key="run-revision-key")
+
+    sent = []
+
+    def upstream_request(**kwargs):
+        sent.append(kwargs)
+        if kwargs["path"].endswith("count_tokens"):
+            return SimpleNamespace(status=200, body=b'{"input_tokens":400}')
+        return SimpleNamespace(status=200, body=json.dumps({
+            "model": "claude-custom", "content": [{"type": "text", "text": "User constraints survive."}],
+            "usage": {"input_tokens": 400, "output_tokens": 12},
+        }).encode())
+
+    service = ModelControlPlaneService(
+        transaction_factory=fake_transaction,
+        settings_provider=lambda: SimpleNamespace(model_connection_encryption_key=_key(),
+                                                  model_connection_allowed_internal_hosts=""),
+        repository=SimpleNamespace(preparation_connection=preparation),
+        security=SimpleNamespace(), upstream=SimpleNamespace(request=upstream_request),
+        attempt_capability_verifier=lambda **_kwargs: False,
+    )
+    result = await service.summarize_context_for_run(run_id="run-a", source_text="prior user constraint")
+    assert result["summary"] == "User constraints survive."
+    assert result["input_tokens"] == 400 and result["output_tokens"] == 12
+    assert [item["path"] for item in sent] == ["/v1/messages/count_tokens", "/v1/messages"]
+    assert all(item["query"] == "beta=true" and item["api_key"] == "run-revision-key" for item in sent)
+    assert json.loads(sent[0]["body"])["tools"] == []
+    assert json.loads(sent[1]["body"])["max_tokens"] == 2048
+    sent.clear()
+    count = await service.count_checkpoint_input_for_run(run_id="run-a", source_text="checkpoint and tail")
+    assert count == 400 and len(sent) == 1
+    assert json.loads(sent[0]["body"]) == {
+        "model": "claude-custom", "messages": [{"role": "user", "content": "checkpoint and tail"}],
+        "tools": [],
+    }
+    sent.clear()
+
+    def missing_count(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(status=404, body=b'{}')
+
+    service._upstream = SimpleNamespace(request=missing_count)
+    count = await service.count_checkpoint_input_for_run(
+        run_id="run-a", source_text="count-less gateway",
+    )
+    assert count == len(sent[0]["body"]) + 4096
+    sent.clear()
+
+    def over_budget(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(status=200, body=b'{"input_tokens":32001}')
+
+    service._upstream = SimpleNamespace(request=over_budget)
+    with pytest.raises(ValueError, match="context_compaction_chunk_too_large"):
+        await service.summarize_context_for_run(run_id="run-a", source_text="prior user constraint")
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("binding_available", [True, False])
 async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response(
     monkeypatch, binding_available: bool,
@@ -1038,6 +1391,8 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         return SimpleNamespace(
             base_url="https://gateway.example",
             api_key="run-pinned-secret",
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
     class FakeUpstream:
@@ -1053,7 +1408,7 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         captured.update(kwargs)
         return FakeUpstream()
 
-    payload = json.dumps({"model": "openai/gpt-5", "messages": []}).encode()
+    payload = json.dumps({"model": "openai/gpt-5", "max_tokens": 512, "messages": []}).encode()
     events = iter([{"type": "http.request", "body": payload, "more_body": False}])
 
     async def receive():
@@ -1092,7 +1447,6 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
             openai_api_key="legacy-env-secret",
         ),
         repository=SimpleNamespace(run_connection=fake_run_connection),
-        legacy_catalog=SimpleNamespace(),
         security=SimpleNamespace(),
         upstream=SimpleNamespace(open_stream=fake_open_stream),
         attempt_capability_verifier=_attempt_capability_verifier(callback_secret),
@@ -1163,7 +1517,6 @@ async def test_internal_runtime_proxy_rejects_invalid_capability_before_database
             sandbox_callback_token=callback_secret,
         ),
         repository=SimpleNamespace(),
-        legacy_catalog=SimpleNamespace(),
         security=SimpleNamespace(),
         upstream=SimpleNamespace(),
         attempt_capability_verifier=_attempt_capability_verifier(callback_secret),
@@ -1173,7 +1526,7 @@ async def test_internal_runtime_proxy_rejects_invalid_capability_before_database
         await service.proxy(
             provider="openai",
             upstream_path="v1/chat/completions",
-            query_present=False,
+            query="",
             body=b'{"model":"openai/gpt-5"}',
             headers={},
             run_id="run-123",
@@ -1209,7 +1562,6 @@ async def test_internal_runtime_proxy_rejects_malformed_tokens_before_database(
             model_proxy_internal_token="internal-token",
         ),
         repository=SimpleNamespace(),
-        legacy_catalog=SimpleNamespace(),
         security=SimpleNamespace(),
         upstream=SimpleNamespace(),
         attempt_capability_verifier=lambda **_kwargs: False,

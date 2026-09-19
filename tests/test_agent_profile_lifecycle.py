@@ -1720,7 +1720,9 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
             return_value=RunModelSelection(
                 model_id="model-a",
                 model_value="model-a",
-                connection_revision=None,
+                connection_revision=1,
+                max_input_tokens=32_000,
+                max_output_tokens=2_048,
             )
         ),
     )
@@ -1901,7 +1903,7 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
 
 
 def test_profile_bound_continuation_rejects_client_execution_overrides():
-    from app.agent_apps.authority import reject_profile_selector_conflicts
+    from app.agent_apps.authority import AgentProfileAuthority
     from app.models import ChatStreamRequest, SelectedSkillRequest
 
     request = ChatStreamRequest(
@@ -1910,7 +1912,7 @@ def test_profile_bound_continuation_rejects_client_execution_overrides():
     )
 
     with pytest.raises(HTTPException) as caught:
-        reject_profile_selector_conflicts(request, active=True)
+        AgentProfileAuthority.reject_profile_selector_conflicts(request, active=True)
     assert (caught.value.status_code, caught.value.detail) == (400, "agent_profile_selector_conflict")
 
 

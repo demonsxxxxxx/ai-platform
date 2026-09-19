@@ -4411,7 +4411,10 @@ def test_authoritative_inspection_catalog_cannot_be_replaced_with_forged_subject
             }
         ],
     )
-    with pytest.raises(generator._InspectionCheckFailed, match="Skill subject mismatch"):
+    with pytest.raises(
+        generator._InspectionCheckFailed,
+        match="authoritative catalog subject aggregation mismatch",
+    ):
         generator._authoritative_inspection_catalog("sdk-native")
 
 

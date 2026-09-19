@@ -81,6 +81,7 @@ def open_upstream_stream(
     provider: str,
     body: bytes = b"",
     headers: Mapping[str, str] | None = None,
+    query: str = "",
     timeout_seconds: float = 3600.0,
     max_response_bytes: int = 16 * 1024 * 1024,
 ) -> UpstreamStream:
@@ -99,7 +100,12 @@ def open_upstream_stream(
     for ip in endpoint.ips:
         connection = _connection(endpoint, ip, timeout_seconds=timeout_seconds)
         try:
-            connection.request(method, path, body=body, headers=outbound)
+            connection.request(
+                method,
+                path + (f"?{query}" if query else ""),
+                body=body,
+                headers=outbound,
+            )
             response = connection.getresponse()
             if 300 <= response.status < 400:
                 response.close()
@@ -132,7 +138,11 @@ def _outbound_headers(
     outbound = {
         str(name).lower(): str(value)
         for name, value in (headers or {}).items()
-        if str(name).lower() in {"accept", "content-type", "anthropic-version", "user-agent"}
+        if str(name).lower() in (
+            {"accept", "content-type", "anthropic-version", "anthropic-beta", "user-agent"}
+            if provider == "anthropic"
+            else {"accept", "content-type", "user-agent"}
+        )
     }
     if provider == "anthropic":
         outbound["x-api-key"] = api_key
@@ -167,6 +177,7 @@ def request_upstream(
     provider: str,
     body: bytes = b"",
     headers: Mapping[str, str] | None = None,
+    query: str = "",
     timeout_seconds: float = 20.0,
     max_response_bytes: int = 16 * 1024 * 1024,
 ) -> UpstreamResponse:
@@ -185,7 +196,12 @@ def request_upstream(
     for ip in endpoint.ips:
         connection = _connection(endpoint, ip, timeout_seconds=timeout_seconds)
         try:
-            connection.request(method, path, body=body, headers=outbound)
+            connection.request(
+                method,
+                path + (f"?{query}" if query else ""),
+                body=body,
+                headers=outbound,
+            )
             response = connection.getresponse()
             if 300 <= response.status < 400:
                 raise ModelUpstreamError("model_upstream_redirect_rejected")

@@ -110,7 +110,7 @@ export function SkillCard({
           <div className="skill-meta-pill">
             <FileText size={13} />
             <span>
-              {skill.file_count} {t("marketplace.files")}
+              {skill.file_count} {t("fileLibrary.files")}
             </span>
           </div>
           {skill.updated_at && (

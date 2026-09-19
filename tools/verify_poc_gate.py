@@ -399,11 +399,8 @@ def check_api_compat(api_url: str, *, expected_default_model_id: str = "") -> Ga
         "/api/auth/oauth/providers",
         "/api/auth/permissions",
         "/api/agent/models/available",
-        "/api/projects",
         "/api/notifications/active",
         "/api/upload/config",
-        "/api/tools",
-        "/api/version",
     ]
     statuses: dict[str, int] = {}
     payloads: dict[str, Any] = {}
@@ -1183,14 +1180,14 @@ def check_upload_attachment_chat(
 ) -> Gate:
     headers = principal_headers("upload-gate-user-a", "Upload Gate User")
     upload_status, upload_payload = http_multipart_file_post(
-        f"{api_url.rstrip('/')}/api/upload/file?folder=uploads",
+        f"{api_url.rstrip('/')}/api/ai/files",
         field_name="file",
         filename="upload-gate.txt",
         content=b"hello upload smoke",
         content_type="text/plain",
         headers=headers,
     )
-    file_id = upload_payload.get("key") if isinstance(upload_payload, dict) else None
+    file_id = upload_payload.get("file_id") if isinstance(upload_payload, dict) else None
     chat_payload: dict[str, Any] | None = None
     chat_status = 0
     if file_id:
@@ -1286,7 +1283,7 @@ group by r.id;
     ok = (
         upload_status == 200
         and isinstance(upload_payload, dict)
-        and str(upload_payload.get("key") or "").startswith("file_")
+        and str(upload_payload.get("file_id") or "").startswith("file_")
         and chat_status == 200
         and run_accepted_by_worker
         and file_id in (run_evidence.get("file_ids") or [])
@@ -1335,14 +1332,14 @@ def check_word_review_attachment_chat(
     filename, content = sample
     headers = principal_headers("upload-review-gate-user", "Upload Review Gate User")
     upload_status, upload_payload = http_multipart_file_post(
-        f"{api_url.rstrip('/')}/api/upload/file?folder=uploads",
+        f"{api_url.rstrip('/')}/api/ai/files",
         field_name="file",
         filename=filename,
         content=content,
         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers=headers,
     )
-    file_id = upload_payload.get("key") if isinstance(upload_payload, dict) else None
+    file_id = upload_payload.get("file_id") if isinstance(upload_payload, dict) else None
     chat_payload: dict[str, Any] | None = None
     chat_status = 0
     if file_id:
@@ -1475,7 +1472,7 @@ group by r.id;
     ok = (
         upload_status == 200
         and isinstance(upload_payload, dict)
-        and str(upload_payload.get("key") or "").startswith("file_")
+        and str(upload_payload.get("file_id") or "").startswith("file_")
         and chat_status == 200
         and run_evidence.get("status") == "succeeded"
         and run_evidence.get("agent_id") == "qa-word-review"

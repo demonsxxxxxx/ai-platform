@@ -7,6 +7,7 @@ import {
   type ComposerSelection,
 } from "../composerSelections";
 import {
+  clearModelCommandDraft,
   parseComposerCommand,
   resolveComposerCommandDraft,
   resolveSlashCommandMenu,
@@ -65,6 +66,27 @@ test("slash command parser maps command words to governed panels", () => {
     query: "",
     unavailable: false,
   });
+});
+
+test("model selection clears only an active model command draft", () => {
+  assert.equal(
+    clearModelCommandDraft(
+      "Draft a validation report",
+      allAvailable,
+      true,
+    ),
+    "Draft a validation report",
+  );
+  assert.equal(clearModelCommandDraft("/model gpt", allAvailable, true), "");
+  assert.equal(clearModelCommandDraft("  /model qwen", allAvailable, true), "");
+  assert.equal(
+    clearModelCommandDraft(
+      "/model is failing in production",
+      allAvailable,
+      false,
+    ),
+    "/model is failing in production",
+  );
 });
 
 test("context is not a supported composer command", () => {
@@ -287,14 +309,22 @@ test("chat input renders composer chips and expanded command groups", () => {
     join(root, "src/components/selectors/FeatureMenu.tsx"),
     "utf8",
   );
+  const toolbar = readFileSync(
+    join(root, "src/components/chat/ChatInputToolbar.tsx"),
+    "utf8",
+  );
+  const zh = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
 
   assert.match(chatInput, /<ComposerChips/);
   assert.match(chatInput, /composerSelectionReducer/);
   assert.match(chatInput, /resolveSlashCommandMenu/);
   assert.match(chatInput, /command-menu/);
-  assert.match(featureMenu, /featureMenu\.model/);
+  assert.match(toolbar, /data-composer-model-trigger/);
+  assert.match(toolbar, /<Paperclip size=\{19\}/);
+  assert.doesNotMatch(featureMenu, /featureMenu\.model/);
   assert.doesNotMatch(featureMenu, /featureMenu\.context/);
-  assert.match(featureMenu, /featureMenu\.fileReference/);
+  assert.doesNotMatch(featureMenu, /featureMenu\.fileReference/);
+  assert.doesNotMatch(zh, /"fileReference"\s*:/);
 });
 
 test("chat input routes the available /file command to the safe upload picker", () => {
@@ -506,7 +536,7 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
   assert.match(attachmentList, /data-composer-file-reference/);
   assert.match(attachmentList, /data-composer-file-state/);
   assert.match(chatInput, /data-composer-command-menu-anchor/);
-  assert.match(chatInput, /<LibreChatComposerRegion region="chips">/);
+  assert.match(chatInput, /<LibreChatComposerRegion region="chips"[^>]*>/);
   assert.match(composerPrimitive, /data-librechat-composer-region=\{region\}/);
 });
 

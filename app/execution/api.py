@@ -8,6 +8,10 @@ from app.execution.application.adapter_run import (
     submit_run_until_cancelled,
     time,
 )
+from app.execution.application.pinned_skill_materialization import (
+    PinnedSkillMismatch as PinnedSkillMismatch,
+    validate_pinned_skill_relative_path as validate_pinned_skill_relative_path,
+)
 from app.execution.application.skill_invocation_evidence import (
     SkillInvocationEvidenceBinder,
 )
@@ -36,6 +40,7 @@ from app.execution.application.worker_attempt_lifecycle import (
 )
 from app.execution.application.worker_failure_diagnostics import (
     executor_exception_failure,
+    normalized_runtime_diagnostics_payload,
     predispatch_failure_result,
 )
 from app.execution.application.claude_agent_events import (
@@ -67,12 +72,26 @@ from app.execution.domain.public_projection import (
 from typing import Any
 
 from app.execution.application.model_control_plane import configured_model_control_plane
+from app.execution.application.provider_sessions import claude_provider_session_dispatch
 from app.execution.application.model_selection import (
     RunModelSelection as RunModelSelection,
 )
 from app.execution.application.model_selection import (
+    bind_selected_run_model as bind_selected_run_model,
     parse_requested_model_selection as parse_requested_model_selection,
 )
+
+
+async def count_checkpoint_input_for_run(*, run_id: str, source_text: str) -> int:
+    return await configured_model_control_plane().count_checkpoint_input_for_run(
+        run_id=run_id, source_text=source_text,
+    )
+
+
+async def summarize_context_for_run(*, run_id: str, source_text: str) -> dict[str, Any]:
+    return await configured_model_control_plane().summarize_context_for_run(
+        run_id=run_id, source_text=source_text,
+    )
 
 
 async def list_public_models(conn: Any) -> dict[str, object]:
@@ -83,7 +102,7 @@ async def resolve_chat_model_selection(
     conn: Any,
     *,
     selection: dict[str, str] | None,
-) -> RunModelSelection | None:
+) -> RunModelSelection:
     return await configured_model_control_plane().resolve_selection(
         conn,
         selection=selection,
@@ -107,6 +126,7 @@ __all__ = [
     "build_artifact_records",
     "claude_sdk_failure_code",
     "claude_sdk_failure_message",
+    "claude_provider_session_dispatch",
     "context_file_failure_event_fields",
     "context_file_failure_event_payload",
     "context_file_failure_log_extra",
@@ -115,12 +135,16 @@ __all__ = [
     "fail_run_and_reconcile_worker_child",
     "executor_exception_failure",
     "finalize_worker_child_parent",
+    "normalized_runtime_diagnostics_payload",
     "restored_executor_reconciliation_queue_payload",
     "restored_sandbox_run_payload",
     "sandbox_reconciliation_payload",
     "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
     "list_public_models",
+    "bind_selected_run_model",
+    "count_checkpoint_input_for_run",
+    "summarize_context_for_run",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",
     "promote_artifact_reservations",

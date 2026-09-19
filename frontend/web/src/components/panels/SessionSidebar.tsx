@@ -36,6 +36,7 @@ import {
   type WorkbenchNavItem,
 } from "./SidebarParts/navigationState";
 import { canAccessWorkbenchItem } from "../governance/workbenchAccessPolicy";
+import type { AgentProfileAvatarRef } from "../../types/agentProfile";
 import { LIBRECHAT_SHELL_GEOMETRY } from "../../librechat-ui/surface";
 
 interface SessionSidebarProps {
@@ -52,9 +53,14 @@ interface SessionSidebarProps {
   sessionFilter?: (session: BackendSession) => boolean;
   sessionSource?: SessionSidebarSessionSource;
   agentWorkspace?: {
+    agent_id?: string;
+    avatar_ref?: AgentProfileAvatarRef;
+    avatar_seed?: string;
     name: string;
     description: string;
   };
+  /** Render Agent history in the adjacent workspace panel on desktop. */
+  agentHistoryInMainPanel?: boolean;
   /** Navigation-only shells expose Agent services without generic Chat history. */
   navigationOnly?: boolean;
   /** Allow a navigation-only shell to show global history without chat actions. */
@@ -97,6 +103,7 @@ export const SessionSidebar = forwardRef<
     sessionFilter,
     sessionSource,
     agentWorkspace,
+    agentHistoryInMainPanel = false,
     navigationOnly = false,
     showSessionHistory = false,
   },
@@ -360,6 +367,7 @@ export const SessionSidebar = forwardRef<
             isChatsCollapsed={isChatsCollapsed}
             onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
             agentWorkspace={agentWorkspace}
+            agentHistoryInMainPanel={agentHistoryInMainPanel}
             hideSessionDiscovery={agentWorkspace !== undefined}
             navigationOnly={navigationOnly}
             showSessionHistory={showSessionHistory}
@@ -403,6 +411,7 @@ export const SessionSidebar = forwardRef<
               isChatsCollapsed={isChatsCollapsed}
               onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
               agentWorkspace={agentWorkspace}
+              agentHistoryInMainPanel={agentHistoryInMainPanel}
               hideSessionDiscovery={agentWorkspace !== undefined}
               navigationOnly={navigationOnly}
               showSessionHistory={showSessionHistory}

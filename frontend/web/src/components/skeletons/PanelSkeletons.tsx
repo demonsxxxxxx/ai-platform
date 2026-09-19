@@ -79,68 +79,6 @@ export function SkillsPanelSkeleton() {
   );
 }
 
-/** Marketplace panel: card grid matching SkillBaseCard (.scb) structure */
-export function MarketplacePanelSkeleton() {
-  return (
-    <div className="flex h-full min-h-0 flex-col gap-4 animate-fade-in">
-      <PanelHeaderSkeleton />
-      <div className="skill-content-area flex-1 overflow-y-auto py-2 sm:py-4 px-4 sm:p-6">
-        <div className="grid auto-grid-cols gap-5">
-          {Array.from({ length: 12 }).map((_, i) => (
-            <div key={i} className="scb">
-              {/* Banner */}
-              <div
-                className="h-12 w-full shrink-0 relative"
-                style={{
-                  background: `linear-gradient(135deg, ${
-                    [
-                      "var(--theme-primary-light)",
-                      "color-mix(in srgb, var(--theme-primary-light) 60%, var(--theme-bg))",
-                      "var(--theme-bg-card)",
-                    ][i % 3]
-                  }, var(--theme-bg-card))`,
-                }}
-              />
-              {/* Card body */}
-              <div className="flex flex-1 flex-col -mt-3 pt-5 p-3 sm:p-4">
-                <div className="flex items-start gap-2.5 sm:gap-3">
-                  {/* Icon overlapping banner */}
-                  <div className="scb__icon-ring shrink-0 skeleton-line" />
-                  <div className="min-w-0 flex-1">
-                    <SkeletonLine
-                      width={i % 3 === 0 ? "w-3/4" : "w-1/2"}
-                      className="!h-[15px] sm:!h-[16px]"
-                    />
-                    <SkeletonLine
-                      width="w-16 sm:w-20"
-                      className="!h-2.5 sm:!h-3 mt-1"
-                    />
-                  </div>
-                </div>
-                <div className="mt-2 space-y-1">
-                  <SkeletonLine width="w-full" className="!h-2.5 sm:!h-3" />
-                  <SkeletonLine width="w-4/5" className="!h-2.5 sm:!h-3" />
-                </div>
-                <div className="mt-2.5 sm:mt-3 flex items-center justify-between">
-                  <SkeletonLine
-                    width="w-12 sm:w-14"
-                    className="!h-4 sm:!h-5 !rounded-full"
-                  />
-                  <div className="flex items-center gap-1.5">
-                    <div className="skeleton-line size-7 rounded-lg" />
-                    <div className="skeleton-line size-7 rounded-lg" />
-                  </div>
-                </div>
-                <div className="flex-1" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /** Roles panel: vertically stacked cards matching real RolesPanel layout */
 export function RolesPanelSkeleton() {
   return (

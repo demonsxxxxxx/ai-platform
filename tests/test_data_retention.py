@@ -305,29 +305,8 @@ def test_undecided_retention_classes_are_explicitly_fail_safe():
         "max_attempts": 5,
         "retry_base_seconds": 60,
         "retry_cap_seconds": 3600,
-        "canonical_environment_prefix": "OBJECT_DELETE_",
-        "legacy_environment_prefix": "ARTIFACT_OBJECT_DELETE_",
-        "legacy_supported_until": "2026-10-31",
-        "precedence": "canonical_over_legacy",
+        "environment_prefix": "OBJECT_DELETE_",
     }
-
-
-def test_retention_projection_accepts_legacy_object_delete_attributes():
-    configured = settings()
-    del configured.object_delete_batch_limit
-    del configured.object_delete_max_attempts
-    del configured.object_delete_retry_base_seconds
-    del configured.object_delete_retry_cap_seconds
-    configured.artifact_object_delete_max_attempts = 6
-    configured.artifact_object_delete_retry_base_seconds = 75
-    configured.artifact_object_delete_retry_cap_seconds = 750
-
-    projection = data_retention.retention_policy_projection(configured)
-
-    assert projection["object_deletion"]["batch_limit"] == 10
-    assert projection["object_deletion"]["max_attempts"] == 6
-    assert projection["object_deletion"]["retry_base_seconds"] == 75
-    assert projection["object_deletion"]["retry_cap_seconds"] == 750
 
 
 @pytest.mark.asyncio

@@ -29,12 +29,16 @@ EXPERT_MARKET_SCHEMA_VERSION = "2026.09.01.1"
 AGENT_AVATAR_STYLE_SCHEMA_VERSION = "2026.09.01.2"
 USER_PROFILE_METADATA_SCHEMA_VERSION = "2026.09.02.1"
 FILE_UPLOAD_SESSION_SCHEMA_VERSION = "2026.09.03.1"
+CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION = "2026.09.04.1"
 EXPERT_SKILL_NAME_SCHEMA_VERSION = "2026.09.03.2"
 BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION = "2026.09.07.1"
 EXPERT_MARKET_MULTI_TAG_SCHEMA_VERSION = "2026.09.07.2"
 STREAM_ONLY_SCHEMA_VERSION = "2026.09.12.1"
 RUN_DIAGNOSTICS_SCHEMA_VERSION = "2026.09.13.1"
-TARGET_SCHEMA_VERSION = RUN_DIAGNOSTICS_SCHEMA_VERSION
+MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION = "2026.09.15.1"
+CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION = "2026.09.15.2"
+SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION = "2026.09.16.1"
+TARGET_SCHEMA_VERSION = SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = STREAM_ONLY_SCHEMA_VERSION
@@ -64,6 +68,13 @@ CRITICAL_RELATIONS = (
     "mcp_servers",
     "mcp_server_credentials",
     "mcp_tools",
+    "provider_session_heads",
+    "provider_session_epochs",
+    "provider_session_entries",
+    "provider_session_append_receipts",
+    "provider_turn_receipts",
+    "conversation_context_checkpoints",
+    "run_context_snapshots",
 )
 CRITICAL_COLUMNS = (
     ("users", "metadata_json", "jsonb", True),
@@ -79,6 +90,8 @@ CRITICAL_COLUMNS = (
     ("runs", "model_id", "text", False),
     ("runs", "model_value", "text", False),
     ("runs", "model_gateway_revision", "int8", False),
+    ("runs", "max_input_tokens", "int8", False),
+    ("runs", "max_output_tokens", "int8", False),
     ("run_diagnostics", "diagnostic_id", "text", True),
     ("run_diagnostics", "tenant_id", "text", True),
     ("run_diagnostics", "run_id", "text", True),
@@ -102,6 +115,8 @@ CRITICAL_COLUMNS = (
     ("model_catalog_entries", "upstream_available", "bool", True),
     ("model_catalog_entries", "is_default", "bool", True),
     ("model_catalog_entries", "display_order", "int4", True),
+    ("model_catalog_entries", "max_input_tokens", "int8", False),
+    ("model_catalog_entries", "max_output_tokens", "int8", False),
     ("model_catalog_entries", "first_seen_revision", "int8", True),
     ("model_catalog_entries", "last_seen_revision", "int8", True),
     ("model_catalog_entries", "first_seen_at", "timestamptz", True),
@@ -163,6 +178,8 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "runtime_executor_url", "text", False),
     ("sandbox_leases", "runtime_workspace_container_path", "text", False),
     ("sandbox_leases", "runtime_handle_verified_at", "timestamptz", False),
+    ("sandbox_leases", "provider_renewed_at", "timestamptz", False),
+    ("sandbox_leases", "provider_expires_at", "timestamptz", False),
     ("sandbox_leases", "executor_status", "text", True),
     ("sandbox_leases", "executor_heartbeat_at", "timestamptz", False),
     ("sandbox_leases", "executor_terminal_json", "jsonb", False),
@@ -181,10 +198,58 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciliation_error", "text", True),
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
     ("mcp_server_credentials", "credential_envelope", "text", True),
+    ("run_context_snapshots", "conversation_authority_json", "jsonb", False),
+    ("conversation_context_checkpoints", "id", "text", True),
+    ("conversation_context_checkpoints", "tenant_id", "text", True),
+    ("conversation_context_checkpoints", "session_id", "text", True),
+    ("conversation_context_checkpoints", "source_snapshot_id", "text", True),
+    ("conversation_context_checkpoints", "source_sha256", "text", True),
+    ("conversation_context_checkpoints", "summary_sha256", "text", False),
+    ("conversation_context_checkpoints", "state", "text", True),
+    ("conversation_context_checkpoints", "owner_run_id", "text", True),
+    ("provider_session_heads", "tenant_id", "text", True),
+    ("provider_session_heads", "workspace_id", "text", True),
+    ("provider_session_heads", "user_id", "text", True),
+    ("provider_session_heads", "session_id", "text", True),
+    ("provider_session_heads", "agent_id", "text", True),
+    ("provider_session_heads", "engine", "text", True),
+    ("provider_session_heads", "current_epoch_id", "text", False),
+    ("provider_session_heads", "next_epoch_number", "int8", True),
+    ("provider_session_heads", "active_run_id", "text", False),
+    ("provider_session_heads", "active_attempt_id", "text", False),
+    ("provider_session_epochs", "id", "text", True),
+    ("provider_session_epochs", "tenant_id", "text", True),
+    ("provider_session_epochs", "session_id", "text", True),
+    ("provider_session_epochs", "provider_session_id", "uuid", True),
+    ("provider_session_epochs", "next_sequence", "int8", True),
+    ("provider_session_epochs", "state", "text", True),
+    ("provider_session_epochs", "coverage_source_sha256", "text", False),
+    ("provider_session_epochs", "writer_owner_generation", "int8", False),
+    ("provider_session_entries", "id", "text", True),
+    ("provider_session_entries", "tenant_id", "text", True),
+    ("provider_session_entries", "workspace_id", "text", True),
+    ("provider_session_entries", "user_id", "text", True),
+    ("provider_session_entries", "session_id", "text", True),
+    ("provider_session_entries", "agent_id", "text", True),
+    ("provider_session_entries", "engine", "text", True),
+    ("provider_session_entries", "epoch_id", "text", True),
+    ("provider_session_entries", "subpath", "text", True),
+    ("provider_session_entries", "sequence", "int8", True),
+    ("provider_session_entries", "sdk_entry_uuid", "text", False),
+    ("provider_session_entries", "entry_json", "jsonb", True),
+    ("provider_session_entries", "created_at", "timestamptz", True),
+    ("provider_session_append_receipts", "epoch_id", "text", True),
+    ("provider_session_append_receipts", "expected_sequence", "int8", True),
+    ("provider_session_append_receipts", "batch_sha256", "text", True),
+    ("provider_session_append_receipts", "owner_generation", "int8", True),
+    ("provider_turn_receipts", "epoch_id", "text", True),
+    ("provider_turn_receipts", "execution_spec_sha256", "text", True),
+    ("provider_turn_receipts", "committed_coverage_sha256", "text", False),
 )
 CRITICAL_CONSTRAINTS = (
     ("users", "chk_users_metadata_json_object"),
     ("runs", "fk_runs_model_gateway_revision"),
+    ("runs", "chk_runs_model_token_limits"),
     ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
     ("model_gateway_revisions", "chk_model_gateway_base_url"),
     ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),
@@ -194,6 +259,7 @@ CRITICAL_CONSTRAINTS = (
     ("model_catalog_entries", "chk_model_catalog_upstream_id"),
     ("model_catalog_entries", "chk_model_catalog_display_name"),
     ("model_catalog_entries", "chk_model_catalog_default_enabled"),
+    ("model_catalog_entries", "chk_model_catalog_token_limits"),
     ("sessions", "chk_sessions_title_source"),
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
@@ -229,6 +295,23 @@ CRITICAL_CONSTRAINTS = (
     ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
     ("mcp_servers", "mcp_servers_endpoint_not_persisted"),
     ("mcp_tools", "mcp_tools_endpoint_not_persisted"),
+    ("conversation_context_checkpoints", "fk_context_checkpoint_session"),
+    ("conversation_context_checkpoints", "fk_context_checkpoint_owner_scope"),
+    ("conversation_context_checkpoints", "fk_context_checkpoint_source_scope"),
+    ("conversation_context_checkpoints", "fk_context_checkpoint_predecessor"),
+    ("conversation_context_checkpoints", "chk_context_checkpoint_ready"),
+    ("provider_session_heads", "pk_provider_session_heads"),
+    ("provider_session_heads", "fk_provider_head_session"),
+    ("provider_session_heads", "fk_provider_head_current_epoch"),
+    ("provider_session_epochs", "fk_provider_epoch_head"),
+    ("provider_session_epochs", "uq_provider_epoch_scope"),
+    ("provider_session_epochs", "uq_provider_epoch_number"),
+    ("provider_session_epochs", "uq_provider_epoch_provider_id"),
+    ("provider_session_entries", "provider_session_entries_pkey"),
+    ("provider_session_entries", "fk_provider_entry_epoch"),
+    ("provider_session_entries", "uq_provider_entry_global_sequence"),
+    ("provider_session_append_receipts", "provider_session_append_receipts_pkey"),
+    ("provider_turn_receipts", "fk_provider_turn_epoch"),
 )
 CRITICAL_TRIGGERS = (
     (
@@ -245,6 +328,24 @@ CRITICAL_TRIGGERS = (
     ),
 )
 MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "runs",
+        "chk_runs_model_token_limits",
+        "c",
+        "CHECK (max_input_tokens IS NULL AND max_output_tokens IS NULL OR "
+        "max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
+        "max_output_tokens >= 1 AND max_output_tokens <= 10000000)",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_token_limits",
+        "c",
+        "CHECK (max_input_tokens IS NULL AND max_output_tokens IS NULL OR "
+        "max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
+        "max_output_tokens >= 1 AND max_output_tokens <= 10000000)",
+    ),
     (
         "runs",
         "fk_runs_model_gateway_revision",
@@ -764,6 +865,27 @@ STATIC_INDEX_DEFINITIONS = (
         ("lease_expires_at", "tenant_id", "run_id", "id"),
         (False, False, False, False),
         "status = any array['claimed', 'running', 'cancel_requested', 'expired']",
+    ),
+    StaticIndexDefinition(
+        "idx_provider_entry_view",
+        "provider_session_entries",
+        ("epoch_id", "subpath", "sequence"),
+        (False, False, False),
+    ),
+    StaticIndexDefinition(
+        "uq_provider_entry_sdk_uuid",
+        "provider_session_entries",
+        ("epoch_id", "subpath", "sdk_entry_uuid"),
+        (False, False, False),
+        "sdk_entry_uuid is not null and sdk_entry_uuid <> ''",
+        unique=True,
+    ),
+    StaticIndexDefinition(
+        "idx_sessions_provider_scope",
+        "sessions",
+        ("tenant_id", "workspace_id", "user_id", "id", "agent_id"),
+        (False, False, False, False, False),
+        unique=True,
     ),
 )
 CRITICAL_INDEXES = (

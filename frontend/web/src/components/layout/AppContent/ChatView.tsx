@@ -13,7 +13,6 @@ import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import toast from "react-hot-toast";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
@@ -84,9 +83,6 @@ import type {
   SelectedSkillTaskState,
 } from "../../../hooks/useSelectedSkillTask";
 import type { RevealPreviewRequest } from "../../chat/ChatMessage/items/revealPreviewData";
-import { clearFileRevealAutoOpenState } from "../../chat/ChatMessage/items/fileRevealAutoOpen";
-import { clearProjectRevealAutoOpenState } from "../../chat/ChatMessage/items/projectRevealAutoOpen";
-import { getLatestChatAutoPreviewTarget } from "../../chat/ChatMessage/autoPreviewEligibility";
 import {
   createActiveRevealPreviewState,
   markRevealPreviewInteracted,
@@ -114,6 +110,7 @@ import {
   createArtifactDownloadScopeContext,
 } from "../../chat/ChatMessage/items/artifactDownloadRegistry";
 import {
+  projectAssistantResponseFiles,
   projectSessionWorkspaceFiles,
   sessionWorkspaceFileToAttachment,
   sessionWorkspaceProjectionForRender,
@@ -210,7 +207,6 @@ interface ChatViewProps {
     composer?: ReactNode;
     rightPanel?: ReactNode;
   }>;
-  sessionRouteBasePath?: string;
 }
 
 export function ChatView({
@@ -269,10 +265,8 @@ export function ChatView({
   externalScrollToBottom,
   outlineToggleRef,
   WorkbenchShellComponent,
-  sessionRouteBasePath = "/chat",
 }: ChatViewProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { user } = useAuth();
   const artifactDownloadScopeContext = useMemo(
     () =>
@@ -308,9 +302,13 @@ export function ChatView({
       files: [],
       status: "idle",
     });
-  const visibleWorkspaceProjection = sessionWorkspaceProjectionForRender(
-    workspaceProjection,
-    sessionId,
+  const visibleWorkspaceProjection = useMemo(
+    () =>
+      projectAssistantResponseFiles(
+        sessionWorkspaceProjectionForRender(workspaceProjection, sessionId),
+        messages,
+      ),
+    [messages, sessionId, workspaceProjection],
   );
   const sessionRunning = isSessionRunning(messages, isLoading);
   const hasVisibleStreamingMessage = messages.some(
@@ -424,19 +422,18 @@ export function ChatView({
             status: "loading",
           },
     );
-    void Promise.allSettled([
-      sessionApi.getInputFiles(sessionId),
-      sessionApi.getArtifactFiles(sessionId),
-    ]).then(([inputResult, artifactResult]) => {
-      if (!current) return;
-      setWorkspaceProjection(
-        projectSessionWorkspaceFiles(sessionId, inputResult, artifactResult),
-      );
-    });
+    void Promise.allSettled([sessionApi.getInputFiles(sessionId)]).then(
+      ([inputResult]) => {
+        if (!current) return;
+        setWorkspaceProjection(
+          projectSessionWorkspaceFiles(sessionId, inputResult),
+        );
+      },
+    );
     return () => {
       current = false;
     };
-  }, [sessionId, currentRunId, messages.length, attachments.length]);
+  }, [sessionId, attachments.length]);
 
   const displayMessages = useMemo(
     () =>
@@ -648,39 +645,13 @@ export function ChatView({
 
   useEffect(() => {
     dismissedPreviewKeysRef.current.clear();
-    clearFileRevealAutoOpenState();
-    clearProjectRevealAutoOpenState();
     clearSidebarHistory();
     setActiveRevealPreviewState(null);
     closePersistentToolPanel();
   }, [sessionId]);
 
-  const latestAutoPreview = useMemo(
-    () =>
-      getLatestChatAutoPreviewTarget({
-        messages,
-        suppressAutoPreview: false,
-      }),
-    [messages],
-  );
   const isMobileViewport =
     typeof window !== "undefined" ? window.innerWidth < 640 : false;
-
-  const handleForkMessage = useCallback(
-    async (messageId: string) => {
-      if (!sessionId) return;
-      try {
-        const response = await sessionApi.forkMessage(sessionId, messageId);
-        toast.success(t("chat.message.forkSuccess"));
-        navigate(`${sessionRouteBasePath}/${response.session.id}`);
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : t("chat.message.forkFailed"),
-        );
-      }
-    },
-    [navigate, sessionId, sessionRouteBasePath, t],
-  );
 
   const handleOpenWorkspaceFile = useCallback(
     (file: SessionWorkspaceFile) => {
@@ -786,13 +757,8 @@ export function ChatView({
           <ChatMessage
             message={message}
             artifactDownloadScopeContext={artifactDownloadScopeContext}
-            sessionId={sessionId ?? undefined}
-            runId={currentRunId ?? undefined}
             isLastMessage={index === messages.length - 1}
-            activePreview={activePreview}
-            latestAutoPreview={latestAutoPreview}
             onOpenPreview={handleOpenPreview}
-            onForkMessage={handleForkMessage}
           />
         }
       >
@@ -803,14 +769,9 @@ export function ChatView({
       </AssistantUiMessageContentContext.Provider>
     ),
     [
-      sessionId,
       artifactDownloadScopeContext,
-      currentRunId,
       messages.length,
-      activePreview,
-      latestAutoPreview,
       handleOpenPreview,
-      handleForkMessage,
     ],
   );
 

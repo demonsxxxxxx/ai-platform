@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
+from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 
 TOOL_PERMISSION_CARD_SCHEMA_VERSION = "ai-platform.tool-permission-card.v1"
 TOOL_PERMISSION_PRIVATE_PAYLOAD_KEYS = {
@@ -43,57 +43,6 @@ def _redact_tool_permission_private_payload(value: Any) -> Any:
         return [_redact_tool_permission_private_payload(item) for item in value]
     return value
 
-
-def permission_response(row: dict[str, Any]) -> dict[str, Any]:
-    """Return an owner-visible permission record without governance controls."""
-
-    run_id = str(row["run_id"])
-    request_id = str(row["id"])
-    return {
-        "permission_request_id": request_id,
-        "tenant_id": str(row["tenant_id"]),
-        "workspace_id": str(row["workspace_id"]),
-        "user_id": str(row["user_id"]),
-        "session_id": str(row["session_id"]),
-        "run_id": run_id,
-        "trace_id": str(row.get("trace_id") or standard_trace_id(run_id)),
-        "tool_id": str(row["tool_id"]),
-        "tool_call_id": str(row["tool_call_id"]),
-        "action": str(row.get("action") or "execute"),
-        "risk_level": _risk_level(row.get("risk_level")),
-        "write_capable": bool(row.get("write_capable")),
-        "status": str(row.get("status") or "pending"),
-        "decision": row.get("decision"),
-        "reason": sanitize_public_text(row.get("reason")),
-        "created_at": row.get("created_at"),
-        "decided_at": row.get("decided_at"),
-        "expires_at": row.get("expires_at"),
-    }
-
-
-def inbox_permission_response(row: dict[str, Any]) -> dict[str, Any]:
-    """Return the tenant-inbox allowlist without owner-controlled request details."""
-    run_id = str(row["run_id"])
-    request_id = str(row["id"])
-    tool_id = _public_text(row.get("tool_id")) or "tool"
-    return {
-        "request_id": request_id,
-        "run_id": run_id,
-        "tool_id": tool_id,
-        "tool_display": tool_id,
-        "risk_level": _risk_level(row.get("risk_level")),
-        "write_capable": bool(row.get("write_capable")),
-        "status": str(row.get("status") or "pending"),
-        "expires_at": row.get("expires_at"),
-        "allowed_decisions": inbox_allowed_decisions(row),
-    }
-
-
-def inbox_allowed_decisions(row: dict[str, Any]) -> list[str]:
-    """Historical records intentionally expose no runtime decision controls."""
-
-    _ = row
-    return []
 
 
 def tool_permission_public_event_payload(

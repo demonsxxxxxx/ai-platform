@@ -67,7 +67,7 @@ server {
 
     location ~ "^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$" {
         if ($request_method != POST) { return 405; }
-        if ($query_string != "") { return 400; }
+        if ($query_string !~ "^(|beta=true)$") { return 400; }
         rewrite ^/anthropic/[^/]+/[^/]+/(.*)$ /api/ai/internal/model-proxy/anthropic/$1 break;
         proxy_pass ${AI_PLATFORM_API_UPSTREAM};
         proxy_http_version 1.1;

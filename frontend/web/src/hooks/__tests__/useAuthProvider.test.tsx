@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  CompanyADLoginError,
+} from "../../services/api/auth.ts";
 import { ApiRequestError } from "../../services/api/fetch.ts";
 import { registerAuthScopedCacheClearer } from "../../services/api/authCacheInvalidation.ts";
 import type { User } from "../../types/auth.ts";
@@ -383,6 +386,7 @@ async function mountAuthPageHarness(
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
     login: authApi.login,
+    fetchCompanyADLogin: authApi.fetchCompanyADLogin,
     loginWithAD: authApi.loginWithAD,
     logout: authApi.logout,
     beginOAuth: authApi.beginOAuth,
@@ -412,6 +416,7 @@ async function mountAuthPageHarness(
   storage.set("ai_platform_session_present", "test-session-marker");
 
   let snapshot: ReturnType<typeof useAuth> | null = null;
+  let setAuthPageVisible: ((visible: boolean) => void) | null = null;
   const successfulRedirects: Array<string | undefined> = [];
   const successToasts: unknown[] = [];
   const errorToasts: unknown[] = [];
@@ -426,6 +431,15 @@ async function mountAuthPageHarness(
   function Probe() {
     snapshot = useAuth();
     return null;
+  }
+  function AuthPageGate() {
+    const [visible, setVisible] = React.useState(true);
+    setAuthPageVisible = setVisible;
+    return visible
+      ? React.createElement(AuthPage, {
+          onSuccess: (path?: string) => successfulRedirects.push(path),
+        })
+      : null;
   }
 
   const container = document.createElement("div");
@@ -442,9 +456,7 @@ async function mountAuthPageHarness(
             React.Fragment,
             null,
             React.createElement(Probe),
-            React.createElement(AuthPage, {
-              onSuccess: (path?: string) => successfulRedirects.push(path),
-            }),
+            React.createElement(AuthPageGate),
           ),
         ),
       ),
@@ -462,12 +474,17 @@ async function mountAuthPageHarness(
       assert.ok(snapshot, "auth page provider probe is mounted");
       return snapshot;
     },
+    async unmountAuthPage() {
+      assert.ok(setAuthPageVisible, "auth page gate is mounted");
+      await React.act(async () => setAuthPageVisible?.(false));
+    },
     async cleanup() {
       await React.act(async () => root.unmount());
       Object.assign(authApi, {
         bootstrapAuthContext: originals.bootstrapAuthContext,
         getCurrentUser: originals.getCurrentUser,
         login: originals.login,
+        fetchCompanyADLogin: originals.fetchCompanyADLogin,
         loginWithAD: originals.loginWithAD,
         logout: originals.logout,
         beginOAuth: originals.beginOAuth,
@@ -1036,11 +1053,16 @@ test("an OAuth hydration superseded by logout returns an explicit cancelled outc
   }
 });
 
-test("AuthPage attempts Windows login automatically and redirects on success", async () => {
+test("AuthPage gets Windows identity before the login-specific bootstrap and redirects on success", async () => {
   let currentUserCalls = 0;
-  let adLoginCalls = 0;
+  const calls: string[] = [];
+  const companyJwt = "signed-company-jwt";
   const mounted = await mountAuthPageHarness((api) => {
+    api.bootstrapAuthContext = async () => {
+      calls.push("bootstrap");
+    };
     api.getCurrentUser = async () => {
+      calls.push("me");
       currentUserCalls += 1;
       if (currentUserCalls === 1) {
         throw new ApiRequestError("unauthorized", 401, "unauthorized");
@@ -1050,9 +1072,14 @@ test("AuthPage attempts Windows login automatically and redirects on success", a
     api.getADLoginConfig = async () => ({
       ad_login_url: "http://company.test/api/login/GetADName",
     });
-    api.loginWithAD = async (loginUrl) => {
-      adLoginCalls += 1;
+    api.fetchCompanyADLogin = async (loginUrl) => {
+      calls.push("GetADName");
       assert.equal(loginUrl, "http://company.test/api/login/GetADName");
+      return companyJwt;
+    };
+    api.loginWithAD = async (token) => {
+      calls.push("ad-login");
+      assert.equal(token, companyJwt);
     };
   });
   try {
@@ -1060,7 +1087,14 @@ test("AuthPage attempts Windows login automatically and redirects on success", a
       for (let index = 0; index < 12; index += 1) await Promise.resolve();
     });
 
-    assert.equal(adLoginCalls, 1);
+    assert.deepEqual(calls, [
+      "bootstrap",
+      "me",
+      "GetADName",
+      "bootstrap",
+      "ad-login",
+      "me",
+    ]);
     assert.equal(mounted.auth.isAuthenticated, true);
     assert.equal(mounted.auth.user?.id, "ad001");
     assert.equal(findElements(mounted.container, "input").length, 0);
@@ -1070,7 +1104,7 @@ test("AuthPage attempts Windows login automatically and redirects on success", a
   }
 });
 
-test("AuthPage silently falls back to the password form when Windows login fails", async () => {
+test("AuthPage reports GetADName failure before falling back to the password form", async () => {
   let adLoginCalls = 0;
   const mounted = await mountAuthPageHarness((api) => {
     api.getCurrentUser = async () => {
@@ -1079,9 +1113,11 @@ test("AuthPage silently falls back to the password form when Windows login fails
     api.getADLoginConfig = async () => ({
       ad_login_url: "http://company.test/api/login/GetADName",
     });
+    api.fetchCompanyADLogin = async () => {
+      throw new CompanyADLoginError();
+    };
     api.loginWithAD = async () => {
       adLoginCalls += 1;
-      throw new Error("Windows authentication unavailable");
     };
   });
   try {
@@ -1089,9 +1125,39 @@ test("AuthPage silently falls back to the password form when Windows login fails
       for (let index = 0; index < 12; index += 1) await Promise.resolve();
     });
 
-    assert.equal(adLoginCalls, 1);
+    assert.equal(adLoginCalls, 0);
     assert.equal(mounted.auth.isAuthenticated, false);
     assert.equal(findElements(mounted.container, "input").length >= 2, true);
+    assert.deepEqual(mounted.errorToasts, ["免登录失败"]);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("AuthPage suppresses a deferred GetADName failure after it unmounts", async () => {
+  const companyLogin = deferred<string>();
+  let companyLoginCalls = 0;
+  const mounted = await mountAuthPageHarness((api) => {
+    api.getCurrentUser = async () => {
+      throw new ApiRequestError("unauthorized", 401, "unauthorized");
+    };
+    api.getADLoginConfig = async () => ({
+      ad_login_url: "http://company.test/api/login/GetADName",
+    });
+    api.fetchCompanyADLogin = async () => {
+      companyLoginCalls += 1;
+      return companyLogin.promise;
+    };
+  });
+  try {
+    assert.equal(companyLoginCalls, 1);
+    await mounted.unmountAuthPage();
+
+    companyLogin.reject(new CompanyADLoginError());
+    await mounted.React.act(async () => {
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    });
+
     assert.deepEqual(mounted.errorToasts, []);
   } finally {
     await mounted.cleanup();

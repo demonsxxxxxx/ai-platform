@@ -29,10 +29,12 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | Product vocabulary and Expert Agent UX | [Workbench](architecture/expert-agent-service-workbench.md); root [CONTEXT](../CONTEXT.md) |
 | Profile revisions, visibility, and publication | [Profile boundary](architecture/agent-profile-persistence-boundary.md) |
 | Conversation selection and executor-private history | [Conversation context](architecture/agent-conversation-context.md) |
+| Claude-native session transcript and epoch lifecycle | [Provider continuity](architecture/claude-provider-session-continuity.md) |
 | Run terminalization and transaction ordering | [Run lifecycle](architecture/run-lifecycle-boundary.md) |
 | Immutable execution input and attempt ownership | [ExecutionSpec and RunAttempt](architecture/execution-spec-and-attempt-lifecycle.md) |
 | Provider resource lifecycle and callback authority | [Sandbox Runtime](architecture/sandbox-runtime-control-layer.md) |
 | Model credentials and governed egress | [Credential boundary](architecture/opensandbox-ephemeral-model-credentials.md) |
+| MCP catalog, references, transport, and selected execution surface | [MCP execution](architecture/mcp-tool-execution.md); public directory [API contract](../frontend/skills-marketplace-public-api.md) |
 | Data ownership, schema changes, and deletion | [Data lifecycle](architecture/single-enterprise-data-lifecycle.md) |
 | SSE navigation and supersession | [SSE index](architecture/redis-streams-sse-event-channel.md) |
 | SSE bytes, identity, replay, and client acceptance | [SSE wire](architecture/redis-streams-sse-wire-protocol.md) |

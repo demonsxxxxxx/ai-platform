@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.executors.claude_agent_sdk_runner import (
     project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
@@ -382,6 +384,7 @@ def _install_sdk(monkeypatch, query):
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     return fake_sdk

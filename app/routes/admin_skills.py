@@ -53,7 +53,12 @@ from app.skills.pinning import (
 )
 from app.skills.release_readiness import build_skill_version_release_review
 from app.skills.registry import BuiltinSkillRegistry
-from app.storage import ObjectStorage
+from app.storage import (
+    ObjectStorage,
+    StorageIOBusyError,
+    StorageIOTimeoutError,
+    run_storage_io,
+)
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -525,11 +530,15 @@ async def admin_upload_skill_package(
         display_version = next_uploaded_skill_display_version(skill_id, display_rows)
         dependency_manifests: list[dict[str, object]] = []
         storage_key = f"skills/{skill_id}/versions/{parsed.content_hash}/package.zip"
-        stored = ObjectStorage().put_bytes(
-            storage_key=storage_key,
-            content=package_content,
-            content_type="application/zip",
-        )
+        try:
+            stored = await run_storage_io(
+                ObjectStorage().put_bytes,
+                storage_key=storage_key,
+                content=package_content,
+                content_type="application/zip",
+            )
+        except (StorageIOBusyError, StorageIOTimeoutError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         source_json = {
             "kind": "uploaded",
             "display_version": display_version,

@@ -2,7 +2,7 @@ from typing import Annotated, Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import (
-    AfterValidator, AliasChoices,
+    AfterValidator, AliasChoices, BeforeValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -17,7 +17,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
-    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, validate_thinking_agent_options,
+    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, normalize_thinking_effort, validate_thinking_agent_options,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import AgentProfileAvatarRef
@@ -350,7 +350,7 @@ class AgentAppRunRequest(BaseModel):
     submission_id: UUID
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     user_timezone: str | None = Field(default=None, max_length=128)
-    thinking_effort: ThinkingEffort = "off"
+    thinking_effort: Annotated[ThinkingEffort, BeforeValidator(normalize_thinking_effort)] = "auto"
 
     @field_validator("file_ids")
     @classmethod
@@ -965,19 +965,18 @@ class LoginRequest(BaseModel):
 
 
 class AuthContextBootstrapRequest(BaseModel):
-    """Browser-generated non-credential nonce used to derive a stable context."""
+    """Browser-generated V2 identity used to derive a stable auth context."""
 
     model_config = ConfigDict(extra="forbid")
 
     nonce: str = Field(min_length=43, max_length=512, pattern=r"^[A-Za-z0-9_-]+$")
-    protocol_version: Literal[1, 2] = 1
-    browser_incarnation: str | None = Field(
-        default=None,
+    protocol_version: Literal[2]
+    browser_incarnation: str = Field(
         min_length=43,
         max_length=43,
         pattern=r"^[A-Za-z0-9_-]+$",
     )
-    generation: int | None = Field(default=None, ge=1, le=(2**53) - 1)
+    generation: int = Field(ge=1, le=(2**53) - 1)
     rotation_ticket: str | None = Field(
         default=None,
         min_length=43,
@@ -985,25 +984,6 @@ class AuthContextBootstrapRequest(BaseModel):
         pattern=r"^[A-Za-z0-9_-]+$",
     )
     recovery_only: bool = False
-
-    @model_validator(mode="after")
-    def validate_protocol_fields(self):
-        """Keep V1 wire compatibility while requiring the complete V2 identity."""
-
-        if self.protocol_version == 1:
-            if any(
-                value is not None
-                for value in (
-                    self.browser_incarnation,
-                    self.generation,
-                    self.rotation_ticket,
-                )
-            ) or self.recovery_only:
-                raise ValueError("V1 bootstrap cannot carry V2 identity fields")
-            return self
-        if self.browser_incarnation is None or self.generation is None:
-            raise ValueError("V2 bootstrap requires incarnation and generation")
-        return self
 
 
 class OAuthCallbackRequest(BaseModel):
@@ -1356,48 +1336,6 @@ class ChatSubmissionPreLedgerAbsenceResponse(BaseModel):
     protocol_version: Literal["chat_submission_resolution.v2"] = "chat_submission_resolution.v2"
     submission_id: str
     state: Literal["absent_before_ledger"] = "absent_before_ledger"
-
-
-class AdminRunSummaryResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    session_id: str
-    user_id: str | None = None
-    workspace_id: str
-    status: str
-    agent_id: str
-    execution_kind: Literal["harness_chat", "skill"] = RUN_EXECUTION_KIND_SKILL
-    skill_id: str | None = None
-    created_at: Any | None = None
-    queued_at: Any | None = None
-    started_at: Any | None = None
-    finished_at: Any | None = None
-    cancel_requested_at: Any | None = None
-    cancel_requested_by: str | None = None
-    error_code: str | None = None
-    error_message: str | None = None
-    queue_position: int | None = None
-    queue_insight: dict[str, Any] | None = None
-
-
-class AdminRunListResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    runs: list[AdminRunSummaryResponse] = Field(default_factory=list)
-    limit: int
-
-
-class AdminRunDetailResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run: dict[str, Any]
-    events: list[dict[str, Any]] = Field(default_factory=list)
-    steps: list[dict[str, Any]] = Field(default_factory=list)
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
-    sandbox_leases: list[dict[str, Any]] = Field(default_factory=list)
-    skill_snapshots: list[dict[str, Any]] = Field(default_factory=list)
-    audit: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PublicSkillResponse(BaseModel):

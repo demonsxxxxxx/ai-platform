@@ -230,7 +230,7 @@ export function RolesPanel() {
     } finally {
       setIsLoading(false);
     }
-  }, [authLoading, isAuthenticated, t]);
+  }, [authLoading, isAuthenticated]);
 
   useEffect(() => {
     void loadOverview();

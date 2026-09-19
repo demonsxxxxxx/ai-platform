@@ -22,6 +22,9 @@ DEPLOY_DIR = Path("deploy/ai-platform")
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
+OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE = (
+    DEPLOY_DIR / "docker-compose.opensandbox-internal-test.yml"
+)
 OPENSANDBOX_EGRESS_TEMPLATE = DEPLOY_DIR / "opensandbox-egress-nginx.conf.template"
 OPENSANDBOX_NETWORK_GUARD_SERVICE = Path(
     "deploy/opensandbox/ai-platform-opensandbox-network-guard.service"
@@ -50,7 +53,7 @@ def env_example_values(env_example_text: str) -> dict[str, str]:
     }
 
 
-def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
+def test_company_auth_requires_operator_managed_endpoints_and_api_only_jwt_verification():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
     env_values = env_example_values(env_example_text)
@@ -59,6 +62,19 @@ def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
         service = compose_service_text(compose_text, service_name)
         assert "EXISTING_AUTH_BASE_URL: ${EXISTING_AUTH_BASE_URL:?set EXISTING_AUTH_BASE_URL}" in service
         assert "EXISTING_USER_INFO_BASE_URL: ${EXISTING_USER_INFO_BASE_URL:?set EXISTING_USER_INFO_BASE_URL}" in service
+    api_service = compose_service_text(compose_text, "api")
+    worker_service = compose_service_text(compose_text, "worker")
+    for name in (
+        "COMPANY_LOGIN_JWT_SECRET",
+        "COMPANY_LOGIN_JWT_ISSUER",
+        "COMPANY_LOGIN_JWT_AUDIENCE",
+    ):
+        assert f"{name}: ${{{name}:?set {name}}}" in api_service
+        assert name not in worker_service
+        assert name in env_values
+    assert env_values["COMPANY_LOGIN_JWT_SECRET"] == ""
+    assert env_values["COMPANY_LOGIN_JWT_ISSUER"]
+    assert env_values["COMPANY_LOGIN_JWT_AUDIENCE"]
     assert "10.56.0.25" not in compose_text
     assert env_values["EXISTING_AUTH_BASE_URL"] == "http://10.56.0.25:7263"
     assert env_values["EXISTING_USER_INFO_BASE_URL"] == "http://10.56.0.25:5166"
@@ -487,6 +503,7 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
             "http://egress.opensandbox.internal:8080"
         )
         for required in (
+            "MODEL_CONNECTION_ENCRYPTION_KEY",
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
             "OPENSANDBOX_BASE_URL",
             "OPENSANDBOX_API_KEY",
@@ -495,7 +512,13 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         ):
             assert environment[required].startswith("${")
             assert ":?set " in environment[required]
+        assert "MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS" in environment
+        for retired_direct_key in (
+            "OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+        ):
+            assert environment[retired_direct_key] == ""
 
+    assert overlay["services"]["api"]["environment"]["MODEL_PROXY_INTERNAL_TOKEN"].startswith("${")
     proxy = overlay["services"]["opensandbox-egress-proxy"]
     assert "ports" not in proxy
     assert proxy["networks"] == {
@@ -538,8 +561,8 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         ]
     for service_name in ("postgres", "redis", "minio"):
         assert overlay["services"][service_name]["ports"] == []
-    assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" not in env_example
-    assert "OPENSANDBOX_EGRESS_PROXY_URL=http://egress.opensandbox.internal:8080" in env_example
+    assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS=172.17.0.1" in env_example
+    assert "OPENSANDBOX_EGRESS_PROXY_URL=http://172.17.0.1:18043" in env_example
     for fixed_key in (
         "DEPLOYMENT_ENVIRONMENT",
         "SANDBOX_SECURITY_PROFILE",
@@ -572,6 +595,32 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
     assert "tomllib" in server_unit
     assert "/etc/ai-platform/opensandbox/server.toml" in server_unit
     assert "host == expected" in server_unit
+
+
+def test_internal_test_opensandbox_uses_the_same_model_proxy_authority():
+    overlay = yaml.safe_load(
+        OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE.read_text(encoding="utf-8")
+    )
+    for service_name in ("api", "worker"):
+        environment = overlay["services"][service_name]["environment"]
+        assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
+        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
+        assert environment["OPENSANDBOX_EGRESS_PROXY_URL"].startswith("${")
+        assert environment["MODEL_CONNECTION_ENCRYPTION_KEY"].startswith("${")
+        assert "MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS" in environment
+        for retired_direct_key in (
+            "OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+        ):
+            assert environment[retired_direct_key] == ""
+    assert overlay["services"]["api"]["environment"]["MODEL_PROXY_INTERNAL_TOKEN"].startswith("${")
+    proxy = overlay["services"]["opensandbox-egress-proxy"]
+    assert proxy["ports"] == [
+        "${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:18043:8080"
+    ]
+    assert proxy["environment"]["MODEL_PROXY_INTERNAL_TOKEN"].startswith("${")
+    assert proxy["volumes"] == [
+        "./opensandbox-egress-nginx.conf.template:/etc/nginx/templates-opensandbox/default.conf.template:ro"
+    ]
 
 
 @pytest.mark.skipif(

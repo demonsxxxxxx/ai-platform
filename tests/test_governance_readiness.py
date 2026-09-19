@@ -4,7 +4,6 @@ import subprocess
 import sys
 
 from app.governance_readiness import (
-    _frontend_projection_audit_evidence,
     build_governance_readiness,
     render_governance_readiness_markdown,
 )
@@ -413,18 +412,10 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert projection_evidence["schema_version"] == "ai-platform.frontend-projection-audit.v1"
     assert projection_evidence["status"] == "pass_with_policy_gaps"
     assert projection_evidence["summary"]["active_forbidden_projection_violations"] == 0
-    assert projection_evidence["summary"]["active_legacy_route_policies"] >= 1
+    assert projection_evidence["summary"]["active_legacy_route_policies"] == 0
     assert projection_evidence["summary"]["quarantined_legacy_source_violations"] == 0
     gap_details = {item["gap"]: item for item in projection_evidence["open_gap_details"]}
-    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in gap_details
-    active_legacy_routes = {
-        route["route_prefix"]
-        for route in gap_details[
-            "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"
-        ]["routes"]
-    }
-    assert "/api/mcp" not in active_legacy_routes
-    assert "/api/admin/mcp" not in active_legacy_routes
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in gap_details
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" not in gap_details
 
     serialized = json.dumps(readiness, ensure_ascii=False).lower()
@@ -442,25 +433,6 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "storage_key" not in serialized
     assert "executor_private_payload" not in serialized
     assert ".claude/skills" not in serialized
-
-
-def test_governance_readiness_frontend_projection_evidence_clears_mcp_active_legacy_gap():
-    projection_evidence = _frontend_projection_audit_evidence()
-
-    assert projection_evidence["schema_version"] == "ai-platform.frontend-projection-audit.v1"
-    assert projection_evidence["status"] == "pass_with_policy_gaps"
-    assert projection_evidence["summary"]["active_forbidden_projection_violations"] == 0
-    assert projection_evidence["summary"]["active_legacy_route_policies"] >= 1
-    gap_details = {item["gap"]: item for item in projection_evidence["open_gap_details"]}
-    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in gap_details
-    active_legacy_routes = {
-        route["route_prefix"]
-        for route in gap_details[
-            "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"
-        ]["routes"]
-    }
-    assert "/api/mcp" not in active_legacy_routes
-    assert "/api/admin/mcp" not in active_legacy_routes
 
 
 def test_governance_readiness_sanitizes_frontend_ci_gap_detail(monkeypatch):
@@ -536,7 +508,7 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     assert "Status: `partial_blocked`" in markdown
     assert "## Open Gaps" in markdown
     assert "legacy_frontend_route_policy_enforcement_or_ai_platform_remap" in markdown
-    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in markdown
     assert "admin_policy_bulk_review_dashboard_contract" in markdown
     assert "ai-platform.tool-policy-bulk-review-dashboard-contract.v1" in markdown
     open_gaps = markdown.split("## Domains", 1)[0]

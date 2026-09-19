@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.db import apply_schema, transaction
+from app.db import transaction
 from app.data_retention import retention_policy_projection
 from app import repositories
 from app.queue import get_queue_status, get_redis
@@ -135,11 +135,3 @@ async def admin_requeue_object_deletion(
     if not requeued:
         raise HTTPException(status_code=409, detail="object_deletion_not_requeueable")
     return {"status": "requeued", "outbox_id": outbox_id}
-
-
-@router.post("/admin/apply-schema")
-async def admin_apply_schema(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, str]:
-    if not is_ai_admin(principal):
-        raise HTTPException(status_code=403, detail="not_ai_admin")
-    await apply_schema()
-    return {"status": "schema_applied"}

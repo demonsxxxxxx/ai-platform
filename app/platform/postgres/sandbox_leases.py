@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from typing import Any
 
 from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
@@ -191,6 +192,39 @@ async def record_sandbox_executor_heartbeat(
         returning *
         """,
         (executor_status, executor_status, int(ttl_seconds), lease_id, tenant_id, run_id, attempt_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def record_opensandbox_renewal_receipt(
+    connection: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    lease_id: str,
+    provider_expires_at: datetime,
+) -> dict[str, Any] | None:
+    if provider_expires_at.tzinfo is None or provider_expires_at.utcoffset() is None:
+        raise ValueError("opensandbox_renewal_receipt_timezone_invalid")
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set provider_renewed_at = now(),
+            provider_expires_at = %s,
+            updated_at = now()
+        where id = %s
+          and tenant_id = %s
+          and run_id = %s
+          and attempt_id = %s
+          and provider = 'opensandbox'
+          and status = 'active'
+          and (expires_at is null or expires_at > now())
+          and executor_terminal_json is null
+        returning *
+        """,
+        (provider_expires_at, lease_id, tenant_id, run_id, attempt_id),
     )
     row = await cursor.fetchone()
     return dict(row) if row is not None else None

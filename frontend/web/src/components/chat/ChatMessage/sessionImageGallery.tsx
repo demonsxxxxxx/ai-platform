@@ -6,11 +6,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { Message, MessagePart, ToolPart } from "../../../types";
-import { isImageFile } from "../../documents/utils";
+import type { Message, MessagePart } from "../../../types";
 import { ImageViewer } from "../../common";
 import { useSafeAttachmentImageSrc } from "../../common/attachmentImageSafety";
-import { parseFileRevealPreviewData } from "./items/revealPreviewData";
 import { resolveSafeSessionImageSrc } from "./sessionImageSafety";
 
 export interface SessionImageGalleryItem {
@@ -20,7 +18,7 @@ export interface SessionImageGalleryItem {
   group: SessionImageGalleryGroup;
 }
 
-export type SessionImageGalleryGroup = "conversation" | "reveal-file";
+export type SessionImageGalleryGroup = "conversation";
 
 interface SessionImageGalleryContextValue {
   openImage: (
@@ -32,11 +30,6 @@ interface SessionImageGalleryContextValue {
 
 const SessionImageGalleryContext =
   createContext<SessionImageGalleryContextValue | null>(null);
-
-function getExtension(nameOrUrl: string): string {
-  const clean = nameOrUrl.split("?")[0].split("#")[0];
-  return clean.split(".").pop()?.toLowerCase() || "";
-}
 
 function collectMarkdownImages(
   content: string | undefined,
@@ -71,41 +64,12 @@ function collectMarkdownImages(
   return items;
 }
 
-function collectRevealFileImage(
-  part: ToolPart,
-  idPrefix: string,
-): SessionImageGalleryItem | null {
-  if (part.name !== "reveal_file" || part.success !== true) return null;
-  const parsed = parseFileRevealPreviewData({
-    args: part.args,
-    result: part.result,
-  });
-  if (!parsed.s3Url) return null;
-
-  const isImage =
-    parsed.mimeType?.startsWith("image/") === true ||
-    isImageFile(getExtension(parsed.filePath || parsed.s3Url));
-  if (!isImage) return null;
-
-  return {
-    id: `${idPrefix}:reveal-file`,
-    src: parsed.s3Url,
-    alt: parsed.filePath.split("/").pop() || undefined,
-    group: "reveal-file",
-  };
-}
-
 function collectPartImages(
   part: MessagePart,
   idPrefix: string,
 ): SessionImageGalleryItem[] {
   if (part.type === "text" || part.type === "summary") {
     return collectMarkdownImages(part.content, idPrefix);
-  }
-
-  if (part.type === "tool") {
-    const revealImage = collectRevealFileImage(part, idPrefix);
-    return revealImage ? [revealImage] : [];
   }
 
   if (part.type === "subagent") {

@@ -12,7 +12,6 @@ export enum Permission {
   SESSION_WRITE = "session:write",
   SESSION_DELETE = "session:delete",
   SESSION_ADMIN = "session:admin",
-  SESSION_SHARE = "session:share",
   // Skill
   SKILL_READ = "skill:read",
   SKILL_WRITE = "skill:write",
@@ -45,21 +44,12 @@ export enum Permission {
   // Avatar
   AVATAR_UPLOAD = "avatar:upload",
   // Feedback
-  FEEDBACK_WRITE = "feedback:write",
   FEEDBACK_READ = "feedback:read",
   FEEDBACK_ADMIN = "feedback:admin",
   // Platform admin status
   ADMIN_STATUS = "admin:status",
   // Model
   MODEL_ADMIN = "model:admin",
-  // Marketplace
-  MARKETPLACE_READ = "marketplace:read",
-  MARKETPLACE_PUBLISH = "marketplace:publish",
-  MARKETPLACE_ADMIN = "marketplace:admin",
-  // Environment Variables
-  ENVVAR_READ = "envvar:read",
-  ENVVAR_WRITE = "envvar:write",
-  ENVVAR_DELETE = "envvar:delete",
   // Notification
   NOTIFICATION_READ = "notification:read",
   NOTIFICATION_ADMIN = "notification:admin",
@@ -87,20 +77,6 @@ export interface User {
   };
   created_at: string;
   updated_at: string;
-}
-
-// 用户创建请求
-export interface UserCreate {
-  username: string;
-  email: string;
-  password: string;
-  roles?: string[];
-}
-
-// 注册响应
-export interface RegisterResponse {
-  user: User;
-  requires_verification: boolean;
 }
 
 // 用户更新请求
@@ -153,34 +129,10 @@ export interface RoleListResponse {
   limit: number;
 }
 
-// 角色创建请求
-export interface RoleCreate {
-  name: string;
-  description?: string;
-  permissions: Permission[];
-  limits?: RoleLimits;
-}
-
-// 角色更新请求
-export interface RoleUpdate {
-  name?: string;
-  description?: string;
-  permissions?: Permission[];
-  limits?: RoleLimits;
-}
-
 // 登录请求
 export interface LoginRequest {
   username: string;
   password: string;
-}
-
-// Token 响应
-export interface TokenResponse {
-  access_token: string;
-  refresh_token?: string;
-  token_type: string;
-  expires_in?: number;
 }
 
 // Token 载荷（解码后的内容）
@@ -200,27 +152,4 @@ export interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   permissions: Permission[];
-}
-
-// ============================================
-// Permission Types
-// ============================================
-
-// 权限信息
-export interface PermissionInfo {
-  value: string;
-  label: string;
-  description: string;
-}
-
-// 权限分组
-export interface PermissionGroup {
-  name: string;
-  permissions: PermissionInfo[];
-}
-
-// 权限列表响应
-export interface PermissionsResponse {
-  groups: PermissionGroup[];
-  all_permissions: PermissionInfo[];
 }

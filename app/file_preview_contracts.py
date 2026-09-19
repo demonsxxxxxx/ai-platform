@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import base64
 import hashlib
 import logging
 import math
@@ -28,21 +29,30 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.file_parser_contracts import (
     AttachmentParserRequirement,
     AttachmentPreprocessingError,
+    MAX_XLSX_COLUMNS_PER_SHEET,
+    MAX_XLSX_ROWS_PER_SHEET,
+    MAX_XLSX_SHEETS,
     ParsedAttachmentContext,
     XLSX_CONTENT_TYPE,
     parse_xlsx_preview_attachment,
     parser_spec_for_attachment,
 )
+from app.files.api import XlsxPreviewImageExtractor, xlsx_preview_image_extractor
 
 
 logger = logging.getLogger(__name__)
 
-FILE_PREVIEW_SCHEMA_VERSION = "ai-platform.file-preview.v1"
+FILE_PREVIEW_SCHEMA_VERSION = "ai-platform.file-preview.v2"
 XLSX_PREVIEW_TIMEOUT_SECONDS = 5.0
 XLSX_PREVIEW_MEMORY_LIMIT_BYTES = 192 * 1024 * 1024
 MAX_CONCURRENT_XLSX_PREVIEWS = 2
 _XLSX_STAGING_FILENAME = "preview.xlsx"
 _FORMULA_REDACTED_PLACEHOLDER = "[formula omitted]"
+_MAX_XLSX_PREVIEW_IMAGES = 16
+_MAX_XLSX_PREVIEW_IMAGE_BYTES = 512 * 1024
+_MAX_XLSX_PREVIEW_IMAGE_TOTAL_BYTES = 2 * 1024 * 1024
+_MAX_XLSX_PREVIEW_IMAGE_EMU = 95_250_000
+_XLSX_IMAGE_WARNINGS = frozenset({"images_not_rendered", "images_truncated"})
 _PREVIEW_ADMISSION = threading.BoundedSemaphore(MAX_CONCURRENT_XLSX_PREVIEWS)
 _PREVIEW_EXECUTOR = ThreadPoolExecutor(
     max_workers=MAX_CONCURRENT_XLSX_PREVIEWS,
@@ -57,6 +67,7 @@ _XLSX_PREVIEW_WARNINGS = (
 _XLSX_PREVIEW_DIAGNOSTIC_PHASES = frozenset(
     {
         "child_configure",
+        "child_images",
         "child_limits",
         "child_parse",
         "child_requirement",
@@ -109,6 +120,77 @@ PreviewFailureCode = Literal[
 ]
 
 
+class XlsxPreviewImageAnchor(BaseModel):
+    """One zero-based, bounded worksheet anchor point."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    col: int = Field(ge=0, lt=MAX_XLSX_COLUMNS_PER_SHEET)
+    row: int = Field(ge=0, lt=MAX_XLSX_ROWS_PER_SHEET)
+    col_offset_emu: int = Field(ge=0, le=_MAX_XLSX_PREVIEW_IMAGE_EMU)
+    row_offset_emu: int = Field(ge=0, le=_MAX_XLSX_PREVIEW_IMAGE_EMU)
+
+
+class XlsxPreviewImageExtent(BaseModel):
+    """One bounded one-cell image extent in EMUs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    width_emu: int = Field(gt=0, le=_MAX_XLSX_PREVIEW_IMAGE_EMU)
+    height_emu: int = Field(gt=0, le=_MAX_XLSX_PREVIEW_IMAGE_EMU)
+
+
+class XlsxPreviewImage(BaseModel):
+    """A safe, server-materialized workbook image."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=256)
+    mime_type: Literal[
+        "image/bmp",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    ]
+    data_url: str = Field(min_length=1, max_length=700_000)
+    anchor_from: XlsxPreviewImageAnchor
+    anchor_to: XlsxPreviewImageAnchor | None = None
+    extent: XlsxPreviewImageExtent | None = None
+    order: int = Field(ge=0, le=_MAX_XLSX_PREVIEW_IMAGES - 1)
+
+    @model_validator(mode="after")
+    def validate_image_payload(self) -> "XlsxPreviewImage":
+        prefix = f"data:{self.mime_type};base64,"
+        if not self.data_url.startswith(prefix):
+            raise ValueError("XLSX image data URL MIME type mismatch")
+        encoded = self.data_url[len(prefix) :]
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise ValueError("XLSX image data URL is not valid base64") from exc
+        if not decoded or len(decoded) > _MAX_XLSX_PREVIEW_IMAGE_BYTES:
+            raise ValueError("XLSX image exceeds the preview byte limit")
+        if (self.anchor_to is None) == (self.extent is None):
+            raise ValueError("XLSX image must use exactly one anchor geometry")
+        if self.anchor_to is not None and (
+            self.anchor_to.row < self.anchor_from.row
+            or self.anchor_to.col < self.anchor_from.col
+            or (
+                self.anchor_to.row == self.anchor_from.row
+                and self.anchor_to.row_offset_emu <= self.anchor_from.row_offset_emu
+            )
+            or (
+                self.anchor_to.col == self.anchor_from.col
+                and self.anchor_to.col_offset_emu <= self.anchor_from.col_offset_emu
+            )
+        ):
+            raise ValueError("XLSX image anchor endpoint must be after its origin")
+        return self
+
+
 class XlsxPreviewCell(BaseModel):
     """One bounded, display-safe cell emitted by the authoritative parser."""
 
@@ -129,12 +211,16 @@ class XlsxPreviewRow(BaseModel):
 
 
 class XlsxPreviewSheet(BaseModel):
-    """A bounded tabular worksheet projection, not an Office rendering model."""
+    """A bounded worksheet projection with server-materialized images."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
     rows: list[XlsxPreviewRow] = Field(default_factory=list)
+    images: list[XlsxPreviewImage] = Field(
+        default_factory=list,
+        max_length=_MAX_XLSX_PREVIEW_IMAGES,
+    )
 
 
 class XlsxPreviewContent(BaseModel):
@@ -422,6 +508,26 @@ def build_xlsx_preview(
 
     try:
         parsed = ParsedAttachmentContext.model_validate(child_result["parsed"])
+        raw_images_by_sheet = child_result.get("images_by_sheet", {})
+        if not isinstance(raw_images_by_sheet, dict):
+            raise ValueError("invalid XLSX image projection")
+        if any(
+            not isinstance(sheet_index, int) or not isinstance(payload, list)
+            for sheet_index, payload in raw_images_by_sheet.items()
+        ):
+            raise ValueError("invalid XLSX image projection")
+        images_by_sheet = {
+            sheet_index: payload
+            for sheet_index, payload in raw_images_by_sheet.items()
+        }
+        raw_image_warnings = child_result.get("image_warnings", [])
+        if not isinstance(raw_image_warnings, list):
+            raise ValueError("invalid XLSX image warnings")
+        image_warnings = [
+            warning
+            for warning in raw_image_warnings
+            if isinstance(warning, str) and warning in _XLSX_IMAGE_WARNINGS
+        ]
     except (TypeError, ValueError):
         return _failed_preview(
             code="xlsx_preview_unavailable",
@@ -434,7 +540,11 @@ def build_xlsx_preview(
         return _failed_preview(
             code="xlsx_preview_unavailable",
         )
-    return _preview_from_parsed_context(parsed)
+    return _preview_from_parsed_context(
+        parsed,
+        images_by_sheet=images_by_sheet,
+        image_warnings=image_warnings,
+    )
 
 
 def _invoke_isolated_xlsx_parser(
@@ -443,14 +553,26 @@ def _invoke_isolated_xlsx_parser(
     requirement: dict[str, Any],
     timeout_seconds: float,
     lease: XlsxPreviewLease,
+    image_extractor: XlsxPreviewImageExtractor | None = None,
 ) -> dict[str, Any]:
     """Run exactly one parser call and reap the child on every parent outcome."""
 
+    if image_extractor is None:
+        try:
+            image_extractor = xlsx_preview_image_extractor()
+        except RuntimeError:
+            result = _isolated_xlsx_failure(
+                code="xlsx_preview_unavailable",
+                phase="parent_start",
+                reason="parent_exception",
+            )
+            _log_isolated_xlsx_result(result)
+            return _strip_isolated_xlsx_diagnostic(result)
     context = multiprocessing.get_context("spawn")
     receive_conn, send_conn = context.Pipe(duplex=False)
     process = context.Process(
         target=_parse_xlsx_preview_child,
-        args=(send_conn, raw, requirement, timeout_seconds),
+        args=(send_conn, raw, requirement, timeout_seconds, image_extractor),
         daemon=True,
     )
     started = False
@@ -568,7 +690,12 @@ def _strip_isolated_xlsx_diagnostic(result: object) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {"status": "failed", "code": "xlsx_preview_unavailable"}
     if result.get("status") == "parsed":
-        return {"status": "parsed", "parsed": result.get("parsed")}
+        return {
+            "status": "parsed",
+            "parsed": result.get("parsed"),
+            "images_by_sheet": result.get("images_by_sheet", {}),
+            "image_warnings": result.get("image_warnings", []),
+        }
     code = result.get("code")
     if not isinstance(code, str) or code not in _XLSX_PREVIEW_PUBLIC_FAILURE_CODES:
         code = "xlsx_preview_unavailable"
@@ -639,6 +766,7 @@ def _parse_xlsx_preview_child(
     raw: bytes,
     requirement_payload: dict[str, Any],
     timeout_seconds: float,
+    image_extractor: XlsxPreviewImageExtractor,
 ) -> None:
     """Child entrypoint: constrain resources, stage private bytes, parse once."""
 
@@ -654,6 +782,17 @@ def _parse_xlsx_preview_child(
             staged_path = _stage_xlsx_preview_bytes(Path(directory), raw)
             phase = "child_parse"
             parsed = parse_xlsx_preview_attachment(path=staged_path, requirement=requirement)
+            phase = "child_images"
+            images_by_sheet, image_warnings = image_extractor(
+                staged_path,
+                max_sheets=MAX_XLSX_SHEETS,
+                max_rows_per_sheet=MAX_XLSX_ROWS_PER_SHEET,
+                max_columns_per_sheet=MAX_XLSX_COLUMNS_PER_SHEET,
+                max_images=_MAX_XLSX_PREVIEW_IMAGES,
+                max_image_bytes=_MAX_XLSX_PREVIEW_IMAGE_BYTES,
+                max_total_image_bytes=_MAX_XLSX_PREVIEW_IMAGE_TOTAL_BYTES,
+                max_image_emu=_MAX_XLSX_PREVIEW_IMAGE_EMU,
+            )
         phase = "child_serialize"
         parsed_payload = parsed.model_dump(mode="json")
         phase = "child_send"
@@ -662,6 +801,8 @@ def _parse_xlsx_preview_child(
             {
                 "status": "parsed",
                 "parsed": parsed_payload,
+                "images_by_sheet": images_by_sheet,
+                "image_warnings": image_warnings,
                 "diagnostic": {"phase": phase, "reason": "child_message"},
             },
         )
@@ -700,7 +841,7 @@ def _configure_isolated_xlsx_parser() -> None:
     """Bound native threads and select stdlib XML before child parser imports."""
 
     # The authoritative ZIP/OPC/XML preflight already uses the standard-library
-    # parser.  Avoiding openpyxl's optional native backend keeps native library
+    # parser. Avoiding openpyxl's optional native backend keeps native library
     # mappings out of the separately address-space-bounded preview child.
     os.environ["OPENPYXL_LXML"] = "False"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -800,7 +941,12 @@ def _failed_preview(
     )
 
 
-def _preview_from_parsed_context(parsed: ParsedAttachmentContext) -> XlsxPreviewResponse:
+def _preview_from_parsed_context(
+    parsed: ParsedAttachmentContext,
+    *,
+    images_by_sheet: Mapping[int, list[dict[str, Any]]],
+    image_warnings: list[str],
+) -> XlsxPreviewResponse:
     """Adapt one parser result to the separate, browser-safe presentation DTO."""
 
     workbook = parsed.content.get("workbook")
@@ -811,8 +957,11 @@ def _preview_from_parsed_context(parsed: ParsedAttachmentContext) -> XlsxPreview
         )
     try:
         sheets = [
-            _public_preview_sheet(sheet)
-            for sheet in raw_sheets
+            _public_preview_sheet(
+                sheet,
+                images=images_by_sheet.get(sheet_index, []),
+            )
+            for sheet_index, sheet in enumerate(raw_sheets)
             if isinstance(sheet, dict)
         ]
         if len(sheets) != len(raw_sheets):
@@ -825,23 +974,38 @@ def _preview_from_parsed_context(parsed: ParsedAttachmentContext) -> XlsxPreview
         return _failed_preview(
             code="xlsx_preview_unavailable",
         )
-    truncated = parsed.evidence.truncated
+    truncated = parsed.evidence.truncated or "images_truncated" in image_warnings
     return XlsxPreviewResponse(
         status="truncated" if truncated else "ready",
         content=content,
         truncated=truncated,
-        warnings=list(_XLSX_PREVIEW_WARNINGS),
+        warnings=list(
+            dict.fromkeys(
+                [
+                    *_XLSX_PREVIEW_WARNINGS,
+                    *image_warnings,
+                ]
+            )
+        ),
     )
 
 
-def _public_preview_sheet(sheet: dict[str, Any]) -> XlsxPreviewSheet:
+def _public_preview_sheet(
+    sheet: dict[str, Any],
+    *,
+    images: list[dict[str, Any]],
+) -> XlsxPreviewSheet:
     """Drop parser-only fields and redact formulas before they enter the UI DTO."""
 
     raw_rows = sheet.get("rows")
     if not isinstance(raw_rows, list):
         raise ValueError("invalid XLSX sheet payload")
     rows = [_public_preview_row(row) for row in raw_rows]
-    return XlsxPreviewSheet(name=sheet.get("name"), rows=rows)
+    return XlsxPreviewSheet(
+        name=sheet.get("name"),
+        rows=rows,
+        images=[XlsxPreviewImage.model_validate(image) for image in images],
+    )
 
 
 def _public_preview_row(row: object) -> XlsxPreviewRow:

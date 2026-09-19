@@ -11,7 +11,6 @@ from app.agent_apps.authority import (
     _revision_hash,
     _revision_hash_matches,
     profile_public_projection,
-    reject_profile_selector_conflicts,
 )
 from app.agent_apps.api import (
     AgentProfileAdminProjection as AgentAppsAdminProjection,
@@ -350,7 +349,7 @@ def test_selected_profile_rejects_client_owned_capability_selectors():
     )
 
     try:
-        reject_profile_selector_conflicts(request)
+        AgentProfileAuthority.reject_profile_selector_conflicts(request)
     except HTTPException as exc:
         assert exc.status_code == 400
         assert exc.detail == "agent_profile_selector_conflict"
@@ -364,7 +363,7 @@ def test_selected_profile_accepts_user_owned_model_selectors():
             message="Help me",
             agent_options=selector,
         )
-        reject_profile_selector_conflicts(request, active=True)
+        AgentProfileAuthority.reject_profile_selector_conflicts(request, active=True)
 
 
 def test_selected_profile_is_an_optimistic_revision_lock():

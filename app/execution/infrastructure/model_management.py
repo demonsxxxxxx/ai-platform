@@ -11,8 +11,6 @@ from app.execution.application.model_selection import RunModelSelection
 from app.execution.domain.model_catalog import (
     admin_model_projection,
     discovered_model_mapping,
-    normalize_catalog_patch,
-    platform_model_id as platform_model_id,
     public_model_projection,
 )
 
@@ -28,6 +26,10 @@ class ActiveConnection:
     base_url: str
     api_key: str
     key_fingerprint: str
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    conversation_mode: str | None = None
+    model_value: str | None = None
 
 
 async def get_connection_projection(conn: AsyncConnection) -> dict[str, Any]:
@@ -80,14 +82,23 @@ async def get_run_connection(
 ) -> ActiveConnection | None:
     cursor = await conn.execute(
         """
-        select revision, base_url, api_key_ciphertext, key_fingerprint
+        select revision, base_url, api_key_ciphertext, key_fingerprint,
+               runs.max_input_tokens, runs.max_output_tokens,
+               run_attempts.execution_spec_json #>> '{context_pack,conversation_context,execution_mode}' as conversation_mode
         from runs
         join model_gateway_revisions
           on model_gateway_revisions.revision = runs.model_gateway_revision
+        join run_attempts
+          on run_attempts.run_id = runs.id and run_attempts.tenant_id = runs.tenant_id
         join sandbox_leases
           on sandbox_leases.run_id = runs.id
          and sandbox_leases.tenant_id = runs.tenant_id
         where runs.id = %s
+          and run_attempts.id = %s
+          and run_attempts.execution_spec_schema_version = 'ai-platform.execution-spec.v2'
+          and run_attempts.execution_spec_json->>'model_value' = runs.model_value
+          and run_attempts.execution_spec_json->>'model_max_input_tokens' = runs.max_input_tokens::text
+          and run_attempts.execution_spec_json->>'model_max_output_tokens' = runs.max_output_tokens::text
           and sandbox_leases.attempt_id = %s
           and runs.model_value = %s
           and runs.status in ('queued', 'running')
@@ -96,7 +107,30 @@ async def get_run_connection(
           and (sandbox_leases.expires_at is null or sandbox_leases.expires_at > now())
         limit 1
         """,
-        (run_id, attempt_id, model_value),
+        (run_id, attempt_id, attempt_id, model_value),
+    )
+    row = await cursor.fetchone()
+    return _connection_from_row(row, encryption_key=encryption_key) if row else None
+
+
+async def get_preparation_connection(
+    conn: AsyncConnection, *, run_id: str, encryption_key: str,
+) -> ActiveConnection | None:
+    cursor = await conn.execute(
+        """
+        select gateway.revision, gateway.base_url, gateway.api_key_ciphertext,
+               gateway.key_fingerprint, runs.model_value, runs.max_input_tokens,
+               runs.max_output_tokens
+        from runs
+        join model_gateway_revisions gateway on gateway.revision = runs.model_gateway_revision
+        join run_context_snapshots snapshot on snapshot.id = runs.context_snapshot_id
+          and snapshot.tenant_id = runs.tenant_id and snapshot.workspace_id = runs.workspace_id
+          and snapshot.user_id = runs.user_id and snapshot.session_id = runs.session_id
+          and snapshot.run_id = runs.id and snapshot.context_kind = 'executor'
+        where runs.id = %s and runs.status = 'queued'
+          and runs.model_value is not null and runs.model_gateway_revision > 0
+          and runs.max_input_tokens > 0 and runs.max_output_tokens > 0
+        """, (run_id,),
     )
     row = await cursor.fetchone()
     return _connection_from_row(row, encryption_key=encryption_key) if row else None
@@ -192,7 +226,8 @@ async def list_admin_models(conn: AsyncConnection) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
         select model_id, upstream_model_id, display_name, provider, enabled,
-               upstream_available, is_default, display_order, last_seen_revision, last_seen_at
+               upstream_available, is_default, display_order, last_seen_revision,
+               last_seen_at, max_input_tokens, max_output_tokens
         from model_catalog_entries
         order by display_order, model_id
         """
@@ -208,48 +243,54 @@ async def list_public_models(conn: AsyncConnection) -> dict[str, Any] | None:
         return None
     cursor = await conn.execute(
         """
-        select model_id, upstream_model_id, display_name, provider, is_default
+        select model_id, upstream_model_id, display_name, provider, is_default,
+               max_input_tokens, max_output_tokens
         from model_catalog_entries
         where enabled = true and upstream_available = true
+          and max_input_tokens is not null and max_output_tokens is not null
         order by is_default desc, display_order, model_id
         """
     )
     return public_model_projection(await cursor.fetchall())
 
 
-async def update_catalog_entry(
+async def publish_models(
     conn: AsyncConnection,
     *,
-    model_id: str,
-    display_name: str | None,
-    enabled: bool | None,
-    is_default: bool | None,
-) -> dict[str, Any] | None:
+    expected_revision: int | None,
+    models: list[dict[str, Any]],
+    **connection: Any,
+) -> tuple[int, list[dict[str, Any]]]:
+    await conn.execute("select pg_advisory_xact_lock(%s)", (_CONNECTION_LOCK_KEY,))
     cursor = await conn.execute(
-        "select * from model_catalog_entries where model_id = %s for update",
-        (model_id,),
+        "select revision from model_gateway_revisions where active = true limit 1"
     )
-    row = await cursor.fetchone()
-    if row is None:
-        return None
-    patch = normalize_catalog_patch(
-        row,
-        display_name=display_name,
-        enabled=enabled,
-        is_default=is_default,
+    active = await cursor.fetchone()
+    if (int(active["revision"]) if active else None) != expected_revision:
+        raise ValueError("model_catalog_revision_conflict")
+    revision, _ = await activate_connection_and_sync(
+        conn, upstream_model_ids=connection.pop("upstream_model_ids"), **connection
     )
-    if patch.is_default:
-        await conn.execute("update model_catalog_entries set is_default = false where is_default = true")
-    await conn.execute(
-        """
-        update model_catalog_entries
-        set display_name = %s, enabled = %s, is_default = %s
-        where model_id = %s
-        """,
-        (patch.display_name, patch.enabled, patch.is_default, model_id),
-    )
-    cursor = await conn.execute("select * from model_catalog_entries where model_id = %s", (model_id,))
-    return admin_model_projection(await cursor.fetchone())
+    await conn.execute("update model_catalog_entries set enabled = false, is_default = false")
+    for model in models:
+        cursor = await conn.execute(
+            """
+            update model_catalog_entries
+            set display_name = %s, enabled = %s, is_default = %s,
+                display_order = %s, max_input_tokens = %s, max_output_tokens = %s
+            where model_id = %s and upstream_model_id = %s
+              and upstream_available = true and last_seen_revision = %s
+            returning model_id
+            """,
+            (
+                model["display_name"], model["enabled"], model["is_default"],
+                model["order"], model.get("max_input_tokens"),
+                model.get("max_output_tokens"), model["id"], model["value"], revision,
+            ),
+        )
+        if await cursor.fetchone() is None:
+            raise ValueError("model_catalog_discovery_changed")
+    return revision, await list_admin_models(conn)
 
 
 async def resolve_run_model(
@@ -270,7 +311,9 @@ async def resolve_run_model(
         )
         select active_gateway.revision as connection_revision,
                catalog.model_id,
-               catalog.upstream_model_id
+               catalog.upstream_model_id,
+               catalog.max_input_tokens,
+               catalog.max_output_tokens
         from active_gateway
         left join model_catalog_entries catalog
           on catalog.enabled = true
@@ -290,10 +333,22 @@ async def resolve_run_model(
         return None
     if row.get("model_id") is None or row.get("upstream_model_id") is None:
         raise ValueError("model_id_not_available")
+    if row.get("max_input_tokens") is None or row.get("max_output_tokens") is None:
+        raise ValueError("model_capacity_missing")
     return RunModelSelection(
         model_id=str(row["model_id"]),
         model_value=str(row["upstream_model_id"]),
         connection_revision=int(row["connection_revision"]),
+        max_input_tokens=(
+            int(row["max_input_tokens"])
+            if row.get("max_input_tokens") is not None
+            else None
+        ),
+        max_output_tokens=(
+            int(row["max_output_tokens"])
+            if row.get("max_output_tokens") is not None
+            else None
+        ),
     )
 
 
@@ -307,6 +362,9 @@ class PostgresModelManagementRepository:
     async def run_connection(self, conn: AsyncConnection, **kwargs: Any) -> ActiveConnection | None:
         return await get_run_connection(conn, **kwargs)
 
+    async def preparation_connection(self, conn: AsyncConnection, **kwargs: Any) -> ActiveConnection | None:
+        return await get_preparation_connection(conn, **kwargs)
+
     async def admin_models(self, conn: AsyncConnection) -> list[dict[str, Any]]:
         return await list_admin_models(conn)
 
@@ -316,8 +374,8 @@ class PostgresModelManagementRepository:
     async def activate_and_sync(self, conn: AsyncConnection, **kwargs: Any) -> Any:
         return await activate_connection_and_sync(conn, **kwargs)
 
-    async def update_catalog(self, conn: AsyncConnection, **kwargs: Any) -> Any:
-        return await update_catalog_entry(conn, **kwargs)
+    async def publish_models(self, conn: AsyncConnection, **kwargs: Any) -> Any:
+        return await publish_models(conn, **kwargs)
 
     async def resolve_run_model(
         self,
@@ -338,4 +396,16 @@ def _connection_from_row(row: dict[str, Any], *, encryption_key: str) -> ActiveC
             encoded_key=encryption_key,
         ),
         key_fingerprint=str(row["key_fingerprint"]),
+        max_input_tokens=(
+            int(row["max_input_tokens"])
+            if row.get("max_input_tokens") is not None
+            else None
+        ),
+        max_output_tokens=(
+            int(row["max_output_tokens"])
+            if row.get("max_output_tokens") is not None
+            else None
+        ),
+        conversation_mode=row.get("conversation_mode"),
+        model_value=row.get("model_value"),
     )

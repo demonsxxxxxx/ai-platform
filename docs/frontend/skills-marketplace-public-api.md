@@ -7,10 +7,11 @@ This contract covers the authenticated frontend Skills and Marketplace surfaces.
 All routes require an authenticated principal. Missing authentication returns `401`. Missing authorization returns `403` with `detail` formatted as `missing_permission:<permission>`.
 
 MCP lifecycle routes are platform-admin gated. Server registry create, update,
-delete, and enablement now persist tenant-scoped lifecycle metadata with
-redacted credential evidence; remaining import, tool-toggle, promote, and
-demote flows still return `409 mcp_lifecycle_contract_not_backed` until their
-governance paths are backed.
+delete, and enablement persist tenant-scoped lifecycle metadata with redacted
+credential evidence. The former compatibility-only routes `POST /api/mcp/import`,
+`PATCH /api/mcp/{name}/tools/{tool_name}`, `POST /api/admin/mcp/{name}/promote`,
+and `POST /api/admin/mcp/{name}/demote` are retired and absent; tool discovery
+and backed server lifecycle routes remain listed below.
 
 Effective permissions are projected from the principal permissions plus admin role expansion:
 
@@ -66,6 +67,11 @@ Marketplace file previews continue to read released Skill snapshots and do not i
 `POST /api/skills/upload/preview` accepts a multipart ZIP package in field
 `file`, validates the package `SKILL.md`, and returns package metadata without
 persistence. It only supports one Skill package per ZIP in this backend slice.
+Preview and actual upload use the same package parser: decoded file and directory
+name components must fit within 255 UTF-8 bytes; non-ASCII ZIP names without
+a UTF-8 flag or a verified Unicode Path (0x7075) extra field are rejected rather than
+guessed or silently renamed. ASCII names need no encoding flag. The admin
+Skill package preview and upload follow the same package-shape validation.
 
 `POST /api/skills/upload` accepts the same package shape for an existing public
 Skill and persists the package files as tenant/user-scoped public Skill file
@@ -107,13 +113,6 @@ Tenant Marketplace distribution lifecycle routes are backed for authorized marke
 
 - `PATCH /api/marketplace/{skill_name}/activate` accepts either `active` or the frontend-compatible `is_active` body field and updates tenant availability.
 - `DELETE /api/marketplace/{skill_name}` disables tenant Marketplace availability without deleting global Skill records.
-
-The following compatibility routes are fail-closed and return
-`409 marketplace_direct_write_contract_not_backed` without reading or mutating
-the Skill catalog, version rows, release policy, or tenant distribution:
-
-- `POST /api/marketplace/`
-- `PUT /api/marketplace/{skill_name}`
 
 The Admin release-management surface under `/api/ai/admin/skills/*` is the only
 authority for immutable version upload, review, promote, rollout policy, and
@@ -174,37 +173,15 @@ it to the fixed translator origin after validating the child window and its
 nonce. It is never placed in a URL or AI Platform browser storage. The
 translator stores the received JWT in its own tab-scoped `sessionStorage` for
 its API calls. At MCP execution time the Worker reuses the existing Capability
-Distribution and Tool Policy plan, reads the current JWT and encrypted Server
-target, then registers the Server with the Agent SDK using static headers plus
-`JWT-Authorization`. The SDK calls the MCP Server directly. There is no
-separate MCP Broker capability or host Relay, and runtime connection material
-is removed from reconciliation persistence.
+Distribution and Tool Policy plan and reads the current JWT and encrypted
+Server target. The executor opens remote MCP sessions with static headers plus
+`JWT-Authorization`, then exposes only the authorized selected tools through
+the SDK's in-process MCP interface. SDK calls pass through that adapter to the
+original remote tool names. There is no separate MCP Broker capability or host
+Relay, and runtime connection material is removed from reconciliation persistence.
 
-Explicitly fail-closed follow-up routes:
+The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selected-tool exposure, SDK alias mapping, HTTP/SSE transport limits, and runnable acceptance. Command/stdin (`sandbox`) configuration writes are rejected until a governed process adapter exists; existing rows remain readable but do not authorize command execution. Ordinary directory responses with `unavailable_reason` display unavailable state rather than an empty successful catalog.
 
-- `POST /api/mcp/import`
-- `PATCH /api/mcp/{name}/tools/{tool_name}`
-- `POST /api/admin/mcp/{name}/promote`
-- `POST /api/admin/mcp/{name}/demote`
-
-Those follow-up routes require platform admin and then return
-`409 mcp_lifecycle_contract_not_backed`. Tool policy writes remain under
-`/api/ai/admin/tool-policies/*`; ordinary users do not gain MCP server CRUD,
-credential lifecycle, or write-tool bypass authority from this public route set.
-
-## Retired Runtime Tool-Permission Writes
-
-Runtime tool policy is zero-click: it synchronously allows or denies an
-already-authorized tool subject and never creates an approval request. The
-following compatibility writes were deprecated on `2026-07-17` and return
-`410 Gone` without mutating a request, decision, audit, or event:
-
-- `POST /api/ai/runs/{run_id}/tool-permissions/request`
-- `POST /api/ai/runs/{run_id}/tool-permissions/{request_id}/decision`
-- `POST /api/ai/tool-permissions/inbox/{request_id}/decision`
-
-`GET /api/ai/tool-permissions/inbox` remains a redacted historical read;
-pre-existing rows may still terminalize safely. The write routes remain only
-for compatibility. Their earliest physical removal is `2026-08-17`, and
-requires a consumer inventory plus recorded no-call evidence; frontend code
-must not call or depend on them.
+Tool policy writes remain under `/api/ai/admin/tool-policies/*`; ordinary users
+do not gain MCP server CRUD, credential lifecycle, or write-tool bypass
+authority from this public route set.

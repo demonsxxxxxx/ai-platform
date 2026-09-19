@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.tool_policy import evaluate_tool_policy
+from app.tool_policy import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_session_messages",
@@ -17,6 +17,8 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "search_memory",
 )
 _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
+_SDK_INTERNAL_RESPONSE_TOOLS = ("attach_file",)
+_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX = "mcp__ai-platform-response__"
 _SKILL_INPUT_MAX_BYTES = 64 * 1024
 _SKILL_INPUT_MAX_DEPTH = 16
 _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
@@ -31,50 +33,6 @@ _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
     "stage_context_file_to_workspace": ("file_id",),
     "stage_run_artifact_to_workspace": ("artifact_id",),
 }
-_BUILTIN_PARAMETER_KEYS = {
-    "Read": ("file_path",),
-    "Glob": ("pattern", "path"),
-    "Grep": (
-        "pattern",
-        "path",
-        "glob",
-        "output_mode",
-        "-i",
-        "multiline",
-        "head_limit",
-        "offset",
-        "context",
-        "-A",
-        "-B",
-        "-C",
-        "-n",
-        "-o",
-        "type",
-    ),
-    "LS": ("path",),
-    "Bash": ("command",),
-    "Write": ("file_path", "content"),
-    "Edit": ("file_path", "old_string", "new_string", "replace_all"),
-    "NotebookEdit": (
-        "notebook_path",
-        "new_source",
-        "cell_id",
-        "cell_type",
-        "edit_mode",
-    ),
-    "Agent": ("agent", "prompt", "description"),
-    "WebFetch": ("url", "prompt"),
-    "WebSearch": ("query",),
-    "Skill": ("skill",),
-}
-_BUILTIN_REQUIRED_PARAMETER_KEYS = {
-    "Grep": ("pattern",),
-    "Bash": ("command",),
-    "Write": ("file_path", "content"),
-    "Skill": ("skill",),
-}
-
-
 def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
     """Keep only exact, complete capability subjects authorized by the worker."""
 
@@ -98,6 +56,16 @@ def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
                 ):
                     continue
                 tool_name = internal_tool
+            elif server_id == "ai-platform-response":
+                internal_tool = identity.removeprefix(
+                    _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX
+                )
+                if (
+                    not identity.startswith(_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+                    or internal_tool not in _SDK_INTERNAL_RESPONSE_TOOLS
+                ):
+                    continue
+                tool_name = internal_tool
             if (
                 not isinstance(server_id, str)
                 or not server_id
@@ -106,6 +74,11 @@ def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
                 or identity != f"mcp__{server_id}__{tool_name}"
             ):
                 continue
+        existing = subjects.get(identity)
+        if existing and identity.startswith("mcp__") and (
+            existing.get("mcp_server"), existing.get("mcp_tool")
+        ) != (raw.get("mcp_server"), raw.get("mcp_tool")):
+            raise ValueError("mcp_identity_collision")
         validation = evaluate_tool_policy(
             tool={
                 "requested_identity": identity,
@@ -156,7 +129,7 @@ class CapabilityExecutionPlan:
             if (
                 not isinstance(server_id, str)
                 or not server_id
-                or server_id == "ai-platform-context"
+                or server_id in {"ai-platform-context", "ai-platform-response"}
                 or not isinstance(tool_name, str)
                 or not tool_name
                 or identity != f"mcp__{server_id}__{tool_name}"
@@ -213,6 +186,28 @@ def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, 
     return subjects
 
 
+def internal_response_tool_policy_subjects() -> list[dict[str, Any]]:
+    """Build the private platform tool that binds files to the final response."""
+
+    return [
+        {
+            "identity": f"{_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX}attach_file",
+            "mcp_server": "ai-platform-response",
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+            "risk_level": "medium",
+            "write_capable": True,
+            "allowed_parameter_keys": ["path"],
+            "required_parameter_keys": ["path"],
+        }
+    ]
+
+
 def _extract_skill_names_from_tool_input(
     tool_input: Any,
     allowed_skill_names: set[str],
@@ -234,7 +229,8 @@ def _authorized_parameter_keys(
         isinstance(item, str) and item for item in configured
     ):
         return set(configured)
-    return set(_BUILTIN_PARAMETER_KEYS.get(tool_name, ()))
+    contract = BUILTIN_TOOL_PARAMETER_CONTRACTS.get(tool_name)
+    return set(contract.allowed_parameter_keys if contract is not None else ())
 
 
 def _delegates_external_mcp_parameters(
@@ -249,7 +245,7 @@ def _delegates_external_mcp_parameters(
         and isinstance(identity, str)
         and isinstance(server_id, str)
         and bool(server_id)
-        and server_id != "ai-platform-context"
+        and server_id not in {"ai-platform-context", "ai-platform-response"}
         and isinstance(mcp_tool, str)
         and bool(mcp_tool)
         and identity == f"mcp__{server_id}__{mcp_tool}"
@@ -358,7 +354,10 @@ def _parameters_match_subject(
     if required is None and isinstance(schema, dict):
         required = schema.get("required", [])
     if required is None:
-        required = list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ()))
+        contract = BUILTIN_TOOL_PARAMETER_CONTRACTS.get(tool_name)
+        required = list(
+            contract.required_parameter_keys if contract is not None else ()
+        )
     if not isinstance(required, list) or not all(
         isinstance(key, str) and key for key in required
     ):

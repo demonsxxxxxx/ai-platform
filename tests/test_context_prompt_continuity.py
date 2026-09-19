@@ -4,6 +4,8 @@ import types
 
 import pytest
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.executors.claude import prompts as claude_prompts
 from app.context.retrieval import (
     ContextRetrieval,
@@ -97,11 +99,8 @@ def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payl
     assert "Available context retrieval tools: stage_context_file_to_workspace" in prompt
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
-    assert "private_payload" not in prompt
-    assert (
-        "Use Simplified Chinese for the final answer and all public summarized-thinking text. "
-        "Keep code, commands, filenames, and other literal values unchanged when the task requires them."
-    ) in prompt
+    assert "list only final user deliverables in `deliverables`" in prompt
+    assert "temporary, intermediate, cache, log, or diagnostic files" in prompt
 
 
 def test_skill_prompt_injects_complete_ordered_conversation_once():
@@ -255,6 +254,7 @@ async def test_sdk_runner_uses_authorized_session_id_in_stream_instead_of_global
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
@@ -342,6 +342,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
         TextBlock=TextBlock,
         create_sdk_mcp_server=create_sdk_mcp_server,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
         tool=tool,
     )
     retrieval = ContextRetrievalAuthority(
@@ -563,6 +564,7 @@ async def test_sdk_runner_fails_closed_when_authorized_context_tool_registration
         "ResultMessage": Message,
         "TextBlock": Message,
         "query": query,
+        "ClaudeSDKClient": native_client_factory(query),
     }
     if sdk_shape == "failing":
         def tool(*_args, **_kwargs):

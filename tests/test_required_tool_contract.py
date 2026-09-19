@@ -5,6 +5,7 @@ import pytest
 from app.execution_boundary import ExecutionBoundaryDecision
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
+    SANDBOX_LOCAL_TOOL_IDENTITIES,
     RequiredCapabilityDecision,
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
@@ -20,6 +21,10 @@ from app.required_tool_contract import (
     validate_tool_invocation_evidence,
     with_boundary_sandbox_local_tool_subjects,
     with_sandbox_local_tool_capability_subjects,
+)
+from app.tool_policy import (
+    BUILTIN_TOOL_IDENTITIES,
+    BUILTIN_TOOL_PARAMETER_CONTRACTS,
 )
 
 
@@ -113,26 +118,33 @@ def test_required_builtin_subject_never_mints_undeclared_authority_and_rejects_f
         )
 
 
-def test_real_sandbox_replaces_local_tool_authority_once():
+def test_builtin_tool_parameter_contract_covers_every_exact_identity_once():
+    assert frozenset(BUILTIN_TOOL_PARAMETER_CONTRACTS) == BUILTIN_TOOL_IDENTITIES
+
+
+def test_real_sandbox_rebuilds_only_authorized_local_tool_identities_once():
+    assert with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="opensandbox",
+    ) == []
+    authorized = with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="opensandbox",
+        authorized_sandbox_tool_identities=SANDBOX_LOCAL_TOOL_IDENTITIES,
+    )
     subjects = with_sandbox_local_tool_capability_subjects(
         [
-            {"identity": "Read", "registered": True},
-            {"identity": "Bash", "command_isolation": "sibling-tool-sandbox-v1"},
+            *[
+                subject
+                for subject in authorized
+                if subject["identity"] in {"Read", "Bash"}
+            ],
             {"identity": "Bash", "command_isolation": "minimal-environment-v1"},
         ],
         sandbox_provider="opensandbox",
     )
 
-    assert [subject["identity"] for subject in subjects] == [
-        "Read",
-        "Glob",
-        "Grep",
-        "LS",
-        "Bash",
-        "Write",
-        "Edit",
-        "NotebookEdit",
-    ]
+    assert [subject["identity"] for subject in subjects] == ["Read", "Bash"]
     assert all(
         subject["execution_strategy"] == "sandbox_full_local"
         for subject in subjects
@@ -146,9 +158,19 @@ def test_real_sandbox_replaces_local_tool_authority_once():
     assert bash_subject["distributed"] is True
     assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
     assert bash_subject["workspace_contract"] == "ai-platform.skill-workspace.v1"
+
+
+def test_sandbox_local_tools_use_credential_free_docker_sibling_for_bash():
+    subjects = with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="docker",
+        authorized_sandbox_tool_identities=SANDBOX_LOCAL_TOOL_IDENTITIES,
+    )
+    bash_subject = next(subject for subject in subjects if subject["identity"] == "Bash")
+
+    assert bash_subject["command_isolation"] == "sibling-tool-sandbox-v1"
+    assert bash_subject["execution_strategy"] == "sandbox_full_local"
     grep_subject = next(subject for subject in subjects if subject["identity"] == "Grep")
-    assert grep_subject["risk_level"] == "low"
-    assert grep_subject["write_capable"] is False
     assert grep_subject["allowed_parameter_keys"] == [
         "pattern",
         "path",
@@ -159,20 +181,14 @@ def test_real_sandbox_replaces_local_tool_authority_once():
         "head_limit",
         "offset",
         "context",
+        "-A",
+        "-B",
+        "-C",
         "-n",
+        "-o",
+        "type",
     ]
     assert grep_subject["required_parameter_keys"] == ["pattern"]
-
-
-def test_sandbox_local_tools_use_credential_free_docker_sibling_for_bash():
-    subjects = with_sandbox_local_tool_capability_subjects(
-        [],
-        sandbox_provider="docker",
-    )
-    bash_subject = next(subject for subject in subjects if subject["identity"] == "Bash")
-
-    assert bash_subject["command_isolation"] == "sibling-tool-sandbox-v1"
-    assert bash_subject["execution_strategy"] == "sandbox_full_local"
 
 
 def test_sandbox_local_tool_subjects_reject_non_real_provider():
@@ -212,11 +228,21 @@ def test_non_real_or_fail_closed_boundary_strips_all_sandbox_local_capabilities(
     assert subjects == []
 
 
-def test_real_boundary_adds_all_local_tools_after_sanitizing_existing_authority():
+def test_real_boundary_keeps_authorized_local_subset_after_sanitizing_authority():
+    local_subjects = with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="opensandbox",
+        authorized_sandbox_tool_identities=SANDBOX_LOCAL_TOOL_IDENTITIES,
+    )
     subjects = with_boundary_sandbox_local_tool_subjects(
         [
             {"identity": "mcp__catalog__search", "write_capable": False},
             {"identity": "custom-write", "write_capable": True},
+            *[
+                subject
+                for subject in local_subjects
+                if subject["identity"] in {"Bash", "Write"}
+            ],
         ],
         decision=_boundary(real=True),
         sandbox_provider="opensandbox",
@@ -224,15 +250,96 @@ def test_real_boundary_adds_all_local_tools_after_sanitizing_existing_authority(
 
     assert [subject["identity"] for subject in subjects] == [
         "mcp__catalog__search",
-        "Read",
-        "Glob",
-        "Grep",
-        "LS",
         "Bash",
         "Write",
-        "Edit",
-        "NotebookEdit",
     ]
+
+
+def test_real_boundary_does_not_mint_local_tools_for_nonlocal_authority():
+    subjects = with_boundary_sandbox_local_tool_subjects(
+        [{"identity": "Skill", "write_capable": False}],
+        decision=_boundary(real=True),
+        sandbox_provider="opensandbox",
+    )
+
+    assert subjects == [{"identity": "Skill", "write_capable": False}]
+
+
+def test_real_boundary_expands_authorized_full_sdk_strategy():
+    skill_subject = {
+        "identity": "Skill",
+        "declared_identities": ["Skill"],
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": "low",
+        "write_capable": False,
+        "execution_strategy": "sandbox_full_local",
+        "allowed_skill_names": ["trusted-skill"],
+    }
+
+    subjects = with_boundary_sandbox_local_tool_subjects(
+        [skill_subject],
+        decision=_boundary(real=True),
+        sandbox_provider="opensandbox",
+    )
+
+    assert [subject["identity"] for subject in subjects] == [
+        "Skill",
+        *SANDBOX_LOCAL_TOOL_IDENTITIES,
+    ]
+
+
+def test_real_boundary_never_mints_local_tools_from_empty_authority():
+    subjects = with_boundary_sandbox_local_tool_subjects(
+        [],
+        decision=_boundary(real=True),
+        sandbox_provider="opensandbox",
+    )
+
+    assert subjects == []
+
+
+def test_real_boundary_rejects_non_skill_full_sdk_authority():
+    forged_mcp_subject = {
+        "identity": "mcp__catalog__search",
+        "declared_identities": ["mcp__catalog__search"],
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": "low",
+        "write_capable": False,
+        "execution_strategy": "sandbox_full_local",
+    }
+
+    subjects = with_boundary_sandbox_local_tool_subjects(
+        [forged_mcp_subject],
+        decision=_boundary(real=True),
+        sandbox_provider="opensandbox",
+    )
+
+    assert subjects == [forged_mcp_subject]
+
+
+def test_real_boundary_explicit_harness_authority_enables_local_tools():
+    subjects = with_boundary_sandbox_local_tool_subjects(
+        [],
+        decision=_boundary(real=True),
+        sandbox_provider="opensandbox",
+        authorized_sandbox_tool_identities=SANDBOX_LOCAL_TOOL_IDENTITIES,
+    )
+
+    assert [subject["identity"] for subject in subjects] == list(
+        SANDBOX_LOCAL_TOOL_IDENTITIES
+    )
 
 
 def test_tool_invocation_evidence_requires_attempt_bound_started_to_terminal_sequence():

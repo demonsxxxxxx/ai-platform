@@ -1078,6 +1078,8 @@ async def create_run(
                 model_id=selected_model.model_id,
                 model_value=selected_model.model_value,
                 connection_revision=selected_model.connection_revision,
+                max_input_tokens=selected_model.max_input_tokens,
+                max_output_tokens=selected_model.max_output_tokens,
             )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await repositories.insert_run_skill_snapshots_at_creation(
@@ -1110,7 +1112,9 @@ async def create_run(
                 message_ids=[],
                 file_ids=primary_file_ids,
                 source="runs_api",
-                include_session_history=bool(request.session_id),
+                include_session_history=(
+                    bool(request.session_id) or executor_type == "claude-agent-worker"
+                ),
             )
             queue_payload = _validate_queue_payload_for_enqueue(
                 {

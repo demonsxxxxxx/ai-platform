@@ -37,14 +37,12 @@ import {
   type ChatSubmissionPreLedgerAbsenceResolution,
   type ChatSubmissionResolution,
 } from "../services/api/session";
-import { feedbackApi } from "../services/api/feedback";
 import { getAccessToken } from "../services/api/token";
 import { useAuth } from "../hooks/useAuth";
 import {
   BROWSER_AUTH_INCARCINATION_EVENT,
   getBrowserAuthIncarnation,
 } from "./browserAuthCoordinator";
-import { Permission } from "../types/auth";
 import {
   type UseAgentOptions,
   type SubagentStackItem,
@@ -640,7 +638,6 @@ function runControlAuthKey(identity: RunControlAuthIdentity): string {
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const {
-    hasAnyPermission,
     isAuthenticated,
     isLoading: isAuthLoading,
     user,
@@ -648,10 +645,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [browserAuthIncarnation, setBrowserAuthIncarnation] = useState(
     getBrowserAuthIncarnation,
   );
-  const canReadFeedback = hasAnyPermission([
-    Permission.FEEDBACK_READ,
-    Permission.FEEDBACK_WRITE,
-  ]);
   const runControlAuth = useMemo<RunControlAuthIdentity>(
     () => ({
       incarnation: browserAuthIncarnation,
@@ -1539,6 +1532,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   }, [createSSEContext]);
 
   useEffect(() => {
+    const terminalReservations = v4TerminalReservationsRef.current;
     isMountedRef.current = true;
     const mountedGeneration = ++mountedGenerationRef.current;
     return () => {
@@ -1557,7 +1551,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
-      v4TerminalReservationsRef.current.clear();
+      terminalReservations.clear();
       statusRetryCountRef.current = 0;
       resetAcceptedStreamState(acceptedRunEventSequenceRef, acceptedStreamCursorRef);
       isLoadingHistoryRef.current = false;
@@ -1717,27 +1711,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           historyFailurePhase = "event_history";
           // Event history determines the exact latest run before its status is
           // queried. Session metadata can be absent or stale in production.
-          const eventsPromise = sessionApi.getEvents(
+          const eventsData = await sessionApi.getEvents(
             targetSessionId,
             targetRunId ? { run_id: targetRunId } : undefined,
           );
-          const feedbackPromise = canReadFeedback
-            ? feedbackApi
-                .list(0, 100, undefined, undefined, targetSessionId)
-                .catch((error) => {
-                  logHistoryLoadFailure(
-                    "feedback",
-                    error,
-                    "[loadHistory] feedback failed",
-                  );
-                  return null;
-                })
-            : Promise.resolve(null);
-
-          const [eventsData, feedbackList] = await Promise.all([
-            eventsPromise,
-            feedbackPromise,
-          ]);
           if (!isCurrentHistoryLoadRequest()) {
             return null;
           }
@@ -1837,23 +1814,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           reconstructedMessages = reconstructedMessages.map((message) =>
             normalizeMessageTextLogicalIds(message),
           );
-
-          if (feedbackList && feedbackList.items.length > 0) {
-            const feedbackMap = new Map(
-              feedbackList.items.map((f) => [
-                f.run_id,
-                { feedback: f.rating, feedbackId: f.id },
-              ]),
-            );
-            reconstructedMessages = reconstructedMessages.map((msg) => {
-              const feedbackInfo = msg.runId
-                ? feedbackMap.get(msg.runId)
-                : undefined;
-              return feedbackInfo
-                ? { ...msg, ...feedbackInfo }
-                : msg;
-            });
-          }
 
           const lastTimestamp = getLastEventTimestamp(
             (eventsData.events || []) as HistoryEvent[],
@@ -2032,7 +1992,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     [
       options,
       createSSEContext,
-      canReadFeedback,
       finalizeRunStatusUnavailable,
       finalizeTerminalResultUnavailable,
       finalizeTerminalRun,
@@ -2172,7 +2131,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         requestedThinkingEffort === "medium" ||
         requestedThinkingEffort === "high"
           ? requestedThinkingEffort
-          : "off";
+          : "auto";
       // A new user submission replaces the parent run before it can mutate
       // optimistic transcript state or issue its POST. This fences a pending
       // retry/resume owner from starting while the next chat admission is open.

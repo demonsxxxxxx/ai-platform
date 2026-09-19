@@ -200,31 +200,15 @@ def _safe_run_id(value: str) -> str:
 
 
 def _configured_platform_runtime_model(settings: object) -> str:
-    from app.model_catalog import build_model_catalog, resolve_model_selection
-
-    configured_default = str(getattr(settings, "default_model_id", "") or "").strip()
-    if configured_default:
-        try:
-            selection = resolve_model_selection(configured_default, settings)
-        except Exception:
-            selection = None
-        if selection and selection.get("value"):
-            return str(selection["value"])
-        return configured_default
-    for attr in ("claude_agent_model", "anthropic_model", "openai_model"):
+    for attr in (
+        "claude_agent_model",
+        "anthropic_model",
+        "openai_model",
+        "default_model_id",
+    ):
         value = str(getattr(settings, attr, "") or "").strip()
         if value:
             return value
-    catalog = build_model_catalog(settings)
-    catalog_default = str(catalog.get("default_model_id") or "").strip()
-    if catalog_default:
-        try:
-            selection = resolve_model_selection(catalog_default, settings)
-        except Exception:
-            selection = None
-        if selection and selection.get("value"):
-            return str(selection["value"])
-        return catalog_default
     return "deepseek-v4-flash"
 
 

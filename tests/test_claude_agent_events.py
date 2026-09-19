@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.execution.api import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
@@ -15,6 +17,7 @@ from app.platform.public_payload import (
     sanitize_public_payload,
     sanitize_public_reasoning_text,
 )
+from app.required_tool_contract import with_sandbox_local_tool_capability_subjects
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import (
     CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
@@ -744,21 +747,11 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             openai_api_key="",
         ),
     )
-    subject = {
-        "identity": "Read",
-        "registered": True,
-        "declared": True,
-        "active": True,
-        "distributed": True,
-        "identity_authorized": True,
-        "object_authorized": True,
-        "parameters_authorized": True,
-        "allowed_parameter_keys": ["file_path"],
-        "required_parameter_keys": ["file_path"],
-        "risk_level": "low",
-        "write_capable": False,
-        "public_tool_label": "Read file",
-    }
+    subject = with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="docker",
+        authorized_sandbox_tool_identities={"Read"},
+    )[0]
     candidates = []
     tool_lifecycle = []
 
@@ -834,13 +827,14 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         thinking_effort="high",
         on_text=lambda value: asyncio.sleep(0),
         on_tool_lifecycle=acknowledge_tool_lifecycle,
@@ -859,14 +853,13 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         for candidate in candidates
     ]
     assert candidate_types == [
-        "message.started",
-        "message.delta",
         "policy.checking",
         "policy.allowed",
         "tool.started",
         "tool.completed",
         "subagent.started",
         "subagent.completed",
+        "message.started",
         "message.delta",
         "message.completed",
         "model.completed",
@@ -877,7 +870,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         if isinstance(candidate, ClaudeAgentEventCandidate)
         and candidate.event_type == "message.delta"
     ]
-    assert deltas == ["safe ", "answer"]
+    assert deltas == ["safe answer"]
     _assert_sandbox_answer_receipt(result, candidates, "safe answer")
     assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
     assert all(isinstance(candidate, ClaudeAgentEventCandidate) for candidate in candidates)
@@ -892,7 +885,9 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
 
 @pytest.mark.asyncio
-async def test_runner_continues_ordinary_stream_past_previous_publication_bound(monkeypatch):
+async def test_runner_ignores_ordinary_stream_and_publishes_structured_terminal_answer(
+    monkeypatch,
+):
     import claude_agent_sdk as sdk
 
     monkeypatch.setattr(
@@ -914,7 +909,8 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
     )
     published: list[str] = []
     candidates = []
-    answer = "a " * 131_073
+    streamed_answer = "a " * 131_073
+    answer = "structured final answer"
 
     async def query_fn(*, prompt, options):
         del prompt, options
@@ -927,7 +923,7 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
                 "content_block": {"type": "text"},
             },
         )
-        for index, offset in enumerate(range(0, len(answer), 4_096)):
+        for index, offset in enumerate(range(0, len(streamed_answer), 4_096)):
             yield sdk.StreamEvent(
                 uuid=f"stream-delta-{index}",
                 session_id="sdk-session",
@@ -936,7 +932,7 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
                     "index": 0,
                     "delta": {
                         "type": "text_delta",
-                        "text": answer[offset : offset + 4_096],
+                        "text": streamed_answer[offset : offset + 4_096],
                     },
                 },
             )
@@ -953,7 +949,8 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
             num_turns=1,
             session_id="sdk-session",
             stop_reason="end_turn",
-            result=answer,
+            result=streamed_answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     async def on_text(value: str) -> None:
@@ -963,7 +960,7 @@ async def test_runner_continues_ordinary_stream_past_previous_publication_bound(
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_text=on_text,
         on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
@@ -1024,6 +1021,7 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     async def on_text(value: str):
@@ -1033,7 +1031,7 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_text=on_text,
         on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
@@ -1098,13 +1096,14 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_agent_event=reject_batch,
         run_id="run-1187",
         attempt_id="attempt-1",
@@ -1161,6 +1160,7 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     task = asyncio.create_task(
@@ -1168,7 +1168,7 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
             prompt="answer",
             cwd=Path("tests"),
             skill_id=None,
-            query_fn=query_fn,
+            client_fn=native_client_factory(query_fn),
             on_agent_event=await_ack,
             run_id="run-1187",
             attempt_id="attempt-1",
@@ -1235,6 +1235,7 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     task = asyncio.create_task(
@@ -1242,7 +1243,7 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
             prompt="answer",
             cwd=Path("tests"),
             skill_id=None,
-            query_fn=query_fn,
+            client_fn=native_client_factory(query_fn),
             on_agent_event=callback,
             run_id="run-1187",
             attempt_id="attempt-1",
@@ -1270,16 +1271,19 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
 @pytest.mark.parametrize(
     "answer",
     [
-        "a" * 262_144,
-        "é" * 262_144,
-        "a" * 262_145,
+        "a" * 199_999,
+        "é" * 199_999,
+        "a" * 200_000,
     ],
-    ids=["ascii", "multibyte", "max-plus-one"],
+    ids=["ascii", "multibyte", "max"],
 )
 async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_boundaries(
     monkeypatch, answer
 ):
     import claude_agent_sdk as sdk
+    from tests.support.claude_mcp import install_mcp_sessions
+
+    install_mcp_sessions(monkeypatch)
 
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings",
@@ -1339,13 +1343,14 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_text=on_text,
         on_agent_event=accept_batch,
         run_id="run-1187",

@@ -86,11 +86,11 @@ function bootstrapSource() {
       if (url.pathname.startsWith('/api/')) state.requests.push({ path: url.pathname, method });
       if (url.pathname === '/api/ai/auth/me') return json({
         user_id: 'layout-admin', user_name: 'layout-admin', display_name: 'Layout Admin', tenant_id: 'tenant-layout',
-        roles: ['admin'], permissions: ['chat:read','chat:write','session:read','session:write','skill:admin','skill:read','skill:write','skill:delete','marketplace:admin','agent_profile:admin'],
+        roles: ['admin'], permissions: ['chat:read','chat:write','session:read','session:write','skill:admin','skill:read','skill:write','skill:delete','agent_profile:admin'],
         is_admin: true, source: 'cookie_session'
       });
       if (url.pathname === '/api/ai/auth/bootstrap' && method === 'POST') return json({
-        status: 'ready', protocol_version: 1
+        status: 'ready', protocol_version: 2, generation: 1
       });
       if (url.pathname === '/api/auth/profile') return json({ metadata: { pinned_model_ids: [] } });
       if (url.pathname === '/api/auth/profile/metadata' && method === 'PUT') return json({ metadata: { pinned_model_ids: [] } });

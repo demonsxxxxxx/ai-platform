@@ -57,7 +57,7 @@ def request(**overrides) -> SandboxRuntimeRequest:
         "attempt_id": "qat_test-runtime-attempt",
         "agent_id": "general-agent",
         "skill_ids": ["general-chat"],
-        "mcp_tool_ids": ["knowledge.search"],
+        "mcp_tool_ids": ["gateway::knowledge.search"],
         "input_message": "hello",
         "file_ids": ["file-a"],
         "sandbox_mode": "ephemeral",
@@ -161,11 +161,12 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "browser_enabled": True,
         "resource_limits": {"max_seconds": 120, "max_tool_calls": 20},
         "skill_ids": ["general-chat"],
-        "mcp_tool_ids": ["knowledge.search"],
+        "mcp_tool_ids": ["gateway::knowledge.search"],
         "tool_policy_subjects": [],
         "input_files": ["file-a"],
         "materialized_file_names": ["z.docx", "a.docx"],
         "system_prompt": "Private profile instruction",
+        "provider_session_resume_required": False,
     }
     assert [event.type for event in events] == ["runtime_container_started"]
     assert lease_calls[0][0] == "record"
@@ -194,7 +195,10 @@ async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and
         async def validate_for_dispatch(self, lease, runtime_request, workspace):
             steps.append("validate")
 
-        async def collect_workspace(self, lease, runtime_request, workspace):
+        async def collect_workspace(
+            self, lease, runtime_request, workspace, response_files=()
+        ):
+            assert list(response_files) == ["outputs/final.txt"]
             steps.append("collect")
 
         async def stop(self, lease, *, reason):
@@ -203,7 +207,12 @@ async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and
 
     async def execute(*_args, **_kwargs):
         steps.append("dispatch")
-        return {"status": "completed", "session_id": "session-a", "run_id": "run-a"}
+        return {
+            "status": "completed",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "response_files": ["outputs/final.txt"],
+        }
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     runtime = SandboxRuntime(
@@ -245,7 +254,9 @@ async def test_runtime_workspace_transfer_failure_is_terminal_and_cleans_up(tmp_
             if failure_phase == "stage":
                 raise RuntimeError("stage failed")
 
-        async def collect_workspace(self, lease, runtime_request, workspace):
+        async def collect_workspace(
+            self, lease, runtime_request, workspace, response_files=()
+        ):
             calls.append("collect")
             if failure_phase == "collect":
                 raise RuntimeError("collect failed")
@@ -1089,7 +1100,9 @@ async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tm
         async def stage_workspace(self, lease, runtime_request, leased_workspace):
             return None
 
-        async def collect_workspace(self, lease, runtime_request, leased_workspace):
+        async def collect_workspace(
+            self, lease, runtime_request, leased_workspace, response_files=()
+        ):
             return None
 
     async def execute(executor_url, task_request):
@@ -2323,7 +2336,9 @@ async def test_runtime_cleanup_timeout_force_stops_all_sandbox_modes_before_retu
     calls = []
 
     class RecordingProvider(FakeContainerProvider):
-        async def collect_workspace(self, lease, runtime_request, workspace):
+        async def collect_workspace(
+            self, lease, runtime_request, workspace, response_files=()
+        ):
             calls.append(("collect", lease.container_id))
 
         async def stop(self, lease, *, reason):

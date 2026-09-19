@@ -16,6 +16,7 @@ import app.runs.application.model_snapshot as run_model_snapshot_module
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
+from app.control_plane_contracts import standard_trace_id
 from app.execution.api import (
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
@@ -77,6 +78,24 @@ _TEST_ATTEMPT_PERSISTENCE = None
 _TEST_RUN_ATTEMPT_LIFECYCLE = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
+
+
+@pytest.fixture(autouse=True)
+def _stub_terminal_context_ports(monkeypatch):
+    async def usage(_conn, **_kwargs):
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
+        usage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
 
 
 class _FakeWorkerV4Admission:
@@ -805,10 +824,20 @@ def test_worker_keeps_bash_available_without_required_completion():
     payload = parse_queue_payload(
         base_payload(
             _leased=False,
+            executor_type="claude-agent-worker",
             input={"message": "请执行 Bash 命令 pwd"},
             skill_id="qa-file-reviewer",
             skill_version="hash-qa-file-reviewer",
             skill_manifests=[primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")],
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-existing",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 1,
+                "memory_record_count": 0,
+                "execution_tier": "sdk_only_writing",
+            },
         )
     )
     subjects = worker_module._builtin_capability_subjects(
@@ -821,6 +850,16 @@ def test_worker_keeps_bash_available_without_required_completion():
     assert set(by_identity) == {"Bash", "Write", "Skill"}
     assert by_identity["Bash"]["declared"] is True
     assert by_identity["Bash"]["required_parameter_keys"] == ["command"]
+    sandbox_subjects = worker_module.with_boundary_sandbox_local_tool_subjects(
+        subjects,
+        decision=worker_module._worker_execution_boundary_decision(payload),
+        sandbox_provider="opensandbox",
+    )
+    assert {subject["identity"] for subject in sandbox_subjects} == {
+        "Bash",
+        "Write",
+        "Skill",
+    }
 
     authorization = worker_module.required_tool_authorization_for_run(
         payload=payload,
@@ -1012,6 +1051,13 @@ def default_cancel_not_requested(monkeypatch):
             ),
         )
 
+    async def no_ready_provider_epoch(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(
+        "app.context.api.matching_ready_provider_epoch",
+        no_ready_provider_epoch,
+    )
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
     monkeypatch.setattr(
@@ -1052,12 +1098,52 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.worker.repositories.get_run", get_run, raising=False)
 
+    locked_run_for_model_snapshot: dict[str, object] = {}
+
+    async def load_test_model(conn, **kwargs):
+        locked_run = locked_run_for_model_snapshot.get("value")
+        if not isinstance(locked_run, dict):
+            locked_run = await worker_module.repositories.get_run(
+                conn,
+                tenant_id=kwargs["tenant_id"],
+                run_id=kwargs["run_id"],
+                for_update=kwargs.get("for_update", False),
+            )
+        if not isinstance(locked_run, dict):
+            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        return {
+            field: locked_run.get(field)
+            for field in (
+                "model_id",
+                "model_value",
+                "model_gateway_revision",
+                "max_input_tokens",
+                "max_output_tokens",
+            )
+        }
+
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_test_model)
+
+    async def no_checkpoint_in_fake_transaction(**_kwargs):
+        return None, False
+
+    monkeypatch.setattr("app.worker.prepare_worker_checkpoint", no_checkpoint_in_fake_transaction)
+
+    async def ready_fence(_conn, **_kwargs):
+        return "ready"
+
+    monkeypatch.setattr("app.worker.worker_dispatch_fence", ready_fence)
+
     async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
-        return await worker_module.repositories.mark_run_running(
+        locked_run = await worker_module.repositories.mark_run_running(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
         )
+        if locked_run is True:
+            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        locked_run_for_model_snapshot["value"] = locked_run
+        return locked_run
 
     async def start_worker_run_attempt(conn, **kwargs):
         return {
@@ -1128,6 +1214,21 @@ def default_cancel_not_requested(monkeypatch):
 
     async def create_artifact(conn, **kwargs):
         return None
+
+    async def persist_test_assistant(
+        conn, *, append_message, tenant_id, session_id, run_id, content, metadata_json, **_kwargs
+    ):
+        return await append_message(
+            conn,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            run_id=run_id,
+            role="assistant",
+            content=content,
+            metadata_json=metadata_json,
+        )
+
+    monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_test_assistant)
 
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run, raising=False)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run, raising=False)
@@ -1420,7 +1521,7 @@ def default_cancel_not_requested(monkeypatch):
             )
             self.snapshot = _DefaultCatalogSnapshot(skill_id, materialized_skill_ids)
 
-        def runtime_input_updates(self):
+        def runtime_input_updates(self, *, pinned_manifests=None):
             return {}
 
     async def resolve_authorized_skill_catalog(*_args, **kwargs):
@@ -1512,7 +1613,16 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
     assert captured["requested_tool_ids"] == ["search-a"]
     assert [
         subject["identity"] for subject in captured["tool_policy_subjects"]
-    ] == ["Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"]
+    ] == [
+        "Read",
+        "Glob",
+        "Grep",
+        "LS",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ]
     bash_subject = next(
         subject
         for subject in captured["tool_policy_subjects"]
@@ -1542,6 +1652,8 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
         "model_id": "catalog-model",
         "model_value": "provider/catalog-model",
         "model_gateway_revision": 3,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
         "input_json": {
             "input": {"message": "hello"},
             "file_ids": [],
@@ -1574,7 +1686,7 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
         ((None, "provider/partial", None), ("queue-model", "provider/queue-model"), None),
         ((None, None, 1), ("queue-model", "provider/queue-model"), None),
         ((None, None, None), (None, None), None),
-        ((None, None, None), ("legacy-model", "provider/legacy-model"), ("legacy-model", "provider/legacy-model")),
+        ((None, None, None), ("legacy-model", "provider/legacy-model"), None),
     ],
 )
 def test_locked_run_uses_one_complete_model_authority(
@@ -2518,8 +2630,10 @@ def locked_run_from_payload(payload):
         "skill_id": validated["skill_id"],
         "model_id": validated.get("model_id"),
         "model_value": validated.get("model_value"),
-        "model_gateway_revision": validated.get("model_gateway_revision"),
-        "trace_id": f"trace_{validated['run_id']}",
+        "model_gateway_revision": 1 if validated.get("model_id") and validated.get("model_value") else None,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
+        "trace_id": standard_trace_id(validated["run_id"]),
         "principal_roles": [],
         "principal_department_id": "",
         "auth_source": "test",
@@ -2734,6 +2848,11 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         "app.worker.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize,
     )
+
+    async def load_frozen_model(_conn, **_kwargs):
+        return locked_run
+
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
 
     outcome = await process_run_payload(
         raw,
@@ -5837,14 +5956,22 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="capture-adapter/1",
-                executor_type="claude-agent-worker",
+                executor_type="fake",
                 executor_version="capture/1",
                 capabilities={},
                 result={"message": "done"},
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+        return locked_run_from_payload(base_payload(
+            executor_type="fake", agent_id="general-agent", skill_id="general-chat",
+            context_snapshot={"source": "tampered_queue_copy"},
+        ))
+
+    async def load_frozen_model(_conn, **_kwargs):
+        return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
+                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -5895,18 +6022,19 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
 
     outcome = await process_run_payload(
         base_payload(
-            executor_type="claude-agent-worker",
+            executor_type="fake",
             agent_id="general-agent",
             skill_id="general-chat",
             context_snapshot={"source": "tampered_queue_copy"},
         ),
-        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+        AdapterRegistry({"fake": CaptureAdapter()}),
     )
 
-    assert outcome.status == "succeeded"
+    assert outcome.status == "succeeded", outcome
     assert captured["payload"].context_snapshot_id == "ctx-existing"
     assert captured["payload"].context_snapshot["source"] == "stored_context_snapshot"
     assert captured["payload"].context_snapshot["used_context_summary"]["source"] == "stored_context_snapshot"
@@ -5939,7 +6067,15 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+        return locked_run_from_payload(base_payload(
+            executor_type="claude-agent-worker",
+            context_snapshot={"source": "tampered_queue_copy"},
+        ))
+
+    async def load_frozen_model(_conn, **_kwargs):
+        return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
+                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
         return "evt-context-manifest"
@@ -6001,8 +6137,14 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
     async def create_artifact(conn, **kwargs):
         return None
 
+    async def persist_assistant(*args, **kwargs):
+        return "msg-a"
+
+    monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_assistant)
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -6017,7 +6159,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
         AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
     )
 
-    assert outcome.status == "succeeded"
+    assert outcome.status == "succeeded", outcome
     assert captured["payload"].context_pack["source"] == "context_manifest"
     assert captured["payload"].context_pack["context_manifest"]["files"] == [
         {"file_id": "file-a", "requires_retrieval": True}
@@ -6045,7 +6187,15 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+        return locked_run_from_payload(base_payload(
+            executor_type="claude-agent-worker", agent_id="general-agent", skill_id="general-chat",
+            context_snapshot={},
+        ))
+
+    async def load_frozen_model(_conn, **_kwargs):
+        return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
+                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
         return "evt-context-id-only"
@@ -6077,8 +6227,13 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
     async def complete_run(conn, **kwargs):
         return True
 
+    async def persist_assistant(*args, **kwargs):
+        return "msg-a"
+
+    monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_assistant)
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -6811,7 +6966,9 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
             return {
                 "model_id": "platform-default",
                 "model_value": "provider/default",
-                "model_gateway_revision": None,
+                "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
             }
 
     async def append_event(conn, **kwargs):
@@ -6847,6 +7004,10 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
     monkeypatch.setattr(run_model_snapshot_module, "_service", run_model_snapshot_module._service)
     monkeypatch.setattr(model_services, "PostgresRunModelSnapshotRepository", SnapshotRepository)
     model_services.configure_model_services()
+    monkeypatch.setattr(
+        "app.worker._load_run_model_snapshot",
+        run_model_snapshot_module.load_run_model_snapshot,
+    )
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -6875,6 +7036,8 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
     assert captured["payload"].skill_version == version
     assert captured["payload"].release_decision == release_decision(version)
     assert captured["payload"].model_id == "platform-default"
+    assert captured["payload"].model_max_input_tokens == 32000
+    assert captured["payload"].model_max_output_tokens == 2048
     model_snapshot_call = next(item for item in calls if item[0] == "model_snapshot")
     assert model_snapshot_call[2:] == ("tenant-a", "run-a")
     assert captured["payload"].context_snapshot_id == "ctx-db"
@@ -7995,6 +8158,9 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
                         size_bytes=10,
                         manifest={
                             "local_path": "/tmp/worker/output.docx",
+                            "delivery_scope": "assistant_response",
+                            "delivery_role": "primary",
+                            "delivery_description": "最终批注文档",
                             "source_file_id": "file-a",
                             "source_step_id": "step-a",
                             "producer_kind": "subagent",
@@ -8034,6 +8200,9 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
     assert created[0]["trace_id"] == "trace_run_a"
     assert created[0]["manifest_json"]["schema_version"] == "ai-platform.artifact-manifest.v1"
     assert created[0]["manifest_json"]["artifact_type"] == "result_docx"
+    assert created[0]["manifest_json"]["delivery_scope"] == "assistant_response"
+    assert created[0]["manifest_json"]["delivery_role"] == "primary"
+    assert created[0]["manifest_json"]["delivery_description"] == "最终批注文档"
     assert created[0]["manifest_json"]["source_file_id"] == "file-a"
     assert "local_path" not in created[0]["manifest_json"]
     artifact_event = next(item for item in events if item["event_type"] == "artifact_ready")
@@ -10017,7 +10186,9 @@ def _install_task6_worker_fakes(
         "skill_id": skill_id,
         "model_id": "platform-default",
         "model_value": "provider/default",
-        "model_gateway_revision": None,
+        "model_gateway_revision": 1,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": list(principal_roles or ["qa_operator"]),
         "principal_department_id": principal_department_id,

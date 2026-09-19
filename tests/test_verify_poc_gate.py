@@ -678,7 +678,7 @@ def test_word_review_attachment_chat_routes_to_qa_runner(monkeypatch):
     def fake_upload(url: str, **kwargs):
         calls["upload_url"] = url
         calls["upload_kwargs"] = kwargs
-        return 200, {"key": "file_review_gate_1"}
+        return 200, {"file_id": "file_review_gate_1"}
 
     def fake_chat(url: str, payload=None, headers=None, timeout: float = 15.0):
         calls["chat_url"] = url
@@ -759,7 +759,7 @@ def test_word_review_attachment_chat_routes_to_qa_runner(monkeypatch):
 
     assert gate.name == "word_review_attachment_chat"
     assert gate.ok is True
-    assert calls["upload_url"] == "http://api.local/api/upload/file?folder=uploads"
+    assert calls["upload_url"] == "http://api.local/api/ai/files"
     assert calls["chat_url"] == "http://api.local/api/chat/stream?agent_id=general-agent"
     chat_payload = calls["chat_payload"]
     assert chat_payload["message"] == "审核一下这个文档"
@@ -780,7 +780,7 @@ def test_word_review_attachment_chat_honors_wait_attempts(monkeypatch):
 
     monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"file_id": "file_review_gate_1"}))
     monkeypatch.setattr(
         verify_poc_gate,
         "http_json_post_with_headers",
@@ -1484,7 +1484,7 @@ def test_context_snapshot_public_projection_gate_rejects_raw_id_and_private_leak
 def test_word_review_attachment_chat_rejects_playback_without_preview_projection(monkeypatch):
     monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"file_id": "file_review_gate_1"}))
     monkeypatch.setattr(
         verify_poc_gate,
         "http_json_post_with_headers",
@@ -1540,7 +1540,7 @@ def test_word_review_attachment_chat_rejects_playback_without_preview_projection
 def test_word_review_attachment_chat_rejects_preview_on_unrelated_artifact(monkeypatch):
     monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"file_id": "file_review_gate_1"}))
     monkeypatch.setattr(
         verify_poc_gate,
         "http_json_post_with_headers",
@@ -1608,7 +1608,7 @@ def test_word_review_attachment_chat_rejects_preview_on_unrelated_artifact(monke
 def test_word_review_attachment_chat_rejects_playback_private_payload_leak(monkeypatch):
     monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"file_id": "file_review_gate_1"}))
     monkeypatch.setattr(
         verify_poc_gate,
         "http_json_post_with_headers",
@@ -1665,7 +1665,7 @@ def test_word_review_attachment_chat_rejects_playback_private_payload_leak(monke
 def test_word_review_attachment_chat_rejects_runtime_private_payload_key_leak(monkeypatch):
     monkeypatch.setattr(verify_poc_gate, "sample_docx_bytes", lambda: ("review.docx", b"docx-bytes"))
     monkeypatch.setattr(verify_poc_gate.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"key": "file_review_gate_1"}))
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *args, **kwargs: (200, {"file_id": "file_review_gate_1"}))
     monkeypatch.setattr(
         verify_poc_gate,
         "http_json_post_with_headers",

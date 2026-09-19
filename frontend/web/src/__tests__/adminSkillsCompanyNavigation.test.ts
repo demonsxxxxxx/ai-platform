@@ -44,19 +44,19 @@ test("authenticated sidebar treats skills as admin skill management and removes 
   assert.doesNotMatch(navigationState, /\|\s*"roles"/);
 });
 
-test("marketplace route is folded into admin skill management", () => {
+test("retired marketplace route is absent from admin skill management", () => {
   const app = readApp();
   const tabContent = readSource("src/components/layout/AppContent/TabContent.tsx");
   const skillsHub = readSource("src/components/panels/SkillsHubPanel.tsx");
   const state = readSource("src/components/panels/SkillsHubPanel/state.ts");
 
-  assert.match(app, /path="\/marketplace"[\s\S]*?<Navigate to="\/skills" replace \/>/);
+  assert.doesNotMatch(app, /path="\/marketplace"/);
   assert.match(tabContent, /skills:\s*SkillsHubPanel/);
   assert.doesNotMatch(tabContent, /marketplace:\s*SkillsHubPanel/);
   assert.doesNotMatch(skillsHub, /location\.pathname === "\/marketplace"/);
   assert.doesNotMatch(state, /marketplace:read/);
   assert.match(state, /skill:admin/);
-  assert.match(state, /marketplace:admin/);
+  assert.doesNotMatch(state, /marketplace:/);
 });
 
 test("company navigation owns copied webUI links without iframe embedding", () => {

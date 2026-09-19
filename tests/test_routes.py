@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
+from app.bootstrap.files import configure_file_preview_services
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.file_preview_contracts import XlsxPreviewResponse
 from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
@@ -114,6 +115,17 @@ async def resume_run(*args, **kwargs):
 
 
 @pytest.fixture(autouse=True)
+def _stub_terminal_provider_lineage(monkeypatch):
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
+@pytest.fixture(autouse=True)
 def default_run_model_inheritance(monkeypatch):
     async def inherit_run_model(*_args, **_kwargs):
         return None
@@ -128,6 +140,8 @@ def default_run_model_binding(monkeypatch):
             model_id="platform-default",
             model_value="provider/default",
             connection_revision=None,
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
     async def bind_model(*_args, **_kwargs):
@@ -1539,7 +1553,7 @@ async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(mo
         "expected_sha256": None,
         "expected_byte_count": len(raw),
     }
-    assert payload["schema_version"] == "ai-platform.file-preview.v1"
+    assert payload["schema_version"] == "ai-platform.file-preview.v2"
     assert payload["kind"] == "xlsx_table"
     assert payload["content"]["sheets"][0]["name"] == "Checks"
     assert "storage_key" not in payload
@@ -1963,8 +1977,16 @@ async def test_preview_input_file_reads_storage_only_after_snapshot_authorizatio
     assert "content-disposition" not in response.headers
 
 
+@pytest.fixture
+def configured_file_preview_services() -> None:
+    configure_file_preview_services()
+
+
 @pytest.mark.asyncio
-async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser(monkeypatch):
+async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser(
+    monkeypatch,
+    configured_file_preview_services,
+):
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Checks"
@@ -2017,7 +2039,10 @@ async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser
 
 
 @pytest.mark.asyncio
-async def test_preview_input_file_returns_a_public_failure_from_the_real_child_parser(monkeypatch):
+async def test_preview_input_file_returns_a_public_failure_from_the_real_child_parser(
+    monkeypatch,
+    configured_file_preview_services,
+):
     raw = b"not an XLSX archive"
 
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
@@ -3889,6 +3914,8 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
             model_id="catalog-default",
             model_value="provider/default",
             connection_revision=9,
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
     async def bind_model(conn, **kwargs):
@@ -3960,6 +3987,8 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         "model_id": "catalog-default",
         "model_value": "provider/default",
         "connection_revision": 9,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
     }
     snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")
     event_index = next(index for index, item in enumerate(calls) if item[0] == "event")

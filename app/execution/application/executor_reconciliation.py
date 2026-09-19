@@ -16,8 +16,6 @@ LOCKED_RUN_SNAPSHOT_FIELDS = (
     "agent_profile",
     "schema_version",
 )
-_RUN_MODEL_SNAPSHOT_FIELDS = ("model_id", "model_value", "model_gateway_revision")
-
 
 def locked_run_payload_candidate(
     locked_run: object,
@@ -37,26 +35,16 @@ def locked_run_payload_candidate(
     durable_model_id = locked_run.get("model_id")
     durable_model_value = locked_run.get("model_value")
     durable_gateway_revision = locked_run.get("model_gateway_revision")
-    if any(
-        value is not None
-        for value in (durable_model_id, durable_model_value, durable_gateway_revision)
-    ):
-        if not (
-            isinstance(durable_model_id, str)
-            and durable_model_id
-            and isinstance(durable_model_value, str)
-            and durable_model_value
-        ):
-            return None
-        candidate["model_id"] = durable_model_id
-        candidate["model_value"] = durable_model_value
-    elif not (
-        isinstance(input_json.get("model_id"), str)
-        and input_json["model_id"]
-        and isinstance(input_json.get("model_value"), str)
-        and input_json["model_value"]
+    if not (
+        isinstance(durable_model_id, str) and durable_model_id
+        and isinstance(durable_model_value, str) and durable_model_value
+        and type(durable_gateway_revision) is int and durable_gateway_revision > 0
+        and all(type(locked_run.get(field)) is int and locked_run[field] > 0
+                for field in ("max_input_tokens", "max_output_tokens"))
     ):
         return None
+    candidate["model_id"] = durable_model_id
+    candidate["model_value"] = durable_model_value
     if (
         candidate.get("execution_kind") == harness_execution_kind
         and candidate.get("skill_id") == ""
@@ -72,9 +60,7 @@ async def with_locked_run_model_snapshot(
     run_identity: dict[str, str],
     load_run_model_snapshot: Callable[..., Awaitable[dict[str, Any]]],
 ) -> object:
-    if isinstance(locked_run, dict) and not any(
-        field in locked_run for field in _RUN_MODEL_SNAPSHOT_FIELDS
-    ):
+    if isinstance(locked_run, dict):
         locked_run = {
             **locked_run,
             **await load_run_model_snapshot(
@@ -168,6 +154,9 @@ def sandbox_reconciliation_payload(payload: Any) -> dict[str, Any]:
             "context_snapshot_id": payload.context_snapshot_id,
             "model_id": payload.model_id,
             "model_value": payload.model_value,
+            "model_gateway_revision": payload.model_gateway_revision,
+            "model_max_input_tokens": payload.model_max_input_tokens,
+            "model_max_output_tokens": payload.model_max_output_tokens,
             "schema_version": payload.schema_version,
             "agent_profile": _non_secret_agent_profile(payload.agent_profile),
         },

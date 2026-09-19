@@ -63,25 +63,18 @@ The closed Agent-kernel registry is:
 - `run.cancel_requested`, `run.succeeded`, `run.cancelled`, `run.failed`.
 
 Every payload is bounded and closed. Public identifiers use disclosure-safe
-patterns; model-provided public reasoning summaries, server-owned phase messages,
-fixed Tool start/result summaries, final content, durations, turns, progress,
-artifact metadata, and reference arrays have explicit size bounds. The Claude SDK
-is configured with `thinking.display = summarized`; the Runner admits only the
-exact SDK `ThinkingBlock` type and extracts only its `thinking` value. That
-complete value is sanitized before it crosses the authenticated callback as one
-internal summary fact. The callback authority, rather than the caller, derives
-an opaque `thinking_id` and creates the ordered `thinking.started` /
-`thinking.delta` / `thinking.completed` sequence with bounded chunks. Sensitive
-fragments are redacted without discarding the remaining public summary. The SDK
-`signature` is never a callback or public field.
-Legacy v4 rows with an empty payload or fixed summary remain replayable, but new
-rows do not synthesize fixed reasoning text. Provider-internal reasoning not
-returned as public summarized thinking, raw SDK fields, commands, paths,
-arguments, outputs, exceptions, and raw capability or task identifiers are not
-protocol fields. Render families are registry
-metadata only in this phase: `text`, `thinking_state`, `agent_progress`,
-`tool_activity`, `subagent_activity`, `artifact`, `policy_result`,
-`public_error`, `cancelled`, and `terminal`.
+patterns; server-owned phase messages, fixed Tool start/result summaries, final
+content, durations, turns, progress, artifact metadata, and reference arrays
+have explicit size bounds. The Claude SDK is configured with
+`thinking.display = omitted`; the Runner does not admit `ThinkingBlock` content
+into the answer or callback projection. Internal model reasoning, raw SDK fields,
+commands, paths, arguments, outputs, exceptions, and raw capability or task
+identifiers are not protocol fields. Legacy `thinking.*` rows remain readable for
+stream compatibility, but current execution does not create them and current
+Chat renderers do not display them. Render families are registry metadata only in
+this phase: `text`, `thinking_state`, `agent_progress`, `tool_activity`,
+`subagent_activity`, `artifact`, `policy_result`, `public_error`, `cancelled`,
+and `terminal`.
 
 Transport controls use the separate schema
 `ai-platform.public-run-stream-control.v4`. The closed controls are

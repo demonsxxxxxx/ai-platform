@@ -3,7 +3,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, Fragment } from "react";
-import { User, Mail, AlertCircle, AtSign } from "lucide-react";
+import { AlertCircle, AtSign } from "lucide-react";
 import { PasswordInput } from "./PasswordInput";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
@@ -15,7 +15,7 @@ import { useTheme } from "../../contexts/ThemeContext";
 import { Loading, LoadingSpinner } from "../common/LoadingSpinner";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
 import { ThemeToggle } from "../common/ThemeToggle";
-import { authApi } from "../../services/api";
+import { CompanyADLoginError, authApi } from "../../services/api/auth";
 import { APP_HOME_URL, APP_NAME } from "../../constants";
 import {
   AUTH_REDIRECT_ANIMATION_MS,
@@ -23,23 +23,17 @@ import {
   resolvePostAuthRedirectPath,
 } from "./authRedirectTransition";
 
-type AuthMode = "login" | "register";
-
 interface TurnstileConfig {
   enabled: boolean;
   site_key: string;
   require_on_login: boolean;
-  require_on_register: boolean;
-  require_on_password_change: boolean;
 }
 
 interface AuthPageProps {
   onSuccess?: (redirectPath?: string) => void;
-  /** Force initial auth mode */
-  initialMode?: AuthMode;
 }
 
-export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
+export function AuthPage({ onSuccess }: AuthPageProps) {
   const { t } = useTranslation();
   const mountedRef = useRef(true);
 
@@ -53,21 +47,16 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     };
   }, []);
 
-  const [mode, setMode] = useState<AuthMode>(initialMode ?? "login");
   const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isAttemptingAD, setIsAttemptingAD] = useState(
-    (initialMode ?? "login") === "login",
-  );
+  const [isAttemptingAD, setIsAttemptingAD] = useState(true);
   const [isRedirecting, setIsRedirecting] = useState(false);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [turnstileKey, setTurnstileKey] = useState(0); // 用于强制重新渲染 Turnstile
-  const submitLabel = mode === "login" ? t("auth.login") : t("auth.register");
+  const submitLabel = t("auth.login");
 
   const { theme } = useTheme();
 
@@ -76,7 +65,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     setTurnstileKey((prev) => prev + 1);
   }, [theme]);
 
-  const { login, loginWithAD, register, loginWithOAuth, isAuthenticated, isLoading } = useAuth();
+  const { login, loginWithAD, loginWithOAuth, isAuthenticated, isLoading } = useAuth();
   const [oauthProviders, setOauthProviders] = useState<
     { id: string; name: string }[]
   >([]);
@@ -84,13 +73,8 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     enabled: false,
     site_key: "",
     require_on_login: false,
-    require_on_register: true,
-    require_on_password_change: true,
   });
 
-  // Use ref to access current mode without adding it to deps
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
   const isAuthenticatedRef = useRef(isAuthenticated);
   isAuthenticatedRef.current = isAuthenticated;
   const authDiscoveryStartedRef = useRef(false);
@@ -110,7 +94,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
 
   useEffect(() => clearRedirectTimers, [clearRedirectTimers]);
 
-  // 保留现有 OAuth、注册和 Turnstile 兼容配置；AD 登录使用独立平台路由。
+  // Load the current OAuth providers and login challenge configuration.
   useEffect(() => {
     let mounted = true;
     const fetchAuthData = async () => {
@@ -119,11 +103,6 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         if (!mounted) return;
         setOauthProviders(result.providers);
         if (result.turnstile) setTurnstileConfig(result.turnstile);
-        if (!result.registration_enabled && modeRef.current === "register") {
-          setMode("login");
-          setEmail("");
-          setConfirmPassword("");
-        }
       } catch {
         // 兼容配置不可用时使用页面安全默认值。
       }
@@ -134,20 +113,11 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     };
   }, []);
 
-  // 检查当前模式是否需要 Turnstile
-  const requiresTurnstile = () => {
-    if (!turnstileConfig.enabled || !turnstileConfig.site_key) return false;
-    if (mode === "login") return turnstileConfig.require_on_login;
-    if (mode === "register") return turnstileConfig.require_on_register;
-    return false;
-  };
+  const requiresTurnstile = () =>
+    turnstileConfig.enabled &&
+    !!turnstileConfig.site_key &&
+    turnstileConfig.require_on_login;
 
-  // 重置 Turnstile token 当模式切换时
-  useEffect(() => {
-    setTurnstileToken(null);
-    // 通过改变 key 强制重新渲染 Turnstile
-    setTurnstileKey((prev) => prev + 1);
-  }, [mode]);
 
   // OAuth 登录处理
   const handleOAuthLogin = async (provider: string) => {
@@ -200,14 +170,17 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         ) {
           return;
         }
-        if (result.ad_login_url && modeRef.current === "login") {
+        if (result.ad_login_url) {
           const loginOutcome = await loginWithAD(result.ad_login_url);
           if (!mountedRef.current || loginOutcome.status !== "completed") return;
           startedRedirect = true;
           beginSuccessRedirect(loginOutcome.value);
         }
-      } catch {
-        // Windows 或 AD 配置不可用时保留账号密码登录。
+      } catch (error) {
+        if (mountedRef.current && error instanceof CompanyADLoginError) {
+          toast.error(t("auth.adLoginFailed", { defaultValue: "免登录失败" }));
+        }
+        // AD 配置或平台登录不可用时保留账号密码登录。
       } finally {
         if (mountedRef.current && !startedRedirect) setIsAttemptingAD(false);
       }
@@ -222,23 +195,8 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
 
     // 表单验证
     if (!username.trim()) {
-      setError(
-        mode === "login"
-          ? t("auth.enterAccount")
-          : t("auth.validation.enterUsername"),
-      );
+      setError(t("auth.enterAccount"));
       return;
-    }
-
-    if (mode === "register") {
-      if (!email.trim()) {
-        setError(t("auth.validation.enterEmail"));
-        return;
-      }
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        setError(t("auth.validation.invalidEmail"));
-        return;
-      }
     }
 
     if (!password) {
@@ -248,11 +206,6 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
 
     if (password.length < 6) {
       setError(t("auth.validation.passwordMinLength"));
-      return;
-    }
-
-    if (mode === "register" && password !== confirmPassword) {
-      setError(t("auth.validation.passwordMismatch"));
       return;
     }
 
@@ -266,35 +219,15 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     let startedRedirect = false;
 
     try {
-      if (mode === "login") {
-        const loginOutcome = await login(
-          { username, password },
-          turnstileToken || undefined,
-        );
-        if (!mountedRef.current) return;
-        if (loginOutcome.status === "cancelled") return;
-        if (loginOutcome.status !== "completed") return;
-        toast.success(t("auth.loginSuccess"));
-        startedRedirect = true;
-        beginSuccessRedirect(loginOutcome.value);
-      } else {
-        const result = await register(
-          { username, email, password },
-          turnstileToken || undefined,
-        );
-        if (result.requiresVerification) {
-          // 注册成功，需要验证邮箱
-          toast.success(t("auth.registerSuccessVerification"));
-          // 跳转到验证等待页面
-          window.location.href = `/auth/pending?email=${encodeURIComponent(
-            result.email,
-          )}`;
-          return;
-        }
-        toast.success(t("auth.registerSuccess"));
-        startedRedirect = true;
-        beginSuccessRedirect();
-      }
+      const loginOutcome = await login(
+        { username, password },
+        turnstileToken || undefined,
+      );
+      if (!mountedRef.current) return;
+      if (loginOutcome.status !== "completed") return;
+      toast.success(t("auth.loginSuccess"));
+      startedRedirect = true;
+      beginSuccessRedirect(loginOutcome.value);
     } catch (err) {
       if (!mountedRef.current) return;
       const errorMessage =
@@ -304,31 +237,8 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
           ? err.message
           : t("auth.operationFailed");
 
-      // 检查是否是邮箱未验证或账户未激活错误，跳转到验证页面
-      if (
-        errorMessage.includes("请先验证邮箱") ||
-        errorMessage.includes("账户未激活")
-      ) {
-        // 如果输入的是邮箱，直接跳转
-        const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(username);
-        if (isEmail) {
-          toast.error(errorMessage);
-          setTimeout(() => {
-            window.location.href = `/auth/pending?email=${encodeURIComponent(
-              username,
-            )}`;
-          }, 1500);
-          return;
-        }
-        // 如果是用户名，提示用户
-        setError(
-          t("auth.pleaseLoginWithEmail") || "请使用注册邮箱登录以完成验证",
-        );
-        toast.error(errorMessage);
-      } else {
-        toast.error(errorMessage);
-        setError(errorMessage);
-      }
+      toast.error(errorMessage);
+      setError(errorMessage);
 
       // 重置 Turnstile widget
       setTurnstileToken(null);
@@ -400,7 +310,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
               {APP_NAME}
             </h1>
             <p className="mx-auto max-w-[18rem] text-xs leading-relaxed text-stone-500 dark:text-stone-400 sm:text-[13px] lg:text-sm">
-              {mode === "login" ? t("auth.loginHint") : t("auth.registerHint")}
+              {t("auth.loginHint")}
             </p>
           </div>
 
@@ -476,7 +386,6 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
 
             <form
               onSubmit={handleSubmit}
-              key={mode}
               className="auth-form-animate space-y-4 sm:space-y-5 lg:space-y-6 2xl:space-y-7"
             >
               {/* Error */}
@@ -507,48 +416,18 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
                 </label>
                 <div className="relative">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-stone-400 dark:text-stone-500 sm:pl-3.5">
-                    {mode === "login" ? (
-                      <AtSign size={14} />
-                    ) : (
-                      <User size={14} />
-                    )}
+                    <AtSign size={14} />
                   </div>
                   <input
                     type="text"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     className="auth-input w-full rounded-xl py-2.5 pl-10 pr-3 text-sm transition-all sm:py-2.5 sm:pl-10 sm:pr-3 md:py-3 md:pl-11 md:pr-4"
-                    placeholder={
-                      mode === "login"
-                        ? t("auth.usernameOrEmailPlaceholder")
-                        : t("auth.usernamePlaceholder")
-                    }
+                    placeholder={t("auth.usernameOrEmailPlaceholder")}
                     autoComplete="username"
                   />
                 </div>
               </div>
-
-              {/* Email (register only) */}
-              {mode === "register" && (
-                <div>
-                  <label className="mb-0.5 block text-[11px] font-medium text-stone-700 dark:text-stone-300 sm:mb-1.5 sm:text-sm">
-                    {t("auth.email")}
-                  </label>
-                  <div className="relative">
-                    <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-stone-400 dark:text-stone-500 sm:pl-3.5">
-                      <Mail size={14} />
-                    </div>
-                    <input
-                      type="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="auth-input w-full rounded-xl py-2.5 pl-10 pr-3 text-sm transition-all sm:py-2.5 sm:pl-10 sm:pr-3 md:py-3 md:pl-11 md:pr-4"
-                      placeholder={t("auth.emailPlaceholder")}
-                      autoComplete="email"
-                    />
-                  </div>
-                </div>
-              )}
 
               {/* Password */}
               <div>
@@ -559,30 +438,11 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={t("auth.passwordPlaceholder")}
-                  autoComplete={
-                    mode === "login" ? "current-password" : "new-password"
-                  }
+                  autoComplete="current-password"
                   showPasswordLabel={t("auth.showPassword")}
                   hidePasswordLabel={t("auth.hidePassword")}
                 />
               </div>
-
-              {/* Confirm password (register only) */}
-              {mode === "register" && (
-                <div>
-                  <label className="mb-0.5 block text-[11px] font-medium text-stone-700 dark:text-stone-300 sm:mb-1.5 sm:text-sm">
-                    {t("auth.confirmPassword")}
-                  </label>
-                  <PasswordInput
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder={t("auth.confirmPasswordPlaceholder")}
-                    autoComplete="new-password"
-                    showPasswordLabel={t("auth.showPassword")}
-                    hidePasswordLabel={t("auth.hidePassword")}
-                  />
-                </div>
-              )}
 
               {/* Turnstile */}
               {requiresTurnstile() && (

@@ -586,6 +586,12 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     runtime_dockerfile = dockerfile.split(f"FROM {nginx_base} AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
     nginx_template = Path("frontend/web/nginx.conf.template").read_text(encoding="utf-8")
+    health_proxy = nginx_template.split("location = /api/ai/health {", 1)[1].split(
+        "    }", 1
+    )[0]
+    auth_proxy = nginx_template.split("location ~ ^/api/(?:ai/)?auth/ {", 1)[1].split(
+        "    }", 1
+    )[0]
     compose_overlay = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     runtime_compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     provenance_script = Path("frontend/web/scripts/write-build-provenance.mjs").read_text(encoding="utf-8")
@@ -647,21 +653,18 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
         for current_probe, next_probe in zip(healthcheck_probes, healthcheck_probes[1:])
     )
     assert "nginx.conf.template" in dockerfile
-    mkdir_templates = "RUN mkdir -p /etc/nginx/templates /etc/nginx/templates-opensandbox"
-    copy_full_template = (
+    mkdir_templates = "RUN mkdir -p /etc/nginx/templates"
+    copy_base_template = (
         "COPY frontend/web/nginx.conf.template "
-        "/etc/nginx/templates-opensandbox/default.conf.template"
+        "/etc/nginx/templates/default.conf.template"
     )
-    extract_base_template = "RUN sed '/^# AI_PLATFORM_S72_BRIDGE_BEGIN$/,$d'"
     assert mkdir_templates in runtime_dockerfile
-    assert copy_full_template in runtime_dockerfile
-    assert extract_base_template in runtime_dockerfile
+    assert "templates-opensandbox" not in runtime_dockerfile
+    assert copy_base_template in runtime_dockerfile
     assert runtime_dockerfile.index(mkdir_templates) < runtime_dockerfile.index(
-        copy_full_template
+        copy_base_template
     )
-    assert runtime_dockerfile.index(copy_full_template) < runtime_dockerfile.index(
-        extract_base_template
-    )
+    assert "AI_PLATFORM_S72_BRIDGE" not in runtime_dockerfile
     assert "package-import-method=copy" not in npmrc
     assert "pnpm install --frozen-lockfile --package-import-method=copy" in dockerfile
     assert "AI_PLATFORM_BUILD_COMMIT" in provenance_script
@@ -671,6 +674,12 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "proxy_pass ${AI_PLATFORM_API_UPSTREAM}" in nginx_template
     assert "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT}" in nginx_template
     assert "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT}" in nginx_template
+    assert "proxy_connect_timeout 1s;" in health_proxy
+    assert "proxy_read_timeout 3s;" in health_proxy
+    assert "proxy_send_timeout 3s;" in health_proxy
+    assert "proxy_connect_timeout 3s;" in auth_proxy
+    assert "proxy_read_timeout 15s;" in auth_proxy
+    assert "proxy_send_timeout 15s;" in auth_proxy
     assert "proxy_request_buffering off" in nginx_template
     assert 'location = /sw.js' in nginx_template
     assert 'location = /index.html' in nginx_template

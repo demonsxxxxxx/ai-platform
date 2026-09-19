@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { SkillsResponse, UserSkill } from "../../types/skill.ts";
 import { skillApi } from "../../services/api/skill.ts";
+import { ApiRequestError } from "../../services/api/fetch.ts";
 import { installTestDom } from "../useAgent/__tests__/testDom.ts";
 
 const dom = installTestDom();
@@ -16,6 +17,23 @@ test("admin lifecycle contract errors render a user-facing catalog message", asy
       "skills.loadFailed",
     ),
     "Skill 管理目录与当前服务版本不一致，请刷新页面；问题持续时请检查前后端部署版本。",
+  );
+});
+
+test("Skill ZIP preview keeps safe backend reasons and translates unknown failures", async () => {
+  const { resolveSkillPreviewError } = await import("../useSkills.ts");
+
+  assert.equal(
+    resolveSkillPreviewError(new ApiRequestError("ZIP 中未找到 SKILL.md。", 400)),
+    "ZIP 中未找到 SKILL.md。",
+  );
+  assert.equal(
+    resolveSkillPreviewError(new ApiRequestError("private-details", 403)),
+    "您没有权限访问此页面",
+  );
+  assert.equal(
+    resolveSkillPreviewError(new Error("private-details")),
+    "无法读取 Skill ZIP，请检查文件后重试。",
   );
 });
 

@@ -1,10 +1,6 @@
-import type { SkillResponse, MarketplaceSkillResponse } from "../types";
+import type { SkillResponse } from "../types";
 
 type TaggedSkill = Pick<SkillResponse, "name" | "description" | "tags">;
-type TaggedMarketplaceSkill = Pick<
-  MarketplaceSkillResponse,
-  "skill_name" | "description" | "tags"
->;
 
 export function sanitizeSkillName(name: string): string {
   return (
@@ -38,22 +34,6 @@ export function skillMatchesQuery(skill: TaggedSkill, query: string): boolean {
 
   return (
     skill.name.toLowerCase().includes(normalized) ||
-    skill.description.toLowerCase().includes(normalized) ||
-    (skill.tags || []).some((tag) => tag.toLowerCase().includes(normalized))
-  );
-}
-
-export function marketplaceSkillMatchesQuery(
-  skill: TaggedMarketplaceSkill,
-  query: string,
-): boolean {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized) {
-    return true;
-  }
-
-  return (
-    skill.skill_name.toLowerCase().includes(normalized) ||
     skill.description.toLowerCase().includes(normalized) ||
     (skill.tags || []).some((tag) => tag.toLowerCase().includes(normalized))
   );

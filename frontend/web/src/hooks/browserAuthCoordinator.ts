@@ -6,8 +6,6 @@ import { ApiRequestError } from "../services/api/fetch";
 
 export const BROWSER_AUTH_CONTEXT_NONCE_KEY =
   "ai_platform_auth_context_nonce_v1";
-export const BROWSER_AUTH_CONTEXT_LOCK_NAME =
-  "ai-platform-auth-context-bootstrap";
 export const BROWSER_AUTH_CONTEXT_V2_DB_NAME =
   "ai-platform-browser-auth-context-v2";
 export const BROWSER_AUTH_CONTEXT_V2_STORE_NAME = "coordination";
@@ -21,14 +19,6 @@ const OWNER_LEASE_MS = 5_000;
 const ACQUISITION_RETRY_MS = 25;
 const BASE64URL_RE = /^[A-Za-z0-9_-]{43}$/;
 let currentBrowserAuthIncarnation: string | null = null;
-
-interface BrowserLockManager {
-  request<T>(
-    name: string,
-    options: { mode: "exclusive" },
-    callback: () => Promise<T>,
-  ): Promise<T>;
-}
 
 interface PendingRotation {
   baseGeneration: number;
@@ -125,13 +115,6 @@ function createV2Random(): string {
   return base64url(cryptoApi.getRandomValues(new Uint8Array(32)));
 }
 
-function browserLocks(): BrowserLockManager | null {
-  if (typeof navigator === "undefined") return null;
-  return (
-    (navigator as Navigator & { locks?: BrowserLockManager }).locks ?? null
-  );
-}
-
 function browserIndexedDb(): IDBFactory | null {
   return typeof indexedDB === "undefined" ? null : indexedDB;
 }
@@ -140,16 +123,9 @@ function rememberBrowserAuthIncarnation(incarnation: string): void {
   currentBrowserAuthIncarnation = incarnation;
 }
 
-/**
- * Returns the coordinator's collision-resistant browser incarnation when it
- * is known in this tab. The V1 coordinator's stable nonce has the same secure
- * random construction; V2 exposes its persisted browser_incarnation.
- */
+/** Returns the coordinator's collision-resistant browser incarnation. */
 export function getBrowserAuthIncarnation(): string | null {
-  if (currentBrowserAuthIncarnation !== null) {
-    return currentBrowserAuthIncarnation;
-  }
-  return browserLocks() ? existingNonce(browserStorage()) : null;
+  return currentBrowserAuthIncarnation;
 }
 
 /**
@@ -939,61 +915,12 @@ async function ensureV2BrowserAuthContext(
   }
 }
 
-async function bootstrapAndPublishNonce(
-  storage: Storage,
-  nonce: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  try {
-    // V1 retains the original Web Locks behavior: a started request completes
-    // before publishing its nonce, and is not aborted mid-commit.
-    await authApi.bootstrapAuthContext(nonce);
-  } catch (error) {
-    if (!isRebootstrapRequired(error)) throw error;
-
-    throwIfAborted(signal);
-    const rotatedNonce = createNonce();
-    await authApi.bootstrapAuthContext(rotatedNonce);
-    storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, rotatedNonce);
-    return;
-  }
-
-  storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, nonce);
-}
-
-async function ensureV1BrowserAuthContext(
-  locks: BrowserLockManager,
-  storage: Storage,
-  signal?: AbortSignal,
-): Promise<void> {
-  await locks.request(
-    BROWSER_AUTH_CONTEXT_LOCK_NAME,
-    { mode: "exclusive" },
-    async () => {
-      throwIfAborted(signal);
-      const stableNonce = existingNonce(storage) ?? createNonce();
-      rememberBrowserAuthIncarnation(stableNonce);
-      await bootstrapAndPublishNonce(storage, stableNonce, signal);
-    },
-  );
-}
-
-/**
- * Establish the browser auth context through the unchanged Web Locks V1 path,
- * or a fail-closed IDB lease and V2 generation fence when Web Locks is absent.
- */
+/** Establish the browser auth context through the V2 generation fence. */
 export async function ensureBrowserAuthContext(
   signal?: AbortSignal,
   options: { forceBootstrap?: boolean; recoveryOnly?: boolean } = {},
 ): Promise<void> {
   throwIfAborted(signal);
-  const storage = browserStorage();
-  const locks = browserLocks();
-  if (locks) {
-    if (!storage) throw unavailable();
-    await ensureV1BrowserAuthContext(locks, storage, signal);
-    return;
-  }
   try {
     await ensureV2BrowserAuthContext(
       signal,

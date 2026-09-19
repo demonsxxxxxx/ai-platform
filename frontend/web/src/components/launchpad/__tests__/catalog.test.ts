@@ -38,11 +38,11 @@ test("launchpad keeps the copied web catalog and AI application entries", () => 
   const entries = launchpadGroups.flatMap((group) => group.entries);
 
   assert.equal(launchpadGroups.length, 14);
-  assert.equal(entries.length, 127);
-  assert.equal(new Set(entries.map((entry) => entry.id)).size, 127);
+  assert.equal(entries.length, 128);
+  assert.equal(new Set(entries.map((entry) => entry.id)).size, 128);
   assert.equal(
     new Set(entries.flatMap((entry) => (entry.icon ? [entry.icon] : []))).size,
-    89,
+    90,
   );
   assert.deepEqual(
     launchpadGroups.map((group) => group.name),
@@ -73,6 +73,16 @@ test("launchpad keeps the copied web catalog and AI application entries", () => 
       description: "公司自研平台",
       icon: "lingxi-platform.png",
       url: "http://10.56.0.25:8189/#/TaskManagement/indexSpace",
+    },
+  );
+  assert.deepEqual(
+    entries.find((entry) => entry.name === "DRS"),
+    {
+      id: "内网登录:DRS",
+      name: "DRS",
+      description: "文档查阅系统",
+      icon: "drs.png",
+      url: "http://10.56.1.79:5173/documents",
     },
   );
   const enterpriseAiGroup = launchpadGroups[1];

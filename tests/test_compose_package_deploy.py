@@ -61,6 +61,30 @@ def test_quiescence_sql_only_excludes_expired_terminal_unclaimed_quarantine():
             db.execute("rollback to counterexample")
 
 
+def test_internal_test_model_proxy_bind_requires_private_docker_bridge_ipv4():
+    base = {
+        "services": {
+            "opensandbox-egress-proxy": {
+                "ports": [{
+                    "host_ip": "172.17.0.1", "published": "18043",
+                    "target": 8080, "protocol": "tcp",
+                }]
+            }
+        }
+    }
+    assert entry.validate_model_proxy_bind(base) == "172.17.0.1"
+    assert entry.validate_model_proxy_bind({
+        "services": {"opensandbox-egress-proxy": {}}
+    }) is None
+    for host_ip in ("", "0.0.0.0", "127.0.0.1", "169.254.1.1", "8.8.8.8", "::1"):
+        invalid = json.loads(json.dumps(base))
+        invalid["services"]["opensandbox-egress-proxy"]["ports"][0]["host_ip"] = host_ip
+        with pytest.raises(entry.DeploymentError, match="model proxy bind is invalid"):
+            entry.validate_model_proxy_bind(invalid)
+    with pytest.raises(entry.DeploymentError, match="model proxy is missing"):
+        entry.validate_model_proxy_bind({"services": {}})
+
+
 def test_quarantine_with_existing_runtime_blocks_even_without_owner_label(monkeypatch):
     def run(command, stage, timeout=90):
         return {"activity check": "0|0|0", "quarantined runtime check": "synthetic-id|synthetic-name",
@@ -83,6 +107,7 @@ def harness(tmp_path, monkeypatch):
         service: {"image": entry.FRONTEND if service == "frontend" else entry.BACKEND}
         for service in (*entry.DATA, *entry.APPS, "migrate", "workspace-init")
     }}
+    config["services"]["opensandbox-egress-proxy"] = {"image": entry.FRONTEND}
 
     def run(command, stage, timeout=90):
         state["calls"].append((stage, command))
@@ -90,6 +115,8 @@ def harness(tmp_path, monkeypatch):
             raise entry.DeploymentError(stage + ": injected failure")
         if stage == "configuration identity":
             return json.dumps(config)
+        if stage == "Docker bridge inspection":
+            return state.get("bridge_gateway", "")
         if stage == "local image verification":
             return json.dumps([{"Id": command[-1], "RepoDigests": [command[-1]]}])
         return ""
@@ -105,8 +132,38 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setattr(entry, "quiescent", quiescent)
     monkeypatch.setattr(entry, "verify_runtime", lambda *args: state["calls"].append(("runtime verified", [])))
     state["config"] = config
+    state["bridge_gateway"] = ""
     state["deploy"] = lambda offline=False, check_only=False: entry.deploy(tmp_path, env, ["docker"], offline, check_only)
     return state
+
+
+def test_internal_test_proxy_bind_must_match_actual_docker_bridge_gateway(harness):
+    proxy_url = "http://172.17.0.1:18043"
+    harness["config"]["services"]["opensandbox-egress-proxy"]["ports"] = [{
+        "host_ip": "172.17.0.1", "published": "18043", "target": 8080,
+        "protocol": "tcp",
+    }]
+    with pytest.raises(entry.DeploymentError, match="not the Docker bridge gateway"):
+        harness["deploy"](check_only=True)
+
+    harness["bridge_gateway"] = "172.17.0.1"
+    for service in ("api", "worker"):
+        harness["config"]["services"][service]["environment"] = {
+            "OPENSANDBOX_EGRESS_PROXY_URL": proxy_url,
+        }
+    harness["config"]["services"]["worker"]["environment"][
+        "OPENSANDBOX_EGRESS_PROXY_URL"
+    ] = "http://172.19.0.9:18043"
+    with pytest.raises(entry.DeploymentError, match="URL does not match"):
+        harness["deploy"](check_only=True)
+
+    harness["config"]["services"]["worker"]["environment"][
+        "OPENSANDBOX_EGRESS_PROXY_URL"
+    ] = proxy_url
+    harness["deploy"](check_only=True)
+    stages = [stage for stage, _ in harness["calls"]]
+    assert stages.count("Docker bridge inspection") == 3
+    assert "local image verification" in stages
 
 
 def test_package_upgrade_fences_twice_and_only_preserves_data_services(harness):

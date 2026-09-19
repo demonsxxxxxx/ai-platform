@@ -232,8 +232,8 @@ def _annotation_state(annotations: Any) -> str:
 def _canonical_tool(raw: Any) -> McpDiscoveredTool:
     if not isinstance(raw, dict):
         raise McpToolDiscoveryError("protocol_error")
-    remote_name = str(raw.get("name") or "").strip()
-    if not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(remote_name):
+    remote_name = raw.get("name")
+    if not isinstance(remote_name, str) or not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(remote_name):
         raise McpToolDiscoveryError("protocol_error")
     input_schema = raw.get("inputSchema")
     if input_schema is not None and not isinstance(input_schema, dict):
@@ -251,8 +251,8 @@ def _canonical_tool(raw: Any) -> McpDiscoveredTool:
 def _canonical_live_definition(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise McpToolDiscoveryError("protocol_error")
-    remote_name = str(raw.get("name") or "").strip()
-    if not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(remote_name):
+    remote_name = raw.get("name")
+    if not isinstance(remote_name, str) or not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(remote_name):
         raise McpToolDiscoveryError("protocol_error")
     description = raw.get("description")
     if description is None:
@@ -322,6 +322,7 @@ class StreamableHttpMcpToolDiscoveryAdapter:
         headers = {
             **normalize_static_mcp_headers(static_headers),
             "Accept": "application/json, text/event-stream",
+            "Accept-Encoding": "identity",
             "Host": target.host_header,
             MCP_JWT_AUTHORIZATION_HEADER: _normalized_jwt_authorization(
                 jwt_authorization
@@ -354,6 +355,8 @@ class StreamableHttpMcpToolDiscoveryAdapter:
                 ),
                 extensions={"sni_hostname": target.sni_hostname},
             ) as streamed_response:
+                if streamed_response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                    raise McpToolDiscoveryError("unsupported_content_encoding")
                 content = bytearray()
                 async for chunk in streamed_response.aiter_bytes():
                     content.extend(chunk)
@@ -415,7 +418,7 @@ class StreamableHttpMcpToolDiscoveryAdapter:
         """Return bounded user-effective definitions without persisting a catalog."""
 
         target = await _validated_discovery_target(endpoint)
-        async with httpx.AsyncClient(timeout=self._timeout_seconds, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=self._timeout_seconds, follow_redirects=False, trust_env=False) as client:
             initialize, session_id = await self._request(
                 client,
                 target,
@@ -468,9 +471,10 @@ class StreamableHttpMcpToolDiscoveryAdapter:
                 if not isinstance(raw_tools, list):
                     raise McpToolDiscoveryError("protocol_error")
                 page_tools = [_canonical_live_definition(item) for item in raw_tools]
-                if any(tool["name"] in seen_names for tool in page_tools):
-                    raise McpToolDiscoveryError("protocol_error")
-                seen_names.update(tool["name"] for tool in page_tools)
+                for tool in page_tools:
+                    if tool["name"] in seen_names:
+                        raise McpToolDiscoveryError("protocol_error")
+                    seen_names.add(tool["name"])
                 tools.extend(page_tools)
                 next_cursor = result.get("nextCursor")
                 if next_cursor is None:

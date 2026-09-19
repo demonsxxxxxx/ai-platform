@@ -781,6 +781,7 @@ def test_skill_admin_upload_existing_catalog_skill_is_denied_before_storage(monk
 
 def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monkeypatch):
     stored_objects = []
+    storage_io_operations = []
     upserts = []
     audits = []
 
@@ -790,6 +791,10 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
             assert content_type == "application/zip"
             stored_objects.append({"storage_key": storage_key, "content": content, "content_type": content_type})
             return StoredObject(storage_key=storage_key, sha256="zip-sha256", size_bytes=len(content))
+
+    async def fake_run_storage_io(operation, /, *args, **kwargs):
+        storage_io_operations.append(operation.__name__)
+        return operation(*args, **kwargs)
 
     async def fake_upsert(conn, **kwargs):
         assert isinstance(conn, OpaqueConnection)
@@ -844,6 +849,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
+    monkeypatch.setattr("app.routes.admin_skills.run_storage_io", fake_run_storage_io)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
@@ -900,6 +906,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
 
     assert len(stored_objects) == 1
     assert stored_objects[0]["storage_key"] == expected_key
+    assert storage_io_operations == ["put_bytes"]
 
     assert len(upserts) == 1
     upsert = upserts[0]

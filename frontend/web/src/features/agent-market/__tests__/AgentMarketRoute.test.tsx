@@ -22,7 +22,10 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
   assert.match(source, /min-h-0 flex-1 overflow-y-auto/);
-  assert.match(source, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/);
+  assert.doesNotMatch(source, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/);
+  assert.match(source, /更多标签/);
+  assert.match(source, /data-agent-market-sort/);
+  assert.match(source, /data-agent-market-view/);
   assert.doesNotMatch(source, /<Check/);
   assert.doesNotMatch(source, /BadgeCheck/);
   assert.match(source, /mobileSidebarOpen/);
@@ -47,7 +50,8 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /buildAgentMarketDetailPath/);
   assert.match(source, /buildAgentMarketWorkspacePath/);
-  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,18rem\),1fr\)\)\]/);
+  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,13\.5rem\),1fr\)\)\]/);
+  assert.doesNotMatch(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,18rem\),1fr\)\)\]/);
   assert.doesNotMatch(source, /xl:grid-cols-3/);
   assert.doesNotMatch(source, /grid-cols-1[\s\S]*md:grid-cols-2[\s\S]*xl:grid-cols-3/);
   assert.match(source, /MARKET_CATALOG_LOAD_ERROR/);

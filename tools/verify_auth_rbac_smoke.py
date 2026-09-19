@@ -15,7 +15,6 @@ from urllib.request import Request, urlopen
 
 SCHEMA_VERSION = "ai-platform.auth-rbac-smoke.v1"
 PLATFORM_AUTH_ME_ROUTE = "/api/ai/auth/me"
-COMPAT_AUTH_ME_ROUTE = "/api/auth/me"
 ADMIN_RUNTIME_ROUTE = "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
 FORBIDDEN_PROJECTION_TERMS = (
     "authorization",
@@ -293,7 +292,7 @@ def build_auth_rbac_smoke(
 ) -> dict[str, object]:
     safe_base_url = sanitize_base_url(base_url)
     auth_me_status, auth_me_payload = _request_json(
-        f"{safe_base_url}{COMPAT_AUTH_ME_ROUTE}",
+        f"{safe_base_url}{PLATFORM_AUTH_ME_ROUTE}",
         timeout_seconds=timeout_seconds,
     )
     authenticated_auth_me_status, authenticated_auth_me_payload = _request_json(
@@ -354,7 +353,7 @@ def build_auth_rbac_smoke(
     )
     checks = {
         "unauthenticated_auth_me": {
-            "route": COMPAT_AUTH_ME_ROUTE,
+            "route": PLATFORM_AUTH_ME_ROUTE,
             "status": auth_me_status,
             "detail": _detail(auth_me_payload, redactions=(gateway_secret, invalid_secret)),
             "expected_status": 401,

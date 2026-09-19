@@ -33,9 +33,11 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
     data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
     build_package(ROOT, manifest, profile, output, data_images)
     with tarfile.open(output) as archive:
-        expected = {"compose.yaml", "compose.override.yaml", ".env.example", "release-image-manifest.json", "deploy.py", "README.md"}
-        if profile == "production":
-            expected.add("opensandbox-egress-nginx.conf.template")
+        expected = {
+            "compose.yaml", "compose.override.yaml", ".env.example",
+            "release-image-manifest.json", "deploy.py", "README.md",
+            "opensandbox-egress-nginx.conf.template",
+        }
         assert set(archive.getnames()) == expected
         base = yaml.safe_load(archive.extractfile("compose.yaml").read())
         # BaseLoader preserves scalars without interpreting Compose's !reset tag.
@@ -65,6 +67,7 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
             "SANDBOX_EGRESS_POLICY_ENABLED", "OPENSANDBOX_USE_SERVER_PROXY",
             "OPENSANDBOX_EXPECTED_NETWORK_MODE", "DOCKER_SOCKET_GID",
             "OPENSANDBOX_ALLOWED_EGRESS_HOSTS", "AI_PLATFORM_BUILD_COMMIT", "AI_PLATFORM_BUILD_DIRTY",
+            "OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
         })
         assert {"POSTGRES_PASSWORD", "MODEL_CONNECTION_ENCRYPTION_KEY", "OPENSANDBOX_API_KEY"} <= env_keys
         expected_profile = "governed" if profile == "production" else "internal-test"
@@ -76,6 +79,7 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
             assert env["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
             assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == ("ai-platform-opensandbox-egress-internal-v1" if profile == "production" else "bridge")
         assert ("OPENSANDBOX_EGRESS_PROXY_URL" in env_keys) == (profile == "internal-test")
+        assert ("OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" in env_keys) == (profile == "internal-test")
         source_env = (ROOT / "deploy/ai-platform/.env.example").read_text()
         for line in env_example.splitlines():
             if line and not line.startswith("#"):

@@ -134,7 +134,8 @@ async def test_streamable_http_discovery_sends_jwt_and_static_headers_on_every_p
 
 
 @pytest.mark.asyncio
-async def test_streamable_http_discovery_rejects_duplicate_tool_and_cursor_loop(monkeypatch):
+@pytest.mark.parametrize("same_page", [False, True])
+async def test_streamable_http_discovery_rejects_duplicate_tool_and_cursor_loop(monkeypatch, same_page):
     page = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -149,7 +150,7 @@ async def test_streamable_http_discovery_rejects_duplicate_tool_and_cursor_loop(
             200,
             json={
                 "result": {
-                    "tools": [{"name": "duplicate", "inputSchema": {}}],
+                    "tools": [{"name": "duplicate", "inputSchema": {}}] * (2 if same_page else 1),
                     "nextCursor": "same",
                 }
             },
@@ -172,7 +173,7 @@ async def test_streamable_http_discovery_rejects_duplicate_tool_and_cursor_loop(
             "https://mcp.example/tools",
             jwt_authorization="Bearer user.jwt",
         )
-    assert page == 2
+    assert page == (1 if same_page else 2)
 
 
 def test_discovery_request_rejects_static_dynamic_header_collision():

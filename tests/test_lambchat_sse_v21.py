@@ -17,7 +17,7 @@ from app.streaming.api import (
     build_v4_control,
     live_redis_id_is_after,
 )
-from app.streaming.events import STREAM_DESIGN_ID_V4
+from app.streaming.domain.protocol_v4 import STREAM_DESIGN_ID as STREAM_DESIGN_ID_V4
 from app.streaming.redis import (
     SseAuthorityConflictError,
     SseAuthorityLease,

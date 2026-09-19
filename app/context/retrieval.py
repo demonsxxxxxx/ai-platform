@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import base64
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
@@ -301,10 +302,12 @@ class ContextRetrievalAuthority:
         self,
         repository: ContextRetrievalRepository,
         *,
+        storage_io: Callable[..., Awaitable[Any]] = asyncio.to_thread,
         _stage_delivery: Literal["broker_export", "local_workspace"] | None = None,
         _workspace_root: str | Path | None = None,
     ) -> None:
         self._repository = repository
+        self._storage_io = storage_io
         self._stage_delivery = _stage_delivery
         self._workspace_root = str(_workspace_root) if _workspace_root is not None else None
 
@@ -321,9 +324,12 @@ class ContextRetrievalAuthority:
         cls,
         conn: Any,
         storage: Any,
+        *,
+        storage_io: Callable[..., Awaitable[Any]],
     ) -> ContextRetrievalAuthority:
         return cls(
             RepositoryContextRetrievalRepository(conn, storage=storage),
+            storage_io=storage_io,
             _stage_delivery="broker_export",
         )
 
@@ -341,9 +347,12 @@ class ContextRetrievalAuthority:
         transaction_factory: Callable[[], AbstractAsyncContextManager[Any]],
         storage: Any,
         workspace_root: str | Path,
+        *,
+        storage_io: Callable[..., Awaitable[Any]],
     ) -> ContextRetrievalAuthority:
         return cls(
             TransactionalContextRetrievalRepository(transaction_factory, storage=storage),
+            storage_io=storage_io,
             _stage_delivery="local_workspace",
             _workspace_root=workspace_root,
         )
@@ -558,7 +567,7 @@ class ContextRetrievalAuthority:
             run_id=run_id,
             artifact_id=artifact_id,
         )
-        content, truncated = self._bounded_content_from_row(row, max_bytes=max_bytes)
+        content, truncated = await self._bounded_content_from_row(row, max_bytes=max_bytes)
         return self._envelope(
             "context_retrieval.read_run_artifact",
             artifact_id=artifact_id,
@@ -667,7 +676,7 @@ class ContextRetrievalAuthority:
             run_id=run_id,
             file_id=file_id,
         )
-        raw_bytes, byte_cap = self._bounded_export_bytes(
+        raw_bytes, byte_cap = await self._bounded_export_bytes(
             row,
             max_bytes=max_bytes,
             size_required_reason="context_file_size_required",
@@ -706,7 +715,7 @@ class ContextRetrievalAuthority:
             run_id=run_id,
             artifact_id=artifact_id,
         )
-        raw_bytes, byte_cap = self._bounded_export_bytes(
+        raw_bytes, byte_cap = await self._bounded_export_bytes(
             row,
             max_bytes=max_bytes,
             size_required_reason="context_artifact_size_required",
@@ -805,13 +814,17 @@ class ContextRetrievalAuthority:
             raise ContextRetrievalDenied("context_scope_denied")
         return row
 
-    def _raw_content_bytes(
+    async def _raw_content_bytes(
         self,
         row: dict[str, Any],
         *,
         max_bytes: int | None = None,
     ) -> bytes:
-        return self._repository.read_storage_bytes(row, max_bytes=max_bytes)
+        return await self._storage_io(
+            self._repository.read_storage_bytes,
+            row,
+            max_bytes=max_bytes,
+        )
 
     def _declared_size_bytes(self, row: dict[str, Any]) -> int | None:
         try:
@@ -820,7 +833,7 @@ class ContextRetrievalAuthority:
             return None
         return declared_size if declared_size >= 0 else None
 
-    def _bounded_export_bytes(
+    async def _bounded_export_bytes(
         self,
         row: dict[str, Any],
         *,
@@ -836,15 +849,20 @@ class ContextRetrievalAuthority:
             raise ContextRetrievalDenied(too_large_reason)
         read_cap = declared_size if declared_size is not None else byte_cap
         try:
-            raw_bytes = self._raw_content_bytes(row, max_bytes=read_cap)
+            raw_bytes = await self._raw_content_bytes(row, max_bytes=read_cap)
         except ObjectStorageSizeLimitError as exc:
             raise ContextRetrievalDenied(too_large_reason) from exc
         if len(raw_bytes) > byte_cap:
             raise ContextRetrievalDenied(too_large_reason)
         return raw_bytes, byte_cap
 
-    def _bounded_content_from_row(self, row: dict[str, Any], *, max_bytes: int) -> tuple[str, bool]:
-        raw = self._raw_content_bytes(row)
+    async def _bounded_content_from_row(
+        self,
+        row: dict[str, Any],
+        *,
+        max_bytes: int,
+    ) -> tuple[str, bool]:
+        raw = await self._raw_content_bytes(row)
         truncated = len(raw) > max_bytes
         bounded = raw[: max(0, int(max_bytes))] if truncated else raw
         text, text_truncated = _bounded_text(bounded.decode("utf-8", errors="ignore"))

@@ -64,8 +64,6 @@ class McpServerLifecycleRequest(BaseModel):
     enabled: bool = True
     url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
-    command: str | None = None
-    env_keys: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
     role_quotas: dict[str, McpRoleQuota] = Field(default_factory=dict)
     department_ids: list[str] = Field(default_factory=list)
@@ -78,7 +76,7 @@ class McpServerLifecycleRequest(BaseModel):
     @field_validator("transport")
     @classmethod
     def validate_transport(cls, value: str):
-        if value not in {"sse", "streamable_http", "sandbox"}:
+        if value not in {"sse", "streamable_http"}:
             raise ValueError("mcp_transport unsupported")
         return value
 
@@ -97,7 +95,7 @@ class McpServerLifecycleRequest(BaseModel):
                 normalized.append(candidate)
         return normalized
 
-    @field_validator("department_ids", "env_keys")
+    @field_validator("department_ids")
     @classmethod
     def validate_exact_safe_lists(cls, value: list[str], info):
         normalized: list[str] = []
@@ -137,10 +135,6 @@ def _safe_name(name: str, field_name: str = "mcp_server_name") -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _lifecycle_not_backed() -> None:
-    raise HTTPException(status_code=409, detail="mcp_lifecycle_contract_not_backed")
-
-
 def _distribution_status_mutation_http_exception(exc: repositories.RepositoryConflictError) -> HTTPException:
     """Map distribution status conflicts without exposing repository-internal details."""
 
@@ -177,10 +171,6 @@ def _request_model(model_type: type[BaseModel], payload: Any) -> BaseModel:
 
 def _credential_metadata(request: McpServerLifecycleRequest) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
-    if request.env_keys:
-        metadata["env_keys"] = sorted(request.env_keys)
-    if request.command:
-        metadata["command_configured"] = True
     if request.url:
         metadata["endpoint_configured"] = True
     return metadata
@@ -190,12 +180,8 @@ def _credential_fingerprint(request: McpServerLifecycleRequest) -> str:
     raw_parts: list[str] = []
     if request.url:
         raw_parts.append(request.url)
-    if request.command:
-        raw_parts.append(request.command)
     for key in sorted(request.headers):
         raw_parts.append(f"header:{key}={request.headers[key]}")
-    for key in sorted(request.env_keys):
-        raw_parts.append(f"env:{key}")
     if not raw_parts:
         return ""
     serialized = "\n".join(raw_parts)
@@ -709,17 +695,6 @@ async def create_mcp_server(
     )
 
 
-@router.post("/mcp/import")
-async def import_mcp_servers(
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> dict[str, Any]:
-    """Fail closed for MCP import until lifecycle governance is backed."""
-
-    _require_admin(principal)
-    _lifecycle_not_backed()
-
-
 @router.get("/mcp/export")
 async def export_mcp_servers(
     principal: AuthPrincipal = Depends(require_principal),
@@ -914,21 +889,6 @@ async def discover_mcp_tools(
     }
 
 
-@router.patch("/mcp/{name}/tools/{tool_name}")
-async def toggle_mcp_tool(
-    name: str,
-    tool_name: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> dict[str, Any]:
-    """Fail closed for MCP tool policy toggles outside admin tool policies."""
-
-    _require_admin(principal)
-    _safe_name(name)
-    _safe_name(tool_name, "mcp_tool_name")
-    _lifecycle_not_backed()
-
-
 @router.post("/admin/mcp/")
 @router.post("/admin/mcp")
 async def create_admin_mcp_server(
@@ -1009,29 +969,3 @@ async def delete_admin_mcp_server(
     except repositories.RepositoryConflictError as exc:
         raise _distribution_status_mutation_http_exception(exc) from exc
     return _server_response(row, distribution=distribution, can_edit=True)
-
-
-@router.post("/admin/mcp/{name}/promote")
-async def promote_admin_mcp_server(
-    name: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> dict[str, Any]:
-    """Fail closed for MCP promote operations until lifecycle governance exists."""
-
-    _require_admin(principal)
-    _safe_name(name)
-    _lifecycle_not_backed()
-
-
-@router.post("/admin/mcp/{name}/demote")
-async def demote_admin_mcp_server(
-    name: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> dict[str, Any]:
-    """Fail closed for MCP demote operations until lifecycle governance exists."""
-
-    _require_admin(principal)
-    _safe_name(name)
-    _lifecycle_not_backed()

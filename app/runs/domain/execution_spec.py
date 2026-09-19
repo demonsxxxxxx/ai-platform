@@ -10,7 +10,10 @@ import math
 import re
 from typing import Any
 
-EXECUTION_SPEC_SCHEMA_VERSION = "ai-platform.execution-spec.v1"
+EXECUTION_SPEC_SCHEMA_VERSION_V1 = "ai-platform.execution-spec.v1"
+EXECUTION_SPEC_SCHEMA_VERSION_V2 = "ai-platform.execution-spec.v2"
+# Keep the legacy public constant for historical readers; dispatch selects v2 explicitly.
+EXECUTION_SPEC_SCHEMA_VERSION = EXECUTION_SPEC_SCHEMA_VERSION_V1
 _RUN_PAYLOAD_SCHEMA_VERSION_V1 = "ai-platform.run-payload.v1"
 _RUN_PAYLOAD_SCHEMA_VERSION_V2 = "ai-platform.run-payload.v2"
 _SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS = frozenset(
@@ -78,7 +81,7 @@ _HIGH_CONFIDENCE_SECRET_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 )
 
-_EXECUTION_SPEC_FIELDS = frozenset(
+_EXECUTION_SPEC_FIELDS_V1 = frozenset(
     {
         "schema_version",
         "run_payload_schema_version",
@@ -103,6 +106,13 @@ _EXECUTION_SPEC_FIELDS = frozenset(
         "model_id",
         "model_value",
         "agent_profile",
+    }
+)
+_EXECUTION_SPEC_FIELDS_V2 = _EXECUTION_SPEC_FIELDS_V1 | frozenset(
+    {
+        "model_gateway_revision",
+        "model_max_input_tokens",
+        "model_max_output_tokens",
     }
 )
 
@@ -273,18 +283,35 @@ def _validate_skill_authority(
         raise ExecutionSpecError("execution_spec_skill_authority_invalid")
 
 
+def _required_positive_int(payload: Mapping[str, Any], field_name: str) -> int:
+    value = payload.get(field_name)
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 1
+        or value > 10_000_000
+    ):
+        raise ExecutionSpecError(f"execution_spec_{field_name}_invalid")
+    return value
+
+
 def _normalize_execution_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
-    if set(payload) != _EXECUTION_SPEC_FIELDS:
-        raise ExecutionSpecError("execution_spec_fields_invalid")
-    if payload.get("schema_version") != EXECUTION_SPEC_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V1:
+        expected_fields = _EXECUTION_SPEC_FIELDS_V1
+    elif schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V2:
+        expected_fields = _EXECUTION_SPEC_FIELDS_V2
+    else:
         raise ExecutionSpecError("execution_spec_schema_version_invalid")
+    if set(payload) != expected_fields:
+        raise ExecutionSpecError("execution_spec_fields_invalid")
 
     run_payload_schema_version = _required_string(payload, "run_payload_schema_version")
     if run_payload_schema_version not in _SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS:
         raise ExecutionSpecError("execution_spec_run_payload_schema_version_invalid")
 
     normalized: dict[str, Any] = {
-        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "run_payload_schema_version": run_payload_schema_version,
     }
     for field_name in (
@@ -351,6 +378,16 @@ def _normalize_execution_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
     model_value = _optional_string(payload, "model_value")
     normalized["model_value"] = _upstream_model_id(model_value) if model_value else model_value
 
+    if schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V2:
+        normalized["model_gateway_revision"] = _required_positive_int(
+            payload, "model_gateway_revision"
+        )
+        normalized["model_max_input_tokens"] = _required_positive_int(
+            payload, "model_max_input_tokens"
+        )
+        normalized["model_max_output_tokens"] = _required_positive_int(
+            payload, "model_max_output_tokens"
+        )
     if execution_kind == _RUN_EXECUTION_KIND_HARNESS_CHAT:
         if run_payload_schema_version != _RUN_PAYLOAD_SCHEMA_VERSION_V2:
             raise ExecutionSpecError("execution_spec_harness_schema_invalid")
@@ -425,10 +462,10 @@ class ExecutionSpec:
     def compile(cls, payload: Mapping[str, Any]) -> "ExecutionSpec":
         normalized = _normalize_execution_spec(payload)
         canonical_json = _canonical_json_bytes(normalized)
-        return cls(
-            canonical_json=canonical_json,
-            spec_sha256=hashlib.sha256(canonical_json).hexdigest(),
-        )
+        spec = object.__new__(cls)
+        object.__setattr__(spec, "canonical_json", canonical_json)
+        object.__setattr__(spec, "spec_sha256", hashlib.sha256(canonical_json).hexdigest())
+        return spec
 
     @classmethod
     def from_canonical_json(

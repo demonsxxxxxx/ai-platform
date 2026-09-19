@@ -2,6 +2,13 @@ services:
   api:
     environment:
       DEPLOYMENT_ENVIRONMENT: test
+      MODEL_CONNECTION_ENCRYPTION_KEY: ${MODEL_CONNECTION_ENCRYPTION_KEY:?set MODEL_CONNECTION_ENCRYPTION_KEY}
+      MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS: ${MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS:-}
+      MODEL_PROXY_INTERNAL_TOKEN: ${MODEL_PROXY_INTERNAL_TOKEN:?set MODEL_PROXY_INTERNAL_TOKEN}
+      OPENAI_BASE_URL: ""
+      OPENAI_API_KEY: ""
+      ANTHROPIC_BASE_URL: ""
+      ANTHROPIC_AUTH_TOKEN: ""
       SANDBOX_CONTAINER_PROVIDER: opensandbox
       SANDBOX_SECURITY_PROFILE: internal-test
       SANDBOX_EGRESS_POLICY_ENABLED: "false"
@@ -10,16 +17,20 @@ services:
       OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:?set OPENSANDBOX_PROTOCOL}
       OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}
       OPENSANDBOX_USE_SERVER_PROXY: "true"
-      OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS: "true"
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
       OPENSANDBOX_EXPECTED_NETWORK_MODE: bridge
-      OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL: ""
-      OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN: ""
+      OPENSANDBOX_EGRESS_PROXY_URL: ${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}
 
   worker:
     environment:
       DEPLOYMENT_ENVIRONMENT: test
+      MODEL_CONNECTION_ENCRYPTION_KEY: ${MODEL_CONNECTION_ENCRYPTION_KEY:?set MODEL_CONNECTION_ENCRYPTION_KEY}
+      MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS: ${MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS:-}
+      OPENAI_BASE_URL: ""
+      OPENAI_API_KEY: ""
+      ANTHROPIC_BASE_URL: ""
+      ANTHROPIC_AUTH_TOKEN: ""
       SANDBOX_CONTAINER_PROVIDER: opensandbox
       SANDBOX_SECURITY_PROFILE: internal-test
       SANDBOX_EGRESS_POLICY_ENABLED: "false"
@@ -28,9 +39,44 @@ services:
       OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:?set OPENSANDBOX_PROTOCOL}
       OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}
       OPENSANDBOX_USE_SERVER_PROXY: "true"
-      OPENSANDBOX_INTERNAL_TEST_FORWARD_MODEL_CREDENTIALS: "true"
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
       OPENSANDBOX_EXPECTED_NETWORK_MODE: bridge
-      OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_URL: ""
-      OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_TOKEN: ""
+      OPENSANDBOX_EGRESS_PROXY_URL: ${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}
+
+  opensandbox-egress-proxy:
+    image: ${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}
+    container_name: ai-platform-opensandbox-egress-proxy
+    labels:
+      ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      ai-platform.source-dirty: "false"
+      ai-platform.release-owner: repo-local-compose
+      ai-platform.release-role: opensandbox-egress-proxy
+      ai-platform.security-domain: control-plane-egress
+    restart: unless-stopped
+    user: "101:101"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates-opensandbox
+      AI_PLATFORM_API_UPSTREAM: http://api:8020
+      MODEL_PROXY_INTERNAL_TOKEN: ${MODEL_PROXY_INTERNAL_TOKEN:?set MODEL_PROXY_INTERNAL_TOKEN}
+    ports:
+      - "${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:18043:8080"
+    volumes:
+      - ./opensandbox-egress-nginx.conf.template:/etc/nginx/templates-opensandbox/default.conf.template:ro
+    tmpfs:
+      - /etc/nginx/conf.d:size=1m,mode=0755,uid=101,gid=101
+      - /var/cache/nginx:size=16m,mode=0755,uid=101,gid=101
+      - /var/run:size=1m,mode=0755,uid=101,gid=101
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      api:
+        condition: service_started
