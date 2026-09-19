@@ -85,6 +85,13 @@ async def _seed_checkpoint_source(conn: psycopg.AsyncConnection) -> None:
     )
     await conn.execute(
         """
+        insert into model_gateway_revisions(
+          revision, base_url, api_key_ciphertext, key_fingerprint, created_by
+        ) values (1, 'https://gateway.example', '\\x00', '0123456789abcdef', 'user-a')
+        """
+    )
+    await conn.execute(
+        """
         insert into runs(
           id, tenant_id, workspace_id, session_id, user_id, agent_id,
           execution_kind, status, model_id, model_value, model_gateway_revision,
