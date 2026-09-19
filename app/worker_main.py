@@ -41,6 +41,7 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
+from app.context.api import fail_expired_checkpoint_builds
 from app.data_retention import run_data_retention_maintenance
 from app.db import transaction
 from app.executors.registry import AdapterRegistry
@@ -701,6 +702,9 @@ async def run_worker_cleanup_maintenance(
     phases = {
         "sandbox_cleanup": cleanup_expired_sandbox_leases,
         "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
+        "conversation_checkpoint_cleanup": lambda: fail_expired_checkpoint_builds(
+            transaction_factory=transaction, limit=50,
+        ),
         "data_retention": lambda: run_data_retention_maintenance(settings),
         "tool_permission_terminalization": lambda: progress_pending_tool_permission_terminalizations_for_worker(
             settings,

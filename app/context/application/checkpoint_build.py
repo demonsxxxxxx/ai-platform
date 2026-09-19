@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
@@ -24,15 +23,49 @@ class CheckpointBuildRepository(Protocol):
     async def load_source(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
     async def find(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
     async def claim(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
-    async def assert_lease(self, conn: Any, **kwargs: Any) -> None: ...
+    async def renew_lease(self, conn: Any, **kwargs: Any) -> None: ...
     async def save_progress(self, conn: Any, **kwargs: Any) -> None: ...
     async def complete(self, conn: Any, **kwargs: Any) -> None: ...
+    async def fail_expired(self, conn: Any, **kwargs: Any) -> int: ...
 
 
 SourcePageLoader = Callable[..., Awaitable[list[dict[str, Any]]]]
 CheckpointLoader = Callable[..., Awaitable[dict[str, Any] | None]]
 CountProviderTokens = Callable[..., Awaitable[int]]
 SummarizeSource = Callable[..., Awaitable[dict[str, Any]]]
+CHECKPOINT_LEASE_HEARTBEAT_SECONDS = 30.0
+
+
+async def _await_with_lease_heartbeat(
+    operation: Awaitable[Any],
+    *,
+    renew_lease: Callable[[], Awaitable[None]],
+) -> Any:
+    """Keep the exact build lease alive while one model operation is pending."""
+
+    operation_task = asyncio.create_task(operation)
+
+    async def heartbeat() -> None:
+        while True:
+            await asyncio.sleep(CHECKPOINT_LEASE_HEARTBEAT_SECONDS)
+            await renew_lease()
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    try:
+        done, _pending = await asyncio.wait(
+            (operation_task, heartbeat_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if heartbeat_task in done:
+            await heartbeat_task
+            raise RuntimeError("conversation_checkpoint_heartbeat_stopped")
+        return await operation_task
+    finally:
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+        if not operation_task.done():
+            operation_task.cancel()
+            await asyncio.gather(operation_task, return_exceptions=True)
 
 
 def _boundary(row: Mapping[str, Any]) -> dict[str, str]:
@@ -147,7 +180,6 @@ class ConversationCheckpointBuilder:
         ], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         predecessor = (base["source_sha256"] if base else
                        hashlib.sha256(source_digest_scope(**scope)).hexdigest())
-        deadline = time.monotonic() + 125
         while True:
             async with transaction_factory() as conn:
                 claimed = await self._repository.claim(
@@ -167,8 +199,13 @@ class ConversationCheckpointBuilder:
                         and ready["source_sha256"] == receipt["source_sha256"]):
                         return ready["id"]
                     raise ValueError("conversation_checkpoint_ready_identity_invalid")
-            if time.monotonic() >= deadline:
-                raise ValueError("conversation_checkpoint_builder_busy")
+                if existing and existing.get("owner_run_dispatchable") is False:
+                    raise ValueError("conversation_checkpoint_builder_fenced")
+                if existing is None and await self._repository.load_source(
+                    conn, tenant_id=tenant_id, run_id=run_id,
+                    context_snapshot_id=context_snapshot_id,
+                ) is None:
+                    raise ValueError("conversation_checkpoint_source_unavailable")
             await asyncio.sleep(1)
         checkpoint_id, lease_id = claimed["id"], claimed["builder_lease_id"]
         recovered = claimed["covered_message_count"] > 0
@@ -189,9 +226,9 @@ class ConversationCheckpointBuilder:
         current_user = (source["current_user_text"] if receipt["current_message_id"] else
                         source["input_message"] or "")
 
-        async def assert_lease() -> None:
+        async def renew_lease() -> None:
             async with transaction_factory() as conn:
-                await self._repository.assert_lease(
+                await self._repository.renew_lease(
                     conn, checkpoint_id=checkpoint_id, lease_id=lease_id, run_id=run_id,
                 )
 
@@ -203,21 +240,31 @@ class ConversationCheckpointBuilder:
                     part = pending[:part_size]
                     text = checkpoint_source_text(previous_summary, part)
                     if len(text.encode("utf-8")) <= 1024 * 1024:
-                        await assert_lease()
-                        count = await self._count(run_id=run_id, source_text=text)
+                        await renew_lease()
+                        count = await _await_with_lease_heartbeat(
+                            self._count(run_id=run_id, source_text=text),
+                            renew_lease=renew_lease,
+                        )
                         if count <= source["max_input_tokens"]:
                             break
                     if part_size == 1:
                         raise ValueError("context_compaction_chunk_too_large")
                     part_size = max(1, part_size // 2)
-                result = await self._summarize(run_id=run_id, source_text=text)
+                await renew_lease()
+                result = await _await_with_lease_heartbeat(
+                    self._summarize(run_id=run_id, source_text=text),
+                    renew_lease=renew_lease,
+                )
                 summary = result["summary"]
                 if (not isinstance(summary, str) or not summary
                     or type(result["input_tokens"]) is not int
                     or type(result["output_tokens"]) is not int):
                     raise ValueError("conversation_checkpoint_summary_invalid")
-                await assert_lease()
-                compressed = await self._count(run_id=run_id, source_text=summary)
+                await renew_lease()
+                compressed = await _await_with_lease_heartbeat(
+                    self._count(run_id=run_id, source_text=summary),
+                    renew_lease=renew_lease,
+                )
                 if compressed >= count:
                     raise ValueError("context_compaction_no_progress")
                 flattened = [row for turn in part for row in turn]
@@ -281,8 +328,11 @@ class ConversationCheckpointBuilder:
                 raise ValueError("conversation_checkpoint_summary_missing")
             projected = _future_input(previous_summary, list(recent), current_user)
             if len(projected.encode("utf-8")) <= 1024 * 1024:
-                await assert_lease()
-                projected_tokens = await self._count(run_id=run_id, source_text=projected)
+                await renew_lease()
+                projected_tokens = await _await_with_lease_heartbeat(
+                    self._count(run_id=run_id, source_text=projected),
+                    renew_lease=renew_lease,
+                )
                 if projected_tokens <= source["max_input_tokens"] * 9 // 10:
                     break
             if len(recent) <= 1:
@@ -342,3 +392,15 @@ async def prepare_checkpoint_for_run(*, transaction_factory: Any, tenant_id: str
         transaction_factory=transaction_factory, tenant_id=tenant_id,
         run_id=run_id, context_snapshot_id=context_snapshot_id,
     )
+
+
+async def fail_expired_checkpoint_builds(
+    *, transaction_factory: Any, limit: int = 50,
+) -> int:
+    """Converge expired builders so stale leases cannot remain active facts."""
+
+    if _builder is None:
+        raise ValueError("conversation_checkpoint_builder_unavailable")
+    bounded_limit = max(1, min(int(limit), 200))
+    async with transaction_factory() as conn:
+        return await _builder._repository.fail_expired(conn, limit=bounded_limit)
