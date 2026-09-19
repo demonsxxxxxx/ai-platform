@@ -5190,6 +5190,14 @@ test("useAgent reloads a cancel-requested Skill run as pending without a submit 
     assert.equal(harness.hook.sessionId, "session-cancel-requested");
     assert.equal(harness.hook.currentRunId, "run-cancel-requested");
     assert.equal(harness.hook.isLoading, false);
+    assert.equal(
+      harness.hook.messages.find(
+        (message) =>
+          message.role === "assistant" &&
+          message.runId === "run-cancel-requested",
+      )?.isStreaming,
+      false,
+    );
     const statusPart = harness.hook.messages
       .flatMap((message) => message.parts || [])
       .find(

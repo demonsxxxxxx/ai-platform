@@ -39,12 +39,19 @@ export function getVisibleConnectionStatus({
   connectionStatus,
   sessionId,
   currentRunId,
+  sessionRunning,
 }: {
   connectionStatus?: ConnectionStatus;
   sessionId: string | null;
   currentRunId: string | null;
+  sessionRunning: boolean;
 }): VisibleConnectionStatus | null {
-  if (!sessionId || !currentRunId || connectionStatus === "connected") {
+  if (
+    !sessionId ||
+    !currentRunId ||
+    !sessionRunning ||
+    connectionStatus === "connected"
+  ) {
     return null;
   }
   return connectionStatus ?? null;

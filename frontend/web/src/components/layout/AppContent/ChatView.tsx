@@ -325,6 +325,7 @@ export function ChatView({
     connectionStatus,
     sessionId,
     currentRunId,
+    sessionRunning,
   });
   const activeConnectionOwner =
     sessionId && currentRunId ? `${sessionId}:${currentRunId}` : null;
