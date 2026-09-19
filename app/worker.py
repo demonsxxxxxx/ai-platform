@@ -55,7 +55,7 @@ from app.execution.api import (
     locked_run_payload_candidate as _locked_run_payload_candidate,
     materialize_worker_answer,
     promote_artifact_reservations,
-    predispatch_failure_result as _pre_dispatch_failure_result,
+    predispatch_failure_result as _pre_dispatch_failure_result, reconciliation_agent_profile_binding_matches as _reconciliation_agent_profile_binding_matches,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
@@ -2130,10 +2130,9 @@ async def process_run_payload(
                     v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
-            if not _locked_agent_profile_identity_valid(
-                locked_payload.agent_profile or {},
-                locked,
-            ):
+            if not _locked_agent_profile_identity_valid(locked_payload.agent_profile or {}, locked) or (
+                reconciliation is not None
+                and not _reconciliation_agent_profile_binding_matches(payload.input, locked_payload.agent_profile or {})):
                 terminal_after_transaction = await _fail_locked_run_snapshot(
                     conn,
                     payload=locked_payload,

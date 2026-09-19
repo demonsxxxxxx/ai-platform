@@ -135,11 +135,26 @@ input, not a runtime dependency or implementation authority.
    one complete turn; the Engine adapter may reject an assembled request that
    exceeds the model's hard context limit rather than silently deleting half of
    the turn.
-5. Future context checkpoints may replace older removed turns only through a
-   separately versioned, testable summarization contract. They are not required
-   for the initial cutover.
+5. Context checkpoints may replace older removed turns only through their
+   separately versioned, testable summarization contract.
 
-### 5. Engine adaptation
+### 5. Checkpoint build recovery
+
+1. A `building` checkpoint is owned by one queued Run and one expiring builder
+   lease. Token counting and summarization renew that exact lease while the
+   provider operation remains pending.
+2. Every progress write and final transition rechecks the checkpoint, lease,
+   owner Run, and source snapshot fences. A superseded builder cannot commit.
+3. Worker maintenance converges expired or missing builder leases from
+   `building` to `failed` in bounded, lock-skipping batches.
+4. The same Run, source snapshot, predecessor, and deterministic build key may
+   reopen a failed or expired build with a new lease and reuse validated partial
+   progress. A different identity cannot take it over.
+5. A waiter does not fail merely because one fixed wall-clock interval elapsed;
+   it waits while the exact owner remains dispatchable and fails when the source
+   or owner fence is no longer valid.
+
+### 6. Engine adaptation
 
 1. Engine-neutral conversation records terminate at the Engine adapter.
 2. An adapter that accepts native message arrays receives role-preserving
@@ -153,7 +168,7 @@ input, not a runtime dependency or implementation authority.
 5. The model is not instructed to call `read_session_messages` to understand the
    latest prior turn.
 
-### 6. Projection and observability
+### 7. Projection and observability
 
 1. Executor-private message text must not enter ordinary-user context summaries,
    operational logs, or public events.
@@ -210,14 +225,13 @@ cutover.
 
 ## Delivery Boundaries
 
-The initial delivery includes the PRD, an executor-private message
-materialization seam, complete-turn selection, Claude transcript rendering, and
-focused regression tests.
+The delivered source contract includes the PRD, an executor-private message
+materialization seam, complete-turn selection, Claude transcript rendering,
+versioned checkpoint summarization, and focused regression tests.
 
-It excludes schema migrations, UI changes, checkpoint summarization, changes to
-message retention, file content inlining, and deployment. Runtime claims require
-a later controlled-host acceptance run
-of the exact deployed subject.
+It excludes UI changes, changes to message retention, file content inlining, and
+deployment. Runtime claims require a controlled-host acceptance run of the exact
+deployed subject.
 
 ## Rollback
 

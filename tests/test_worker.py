@@ -18,6 +18,8 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
 from app.control_plane_contracts import standard_trace_id
 from app.execution.api import (
+    reconciliation_agent_profile_binding_matches,
+    restored_executor_reconciliation_queue_payload,
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
     validated_context_file_diagnostic,
@@ -2137,6 +2139,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     locked_run["status"] = "running"
     get_run_calls = []
     terminal_calls = []
+    profile_reauthorization_calls = []
 
     async def get_run(
         _conn,
@@ -2161,6 +2164,14 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         assert kwargs == {"lease_id": "lease-a", "claim_token": "claim-a"}
         return True
 
+    async def reauthorize_profile(_conn, **kwargs):
+        profile_reauthorization_calls.append(kwargs)
+        return types.SimpleNamespace(
+            private_execution_input=profile,
+            skill={"skill_id": "general-chat"},
+            mcp_tool_ids=(),
+        )
+
     def unexpected_transaction():
         raise AssertionError("reconciliation must use the claim-owning transaction factory")
 
@@ -2169,6 +2180,10 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(
+        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        reauthorize_profile,
+    )
     monkeypatch.setattr(
         "app.worker.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
@@ -2204,7 +2219,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         "executor_reconciliation_context_json": {
             "adapter_name": "claude-agent-worker",
             "adapter_context": {},
-            "run_payload": asdict(run_payload),
+            "run_payload": sandbox_reconciliation_payload(run_payload),
         },
     }
     result = ExecutorResult(
@@ -2232,6 +2247,12 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     assert get_run_calls.count(False) >= 2
     assert True in get_run_calls
     assert ("complete", "run-a") in terminal_calls
+    assert profile_reauthorization_calls == [{
+        "principal": _test_current_principal(user_id="user-a", tenant_id="tenant-a"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+    }]
     assert not any(
         call == ("event", "capability_not_authorized") for call in terminal_calls
     )
@@ -3371,10 +3392,28 @@ async def test_sandbox_reconciliation_payload_persists_non_secret_agent_profile(
     result = {}
     restored = restored_sandbox_run_payload(stored, RunPayload, result)
     assert restored.agent_profile == {}
-    assert result["diagnostics"] == ["agent_profile_transport_lost"]
+    assert result == {}
+
+    queue_payload, attempt_id = restored_executor_reconciliation_queue_payload(
+        {
+            "adapter_name": "claude-agent-worker",
+            "adapter_context": {},
+            "run_payload": stored,
+        },
+        result={},
+        run_payload_factory=RunPayload,
+        queue_payload_factory=QueueRunPayload,
+    )
+    assert attempt_id == "attempt-1"
+    assert reconciliation_agent_profile_binding_matches(
+        queue_payload.input, payload.agent_profile,
+    )
+    assert not reconciliation_agent_profile_binding_matches(
+        queue_payload.input, {**payload.agent_profile, "content_hash": "b" * 64},
+    )
 
 
-def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
+def test_restored_sandbox_run_payload_rejects_missing_expected_profile_identity():
     payload = RunPayload(
         tenant_id="tenant-1",
         workspace_id="workspace-1",
@@ -3394,15 +3433,13 @@ def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
     stored["metadata"]["agent_profile_expected"] = True
     result = {}
 
-    restored = restored_sandbox_run_payload(stored, RunPayload, result)
+    with pytest.raises(
+        ValueError,
+        match="executor_reconciliation_agent_profile_identity_invalid",
+    ):
+        restored_sandbox_run_payload(stored, RunPayload, result)
 
-    assert restored.agent_profile == {}
-    assert result["diagnostics"] == ["agent_profile_transport_lost"]
-
-    invalid_result = {"diagnostics": "invalid"}
-    restored_sandbox_run_payload(stored, RunPayload, invalid_result)
-
-    assert invalid_result["diagnostics"] == ["agent_profile_transport_lost"]
+    assert result == {}
 
 
 async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeypatch):

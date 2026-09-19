@@ -23,6 +23,7 @@ from app.execution.application.context_file_diagnostics import (
 )
 from app.execution.application.executor_reconciliation import (
     locked_run_payload_candidate,
+    reconciliation_agent_profile_binding_matches,
     restored_executor_reconciliation_queue_payload,
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
@@ -115,6 +116,7 @@ __all__ = [
     "WorkerAnswerMaterialization",
     "append_artifact_links",
     "materialize_worker_answer",
+    "reconciliation_agent_profile_binding_matches",
     "runtime_terminal_payload",
     "RunModelSelection",
     "SkillInvocationEvidenceBinder",

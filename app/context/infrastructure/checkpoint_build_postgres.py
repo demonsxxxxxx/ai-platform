@@ -47,10 +47,20 @@ async def find_checkpoint_build(
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
-        select id, state, owner_run_id, source_snapshot_id
-        from conversation_context_checkpoints
-        where tenant_id = %s and workspace_id = %s and user_id = %s
-          and session_id = %s and agent_id = %s and build_key_sha256 = %s
+        select checkpoint.id, checkpoint.state, checkpoint.owner_run_id,
+          checkpoint.source_snapshot_id,
+          (runs.status = 'queued' and runs.cancel_requested_at is null)
+            as owner_run_dispatchable
+        from conversation_context_checkpoints checkpoint
+        join runs on runs.tenant_id = checkpoint.tenant_id
+          and runs.workspace_id = checkpoint.workspace_id
+          and runs.user_id = checkpoint.user_id
+          and runs.session_id = checkpoint.session_id
+          and runs.agent_id = checkpoint.agent_id
+          and runs.id = checkpoint.owner_run_id
+        where checkpoint.tenant_id = %s and checkpoint.workspace_id = %s
+          and checkpoint.user_id = %s and checkpoint.session_id = %s
+          and checkpoint.agent_id = %s and checkpoint.build_key_sha256 = %s
         """, (*[scope[key] for key in
                  ("tenant_id", "workspace_id", "user_id", "session_id", "agent_id")],
                build_key_sha256),
@@ -98,10 +108,18 @@ async def claim_checkpoint_build(
           and runs.max_input_tokens > 0 and runs.max_output_tokens > 0
           and snapshot.conversation_authority_json->>'source_sha256' = %s
         on conflict (tenant_id, workspace_id, user_id, session_id, agent_id, build_key_sha256)
-        do update set builder_lease_id = excluded.builder_lease_id,
+        do update set state = 'building', builder_lease_id = excluded.builder_lease_id,
           lease_not_after = excluded.lease_not_after, updated_at = clock_timestamp()
-        where conversation_context_checkpoints.state = 'building'
-          and conversation_context_checkpoints.lease_not_after < clock_timestamp()
+        where (
+            conversation_context_checkpoints.state = 'failed'
+            or (
+              conversation_context_checkpoints.state = 'building'
+              and (
+                conversation_context_checkpoints.lease_not_after is null
+                or conversation_context_checkpoints.lease_not_after < clock_timestamp()
+              )
+            )
+          )
           and conversation_context_checkpoints.owner_run_id = excluded.owner_run_id
           and conversation_context_checkpoints.source_snapshot_id = excluded.source_snapshot_id
           and conversation_context_checkpoints.predecessor_checkpoint_id
@@ -154,17 +172,21 @@ async def save_checkpoint_progress(
         raise ValueError("conversation_checkpoint_builder_fenced")
 
 
-async def assert_checkpoint_lease(conn: AsyncConnection, *, checkpoint_id: str,
-                                  lease_id: str, run_id: str) -> None:
+async def renew_checkpoint_lease(conn: AsyncConnection, *, checkpoint_id: str,
+                                 lease_id: str, run_id: str) -> None:
     cursor = await conn.execute(
         """
-        select checkpoint.id from conversation_context_checkpoints checkpoint
-        join runs on runs.id = checkpoint.owner_run_id
-          and runs.tenant_id = checkpoint.tenant_id
+        update conversation_context_checkpoints checkpoint
+        set lease_not_after = clock_timestamp() + interval '120 seconds',
+          updated_at = clock_timestamp()
+        from runs
         where checkpoint.id = %s and checkpoint.builder_lease_id = %s
           and checkpoint.lease_not_after > clock_timestamp()
-          and checkpoint.state = 'building' and runs.id = %s
+          and checkpoint.state = 'building' and checkpoint.owner_run_id = %s
+          and runs.id = checkpoint.owner_run_id
+          and runs.tenant_id = checkpoint.tenant_id
           and runs.status = 'queued' and runs.cancel_requested_at is null
+        returning checkpoint.id
         """, (checkpoint_id, lease_id, run_id),
     )
     if await cursor.fetchone() is None:
@@ -196,10 +218,36 @@ async def complete_checkpoint_build(conn: AsyncConnection, *, checkpoint_id: str
         raise ValueError("conversation_checkpoint_builder_fenced")
 
 
+async def fail_expired_checkpoint_builds(
+    conn: AsyncConnection, *, limit: int,
+) -> int:
+    cursor = await conn.execute(
+        """
+        with expired as (
+          select id
+          from conversation_context_checkpoints
+          where state = 'building'
+            and (lease_not_after is null or lease_not_after <= clock_timestamp())
+          order by updated_at, id
+          for update skip locked
+          limit %s
+        )
+        update conversation_context_checkpoints checkpoint
+        set state = 'failed', builder_lease_id = null, lease_not_after = null,
+          updated_at = clock_timestamp()
+        from expired
+        where checkpoint.id = expired.id
+        returning checkpoint.id
+        """, (limit,),
+    )
+    return len(await cursor.fetchall())
+
+
 class PostgresCheckpointBuildRepository:
     load_source = staticmethod(load_checkpoint_build_source)
     find = staticmethod(find_checkpoint_build)
     claim = staticmethod(claim_checkpoint_build)
-    assert_lease = staticmethod(assert_checkpoint_lease)
+    renew_lease = staticmethod(renew_checkpoint_lease)
     save_progress = staticmethod(save_checkpoint_progress)
     complete = staticmethod(complete_checkpoint_build)
+    fail_expired = staticmethod(fail_expired_checkpoint_builds)

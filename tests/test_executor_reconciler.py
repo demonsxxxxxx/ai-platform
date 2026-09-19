@@ -157,6 +157,12 @@ def test_reconciler_restores_versioned_execution_payload_without_metadata_leakag
                 "trace_id": "trace-a",
                 "schema_version": "ai-platform.run-payload.v2",
                 "skill_manifests": [],
+                "agent_profile": {
+                    "agent_id": "agent-a",
+                    "revision": 1,
+                    "content_hash": "a" * 64,
+                    "skill_set": [],
+                },
             },
             "metadata": {"agent_profile_expected": True},
         },
@@ -167,9 +173,7 @@ def test_reconciler_restores_versioned_execution_payload_without_metadata_leakag
 
     assert context["adapter_context"] == {}
     assert payload.run_id == "run-a"
-    assert row["executor_terminal_json"]["diagnostics"] == [
-        "agent_profile_transport_lost"
-    ]
+    assert "diagnostics" not in row["executor_terminal_json"]
 
 
 @pytest.mark.asyncio

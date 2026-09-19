@@ -126,6 +126,7 @@ jobs:
               tests/test_queue.py
               tests/test_run_attempt_application.py
               tests/test_run_attempt_repository.py
+              tests/test_context_checkpoint_leases_postgres.py
               tests/test_worker_main.py
               tests/test_worker_heartbeat_postgres_redis_integration.py
               tests/test_sse_runtime_cutover.py
