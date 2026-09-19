@@ -8158,6 +8158,9 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
                         size_bytes=10,
                         manifest={
                             "local_path": "/tmp/worker/output.docx",
+                            "delivery_scope": "assistant_response",
+                            "delivery_role": "primary",
+                            "delivery_description": "最终批注文档",
                             "source_file_id": "file-a",
                             "source_step_id": "step-a",
                             "producer_kind": "subagent",
@@ -8197,6 +8200,9 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
     assert created[0]["trace_id"] == "trace_run_a"
     assert created[0]["manifest_json"]["schema_version"] == "ai-platform.artifact-manifest.v1"
     assert created[0]["manifest_json"]["artifact_type"] == "result_docx"
+    assert created[0]["manifest_json"]["delivery_scope"] == "assistant_response"
+    assert created[0]["manifest_json"]["delivery_role"] == "primary"
+    assert created[0]["manifest_json"]["delivery_description"] == "最终批注文档"
     assert created[0]["manifest_json"]["source_file_id"] == "file-a"
     assert "local_path" not in created[0]["manifest_json"]
     artifact_event = next(item for item in events if item["event_type"] == "artifact_ready")

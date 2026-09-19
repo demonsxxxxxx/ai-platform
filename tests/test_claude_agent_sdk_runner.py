@@ -9,7 +9,6 @@ from tests.support.claude_mcp import install_mcp_sessions
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
-    _build_response_files_mcp_server,
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
 )
@@ -73,47 +72,6 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
         )
         is None
     )
-
-
-@pytest.mark.asyncio
-async def test_response_file_tool_selects_only_existing_public_workspace_files(tmp_path):
-    workspace = tmp_path / "workspace"
-    (workspace / "output").mkdir(parents=True)
-    (workspace / "output" / "final.txt").write_text("final", encoding="utf-8")
-    (workspace / "inputs").mkdir()
-    (workspace / "inputs" / "source.txt").write_text("private", encoding="utf-8")
-    captured = {}
-
-    def sdk_tool(name, _description, _schema):
-        def decorate(function):
-            function.name = name
-            return function
-
-        return decorate
-
-    sdk = types.SimpleNamespace(
-        tool=sdk_tool,
-        create_sdk_mcp_server=lambda name, **kwargs: captured.update(
-            name=name, **kwargs
-        )
-        or captured,
-    )
-    response_files = []
-
-    server = _build_response_files_mcp_server(
-        sdk,
-        workspace=workspace,
-        response_files=response_files,
-    )
-    accepted = await captured["tools"][0]({"path": "output/final.txt"})
-    duplicate = await captured["tools"][0]({"path": "output/final.txt"})
-    rejected = await captured["tools"][0]({"path": "inputs/source.txt"})
-
-    assert server is captured
-    assert response_files == ["output/final.txt"]
-    assert "attached" in accepted["content"][0]["text"]
-    assert "attached" in duplicate["content"][0]["text"]
-    assert rejected["is_error"] is True
 
 
 def _settings():
@@ -3840,6 +3798,167 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
     assert "".join(deltas) == "Complete Assistant body with terminal suffix"
     assert result.error is None
     assert result.message == "Complete Assistant body with terminal suffix"
+
+
+@pytest.mark.asyncio
+async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
+    monkeypatch, tmp_path
+):
+    captured, observed_before_result, deltas = {}, [], []
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "outputs" / "final.txt").write_text("final", encoding="utf-8")
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "facts.json").write_text("{}", encoding="utf-8")
+    skill_output = tmp_path / ".claude" / "skills" / "reporting" / "output"
+    skill_output.mkdir(parents=True)
+    (skill_output / "report.docx").write_bytes(b"report")
+
+    class AssistantMessage:
+        def __init__(self):
+            self.content = [TextBlock("internal draft")]
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class ResultMessage:
+        __annotations__ = {"structured_output": object}
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = '{"answer":"wire json"}'
+        structured_output = {
+            "answer": "Final user answer",
+            "deliverables": [
+                {
+                    "source_path": "outputs/final.txt",
+                    "display_name": "final-report.txt",
+                    "role": "primary",
+                    "description": "Final report",
+                },
+                {
+                    "source_path": ".claude/skills/reporting/output/report.docx",
+                    "role": "supporting",
+                },
+            ],
+        }
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        terminal_reason = "completed"
+        num_turns = 1
+        permission_denials = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    async def query(*, prompt, options):
+        del prompt, options
+        yield AssistantMessage()
+        observed_before_result.extend(deltas)
+        yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=AssistantMessage,
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                ResultMessage=ResultMessage,
+                StreamEvent=type("StreamEvent", (), {}),
+                TextBlock=TextBlock,
+                query=query,
+            ),
+            captured,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="reporting",
+        skills=["reporting"],
+        on_text=deltas.append,
+    )
+
+    assert observed_before_result == []
+    assert "".join(deltas) == "Final user answer"
+    assert result.error is None
+    assert result.message == "Final user answer"
+    assert result.response_files == [
+        "outputs/final.txt",
+        ".claude/skills/reporting/output/report.docx",
+    ]
+    assert result.response_file_descriptors[0] == {
+        "source_path": "outputs/final.txt",
+        "display_name": "final-report.txt",
+        "role": "primary",
+        "description": "Final report",
+    }
+    assert "tasks/facts.json" not in result.response_files
+    assert captured["output_format"]["type"] == "json_schema"
+    assert captured["output_format"]["schema"]["required"] == [
+        "answer",
+        "deliverables",
+    ]
+    assert "ai-platform-response" not in captured["mcp_servers"]
+
+
+@pytest.mark.asyncio
+async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path):
+    captured = {}
+
+    class ResultMessage:
+        __annotations__ = {"structured_output": object}
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = "done"
+        structured_output = None
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        terminal_reason = "completed"
+        num_turns = 1
+        permission_denials = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    async def query(*, prompt, options):
+        del prompt, options
+        yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=type("AssistantMessage", (), {}),
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                ResultMessage=ResultMessage,
+                StreamEvent=type("StreamEvent", (), {}),
+                TextBlock=type("TextBlock", (), {}),
+                query=query,
+            ),
+            captured,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+    )
+
+    assert result.error == "claude_agent_sdk_delivery_manifest_invalid"
+    assert result.received_structured_terminal is False
+    assert result.response_files == []
 
 
 @pytest.mark.asyncio

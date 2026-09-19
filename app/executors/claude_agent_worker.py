@@ -1663,6 +1663,8 @@ class ClaudeAgentWorkerAdapter:
             payload,
             prepared.workspace,
             response_files=executor_response.get("response_files", []),
+            response_file_descriptors=executor_response.get("response_file_descriptors"),
+            allowed_skill_names=prepared.staged_skill_names,
             storage_scope=storage_scope,
             abandoned=abandoned,
             reserve_storage=reserve_storage,
@@ -1773,6 +1775,7 @@ class ClaudeAgentWorkerAdapter:
         workspace: Path,
         *,
         response_files: Any,
+        response_file_descriptors: Any = None, allowed_skill_names: Any = None,
         storage_scope: str = "",
         abandoned: threading.Event | None = None,
         reserve_storage: Callable[[str], str] | None = None,
@@ -1784,12 +1787,9 @@ class ClaudeAgentWorkerAdapter:
             run_id=payload.run_id,
             source_executor=self.executor_type,
             workspace=workspace,
-            response_files=(
-                response_files
-                if isinstance(response_files, list)
-                and all(isinstance(path, str) for path in response_files)
-                else []
-            ),
+            response_files=response_files,
+            response_file_descriptors=response_file_descriptors,
+            allowed_skill_names=allowed_skill_names,
             required_artifact_types=_required_artifact_types(payload),
             artifact_factory=ArtifactManifest,
             storage_factory=ObjectStorage,

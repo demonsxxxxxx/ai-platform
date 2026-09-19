@@ -223,7 +223,10 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
     class Provider:
         fail_collection = False
 
-        async def collect_workspace(self, _lease, _request, _workspace):
+        async def collect_workspace(
+            self, _lease, _request, _workspace, response_files=()
+        ):
+            assert list(response_files) == ["output/final.txt"]
             if self.fail_collection:
                 raise RuntimeError("workspace collection failed")
 
@@ -265,7 +268,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
         "_context_and_payload",
         lambda _row: (
             {"adapter_name": "claude", "adapter_context": {}},
-            {"status": "succeeded"},
+            {"status": "succeeded", "response_files": ["output/final.txt"]},
             SimpleNamespace(attempt_id="attempt-a"),
         ),
     )

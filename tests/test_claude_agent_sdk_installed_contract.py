@@ -68,6 +68,14 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         hooks={"PostToolUse": [matcher]},
         include_partial_messages=True,
         setting_sources=["project"],
+        output_format={
+            "type": "json_schema",
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+        },
     )
     resume_options = sdk.ClaudeAgentOptions(
         cwd=str(tmp_path),
@@ -95,6 +103,7 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         total_cost_usd=0.0,
         usage={},
         result="done",
+        structured_output={"answer": "done"},
         stop_reason="end_turn",
         terminal_reason="completed",
     )
@@ -105,6 +114,8 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     assert options.session_store_flush == "eager"
     assert options.thinking == {"type": "adaptive", "display": "omitted"}
     assert options.effort == "high"
+    assert options.output_format["type"] == "json_schema"
     assert assistant.content[0].text == "partial"
     assert event.event["type"] == "message_start"
     assert result.terminal_reason == "completed"
+    assert result.structured_output == {"answer": "done"}

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -163,3 +163,39 @@ def workspace_collection_file_allowed(relative_path: str | PurePosixPath) -> boo
     if any(part in _COLLECTION_PRIVATE_DIRECTORIES for part in lowered[:-1]):
         return False
     return lowered[-1] not in _COLLECTION_PRIVATE_FILES
+
+
+def workspace_delivery_file_allowed(
+    relative_path: str | PurePosixPath,
+    *,
+    allowed_skill_names: Iterable[str] = (),
+) -> bool:
+    """Allow an explicitly declared deliverable without exposing Skill sources.
+
+    Ordinary workspace outputs keep the existing collection policy.  A staged
+    Skill may additionally declare a file below its own ``output`` directory;
+    every other path below ``.claude`` remains private.
+    """
+
+    path = PurePosixPath(relative_path)
+    if workspace_collection_file_allowed(path):
+        return True
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return False
+    parts = path.parts
+    if len(parts) < 5 or tuple(part.casefold() for part in parts[:2]) != (
+        ".claude",
+        "skills",
+    ):
+        return False
+    allowed = {
+        name
+        for name in allowed_skill_names
+        if isinstance(name, str) and name
+    }
+    if parts[2] not in allowed or parts[3].casefold() != "output":
+        return False
+    descendants = tuple(part.casefold() for part in parts[4:])
+    if any(part in _COLLECTION_PRIVATE_DIRECTORIES for part in descendants[:-1]):
+        return False
+    return descendants[-1] not in _COLLECTION_PRIVATE_FILES
