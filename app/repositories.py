@@ -226,6 +226,7 @@ finalize_chat_submission = chat_submissions.finalize_chat_submission
 get_chat_submission = chat_submissions.get_chat_submission
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
+RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
 RUN_CONTROL_OPERATION_ACTIONS = {"retry", "resume"}
 TOOL_PERMISSION_TERMINALIZATION_BATCH_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
 TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
@@ -6878,8 +6879,8 @@ async def retry_run_as_new_task(
     if source is None:
         return None
     source_status = str(source.get("status") or "")
-    if reason := runs_api.run_retry_block_reason(source_status, source.get("error_code")):
-        raise RepositoryConflictError(reason)
+    if source_status not in RETRYABLE_RUN_STATUSES:
+        raise RepositoryConflictError("status_not_retryable")
     active_retry = await get_active_retry_for_source_run(
         conn,
         tenant_id=tenant_id,

@@ -317,6 +317,9 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     async def get_run_control_operation(*_args, **_kwargs):
         return None
 
+    async def get_retryable_source(*_args, **_kwargs):
+        return {"status": "failed", "error_code": None}
+
     async def record_run_control_operation(*_args, **_kwargs):
         return "evt-control-operation"
 
@@ -369,6 +372,10 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
         "app.routes.runs.repositories.get_run_control_operation",
         get_run_control_operation,
         raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        get_retryable_source,
     )
     monkeypatch.setattr(
         "app.routes.runs.repositories.record_run_control_operation",
@@ -1806,6 +1813,56 @@ def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
     assert response.status_code == 409
     assert response.json()["detail"] == "status_not_retryable"
     assert calls == [("admit", "default", "user-a", 3), ("retry", "default", "user-a", "run-running")]
+
+
+def test_retry_run_rejects_unconfirmed_mcp_execution_without_copy(monkeypatch):
+    calls = []
+
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
+        return 0
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        calls.append(("source", tenant_id, user_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "status": "failed",
+            "error_code": "mcp_execution_outcome_unknown",
+        }
+
+    async def fail_retry_run_as_new_task(*args, **kwargs):
+        raise AssertionError("unconfirmed MCP execution must not be copied")
+
+    async def fail_enqueue_run(payload):
+        raise AssertionError("unconfirmed MCP execution must not be enqueued")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.retry_run_as_new_task",
+        fail_retry_run_as_new_task,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
+    client = TestClient(create_app())
+
+    response = client.post(run_control_url("run-unconfirmed", "retry"), headers=headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "execution_outcome_unconfirmed"
+    assert calls == [
+        ("admit", "default", "user-a", 3),
+        ("source", "default", "user-a", "run-unconfirmed", True),
+    ]
 
 
 def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
@@ -4342,42 +4399,6 @@ async def test_retry_run_as_new_task_rejects_non_retryable_status(monkeypatch):
 
     with pytest.raises(repositories.RepositoryConflictError, match="status_not_retryable"):
         await repositories.retry_run_as_new_task(object(), tenant_id="default", user_id="user-a", run_id="run-running")
-
-
-@pytest.mark.asyncio
-async def test_retry_run_as_new_task_rejects_unconfirmed_mcp_execution(
-    monkeypatch,
-):
-    from app import repositories
-
-    async def fake_get_authorized_run(
-        conn, *, tenant_id, user_id, run_id, for_update=False
-    ):
-        assert for_update is True
-        return {
-            "id": run_id,
-            "status": "failed",
-            "error_code": "mcp_execution_outcome_unknown",
-        }
-
-    async def fail_copy(*args, **kwargs):
-        raise AssertionError("unconfirmed MCP execution must not be retried")
-
-    monkeypatch.setattr(
-        "app.repositories.get_authorized_run", fake_get_authorized_run
-    )
-    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy)
-
-    with pytest.raises(
-        repositories.RepositoryConflictError,
-        match="execution_outcome_unconfirmed",
-    ):
-        await repositories.retry_run_as_new_task(
-            object(),
-            tenant_id="default",
-            user_id="user-a",
-            run_id="run-unconfirmed",
-        )
 
 
 @pytest.mark.asyncio
