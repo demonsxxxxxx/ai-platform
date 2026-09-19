@@ -51,6 +51,8 @@ from app.execution.api import ClaudeSdkAgentEventAdapter
 from app.executors.claude_stream_projection import AssistantAnswerTimeline, ClaudeStreamProjector
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.required_tool_contract import (
+    MCP_EXECUTION_OUTCOME_UNKNOWN,
+    MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
     SANDBOX_LOCAL_TOOL_IDENTITIES,
@@ -165,6 +167,7 @@ _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal
 _SDK_DELIVERY_MANIFEST_INVALID = "claude_agent_sdk_delivery_manifest_invalid"
 _MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
+_SDK_EXECUTION_RECEIPT_INCOMPLETE = "claude_agent_sdk_execution_receipt_incomplete"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 _SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
 _SDK_NATIVE_COMPACT_FAILED = "context_native_compact_failed"
@@ -348,6 +351,18 @@ def _diagnostic_terminal_class(
             _SDK_MISSING_STRUCTURED_TERMINAL,
             "retry_request",
             True,
+        )
+    if error_code in {
+        MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
+        MCP_EXECUTION_OUTCOME_UNKNOWN,
+    }:
+        return (
+            "execution_receipt_incomplete"
+            if error_code == MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE
+            else "execution_outcome_unknown",
+            _SDK_EXECUTION_RECEIPT_INCOMPLETE,
+            "reconcile_before_retry",
+            False,
         )
     if error_code in {
         _SDK_SELECTED_SKILL_HOOK_FAILED,
@@ -1551,6 +1566,8 @@ async def run_claude_agent_sdk(
     capability_evidence: list[dict[str, str]] = []
     capability_evidence_rejected = False
     actual_mcp_invocation_observed = False
+    mcp_execution_states: dict[tuple[str, str], str] = {}
+    mcp_execution_conflicted = False
     capability_invocation_states: dict[tuple[str, str, str], str] = {}
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
     observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
@@ -2616,6 +2633,7 @@ async def run_claude_agent_sdk(
     async def enforce_side_effect_tool_policy(
         hook_input, tool_use_id=None, _context=None
     ) -> dict[str, object]:
+        nonlocal mcp_execution_conflicted
         hook_input_is_mapping = isinstance(hook_input, dict)
         hook_input = hook_input if hook_input_is_mapping else {}
         if compact_in_progress:
@@ -2762,6 +2780,15 @@ async def run_claude_agent_sdk(
                 output["permissionDecisionReason"] = (
                     "required_tool_completion_evidence_mismatch"
                 )
+            elif identity.startswith("mcp__") and identity in authorized_subjects:
+                execution_key = (identity, resolved_tool_call_id)
+                if any(
+                    existing_call_id == resolved_tool_call_id
+                    and (existing_identity, existing_call_id) != execution_key
+                    for existing_identity, existing_call_id in mcp_execution_states
+                ):
+                    mcp_execution_conflicted = True
+                mcp_execution_states[execution_key] = "admitted"
         return {"hookSpecificOutput": output}
 
     def skill_tool_hook(lifecycle_phase: str):
@@ -2819,6 +2846,7 @@ async def run_claude_agent_sdk(
         async def handler(
             hook_input, tool_use_id=None, _context=None
         ) -> dict[str, object]:
+            nonlocal mcp_execution_conflicted
             hook_input = hook_input if isinstance(hook_input, dict) else {}
             identity = adapter_identity(hook_input.get("tool_name"))
             call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
@@ -2836,6 +2864,11 @@ async def run_claude_agent_sdk(
                     lifecycle=lifecycle_phase,
                 )
             elif identity.startswith("mcp__") and identity in authorized_subjects:
+                execution_key = (identity, call_id)
+                if mcp_execution_states and execution_key not in mcp_execution_states:
+                    mcp_execution_conflicted = True
+                elif execution_key in mcp_execution_states:
+                    mcp_execution_states[execution_key] = lifecycle_phase
                 evidence_acknowledged = await record_capability_evidence(
                     capability_kind="mcp",
                     canonical_identity=identity,
@@ -2843,15 +2876,16 @@ async def run_claude_agent_sdk(
                     lifecycle_phase=lifecycle_phase,
                 )
             if agent_event_adapter is not None and evidence_acknowledged is True:
-                await publish_agent_candidates(
-                    agent_event_adapter.accept_hook(
-                        "PostToolUseFailure"
-                        if lifecycle_phase == "failed"
-                        else "PostToolUse",
-                        hook_input,
-                        tool_use_id=exact_hook_tool_call_id(hook_input, tool_use_id),
-                    )
+                candidates = agent_event_adapter.accept_hook(
+                    "PostToolUseFailure"
+                    if lifecycle_phase == "failed"
+                    else "PostToolUse",
+                    hook_input,
+                    tool_use_id=call_id,
                 )
+                if not candidates and not agent_event_callback_failed:
+                    mcp_execution_conflicted = True
+                await publish_agent_candidates(candidates)
             return {}
 
         return handler
@@ -3060,6 +3094,23 @@ async def run_claude_agent_sdk(
         if sandbox_partial_streaming
         else None
     )
+
+    def mcp_execution_conflict_observed() -> bool:
+        return mcp_execution_conflicted or bool(
+            agent_event_adapter is not None
+            and agent_event_adapter.has_tool_block_conflict(
+                {call_id for _identity, call_id in mcp_execution_states}
+            )
+        )
+
+    def mcp_execution_receipt_error() -> str | None:
+        if not mcp_execution_states:
+            return None
+        if mcp_execution_conflict_observed():
+            return MCP_EXECUTION_OUTCOME_UNKNOWN
+        if all(state == "completed" for state in mcp_execution_states.values()):
+            return MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE
+        return MCP_EXECUTION_OUTCOME_UNKNOWN
 
     def capability_completion_error() -> str | None:
         """Validate every observed call and every explicit requirement together."""
@@ -3466,18 +3517,28 @@ async def run_claude_agent_sdk(
             else None
         )
         if terminal_error is None and agent_event_callback_failed:
-            terminal_error = "agent_event_callback_not_acknowledged"
+            terminal_error = (
+                mcp_execution_receipt_error()
+                or "agent_event_callback_not_acknowledged"
+            )
         if terminal_error is None and (
             read_only_lifecycle_rejected
             or "started" in observed_read_only_invocation_states.values()
         ):
             terminal_error = _SDK_TOOL_ADMISSION_FAILED
         if terminal_error is None and capability_evidence_rejected:
-            terminal_error = "required_tool_completion_evidence_mismatch"
+            terminal_error = (
+                mcp_execution_receipt_error()
+                or "required_tool_completion_evidence_mismatch"
+            )
+        if terminal_error is None and mcp_execution_conflict_observed():
+            terminal_error = MCP_EXECUTION_OUTCOME_UNKNOWN
         if terminal_error is None:
             terminal_error = skill_hook_error()
         if terminal_error is None:
-            terminal_error = capability_completion_error()
+            completion_error = capability_completion_error()
+            if completion_error is not None:
+                terminal_error = mcp_execution_receipt_error() or completion_error
         finished_answer = answer_stream_gate.finish(
             final_text=answer_timeline.text,
             release=True,
@@ -3489,7 +3550,11 @@ async def run_claude_agent_sdk(
             for public_text in finished_answer.chunks:
                 if not await publish_terminal_text(public_text):
                     terminal_text_acknowledged = False
-                    terminal_error = "agent_event_callback_not_acknowledged"
+                    terminal_error = (
+                        mcp_execution_receipt_error()
+                        or terminal_error
+                        or "agent_event_callback_not_acknowledged"
+                    )
                     break
         delivered_final_text = (
             "".join(agent_public_answer_chunks)
@@ -3508,7 +3573,11 @@ async def run_claude_agent_sdk(
                     final_content=delivered_final_text,
                 )
             ):
-                terminal_error = "agent_event_callback_not_acknowledged"
+                terminal_error = (
+                    mcp_execution_receipt_error()
+                    or terminal_error
+                    or "agent_event_callback_not_acknowledged"
+                )
         if terminal_error is not None:
             seal_agent_candidates(terminal_error)
         answer_receipt = (

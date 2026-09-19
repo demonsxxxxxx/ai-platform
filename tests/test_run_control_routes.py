@@ -317,6 +317,9 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     async def get_run_control_operation(*_args, **_kwargs):
         return None
 
+    async def get_retryable_source(*_args, **_kwargs):
+        return {"status": "failed", "error_code": None}
+
     async def record_run_control_operation(*_args, **_kwargs):
         return "evt-control-operation"
 
@@ -369,6 +372,10 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
         "app.routes.runs.repositories.get_run_control_operation",
         get_run_control_operation,
         raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        get_retryable_source,
     )
     monkeypatch.setattr(
         "app.routes.runs.repositories.record_run_control_operation",
@@ -1808,6 +1815,56 @@ def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
     assert calls == [("admit", "default", "user-a", 3), ("retry", "default", "user-a", "run-running")]
 
 
+def test_retry_run_rejects_unconfirmed_mcp_execution_without_copy(monkeypatch):
+    calls = []
+
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
+        return 0
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        calls.append(("source", tenant_id, user_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "status": "failed",
+            "error_code": "mcp_execution_outcome_unknown",
+        }
+
+    async def fail_retry_run_as_new_task(*args, **kwargs):
+        raise AssertionError("unconfirmed MCP execution must not be copied")
+
+    async def fail_enqueue_run(payload):
+        raise AssertionError("unconfirmed MCP execution must not be enqueued")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.retry_run_as_new_task",
+        fail_retry_run_as_new_task,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
+    client = TestClient(create_app())
+
+    response = client.post(run_control_url("run-unconfirmed", "retry"), headers=headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "execution_outcome_unconfirmed"
+    assert calls == [
+        ("admit", "default", "user-a", 3),
+        ("source", "default", "user-a", "run-unconfirmed", True),
+    ]
+
+
 def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
     calls = []
 
@@ -2253,6 +2310,47 @@ def test_run_control_readiness_enables_resume_from_checkpoint_outputs(monkeypatc
     assert "/tmp/" not in public_dump
     assert "private_payload" not in public_dump
     assert "secret-token" not in public_dump
+
+
+def test_run_control_readiness_blocks_retry_for_unconfirmed_mcp_execution(
+    monkeypatch,
+):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        run = readiness_run_row(status="failed")
+        run["error_code"] = "mcp_execution_succeeded_receipt_incomplete"
+        return run
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return []
+
+    async def fake_queue_insight(status, tenant_id, **_kwargs):
+        raise AssertionError("queue insight should only be loaded for queued runs")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.list_run_steps", fake_list_run_steps
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.queue_insight_for_status", fake_queue_insight
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/runs/run-ready/control/readiness", headers=headers()
+    )
+
+    assert response.status_code == 200
+    assert response.json()["actions"]["retry"] == {
+        "enabled": False,
+        "reason": "execution_outcome_unconfirmed",
+        "method": "POST",
+        "href": "/api/ai/runs/run-ready/retry",
+    }
 
 
 def test_run_control_readiness_redacts_raw_skill_ids_from_public_scalars(monkeypatch):

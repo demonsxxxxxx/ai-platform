@@ -25,7 +25,7 @@ from app.models import (
     RunControlResponse,
     RunResponse,
 )
-from app.runs.api import bind_run_model, inherit_run_model
+from app.runs.api import bind_run_model, inherit_run_model, run_retry_block_reason
 from app.product_events import initial_run_event_specs
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import (
@@ -1417,6 +1417,20 @@ async def _mutate_run_control_child(
                     principal=principal,
                     run_id=run_id,
                 )
+                if action == "retry":
+                    source = await repositories.get_authorized_run(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        run_id=run_id,
+                        for_update=True,
+                    )
+                    if source is not None and (
+                        reason := run_retry_block_reason(
+                            source.get("status"), source.get("error_code")
+                        )
+                    ):
+                        raise RepositoryConflictError(reason)
                 mutation = (
                     repositories.retry_run_as_new_task
                     if action == "retry"

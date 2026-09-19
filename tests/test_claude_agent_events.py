@@ -314,6 +314,56 @@ def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
     assert all("denied-call" not in repr(event.as_dict()) for event in denied)
 
 
+def test_tool_hook_can_precede_tool_use_block_without_exposing_sdk_payload():
+    adapter = _adapter()
+    hook = {
+        "tool_name": "Read",
+        "tool_use_id": "sdk-tool-before-block",
+        "tool_input": {"file_path": "C:\\private\\x"},
+    }
+
+    started = adapter.accept_hook(
+        "PreToolUse", hook, tool_use_id="sdk-tool-before-block"
+    )
+    completed = adapter.accept_hook(
+        "PostToolUse", hook, tool_use_id="sdk-tool-before-block"
+    )
+
+    assert [event.event_type for event in started + completed] == [
+        "tool.started",
+        "tool.completed",
+    ]
+    assert "file_path" not in repr(started + completed)
+    assert "C:\\private\\x" not in repr(started + completed)
+
+
+def test_hook_seed_rejects_conflicting_late_tool_block_without_private_payload():
+    adapter = _adapter()
+    hook = {
+        "tool_name": "Read",
+        "tool_use_id": "sdk-tool-conflict",
+        "tool_input": {"file_path": "C:\\private\\hook"},
+    }
+    started = adapter.accept_hook(
+        "PreToolUse", hook, tool_use_id="sdk-tool-conflict"
+    )
+    assert [event.event_type for event in started] == ["tool.started"]
+
+    class ToolUseBlock:
+        pass
+
+    block = ToolUseBlock()
+    block.id = "sdk-tool-conflict"
+    block.name = "Read"
+    block.input = {"file_path": "C:\\private\\late"}
+    assert adapter.accept_content_block(block) == ()
+
+    assert adapter.accept_hook(
+        "PostToolUse", hook, tool_use_id="sdk-tool-conflict"
+    ) == ()
+    assert "C:\\private\\hook" not in repr(started)
+    assert "C:\\private\\late" not in repr(started)
+
 
 def test_tool_hooks_exclude_sdk_tool_payload():
     adapter = _adapter()

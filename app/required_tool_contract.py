@@ -32,6 +32,16 @@ REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION = (
     "ai-platform.required-capability-evidence.v1"
 )
 TOOL_INVOCATION_EVIDENCE_SCHEMA_VERSION = "ai-platform.tool-invocation-evidence.v1"
+MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE = (
+    "mcp_execution_succeeded_receipt_incomplete"
+)
+MCP_EXECUTION_OUTCOME_UNKNOWN = "mcp_execution_outcome_unknown"
+MCP_EXECUTION_UNCERTAIN_ERROR_CODES = frozenset(
+    {
+        MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
+        MCP_EXECUTION_OUTCOME_UNKNOWN,
+    }
+)
 REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY = "_required_capability_declaration"
 REQUIRED_CAPABILITY_EVIDENCE_KEY = "required_capability_evidence"
 TOOL_INVOCATION_EVIDENCE_KEY = "tool_invocation_evidence"

@@ -47,6 +47,13 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
    Use `strict_mcp_config=True` so project/user/plugin MCP config cannot expand
    the Server set. Selection remains optional use: a connected selected tool
    need not be called, but an observed call still requires existing evidence.
+   `PreToolUse` may arrive before the corresponding assistant `ToolUseBlock`; the
+   hook's validated call ID, tool name and private input seed the same per-call
+   state so event publication order cannot turn an authorized call into a false
+   denial. After admission, a missing terminal hook is
+   `mcp_execution_outcome_unknown`; a completed hook whose durable callback or
+   public receipt is incomplete is `mcp_execution_succeeded_receipt_incomplete`.
+   Both require reconciliation and are not retryable.
 4. Support Streamable HTTP and legacy SSE explicitly in discovery and execution.
    Preserve endpoint validation, DNS pinning, same-origin SSE message endpoints,
    redirect rejection, reserved-header protection, and bounded responses.
@@ -132,6 +139,10 @@ and absence of secrets in public events. That stage remains unclaimed until run.
   existing rows for administrative inspection and explicit transport migration.
 - Replace tests that assume selected tools are raw remote SDK configs with
   selected-surface and actual SDK assertions; retain policy and receipt tests.
+- Replace generic completion-evidence mismatch after an admitted MCP call with
+  explicit succeeded-but-receipt-incomplete or outcome-unknown errors. Retry
+  readiness and retry creation reject both; pre-admission mismatches remain
+  compatible and no parallel retry path remains.
 - Update the owning MCP section in `docs/frontend/skills-marketplace-public-api.md`
   and link this execution contract there. Inventory affected selectors and
   configuration references with targeted searches before completion.

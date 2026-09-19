@@ -44,6 +44,7 @@ from app.public_execution import (
     public_execution_phase_progress_payload,
 )
 from app.required_tool_contract import (
+    MCP_EXECUTION_UNCERTAIN_ERROR_CODES,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
     SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
@@ -2387,10 +2388,20 @@ async def _default_executor_runner(
     if capability_evidence_error["code"]:
         response["status"] = "failed"
         response["message"] = ""
-        response["error_code"] = capability_evidence_error["code"]
-        if capability_evidence_error["code"] == "capability_callback_not_acknowledged":
+        sdk_error_code = str(response.get("error_code") or "")
+        effective_error_code = (
+            sdk_error_code
+            if sdk_error_code in MCP_EXECUTION_UNCERTAIN_ERROR_CODES
+            else capability_evidence_error["code"]
+        )
+        response["error_code"] = effective_error_code
+        if effective_error_code in MCP_EXECUTION_UNCERTAIN_ERROR_CODES:
+            response["error_message"] = (
+                "MCP execution outcome requires reconciliation before retry"
+            )
+        elif effective_error_code == "capability_callback_not_acknowledged":
             response["error_message"] = "Capability lifecycle callback was not acknowledged"
-        elif capability_evidence_error["code"] == "required_tool_completion_evidence_mismatch":
+        elif effective_error_code == "required_tool_completion_evidence_mismatch":
             response["error_message"] = "Required capability completion evidence is invalid"
         else:
             response["error_message"] = "Capability lifecycle sequence is invalid"
@@ -2417,7 +2428,7 @@ async def _default_executor_runner(
         ]
         response["runtime_diagnostics"] = _merge_runtime_diagnostics(
             response.get("runtime_diagnostics"),
-            error_code=capability_evidence_error["code"],
+            error_code=effective_error_code,
             failure_source="sandbox_capability_validation",
             failure_stage="model_wait",
             tool_lifecycles=capability_lifecycles,
@@ -3183,7 +3194,12 @@ def create_executor_app(
             await await_shutdown_task(progress_cleanup)
 
         if capability_callback_failed["value"]:
-            error_code = "capability_callback_not_acknowledged"
+            runner_error_code = str(runner_result.get("error_code") or "")
+            error_code = (
+                runner_error_code
+                if runner_error_code in MCP_EXECUTION_UNCERTAIN_ERROR_CODES
+                else "capability_callback_not_acknowledged"
+            )
             runner_result["runtime_diagnostics"] = _merge_runtime_diagnostics(
                 runner_result.get("runtime_diagnostics"),
                 error_code=error_code,
@@ -3193,7 +3209,11 @@ def create_executor_app(
             runner_result["status"] = "failed"
             runner_result["message"] = ""
             runner_result["error_code"] = error_code
-            runner_result["error_message"] = "Capability lifecycle callback was not acknowledged"
+            runner_result["error_message"] = (
+                "MCP execution outcome requires reconciliation before retry"
+                if error_code in MCP_EXECUTION_UNCERTAIN_ERROR_CODES
+                else "Capability lifecycle callback was not acknowledged"
+            )
             runner_result["capability_evidence"] = []
         else:
             apply_stream_delivery_failure(runner_result)
