@@ -5,6 +5,7 @@ export type TabType =
   | "chat"
   | "apps"
   | "skills"
+  | "pluginMarket"
   | "users"
   | "roles"
   | "mcp"

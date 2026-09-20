@@ -6,6 +6,7 @@ import { APP_ROUTE_PATHS, resolveAppRoute } from "../appRouteManifest";
 test("appRouteManifest separates the admin Builder from the ordinary-user Agent market", () => {
   assert.equal(APP_ROUTE_PATHS.agentBuilder, "/agent-builder");
   assert.equal(APP_ROUTE_PATHS.agentMarket, "/agent-market");
+  assert.equal(APP_ROUTE_PATHS.pluginMarket, "/plugins");
   assert.equal(
     APP_ROUTE_PATHS.agentMarketDetail,
     "/agent-market/:agentId/:revision",
@@ -16,6 +17,7 @@ test("appRouteManifest separates the admin Builder from the ordinary-user Agent 
   );
   assert.equal(resolveAppRoute("/agent-builder"), "agentBuilder");
   assert.equal(resolveAppRoute("/agent-market"), "agentMarket");
+  assert.equal(resolveAppRoute("/plugins"), "pluginMarket");
   assert.equal(resolveAppRoute("/agent-market/agt_support/4"), "agentMarketDetail");
   assert.equal(
     resolveAppRoute("/agent-market/agt_support/4/chat"),

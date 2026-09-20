@@ -7,6 +7,7 @@ export type WorkbenchAccessKey =
   | "aiApplication"
   | "apps"
   | "skills"
+  | "pluginMarket"
   | "mcp"
   | "knowledge"
   | "notifications"
@@ -19,6 +20,7 @@ export type WorkbenchAccessKey =
   | "feedback";
 
 const ADMIN_ONLY_ITEMS = new Set<WorkbenchAccessKey>([
+  "pluginMarket",
   "users",
   "roles",
   "settings",
@@ -34,6 +36,7 @@ const PATH_ACCESS_KEYS: Array<[RegExp, WorkbenchAccessKey]> = [
   [/^\/agent-builder(?:\/|$)/, "agentBuilder"],
   [/^\/ai-apps(?:\/|$)/, "aiApplication"],
   [/^\/apps(?:\/|$)/, "apps"],
+  [/^\/plugins(?:\/|$)/, "pluginMarket"],
   [/^\/skills(?:\/|$)/, "skills"],
   [/^\/mcp(?:\/|$)/, "mcp"],
   [/^\/knowledge(?:\/|$)/, "knowledge"],

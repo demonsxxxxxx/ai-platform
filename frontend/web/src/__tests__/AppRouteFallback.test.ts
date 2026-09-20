@@ -21,7 +21,7 @@ const readApp = () => {
 
 test("admin routes redirect ordinary users before mounting management pages", () => {
   const app = readApp();
-  const routes = ["users", "roles", "settings", "feedback", "models"];
+  const routes = ["users", "roles", "settings", "feedback", "models", "plugins"];
   for (const route of routes) {
     assert.match(
       app,

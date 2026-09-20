@@ -5,6 +5,7 @@ import {
   MessageSquarePlus,
   LayoutGrid,
   Package,
+  Plug,
   Server,
   Bot,
   Cpu,
@@ -202,6 +203,12 @@ export function SessionListContent({
       label: skillsNavigationLabel,
       onClick: () => navigate("/skills"),
     },
+    {
+      key: "pluginMarket",
+      icon: Plug,
+      label: "插件市场",
+      onClick: () => navigate("/plugins"),
+    },
   ];
   const governanceNavItems: Array<{
     key: WorkbenchNavItem;
@@ -322,22 +329,24 @@ export function SessionListContent({
         ) : null}
 
         <LibreChatPanelSection group="tasks" label={t("sidebar.tasks")}>
-          {taskNavItems.map(({ key, icon: Icon, label, onClick }) => {
-            const isActive = activeNavItem === key;
-            return (
-              <button
-                key={key}
-                onClick={onClick}
-                aria-current={isActive ? "page" : undefined}
-                data-active={isActive ? "true" : "false"}
-                data-workbench-nav-item={key}
-                className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
-              >
-                <Icon size={19} />
-                <span className="min-w-0 truncate">{label}</span>
-              </button>
-            );
-          })}
+          {taskNavItems
+            .filter(({ key }) => canAccessWorkbenchItem(user, key))
+            .map(({ key, icon: Icon, label, onClick }) => {
+              const isActive = activeNavItem === key;
+              return (
+                <button
+                  key={key}
+                  onClick={onClick}
+                  aria-current={isActive ? "page" : undefined}
+                  data-active={isActive ? "true" : "false"}
+                  data-workbench-nav-item={key}
+                  className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
+                >
+                  <Icon size={19} />
+                  <span className="min-w-0 truncate">{label}</span>
+                </button>
+              );
+            })}
         </LibreChatPanelSection>
 
         <LibreChatPanelSection
@@ -493,9 +502,8 @@ export function SessionListContent({
         </div>
       </div> : <div className="flex-1" data-workbench-navigation-spacer />}
 
-      {agentWorkspace ? (
-        <div className="mt-auto flex items-center justify-between border-t border-[var(--theme-border)] px-3 py-3">
-          <div className="min-w-0 flex-1"><UserMenu showLabel /></div>
+      <div className="mt-auto flex items-center justify-between border-t border-[var(--theme-border)] px-3 py-3">
+        <div className="min-w-0 flex-1"><UserMenu showLabel /></div>
           <button
             aria-label="设置"
             className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
@@ -516,7 +524,6 @@ export function SessionListContent({
             <Settings aria-hidden="true" size={17} />
           </button>
         </div>
-      ) : null}
 
     </div>
   );
