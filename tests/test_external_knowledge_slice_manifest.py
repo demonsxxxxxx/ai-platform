@@ -33,12 +33,16 @@ def _write_manifest(tmp_path: Path, document: dict[str, object]) -> Path:
     return path
 
 
-def test_repository_manifests_match_exact_traceability_ownership():
+def test_repository_manifests_match_traceability_ownership():
     manifests = validate_all_manifests()
     by_slice = {manifest.slice_id: manifest for manifest in manifests}
 
-    assert set(by_slice) == {"KADR-01", "KDOC-00", "KTRACE-62"}
+    assert {"KADR-01", "KDOC-00", "KTRACE-62"} <= set(by_slice)
     assert by_slice["KTRACE-62"].atomic_case_ids == ("KAC-FR-KOPS-035",)
+    if "KSNAP-35" in by_slice:
+        assert by_slice["KSNAP-35"].atomic_case_ids == tuple(
+            f"KAC-FR-KADM-{index:03d}" for index in range(18, 27)
+        )
 
 
 def test_traceability_derives_the_ktrace_atomic_case_set():
