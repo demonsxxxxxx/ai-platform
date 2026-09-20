@@ -18,6 +18,7 @@ def decode_hs256_jwt(
     issuer: str,
     audience: str,
     required_claims: Sequence[str],
+    verify_exp: bool = True,
 ) -> dict[str, Any]:
     """Decode one HS256 JWT with exact issuer, audience, and required claims."""
 
@@ -28,7 +29,10 @@ def decode_hs256_jwt(
             algorithms=["HS256"],
             issuer=issuer,
             audience=audience,
-            options={"require": list(required_claims)},
+            options={
+                "require": list(required_claims),
+                "verify_exp": verify_exp,
+            },
         )
     except (PyJWTError, TypeError, ValueError) as exc:
         raise JwtValidationError() from exc

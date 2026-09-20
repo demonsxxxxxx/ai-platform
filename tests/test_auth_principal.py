@@ -170,8 +170,13 @@ def test_signed_session_expires_at_the_exact_expiry_second(monkeypatch):
     assert exc_info.value.detail == "session_expired"
 
 
-def _browser_company_snapshot(*, policy_version: int = 1, checked_at: str | None = None) -> dict[str, object]:
-    return {
+def _browser_company_snapshot(
+    *,
+    policy_version: int = 1,
+    checked_at: str | None = None,
+    company_jwt_expires_at: int | None = None,
+) -> dict[str, object]:
+    snapshot: dict[str, object] = {
         "user_id": "browser-user",
         "display_name": "Browser User",
         "tenant_id": "default",
@@ -183,6 +188,9 @@ def _browser_company_snapshot(*, policy_version: int = 1, checked_at: str | None
         "authority_source": "company-user-info",
         "authority_checked_at": checked_at or datetime.now(timezone.utc).isoformat(),
     }
+    if company_jwt_expires_at is not None:
+        snapshot["company_jwt_expires_at"] = company_jwt_expires_at
+    return snapshot
 
 
 def _browser_authority_app() -> FastAPI:
@@ -242,6 +250,10 @@ def test_browser_principal_preserves_authority_facts_through_me_and_run_admissio
             ),
             "stale_company_authority",
         ),
+        (
+            _browser_company_snapshot(company_jwt_expires_at=int(time.time()) - 1),
+            "company_login_expired",
+        ),
     ],
 )
 def test_browser_principal_stale_policy_or_authority_fails_closed_for_me_and_admission(
@@ -261,6 +273,7 @@ def test_browser_principal_stale_policy_or_authority_fails_closed_for_me_and_adm
         response = method(path)
         assert response.status_code == 401
         assert response.json()["detail"] == detail
+        assert response.headers["x-force-relogin"] == "true"
 
 
 def test_require_principal_rejects_forged_headers_without_gateway_secret(monkeypatch):

@@ -12,6 +12,8 @@ interface FetchOptions extends RequestInit {
 }
 
 /** A sanitized server status/code pair for callers that need safe recovery. */
+export const FORCE_RELOGIN_EVENT = "auth:force-relogin";
+
 export class ApiRequestError extends Error {
   constructor(
     message: string,
@@ -22,6 +24,12 @@ export class ApiRequestError extends Error {
   ) {
     super(message);
     this.name = "ApiRequestError";
+  }
+}
+
+export function notifyForcedRelogin(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(FORCE_RELOGIN_EVENT));
   }
 }
 
@@ -121,10 +129,12 @@ export async function authFetch<T>(
     headers: finalHeaders,
   });
 
-  // Cookie-session callers own identity recovery. This transport never
-  // refreshes, replays, redirects, clears caches, or dispatches auth events.
+  // Cookie-session callers own identity recovery. A forced re-login response
+  // emits one recovery signal; AuthProvider owns the state transition.
   if (response.headers.get("X-Force-Relogin") === "true") {
-    throw await apiRequestErrorFromResponse(response, 401);
+    const error = await apiRequestErrorFromResponse(response, 401);
+    notifyForcedRelogin();
+    throw error;
   }
 
   if (!response.ok) {

@@ -1,6 +1,7 @@
 import {
   apiRequestErrorFromResponse,
   cookieSessionFetch,
+  notifyForcedRelogin,
 } from "./fetch";
 
 export async function createAuthHeaders(
@@ -28,7 +29,9 @@ export async function authenticatedRequest(
   });
 
   if (response.headers.get("X-Force-Relogin") === "true") {
-    throw await apiRequestErrorFromResponse(response, 401);
+    const error = await apiRequestErrorFromResponse(response, 401);
+    notifyForcedRelogin();
+    throw error;
   }
   if (response.status === 401 || response.status === 403) {
     throw await apiRequestErrorFromResponse(response);
