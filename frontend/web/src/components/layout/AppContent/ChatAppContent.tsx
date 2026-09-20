@@ -1328,6 +1328,7 @@ export function ChatAppContent({
             currentSessionId={sessionId}
             onNewSession={handleNewSessionWithReset}
             onSelectSession={handleSelectSessionAndClose}
+            profile={agentWorkspace}
             source={agentWorkspaceSessionSource}
           />
         ) : undefined

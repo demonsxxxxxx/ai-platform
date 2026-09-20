@@ -19,8 +19,9 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   const userMenu = read("components/layout/UserMenu.tsx");
 
   assert.match(panel, /data-agent-conversation-panel/);
+  assert.match(panel, /<AgentIdentityAvatar[\s\S]*?\{profile\.name\}/);
   assert.match(panel, /新建会话/);
-  assert.doesNotMatch(panel, /搜索历史会话|历史会话<\/div>/);
+  assert.doesNotMatch(panel, />对话<|搜索历史会话|历史会话<\/div>/);
   assert.match(panel, /<\/header>\s*<div className="px-4 pb-3 pt-2">\s*<button/);
   assert.doesNotMatch(sidebar, /data-agent-workspace-identity/);
   assert.match(sidebar, /mt-auto flex items-center justify-between[\s\S]*<UserMenu showLabel \/>[\s\S]*<Settings/);
@@ -38,6 +39,7 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   assert.match(panel, /source\.removeSession/);
   assert.match(panel, /<SessionItem/);
   assert.match(chat, /contentSidebar=\{[\s\S]*?<AgentConversationPanel/);
+  assert.match(chat, /profile=\{agentWorkspace\}/);
   assert.match(chat, /source=\{agentWorkspaceSessionSource\}/);
   assert.match(shell, /showHeaderUserMenu = false/);
   assert.doesNotMatch(chat, /showHeaderUserMenu=/);
