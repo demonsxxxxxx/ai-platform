@@ -11,6 +11,7 @@ export const APP_ROUTE_PATHS = {
   aiApplication: "/ai-apps/:appKey",
   apps: "/apps",
   skills: "/skills",
+  pluginMarket: "/plugins",
   mcp: "/mcp",
   users: "/users",
   roles: "/roles",
