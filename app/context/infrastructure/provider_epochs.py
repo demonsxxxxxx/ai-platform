@@ -450,11 +450,13 @@ async def prepare_provider_epoch(
 
 async def commit_provider_turn(
     conn: AsyncConnection, *, tenant_id: str, run_id: str, attempt_id: str,
-    assistant_message_id: str, final_sequence: int,
+    assistant_message_id: str, final_sequence: int | None,
 ) -> None:
     """Extend coverage only inside the assistant + Run success transaction."""
-    if (not assistant_message_id or type(final_sequence) is not int
-        or final_sequence < 1):
+    if not assistant_message_id or (
+        final_sequence is not None
+        and (type(final_sequence) is not int or final_sequence < 1)
+    ):
         raise ProviderSessionConflictError("provider_session_terminal_receipt_invalid")
     cursor = await conn.execute(
         """
@@ -499,6 +501,28 @@ async def commit_provider_turn(
     row = await cursor.fetchone()
     if row is None:
         raise ProviderSessionConflictError("provider_session_terminal_writer_invalid")
+    if final_sequence is None:
+        cursor = await conn.execute(
+            """
+            select count(*) as main_entry_count
+            from provider_session_entries
+            where epoch_id = %s and sequence >= %s and subpath = ''
+            """,
+            (row["epoch_id"], row["start_sequence"]),
+        )
+        main_entries = await cursor.fetchone()
+        if (
+            not isinstance(main_entries, dict)
+            or type(main_entries.get("main_entry_count")) is not int
+            or main_entries["main_entry_count"] < 1
+            or type(row["next_sequence"]) is not int
+        ):
+            raise ProviderSessionConflictError(
+                "provider_session_terminal_receipt_invalid"
+            )
+        # Older sandbox runtimes omitted the terminal sequence after their
+        # eager append. The locked epoch is the authoritative sequence source.
+        final_sequence = row["next_sequence"] - 1
     frozen = row["frozen_context"]
     receipt = validate_authority_receipt(row["conversation_authority_json"])
     scope = {name: row[name] for name in

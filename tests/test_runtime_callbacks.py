@@ -573,9 +573,11 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
 
     class FakeTransaction:
         async def __aenter__(self):
+            calls.append("transaction_enter")
             return object()
 
         async def __aexit__(self, exc_type, exc, traceback):
+            calls.append("transaction_exit")
             return None
 
     async def fake_get_run_identity(conn, *, run_id, for_update=False):
@@ -590,7 +592,19 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
         calls.append(("terminal", kwargs))
         return {"id": kwargs["lease_id"]}
 
+    signal_calls = []
+
+    async def fake_publish_executor_terminal_signal():
+        signal_calls.append("wake")
+        calls.append("signal")
+
     from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "publish_executor_terminal_signal",
+        fake_publish_executor_terminal_signal,
+    )
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
@@ -630,6 +644,28 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     assert len(terminal_calls) == 1
     assert terminal_calls[0][1]["lease_id"] == "lease-a"
     assert terminal_calls[0][1]["terminal_result"]["status"] == "completed"
+    assert signal_calls == ["wake"]
+    assert calls.index("transaction_exit") < calls.index("signal")
+
+    async def unavailable_signal():
+        raise runtime_callbacks.ExecutorSignalUnavailable("redis unavailable")
+
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "publish_executor_terminal_signal",
+        unavailable_signal,
+    )
+    retry = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(
+            status="completed",
+            progress=100,
+            new_message=None,
+            state_patch={},
+        ),
+    )
+    assert retry.status_code == 200
 
 
 def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatch):

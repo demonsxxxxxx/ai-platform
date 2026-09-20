@@ -31,7 +31,7 @@ import {
   type TerminalRunStatus,
 } from "./runLifecycle";
 import type { ChatRunStatusResponse } from "../../services/api/session";
-import { ApiRequestError } from "../../services/api/fetch";
+import { ApiRequestError, notifyForcedRelogin } from "../../services/api/fetch";
 import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 
 /**
@@ -125,7 +125,8 @@ export const NON_RETRYABLE_SSE_AUTH_ERROR_CODE = "sse_authentication_failed";
 export type NonRetryableSSEAuthenticationFailure =
   | "refresh_retry_exhausted"
   | "refresh_unavailable"
-  | "refresh_failed";
+  | "refresh_failed"
+  | "forced_relogin";
 
 /** Stable, sanitized authentication error surfaced to stream owners. */
 export class NonRetryableSSEAuthenticationError extends Error {
@@ -148,7 +149,8 @@ export function isNonRetryableSSEAuthenticationError(
     error.code === NON_RETRYABLE_SSE_AUTH_ERROR_CODE &&
     (error.failure === "refresh_retry_exhausted" ||
       error.failure === "refresh_unavailable" ||
-      error.failure === "refresh_failed")
+      error.failure === "refresh_failed" ||
+      error.failure === "forced_relogin")
   );
 }
 
@@ -788,6 +790,10 @@ export async function connectToSSE(
             return;
           }
           if (response.status === 401) {
+            if (response.headers.get("X-Force-Relogin") === "true") {
+              notifyForcedRelogin();
+              throw new NonRetryableSSEAuthenticationError("forced_relogin");
+            }
             if (hasRetried) {
               // The first attempt already granted the only refresh opportunity
               // for this stream. Do not turn a second 401 into a reconnect.

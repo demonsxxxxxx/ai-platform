@@ -21,10 +21,12 @@ import {
 } from "../services/api";
 import {
   clearTokens,
+  isSafeRedirectPath,
   migrateLegacyBearerStorage,
+  setRedirectPath,
   setTokens,
 } from "../services/api/token";
-import { ApiRequestError } from "../services/api/fetch";
+import { ApiRequestError, FORCE_RELOGIN_EVENT } from "../services/api/fetch";
 import { clearAuthScopedCaches } from "../services/api/authCacheInvalidation";
 import { classifyBrowserAuthStorageEvent } from "./browserAuthStorage";
 import {
@@ -43,6 +45,14 @@ import { Permission } from "../types";
 import type { User, LoginRequest, AuthState } from "../types";
 
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
+
+function rememberRedirectPathForLogin(): void {
+  if (typeof window === "undefined") return;
+  const currentPath = window.location.pathname + window.location.search;
+  if (isSafeRedirectPath(currentPath)) {
+    setRedirectPath(currentPath);
+  }
+}
 
 /** Apply user metadata preferences from backend */
 function applyUserMetadata(metadata?: {
@@ -183,6 +193,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const mountedRef = useRef(false);
   const authOperationGenerationRef = useRef(0);
   const authOperationAbortControllerRef = useRef<AbortController | null>(null);
+  const forcedReloginInProgressRef = useRef(false);
 
   // 权限列表：从 API 动态获取
   const permissions = dynamicPermissions;
@@ -453,6 +464,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (isCurrentAuthOperation(owner)) setIsLoading(false);
     };
 
+    const handleForceRelogin = () => {
+      if (forcedReloginInProgressRef.current) return;
+      forcedReloginInProgressRef.current = true;
+      rememberRedirectPathForLogin();
+      const owner = beginAuthOperation();
+      if (!isCurrentAuthOperation(owner)) {
+        forcedReloginInProgressRef.current = false;
+        return;
+      }
+      setIsLoading(true);
+      void (async () => {
+        try {
+          await authApi.logout(owner.abortController.signal);
+        } catch {
+          // Local convergence still allows the login page to re-establish a fresh context.
+        }
+        if (isCurrentAuthOperation(owner)) {
+          applyLoggedOut(owner);
+          setIsLoading(false);
+        }
+        forcedReloginInProgressRef.current = false;
+      })();
+    };
+
     const handleStorage = (event: StorageEvent) => {
       const change = classifyBrowserAuthStorageEvent(event);
       if (!change) return;
@@ -473,9 +508,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     window.addEventListener("auth:logout", handleLogout);
+    window.addEventListener(FORCE_RELOGIN_EVENT, handleForceRelogin);
     window.addEventListener("storage", handleStorage);
     return () => {
       window.removeEventListener("auth:logout", handleLogout);
+      window.removeEventListener(FORCE_RELOGIN_EVENT, handleForceRelogin);
       window.removeEventListener("storage", handleStorage);
     };
   }, [

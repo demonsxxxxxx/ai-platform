@@ -287,7 +287,7 @@ test("authFetch never replays a stale POST or mutates a replacement marker after
   }
 });
 
-test("authFetch treats force-relogin as a typed safe error without global side effects", async () => {
+test("authFetch treats force-relogin as a typed safe error and emits the recovery signal", async () => {
   const calls: string[] = [];
   const stubs = installFetchAuthStubs({
     initialLocalStorage: {
@@ -323,7 +323,7 @@ test("authFetch treats force-relogin as a typed safe error without global side e
       stubs.store.get("ai_platform_session_present"),
       "session-marker",
     );
-    assert.deepEqual(stubs.events, []);
+    assert.deepEqual(stubs.events, ["auth:force-relogin"]);
     assert.deepEqual(stubs.removedKeys, []);
     assert.equal(stubs.sessionStore.size, 0);
   } finally {

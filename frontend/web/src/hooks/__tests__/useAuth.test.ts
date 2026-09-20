@@ -64,6 +64,17 @@ test("useAuth login resumes the redirect path saved by revoked-session handling"
   );
 });
 
+test("useAuth turns forced re-login into a logout-owned local transition", () => {
+  assert.match(
+    useAuthSource,
+    /const handleForceRelogin = \(\) => \{[\s\S]*rememberRedirectPathForLogin\(\);[\s\S]*await authApi\.logout\(owner\.abortController\.signal\);[\s\S]*applyLoggedOut\(owner\);/,
+  );
+  assert.match(
+    useAuthSource,
+    /window\.addEventListener\(FORCE_RELOGIN_EVENT, handleForceRelogin\)/,
+  );
+});
+
 test("useAuth exposes explicit cancellation instead of null or void success sentinels", () => {
   assert.match(
     useAuthSource,

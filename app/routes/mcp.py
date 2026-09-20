@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app import repositories
-from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.auth import FORCE_RELOGIN_HEADER, AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessContext,
     CapabilityAccessDecision,
@@ -42,7 +42,12 @@ LIVE_MCP_CATALOG = get_live_mcp_catalog()
 
 
 def _mcp_runtime_http_error(exc: McpRuntimeContextError) -> HTTPException:
-    return HTTPException(status_code=exc.status_code, detail=exc.code)
+    headers = (
+        {FORCE_RELOGIN_HEADER: "true"}
+        if exc.code in {"mcp_principal_jwt_expired", "mcp_principal_jwt_missing", "mcp_jwt_expired_or_missing"}
+        else None
+    )
+    return HTTPException(status_code=exc.status_code, detail=exc.code, headers=headers)
 
 
 class McpRoleQuota(BaseModel):

@@ -35,6 +35,10 @@ from app.runtime.sandbox.contracts import (
     executor_terminal_receipt_payload,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
+from app.runtime.sandbox.executor_signals import (
+    ExecutorSignalUnavailable,
+    publish_executor_terminal_signal,
+)
 from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
 from app.runs.api import RunDiagnosticsService
 from app.settings import get_settings
@@ -388,6 +392,17 @@ async def record_executor_callback(
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
+    if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
+        try:
+            await publish_executor_terminal_signal()
+        except ExecutorSignalUnavailable:
+            logger.warning(
+                "executor_terminal_reconciliation_signal_unavailable",
+                extra={
+                    "run_id": callback.run_id,
+                    "attempt_id": callback.attempt_id,
+                },
+            )
     try:
         await publish_callback_rows(capabilities, committed_rows, authority=authority)
     except V4PublicationTransportUnavailable as exc:

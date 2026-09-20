@@ -166,7 +166,7 @@ test("authenticatedRequest never replays a stale POST or mutates replacement aut
   }
 });
 
-test("authenticatedRequest treats force-relogin as a typed safe error without side effects", async () => {
+test("authenticatedRequest treats force-relogin as a typed safe error and emits the recovery signal", async () => {
   const calls: string[] = [];
   const stubs = installAuthenticatedRequestStubs(async (input) => {
     calls.push(String(input));
@@ -197,7 +197,7 @@ test("authenticatedRequest treats force-relogin as a typed safe error without si
       stubs.localStore.get("ai_platform_session_present"),
       "session-marker",
     );
-    assert.deepEqual(stubs.events, []);
+    assert.deepEqual(stubs.events, ["auth:force-relogin"]);
   } finally {
     stubs.restore();
   }
