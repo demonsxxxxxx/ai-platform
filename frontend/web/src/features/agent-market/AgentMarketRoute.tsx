@@ -74,7 +74,6 @@ function AgentMarketShell({ children }: { children: ReactNode }) {
   return (
     <AppShell
       activeTab="chat"
-      setMobileSidebarOpen={setMobileSidebarOpen}
       onNewSession={handleNewSession}
       allowNewSessionAction={false}
       sidebar={

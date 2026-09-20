@@ -82,12 +82,12 @@ test("product UI is fixed to Chinese regardless of historical language storage",
 
 test("generic Chat deep links remain readable without exposing generic creation or history", () => {
   const chat = read("components/layout/AppContent/ChatAppContent.tsx");
-  const header = read("components/layout/AppContent/Header.tsx");
+  const menuHost = read("components/layout/AppContent/WorkbenchMenuHost.tsx");
 
   assert.match(chat, /allowNewSessionAction=\{agentWorkspace !== undefined\}/);
   assert.match(chat, /navigationOnly=\{agentWorkspace === undefined\}/);
   assert.match(chat, /newSessionActionLabel=\{agentWorkspace \? "开始新任务" : undefined\}/);
-  assert.match(header, /newSessionActionLabel \?\? t\("sidebar\.newChat"\)/);
+  assert.match(menuHost, /newSessionActionLabel \?\? t\("sidebar\.newChat"\)/);
 });
 
 test("bare Chat redirects to Agent Market while session deep links remain readable", async () => {

@@ -3,9 +3,6 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
-import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-
 import type { AgentConversationIdentity } from "../../../../types/agentProfile.ts";
 
 register(
@@ -15,7 +12,6 @@ register(
 await new Promise<void>((resolve) => setImmediate(resolve));
 
 const {
-  AgentConversationHeaderIdentity,
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
@@ -764,14 +760,7 @@ test("fails closed when Agent Conversation operation storage cannot be read or v
   }
 });
 
-test("renders only the safe Agent identity in the compact Chat header", () => {
-  const html = renderToStaticMarkup(
-    React.createElement(AgentConversationHeaderIdentity, { identity: safeIdentity }),
-  );
-  assert.match(html, /支持助手/);
-  assert.doesNotMatch(html, /处理已授权的支持请求/);
-  assert.match(html, /data-agent-avatar-ref="builtin:assistant"/);
-  assert.doesNotMatch(html, /content_hash|model_id|skill_id|mcp_tool_ids|PRIVATE/);
+test("locks Agent-only controls while generic Chat controls remain available", () => {
   assert.equal(areAgentConversationControlsLocked("loading"), true);
   assert.equal(areAgentConversationControlsLocked("bound"), true);
   assert.equal(areAgentConversationControlsLocked("blocked"), true);
@@ -792,10 +781,7 @@ test("projects the Agent description and starter prompts only in the empty Chat 
     "utf8",
   );
 
-  assert.match(
-    appContentSource,
-    /chatIdentity=\{[\s\S]*?<AgentConversationHeaderIdentity/,
-  );
+  assert.doesNotMatch(appContentSource, /chatIdentity|AgentConversationHeaderIdentity/);
   assert.doesNotMatch(appContentSource, /data-agent-conversation-profile/);
   assert.match(chatViewSource, /messages\.length === 0[\s\S]*agentEmptyProfile/);
   assert.match(chatViewSource, /data-agent-chat-opening/);

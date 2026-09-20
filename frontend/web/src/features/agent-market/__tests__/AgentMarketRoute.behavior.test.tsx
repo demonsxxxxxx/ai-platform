@@ -1504,7 +1504,7 @@ test("a shared detail URL restores the exact current published revision", async 
     assert.ok(container.querySelector("[data-agent-market-detail]"));
     assert.match(container.textContent, /支持助手/);
     assert.match(container.textContent, /当前发布版本/);
-    assert.ok(container.querySelector("[data-workbench-header]"));
+    assert.equal(container.querySelector("[data-workbench-header]"), null);
     assert.ok(container.querySelector("[data-librechat-desktop-sidebar]"));
   } finally {
     agentProfileApi.getPublished = originalGetPublished;

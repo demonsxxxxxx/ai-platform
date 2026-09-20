@@ -236,7 +236,6 @@ export function AgentWorkspaceRoute() {
       activeTab="chat"
       onNewSession={handleGenericNewSession}
       allowNewSessionAction={false}
-      setMobileSidebarOpen={setMobileSidebarOpen}
       sidebar={
         <SessionSidebar
           currentSessionId={null}

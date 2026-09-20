@@ -34,7 +34,7 @@ test("product language controls are absent from authentication and workbench sur
   for (const relativePath of [
     "components/auth/AuthLayout.tsx",
     "components/auth/AuthPage.tsx",
-    "components/layout/AppContent/Header.tsx",
+    "components/layout/AppContent/WorkbenchMenuHost.tsx",
   ]) {
     const source = read(relativePath);
     assert.doesNotMatch(source, /LanguageToggle|changeLanguage|common\.language/);

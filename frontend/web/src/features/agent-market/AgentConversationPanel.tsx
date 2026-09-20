@@ -4,17 +4,20 @@ import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "../../components/common/ConfirmDialog";
+import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
 import { LoadingSpinner } from "../../components/common/LoadingSpinner";
 import { SessionItem } from "../../components/sidebar/SessionItem";
 import { groupSessionsByTime } from "../../components/panels/sessionHelpers";
 import { sessionApi } from "../../services/api";
 import type { BackendSession } from "../../services/api";
+import type { AgentProfilePublicProjection } from "../../types";
 import type { SessionSidebarSessionSource } from "../../components/panels/SessionSidebar";
 
 interface AgentConversationPanelProps {
   currentSessionId: string | null;
   onNewSession: () => void;
   onSelectSession: (sessionId: string) => void;
+  profile: AgentProfilePublicProjection;
   source: SessionSidebarSessionSource;
 }
 
@@ -23,6 +26,7 @@ export function AgentConversationPanel({
   currentSessionId,
   onNewSession,
   onSelectSession,
+  profile,
   source,
 }: AgentConversationPanelProps) {
   const { t } = useTranslation();
@@ -74,8 +78,20 @@ export function AgentConversationPanel({
     >
       {!isCollapsed ? (
         <>
-          <header className="flex h-[62px] items-center px-5">
-            <h2 className="text-lg font-semibold text-[var(--theme-text)]">对话</h2>
+          <header className="flex h-[62px] min-w-0 items-center gap-2 px-4">
+            <AgentIdentityAvatar
+              agentId={profile.agent_id}
+              avatarRef={profile.avatar_ref}
+              avatarSeed={profile.avatar_seed}
+              name={profile.name}
+              size="sm"
+            />
+            <h2
+              className="min-w-0 truncate text-sm font-semibold text-[var(--theme-text)]"
+              title={profile.name}
+            >
+              {profile.name}
+            </h2>
           </header>
           <div className="px-4 pb-3 pt-2">
             <button
