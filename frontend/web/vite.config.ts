@@ -16,6 +16,11 @@ const AI_PLATFORM_API_TARGET =
   process.env.VITE_AI_PLATFORM_API_TARGET ||
   "http://127.0.0.1:8020";
 
+const PROFILE_DRIVE_MCP_TARGET =
+  PROJECT_ENV.VITE_PROFILE_DRIVE_MCP_TARGET ||
+  process.env.VITE_PROFILE_DRIVE_MCP_TARGET ||
+  "http://127.0.0.1:5201";
+
 function getStaticIconContentType(filePath: string): string {
   if (filePath.endsWith(".svg")) return "image/svg+xml";
   if (filePath.endsWith(".png")) return "image/png";
@@ -174,6 +179,18 @@ export default defineConfig({
     host: true, // 监听所有地址 (0.0.0.0)，允许 127.0.0.1 和 localhost 访问
     port: 3001,
     proxy: {
+      "/api/profile-drive": {
+        target: PROFILE_DRIVE_MCP_TARGET,
+        changeOrigin: true,
+        secure: false,
+        timeout: 60000,
+        proxyTimeout: 60000,
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyReq) => {
+            proxyReq.removeHeader("cookie");
+          });
+        },
+      },
       "/api": {
         target: AI_PLATFORM_API_TARGET,
         changeOrigin: true,

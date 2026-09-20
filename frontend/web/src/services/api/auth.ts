@@ -219,7 +219,7 @@ export const authApi = {
     return mapPrincipalToUser(principal);
   },
 
-  /** Read the current user's company credential for the document-translator handoff. */
+  /** Read the current user's company credential for an approved same-origin handoff. */
   async getCompanyCredentialForHandoff(signal?: AbortSignal): Promise<string> {
     const payload = await authFetch<{ credential?: unknown }>(
       `${API_BASE}/api/ai/auth/company-credential-handoff`,

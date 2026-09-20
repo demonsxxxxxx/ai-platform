@@ -183,6 +183,15 @@ function SkillsPage() {
   return <AppContent key="skills" activeTab="skills" />;
 }
 
+function PluginMarketPage() {
+  useSEO({
+    title: "seo.pluginMarket.title",
+    description: "seo.pluginMarket.description",
+    path: "/plugins",
+  });
+  return <AppContent key="plugin-market" activeTab="pluginMarket" />;
+}
+
 function UsersPage() {
   useSEO({
     title: "seo.users.title",
@@ -400,6 +409,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <SkillsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.pluginMarket}
+              element={
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
+                  <PluginMarketPage />
                 </ProtectedRoute>
               }
             />
