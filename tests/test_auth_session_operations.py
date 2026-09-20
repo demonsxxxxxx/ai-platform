@@ -891,11 +891,17 @@ def test_browser_principal_snapshot_strictly_preserves_authority_metadata():
         authz_policy_version=1,
         authority_source="company-user-info",
         authority_checked_at=authority_checked_at_now(),
+        company_jwt_expires_at=int(time.time()) + 900,
     )
     snapshot = auth_sessions.principal_snapshot(principal)
 
     assert auth_sessions._valid_snapshot(snapshot) == snapshot
-    for field in ("authz_policy_version", "authority_source", "authority_checked_at"):
+    for field in (
+        "authz_policy_version",
+        "authority_source",
+        "authority_checked_at",
+        "company_jwt_expires_at",
+    ):
         incomplete = dict(snapshot)
         incomplete.pop(field)
         assert auth_sessions._valid_snapshot(incomplete) is None

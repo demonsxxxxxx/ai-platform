@@ -260,6 +260,7 @@ def test_signed_session_roundtrip_preserves_principal(monkeypatch):
             source="company-login",
             authority_source="company-user-info",
             authority_checked_at=authority_checked_at_now(),
+            company_jwt_expires_at=int(time.time()) + 300,
         )
     )
     principal = verify_principal_session(token)
@@ -269,6 +270,7 @@ def test_signed_session_roundtrip_preserves_principal(monkeypatch):
     assert principal.display_name == "Zhang San"
     assert principal.roles == ["user"]
     assert principal.source == "company-login"
+    assert principal.company_jwt_expires_at is not None
 
 
 def test_require_principal_accepts_signed_session_bearer(monkeypatch):

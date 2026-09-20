@@ -110,6 +110,36 @@ _REQUIRED_COMPANY_JWT_CLAIMS = (
 )
 
 
+def read_company_jwt_expiry(
+    company_jwt: str,
+    *,
+    settings: Any | None = None,
+) -> int | None:
+    """Read a verified company token's expiry for the platform session deadline."""
+
+    effective_settings = settings or get_settings()
+    secret = str(getattr(effective_settings, "company_login_jwt_secret", "") or "")
+    issuer = str(getattr(effective_settings, "company_login_jwt_issuer", "") or "").strip()
+    audience = str(getattr(effective_settings, "company_login_jwt_audience", "") or "").strip()
+    if len(secret.encode("utf-8")) < 32 or not issuer or not audience:
+        return None
+    try:
+        claims = decode_hs256_jwt(
+            company_jwt,
+            secret=secret,
+            issuer=issuer,
+            audience=audience,
+            required_claims=_REQUIRED_COMPANY_JWT_CLAIMS,
+            verify_exp=False,
+        )
+    except JwtValidationError:
+        return None
+    expiry = claims.get("exp")
+    if isinstance(expiry, bool) or not isinstance(expiry, int) or expiry <= 0:
+        return None
+    return expiry
+
+
 def resolve_company_login_jwt(
     company_jwt: str,
     *,
@@ -140,6 +170,7 @@ def resolve_company_login_jwt(
     display_name = _required_company_claim(claims, "cnname", 128)
     department = _required_company_claim(claims, "depart", 160)
     role = _required_company_claim(claims, "role", 512)
+    company_jwt_expires_at = _required_epoch_claim(claims, "exp")
     try:
         assert_safe_principal_user_id(work_id)
         roles, department_id = _normalize_company_record(
@@ -167,7 +198,15 @@ def resolve_company_login_jwt(
         authz_policy_version=COMPANY_AUTHZ_POLICY_VERSION,
         authority_source="company-login-jwt",
         authority_checked_at=authority_checked_at_now(),
+        company_jwt_expires_at=company_jwt_expires_at,
     )
+
+
+def _required_epoch_claim(claims: dict[str, Any], name: str) -> int:
+    value = claims.get(name)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise PrincipalAuthorityDenied()
+    return value
 
 
 def _required_company_claim(claims: dict[str, Any], name: str, max_length: int) -> str:
