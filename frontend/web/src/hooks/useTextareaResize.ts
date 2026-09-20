@@ -23,8 +23,9 @@ export function useTextareaResize(
             ? window.visualViewport?.height ?? window.innerHeight
             : null,
       }),
+      input.length > 0,
     );
-  }, [textareaRef]);
+  }, [input, textareaRef]);
 
   const scheduleTextareaResize = useCallback(() => {
     if (typeof window === "undefined") return;

@@ -14,50 +14,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 V4_PUBLICATION_CALLS = frozenset(
     {
-        "admit_v4_stream",
-        "finalize_parent_and_publish",
-        "persist_and_publish_worker_event",
-        "publish_claimed_v4_events",
-        "publish_due_v4_events",
-        "publish_pending_admissions",
-        "publish_pending_run_terminal",
-        "publish_pending_v4_admissions",
-        "publish_pending_v4_events",
+        'admit_v4_stream',
+        'finalize_parent_and_publish',
+        'publish_callback_rows',
+        'publish_run_event',
     }
 )
 V4_PUBLICATION_OWNER_MANIFEST = frozenset(
     {
-        ("app/executor_reconciler.py", "_terminalize_reconciliation_failure"),
-        ("app/routes/admin_runs.py", "admin_run_cancel"),
-        ("app/routes/runs.py", "cancel_run"),
-        ("app/routes/runtime_callbacks.py", "record_executor_callback"),
-        ("app/streaming/application/durable_v4.py", "publish_claimed_v4_events"),
-        ("app/streaming/application/durable_v4.py", "publish_due_v4_events"),
-        ("app/streaming/application/durable_v4.py", "publish_pending_v4_admissions"),
-        ("app/streaming/application/worker_publication_v4.py", "admit_v4_stream"),
-        (
-            "app/streaming/application/worker_publication_v4.py",
-            "finalize_parent_and_publish",
-        ),
-        (
-            "app/streaming/application/worker_publication_v4.py",
-            "persist_and_publish_worker_event",
-        ),
-        (
-            "app/streaming/application/worker_publication_v4.py",
-            "publish_pending_admissions",
-        ),
-        (
-            "app/streaming/application/worker_publication_v4.py",
-            "publish_pending_run_terminal",
-        ),
-        (
-            "app/streaming/application/worker_publication_v4.py",
-            "publish_pending_v4_events",
-        ),
-        ("app/worker.py", "process_run_payload"),
-        ("app/worker_main.py", "_terminalize_escaped_process_exception"),
-        ("app/worker_main.py", "run_worker_maintenance"),
+        ('app/executor_reconciler.py', '_terminalize_reconciliation_failure'),
+        ('app/routes/admin_runs.py', 'admin_run_cancel'),
+        ('app/routes/runs.py', 'cancel_run'),
+        ('app/routes/runtime_callbacks.py', 'record_executor_callback'),
+        ('app/streaming/application/worker_publication_v4.py', 'admit_v4_stream'),
+        ('app/streaming/application/worker_publication_v4.py', 'finalize_parent_and_publish'),
+        ('app/streaming/application/worker_publication_v4.py', 'publish_callback_rows'),
+        ('app/streaming/application/worker_publication_v4.py', 'publish_run_event'),
+        ('app/worker.py', 'process_run_payload'),
+        ('app/worker_main.py', '_terminalize_escaped_process_exception'),
     }
 )
 
@@ -177,7 +151,7 @@ def _is_v4_publication_call(name: str) -> bool:
     parts = name.split(".")
     return parts[-1] in V4_PUBLICATION_CALLS or (
         len(parts) >= 2
-        and parts[-1] == "publish"
+        and parts[-1] in {"publish", "publish_callback_batch"}
         and parts[-2] in {"transport", "publication_transport"}
     )
 
@@ -313,12 +287,9 @@ def _assistant_delta_ownership_failures(
         failures.append("worker direct assistant-delta publisher exists")
     if "raise WorkerDirectAssistantDeltaError" not in worker_source:
         failures.append("worker assistant-delta ingress does not fail closed")
-    if not (
-        "append_callback_v4_rows" in callback_source
-        or (
-            "canonical_assistant_delta_event" in callback_source
-            and "await bridge.append(" in callback_source
-        )
+    if not all(
+        name in callback_source
+        for name in ("append_callback_v4_rows", "publish_callback_rows")
     ):
         failures.append("runtime callback is not the declared assistant-delta ingress")
     forbidden_executor_dependencies = (
@@ -434,8 +405,58 @@ def _typescript_call_arguments(source: str, callee: str) -> list[str]:
 def _nginx_sse_contract_failures(source: str) -> list[str]:
     uncommented = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
     marker = "location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {"
-    if marker not in uncommented:
+    marker_count = uncommented.count(marker)
+    if marker_count == 0:
         return ["nginx.conf.template:sse_location_missing"]
+    if marker_count != 1:
+        return ["nginx.conf.template:sse_location_ambiguous"]
+    marker_offset = uncommented.index(marker)
+    server_starts = list(
+        re.finditer(r"(?m)^\s*server\s*\{", uncommented)
+    )
+    containing_server_index = next(
+        (
+            index
+            for index, match in reversed(list(enumerate(server_starts)))
+            if match.start() < marker_offset
+        ),
+        None,
+    )
+    if containing_server_index is None:
+        server_source = uncommented
+        server_marker_offset = marker_offset
+    else:
+        server_start = server_starts[containing_server_index].start()
+        next_server_index = containing_server_index + 1
+        server_end = (
+            server_starts[next_server_index].start()
+            if next_server_index < len(server_starts)
+            else len(uncommented)
+        )
+        server_source = uncommented[server_start:server_end]
+        server_marker_offset = marker_offset - server_start
+    sse_probe_path = "/api/chat/sessions/sse-probe/stream"
+    # Nginx selects the first matching regex location inside one server. Only
+    # an earlier regex that also matches this request can steal it.
+    for regex_match in re.finditer(
+        r"(?m)^\s*location\s+~(\*)?\s+(.+?)\s*\{",
+        server_source[:server_marker_offset],
+    ):
+        pattern = regex_match.group(2).strip('"\'')
+        flags = re.IGNORECASE if regex_match.group(1) else 0
+        try:
+            steals_sse_request = re.search(pattern, sse_probe_path, flags) is not None
+        except re.error:
+            steals_sse_request = True
+        if steals_sse_request:
+            return ["nginx.conf.template:sse_location_precedence_ambiguous"]
+    for prefix_match in re.finditer(
+        r"(?m)^\s*location\s+\^~\s+([^\s{]+)",
+        server_source,
+    ):
+        prefix = prefix_match.group(1).strip('"\'')
+        if sse_probe_path.startswith(prefix):
+            return ["nginx.conf.template:sse_location_precedence_ambiguous"]
     block = uncommented.split(marker, 1)[1].split("\n    }", 1)[0]
     required = (
         'proxy_set_header Connection "";',
@@ -445,6 +466,7 @@ def _nginx_sse_contract_failures(source: str) -> list[str]:
         "proxy_cache off;",
         "gzip off;",
         'add_header Cache-Control "no-cache, no-transform" always;',
+        "add_header X-Accel-Buffering no always;",
         "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};",
         "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};",
     )
@@ -509,7 +531,7 @@ def _frontend_cursor_commit_failures(frontend: str) -> list[str]:
     connect = _typescript_function_body(frontend, "export async function connectToSSE")
     handle_calls = _typescript_call_arguments(
         connect,
-        "handlePublicRunStreamFrameV4",
+        "handlePublicRunStreamFrameV4Result",
     )
     commit = _typescript_function_body(
         connect,
@@ -542,34 +564,43 @@ def check() -> list[str]:
         if final_name in {"list_run_events", "event_page", "sleep", "read", "xread"}:
             failures.append(f"lambchat_compat.py:{line}:retired_live_call:{final_name}")
     chat_source = (ROOT / "app/routes/lambchat_compat.py").read_text(encoding="utf-8")
-    subscribe_position = chat_source.find("await runtime.hub.subscribe")
-    replay_position = chat_source.find("await bridge.resolve_resume")
+    replay_position = chat_source.find("await bridge.replay_page")
+    read_position = chat_source.find("await bridge.read_stream")
     if (
-        subscribe_position < 0
-        or replay_position < 0
-        or subscribe_position > replay_position
+        replay_position < 0
+        or read_position < 0
+        or read_position < replay_position
     ):
-        failures.append("lambchat_compat.py:subscribe_before_replay_unproven")
+        failures.append("lambchat_compat.py:stream_replay_before_direct_read_unproven")
 
     redis_source = (ROOT / "app/streaming/redis.py").read_text(encoding="utf-8")
     if "async def read(" in redis_source or ".xread(" in redis_source:
         failures.append("redis.py:retired_xread_live_path_present")
-    if "XADD" not in redis_source or "PUBLISH" not in redis_source:
-        failures.append("redis.py:atomic_stream_publish_script_missing")
+    if "XADD" not in redis_source:
+        failures.append("redis.py:atomic_stream_append_script_missing")
     for retired_marker in (
         "ai-platform-stream-open-v2.1",
         "ai-platform-stream-terminal-v2.1",
         "ai-platform:sse:v2.1",
         "ai-platform.stream-event.v2.1",
-    ):
-        if retired_marker in redis_source:
-            failures.append(f"redis.py:retired_v21_marker:{retired_marker}")
-    for required_marker in (
         "ai-platform-stream-open-v3",
         "ai-platform-stream-terminal-v3",
+        "class RunStreamPublisher",
+        "class TerminalPublicationIntent",
+        "def create_or_get_stream_admission(",
     ):
-        if required_marker not in redis_source:
-            failures.append(f"redis.py:v3_semantic_id_marker_missing:{required_marker}")
+        if retired_marker in redis_source:
+            failures.append(f"redis.py:retired_runtime_marker:{retired_marker}")
+    for retired_path in (
+        "app/streaming/application/live_fanout.py",
+        "app/streaming/application/recovery_v4.py",
+        "app/streaming/infrastructure/redis_live.py",
+        "app/streaming/infrastructure/redis_v4_rebuild.py",
+        "app/streaming/infrastructure/postgres_v4.py",
+        "app/streaming/infrastructure/publication_wakeup.py",
+    ):
+        if (ROOT / retired_path).is_file():
+            failures.append(f"retired_streaming_runtime_path:{retired_path}")
 
     failures.extend(
         _assistant_delta_ownership_failures(
@@ -602,7 +633,7 @@ def check() -> list[str]:
     event_sink_calls = _calls(event_sink)
     sink_handoff = _unique_call_line(
         event_sink_calls,
-        qualified_name="persist_and_publish_worker_event",
+        qualified_name="persist_worker_event",
     )
     if sink_handoff is None:
         failures.append("worker.py:committed_semantic_producer_unwired")
@@ -620,7 +651,7 @@ def check() -> list[str]:
     if connect.count('headers["Last-Event-ID"] = acceptedCursor.eventId') != 1:
         failures.append("sseConnection.ts:last_event_id_not_from_accepted_cursor")
     failures.extend(_frontend_cursor_commit_failures(frontend))
-    if connect.count("handlePublicRunStreamFrameV4(") != 1:
+    if connect.count("handlePublicRunStreamFrameV4Result(") != 1:
         failures.append("sseConnection.ts:v4_handler_not_unique")
     active_frontend_paths = (
         "frontend/web/src/hooks/useAgent/sseConnection.ts",

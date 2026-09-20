@@ -1,12 +1,17 @@
 from dataclasses import dataclass
 from ipaddress import ip_address
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.control_plane_contracts import normalize_thinking_effort
+from app.mcp.api import assert_mcp_tool_reference
+from app.persistence_limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
+from app.sandbox.api import AssistantAnswerReceipt
 from app.validation import (
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
     assert_safe_id,
@@ -22,6 +27,7 @@ EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/tool-permission"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
+EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/provider-session"
 _TRUSTED_CALLBACK_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -55,6 +61,7 @@ class TrustedCallbackTarget:
     callback_url: str
     tool_permission_url: str
     context_retrieval_url: str
+    provider_session_url: str
     host: str
 
 
@@ -123,8 +130,51 @@ def build_trusted_callback_target(
         callback_url=f"{normalized_base_url}{EXECUTOR_CALLBACK_PATH}",
         tool_permission_url=f"{normalized_base_url}{EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH}",
         context_retrieval_url=f"{normalized_base_url}{EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH}",
+        provider_session_url=f"{normalized_base_url}{EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH}",
         host=host,
     )
+
+
+class ProviderSessionCallbackRequest(BaseModel):
+    """Private callback envelope for the opaque Claude SessionStore mirror."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["load", "append", "list_subkeys"]
+    run_id: str
+    attempt_id: str
+    callback_token_id: str
+    provider_session_id: str = Field(min_length=1, max_length=128)
+    subpath: str | None = Field(default=None, max_length=512)
+    entries: list[dict[str, Any]] = Field(default_factory=list, max_length=128)
+    expected_sequence: int | None = Field(default=None, ge=1)
+
+    @field_validator("run_id", "attempt_id", "callback_token_id")
+    @classmethod
+    def validate_ids(cls, value: str, info):
+        return assert_safe_id(value, info.field_name)
+
+    @model_validator(mode="after")
+    def validate_action_payload(self):
+        if self.action == "append" and (not self.entries or self.expected_sequence is None):
+            raise ValueError("provider_session_append_sequence_required")
+        if self.action != "append" and (self.entries or self.expected_sequence is not None):
+            raise ValueError("provider_session_append_fields_forbidden")
+        return self
+
+
+class ProviderSessionCallbackResponse(BaseModel):
+    """Private callback receipt carrying no platform scope claims."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["load", "append", "list_subkeys"]
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    subpaths: list[str] = Field(default_factory=list, max_length=4096)
+    accepted: bool = True
+    entry_count: int = Field(default=0, ge=0)
+    next_sequence: int = Field(ge=1)
+    last_sequence: int | None = Field(default=None, ge=1)
 
 
 class ContextRetrievalScope(BaseModel):
@@ -148,6 +198,15 @@ class ContextRetrievalScope(BaseModel):
         return assert_safe_principal_user_id(value)
 
 
+class ModelTokenLimits(BaseModel):
+    """Run-frozen model budget accepted by the sandbox transport."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    max_input_tokens: int = Field(gt=0, le=10_000_000)
+    max_output_tokens: int = Field(gt=0, le=10_000_000)
+
+
 class SandboxRuntimeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -168,6 +227,8 @@ class SandboxRuntimeRequest(BaseModel):
     sandbox_mode: SandboxMode
     browser_enabled: bool = False
     model: str
+    model_token_limits: ModelTokenLimits | None = None
+    thinking_effort: str = "auto"
     model_gateway: Literal["new-api"] = "new-api"
     permissions: list[str] = Field(default_factory=list)
     resource_limits: dict[str, Any] = Field(default_factory=dict)
@@ -178,8 +239,8 @@ class SandboxRuntimeRequest(BaseModel):
     context_manifest: dict[str, Any] = Field(default_factory=dict)
     context_retrieval_scope: ContextRetrievalScope | None = None
     sdk_session_id: str | None = None
+    provider_session_resume_required: bool = False
     governed_permission_wait: bool = False
-    require_selected_skill_invocation: bool = True
     reconciliation_context: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "attempt_id", "agent_id", "callback_token_id")
@@ -192,15 +253,31 @@ class SandboxRuntimeRequest(BaseModel):
     def validate_user_id(cls, value: str):
         return assert_safe_principal_user_id(value)
 
-    @field_validator("skill_ids", "mcp_tool_ids", "file_ids")
+    @field_validator("skill_ids", "file_ids")
     @classmethod
     def validate_list_ids(cls, values: list[str], info):
         return [assert_safe_id(value, info.field_name) for value in values]
+
+    @field_validator("mcp_tool_ids")
+    @classmethod
+    def validate_mcp_tool_ids(cls, values: list[str]):
+        # The code-owned RAGFlow capability is the sole retained legacy reference.
+        return [
+            value
+            if value == "ragflow-knowledge-search"
+            else assert_mcp_tool_reference(value)
+            for value in values
+        ]
 
     @field_validator("trace_id")
     @classmethod
     def validate_optional_trace_id(cls, value: str):
         return assert_safe_id(value, "trace_id") if value else value
+
+    @field_validator("thinking_effort")
+    @classmethod
+    def validate_thinking_effort(cls, value: str):
+        return normalize_thinking_effort(value)
 
     @field_validator("sdk_session_id")
     @classmethod
@@ -341,6 +418,10 @@ class ExecutorTaskRequest(BaseModel):
     governed_permission_wait: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
 
+    @property
+    def callback_target(self) -> TrustedCallbackTarget:
+        return build_trusted_callback_target(self.callback_base_url)
+
     @field_validator(
         "tenant_id",
         "workspace_id",
@@ -357,6 +438,18 @@ class ExecutorTaskRequest(BaseModel):
     @classmethod
     def validate_user_id(cls, value: str):
         return assert_safe_principal_user_id(value)
+
+    @field_validator("config")
+    @classmethod
+    def validate_config(cls, value: dict[str, Any]):
+        if "thinking_effort" in value:
+            normalize_thinking_effort(value["thinking_effort"])
+        if "model_token_limits" in value:
+            try:
+                ModelTokenLimits.model_validate(value["model_token_limits"])
+            except Exception as exc:
+                raise ValueError("model_token_limits_invalid") from exc
+        return value
 
     @field_validator("sdk_session_id")
     @classmethod
@@ -377,6 +470,58 @@ class ExecutorTaskDispatchReceipt(BaseModel):
         return assert_safe_id(value, str(info.field_name))
 
 
+class ResponseFileDescriptor(BaseModel):
+    """Presentation metadata for one explicitly declared response file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_path: str = Field(max_length=1_024)
+    display_name: str | None = Field(default=None, max_length=255)
+    role: Literal["primary", "supporting"] | None = None
+    description: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("source_path")
+    @classmethod
+    def validate_source_path(cls, value: str) -> str:
+        if not value or "\x00" in value:
+            raise ValueError("response_file_path_invalid")
+        path = PurePosixPath(value.replace("\\", "/"))
+        windows_path = PureWindowsPath(value)
+        if (
+            path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or any(part in {"", ".", ".."} for part in value.replace("\\", "/").split("/"))
+        ):
+            raise ValueError("response_file_path_invalid")
+        return path.as_posix()
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if (
+            not normalized
+            or "\x00" in normalized
+            or "/" in normalized
+            or "\\" in normalized
+            or normalized in {".", ".."}
+        ):
+            raise ValueError("response_file_display_name_invalid")
+        return normalized
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if "\x00" in value:
+            raise ValueError("response_file_description_invalid")
+        return value.strip() or None
+
+
 class ExecutorTerminalResult(BaseModel):
     """Authoritative terminal response returned through the callback channel."""
 
@@ -385,8 +530,42 @@ class ExecutorTerminalResult(BaseModel):
     status: Literal["completed", "succeeded", "failed", "cancelled", "canceled"]
     run_id: str
     message: str = Field(default="", max_length=200_000)
+    answer_receipt: AssistantAnswerReceipt | None = None
+    response_files: list[str] = Field(default_factory=list, max_length=128)
+    response_file_descriptors: list[ResponseFileDescriptor] | None = Field(
+        default=None,
+        max_length=128,
+    )
     error_code: str | None = Field(default=None, max_length=256)
     error_message: str | None = Field(default=None, max_length=4_096)
+    provider_session_final_sequence: int | None = Field(default=None, ge=1, strict=True)
+
+    @field_validator("answer_receipt", mode="before")
+    @classmethod
+    def validate_answer_receipt(cls, value: object):
+        return None if value is None else AssistantAnswerReceipt.model_validate(value)
+
+    @field_validator("response_files")
+    @classmethod
+    def validate_response_files(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            if not isinstance(value, str) or not value or len(value) > 1024 or "\x00" in value:
+                raise ValueError("response_file_path_invalid")
+            path = PurePosixPath(value.replace("\\", "/"))
+            windows_path = PureWindowsPath(value)
+            if (
+                path.is_absolute()
+                or windows_path.is_absolute()
+                or windows_path.drive
+                or any(part in {"", ".", ".."} for part in value.replace("\\", "/").split("/"))
+            ):
+                raise ValueError("response_file_path_invalid")
+            canonical = path.as_posix()
+            if canonical in normalized:
+                raise ValueError("response_file_path_duplicate")
+            normalized.append(canonical)
+        return normalized
 
     @field_validator("run_id")
     @classmethod
@@ -396,11 +575,108 @@ class ExecutorTerminalResult(BaseModel):
     @model_validator(mode="after")
     def validate_terminal_payload(self) -> "ExecutorTerminalResult":
         if self.status in {"completed", "succeeded"}:
-            if not self.message.strip():
-                raise ValueError("successful terminal result requires a non-empty message")
-        elif not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
-            raise ValueError("failed or cancelled terminal result requires structured error fields")
+            if self.answer_receipt is None and not self.message.strip():
+                raise ValueError(
+                    "successful terminal result requires a non-empty message or answer receipt"
+                )
+            if self.answer_receipt is not None and self.message != "":
+                raise ValueError(
+                    "successful terminal result must contain either a message or answer receipt"
+                )
+            if self.response_file_descriptors and [
+                item.source_path for item in self.response_file_descriptors
+            ] != self.response_files:
+                raise ValueError(
+                    "response file descriptors must match response files"
+                )
+        else:
+            if self.answer_receipt is not None:
+                raise ValueError(
+                    "failed or cancelled terminal result must not contain an answer receipt"
+                )
+            if self.response_files:
+                raise ValueError(
+                    "failed or cancelled terminal result must not contain response files"
+                )
+            if self.response_file_descriptors:
+                raise ValueError(
+                    "failed or cancelled terminal result must not contain response file descriptors"
+                )
+            if not str(self.error_code or "").strip() or not str(self.error_message or "").strip():
+                raise ValueError("failed or cancelled terminal result requires structured error fields")
         return self
+
+
+_EXECUTOR_TERMINAL_RECEIPT_FIELDS = frozenset(
+    {
+        "status",
+        "run_id",
+        "message",
+        "answer_receipt",
+        "response_files",
+        "response_file_descriptors",
+        "provider_session_final_sequence",
+        "error_code",
+        "error_message",
+        "executor_model_latency_ms",
+        "document_processing_latency_ms",
+        "executor_first_token_latency_ms",
+        "executor_tool_call_latency_ms",
+        "artifact_upload_latency_ms",
+        "timeout_elapsed_ms",
+        "sdk_session_id",
+        "sdk_usage",
+        "sdk_used",
+        "sdk_received_structured_terminal",
+        "sdk_terminal_reason",
+        "executor_mode",
+        "used_skills",
+        "used_skills_source",
+        "sdk_turn_diagnostics",
+        "capability_evidence",
+        "required_capability_evidence",
+        "tool_invocation_evidence",
+        "callback_errors",
+        "diagnostics",
+    }
+)
+
+
+def executor_terminal_receipt_payload(
+    value: ExecutorTerminalResult | dict[str, Any],
+) -> dict[str, Any]:
+    """Persist only the bounded reconciliation contract, excluding private diagnostics."""
+
+    raw = (
+        value.model_dump(mode="json", exclude_none=True)
+        if isinstance(value, ExecutorTerminalResult)
+        else dict(value)
+    )
+    receipt = {
+        key: _without_runtime_diagnostics(raw[key])
+        for key in _EXECUTOR_TERMINAL_RECEIPT_FIELDS
+        if key in raw
+    }
+    ensure_json_size(
+        receipt,
+        max_bytes=RUN_RESULT_MAX_BYTES,
+        code="executor_terminal_receipt_too_large",
+    )
+    return receipt
+
+
+def _without_runtime_diagnostics(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_runtime_diagnostics(item)
+            for key, item in value.items()
+            if str(key) != "runtime_diagnostics"
+        }
+    if isinstance(value, list):
+        return [_without_runtime_diagnostics(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_runtime_diagnostics(item) for item in value)
+    return value
 
 
 def normalize_executor_terminal_status(

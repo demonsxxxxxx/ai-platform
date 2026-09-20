@@ -300,7 +300,11 @@ def run_playback_summary(
     raw_agent_id = str(run["agent_id"])
     show_raw_skill = is_ai_admin(principal)
     terminal_projection = (
-        public_terminal_projection(run.get("status"), run.get("error_code"))
+        public_terminal_projection(
+            run.get("status"),
+            run.get("error_code"),
+            run.get("result_json"),
+        )
         if not show_raw_skill
         else None
     )

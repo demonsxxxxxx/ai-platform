@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import UUID4
 
 from app import repositories
-from app.agent_profiles import reauthorize_pinned_run_for_replay
+from app.mcp.api import authorize_selected_chat_mcp_tools
+from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
 from app.context_builder import record_initial_context_snapshot
@@ -24,7 +25,7 @@ from app.models import (
     RunControlResponse,
     RunResponse,
 )
-from app.runs.api import bind_run_model, inherit_run_model
+from app.runs.api import bind_run_model, inherit_run_model, run_retry_block_reason
 from app.product_events import initial_run_event_specs
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import (
@@ -87,12 +88,12 @@ from app.run_admission_terminalization import (
     terminalize_retired_platform_multi_agent_run,
 )
 from app.run_control_readiness import run_control_readiness_snapshot
-from app.runs.api import RunCancellationUseCase
+from app.runs.api import RunCancellationUseCase, RunDiagnosticsService
 from app.streaming.api import (
     V4PublicationTransportUnavailable,
     WorkerV4Capabilities,
     admit_v4_stream,
-    publish_pending_run_terminal,
+    publish_run_event,
 )
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
@@ -116,6 +117,7 @@ from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+_agent_profile_authority = AgentProfileAuthority()
 logger = logging.getLogger(__name__)
 
 
@@ -624,6 +626,8 @@ async def _compensate_enqueue_failure(
     principal: AuthPrincipal,
     run_id: str,
     v4_capabilities: WorkerV4Capabilities,
+    diagnostic_error: BaseException | None = None,
+    run_diagnostics: RunDiagnosticsService | None = None,
     trace_id: str | None = None,
 ) -> None:
     """Leave a committed run in a truthful terminal state when queue admission fails."""
@@ -634,6 +638,8 @@ async def _compensate_enqueue_failure(
             user_id=principal.user_id,
             run_id=run_id,
             trace_id=trace_id or standard_trace_id(run_id),
+            diagnostic_error=diagnostic_error,
+            run_diagnostics=run_diagnostics,
         )
 
 
@@ -676,7 +682,7 @@ async def prepare_copied_run_for_queue(
     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
         if copied_skill_id is not None:
             raise RepositoryConflictError("run_execution_skill_identity_mismatch")
-        await repositories.authorize_selected_chat_mcp_tools(
+        await authorize_selected_chat_mcp_tools(
             conn,
             tenant_id=effective_principal.tenant_id,
             tool_ids=repositories.extract_run_mcp_tool_ids(copied_input),
@@ -692,7 +698,7 @@ async def prepare_copied_run_for_queue(
         if isinstance(profile_snapshot, dict) and isinstance(
             profile_snapshot.get("skill_set"), list
         ):
-            await reauthorize_pinned_run_for_replay(
+            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                 conn,
                 principal=effective_principal,
                 run_id=str(copied["run_id"]),
@@ -761,6 +767,7 @@ async def prepare_copied_run_for_queue(
         file_ids=list(copied_snapshot["file_ids"]),
         source=source,
         source_run_id=source_run_id,
+        include_session_history=True,
     )
     for event in initial_run_event_specs(
         agent_id=str(copied["agent_id"]),
@@ -877,7 +884,7 @@ async def create_run(
                     or str(harness_agent.get("agent_type") or "") != "chat"
                 ):
                     raise RepositoryConflictError("harness_chat_agent_unavailable")
-                await repositories.authorize_selected_chat_mcp_tools(
+                await authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=tenant_id,
                     tool_ids=repositories.extract_run_mcp_tool_ids(run_input),
@@ -1071,6 +1078,8 @@ async def create_run(
                 model_id=selected_model.model_id,
                 model_value=selected_model.model_value,
                 connection_revision=selected_model.connection_revision,
+                max_input_tokens=selected_model.max_input_tokens,
+                max_output_tokens=selected_model.max_output_tokens,
             )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await repositories.insert_run_skill_snapshots_at_creation(
@@ -1103,7 +1112,9 @@ async def create_run(
                 message_ids=[],
                 file_ids=primary_file_ids,
                 source="runs_api",
-                include_session_history=bool(request.session_id),
+                include_session_history=(
+                    bool(request.session_id) or executor_type == "claude-agent-worker"
+                ),
             )
             queue_payload = _validate_queue_payload_for_enqueue(
                 {
@@ -1162,6 +1173,12 @@ async def create_run(
             principal=principal,
             run_id=run_id,
             v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
+            diagnostic_error=exc,
+            run_diagnostics=getattr(
+                http_request.app.state,
+                "run_diagnostics_service",
+                None,
+            ),
         )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return CreateRunResponse(run_id=run_id, session_id=session_id, status="queued")
@@ -1177,7 +1194,7 @@ async def copy_run(
     try:
         async with transaction() as conn:
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
-            await reauthorize_pinned_run_for_replay(
+            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                 conn,
                 principal=principal,
                 run_id=run_id,
@@ -1220,7 +1237,7 @@ async def copy_run(
         raise HTTPException(status_code=404, detail="run_not_found")
     try:
         async with transaction() as conn:
-            await reauthorize_pinned_run_for_replay(
+            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                 conn,
                 principal=principal,
                 run_id=str(copied["run_id"]),
@@ -1245,6 +1262,12 @@ async def copy_run(
             principal=principal,
             run_id=str(copied["run_id"]),
             v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+            diagnostic_error=exc,
+            run_diagnostics=getattr(
+                request.app.state,
+                "run_diagnostics_service",
+                None,
+            ),
         )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return RunControlResponse(
@@ -1287,7 +1310,7 @@ async def _ensure_run_control_queue_admission(
     """Recover or idempotently admit one immutable committed control child."""
 
     async with transaction() as conn:
-        await reauthorize_pinned_run_for_replay(
+        await _agent_profile_authority.reauthorize_pinned_run_for_replay(
             conn,
             principal=principal,
             run_id=str(queue_payload["run_id"]),
@@ -1389,11 +1412,25 @@ async def _mutate_run_control_child(
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
                 )
-                await reauthorize_pinned_run_for_replay(
+                await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                     conn,
                     principal=principal,
                     run_id=run_id,
                 )
+                if action == "retry":
+                    source = await repositories.get_authorized_run(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        run_id=run_id,
+                        for_update=True,
+                    )
+                    if source is not None and (
+                        reason := run_retry_block_reason(
+                            source.get("status"), source.get("error_code")
+                        )
+                    ):
+                        raise RepositoryConflictError(reason)
                 mutation = (
                     repositories.retry_run_as_new_task
                     if action == "retry"
@@ -1704,6 +1741,7 @@ async def cancel_run(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     runtime = request.app.state.run_stream_runtime
+    attempt_lifecycle = request.app.state.run_attempt_lifecycle
     cancellation = await _require_run_cancellation_use_case(request).request_owner_cancel(
         tenant_id=principal.tenant_id,
         owner_user_id=principal.user_id,
@@ -1734,12 +1772,15 @@ async def cancel_run(
                 run_id=run_id,
                 progress=initial_progress,
                 transaction_factory=transaction,
+                attempt_lifecycle=attempt_lifecycle,
             )
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             capabilities=runtime.worker_capabilities,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
+            attempt_id=cancellation.attempt_id if cancellation is not None else None,
         )
         if progress is not None and progress.is_terminal():
             progressed_status = str(progress.status or result["status"])
@@ -1753,10 +1794,11 @@ async def cancel_run(
             run_id=run_id,
             progress=progress,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
         )
     if cancellation is not None and cancellation.attempt_id:
         try:
-            await publish_pending_run_terminal(
+            await publish_run_event(
                 runtime.worker_capabilities,
                 tenant_id=principal.tenant_id,
                 run_id=cancellation.run_id,
@@ -1892,6 +1934,7 @@ async def get_run(
         public_terminal_projection(
             run_status,
             run.get("error_code"),
+            result,
         )
         if not show_raw_skill
         else None

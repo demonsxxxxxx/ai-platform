@@ -57,13 +57,52 @@ generation, timestamps, and reconciliation ownership in one migration.
 3. Callback authority is the HMAC-bound `(run_id, attempt_id)` token plus exactly
    one current active lease. A callback batch is persisted through the durable
    `(tenant_id, run_id, attempt_id, batch_id)` receipt when the executor supplies
-   `batch_id`. Missing-batch compatibility requests remain a migration gap and
-   must be removed only after every deployed executor sends batch identities.
+   `batch_id`. Terminal-only answer deltas may span multiple bounded callback
+   batches; the receipt is created only after every delta batch and the final
+   completion batch are acknowledged. Missing-batch compatibility requests
+   remain a migration gap and must be removed only after every deployed executor
+   sends batch identities.
+   A successful streamed answer returns a versioned `AssistantAnswerReceipt`
+   containing only `schema_version`, `message_id`, `delta_count`, `text_length`,
+   and `last_delta_event_id`. Its legacy `message` is exactly empty, and failed
+   or cancelled terminals cannot carry a receipt. It never carries the full
+   answer body. The Worker
+   accepts only current-Attempt, strictly ordered v4 rows whose database and
+   canonical metadata publication states are both `published`; `pending` remains
+   retryable, while inconsistent or `suppressed` publication fails closed. Receipt,
+   identity, sequence, count, or length mismatch also fails closed. Legacy
+   non-streaming bounded terminal messages use the same stable-source
+   `assistant_delta` compatibility shape only when no streamed answer exists;
+   obsolete `assistant_final` is retired.
+   A first terminal callback fixes the protocol fields in `executor_terminal_json`
+   and normally appends the bounded Runs-owned private diagnostic observation in
+   the same PostgreSQL transaction. Diagnostic-only normalization, budget, lock
+   wait or write failure is contained by a savepoint with bounded local timeouts;
+   the valid receipt/terminal may commit without that observation. Connection,
+   savepoint and outer business-transaction failures retain existing retry
+   semantics. Receipt retry remains the deduplication authority and does not
+   advance the diagnostic revision twice. The receipt is retained for protocol
+   protocol recovery; reconciliation may append its bounded `diagnostics` list,
+   but cannot replace the first receipt fields. It is not the administrator query store.
+   A nonterminal OpenSandbox heartbeat verifies the exact provider identity before
+   renewing its remote lifetime. The callback records the SDK's absolute
+   `expires_at` as nullable `sandbox_leases.provider_expires_at`, with
+   `provider_renewed_at`, under the same active Run/Attempt/lease fence; these
+   are provider observations, not substitutes for the platform lease's
+   `expires_at` or an authorization grant. If the SDK provides no valid future
+   receipt, the callback rolls back with the existing disclosure-safe 503.
+   The external renewal and PostgreSQL commit are not atomic: a failed commit
+   can leave the provider alive longer than the platform lease.
 4. A real-provider release takes the scoped lease row lock, calls provider stop,
    and marks released in that transaction. Concurrent release waits and then
    observes the terminal row instead of issuing a duplicate stop. Stop failure
    leaves the lease non-terminal and records a cleanup failure for retry or
-   reconciliation.
+   reconciliation. This is the initial stop-under-lock compatibility mechanism,
+   not a target requirement to hold database locks during unbounded provider
+   I/O. Replacing it requires a reviewed operation claim, immutable resource
+   identity, out-of-transaction provider effect, stale-receipt rejection and
+   crash recovery. Until that replacement is activated, do not merely move
+   `stop` out of the lock. See [runtime convergence](runtime-convergence.md).
 5. Tenant/run authorization is resolved before any provider call. Provider
    handles are never returned in public payloads.
 6. Provider-internal recovery state is observed and reconciled; it is never
@@ -71,6 +110,11 @@ generation, timestamps, and reconciliation ownership in one migration.
 7. Provider stop exceptions are normalized without leaking provider details.
    Expiry compensation and admin orphan-cleanup failures write tenant-scoped
    audit outcomes while the failed lease remains a reconciliation subject.
+   A lost executor probe keeps the public `sandbox_executor_lost` receipt and
+   stores only classified probe stage, exception type and validated SDK/HTTP
+   facts in Runs-owned private diagnostics. A retry stores a fixed safe lease
+   error code instead of a raw provider exception; absent executor diagnostics
+   never synthesize an `unsupported_schema` observation.
 
 `attempt_id` is the first ownership fence in the initial slice. It does not yet
 replace a general monotonically increasing fencing generation for provider
@@ -90,6 +134,58 @@ SDK to routes or workers:
 
 Renaming these methods is not a correctness requirement. Consolidating their
 invocation and durable receipts behind the application control authority is.
+
+## Task workspace and Claude project instructions
+
+Each attempt receives a platform-owned `CLAUDE.md` at the root of its assigned
+workspace. Claude Agent SDK runs with the workspace as `cwd` and project setting
+sources enabled, so the file supplies the default Simplified Chinese response
+instruction. An explicit user language request takes precedence. The platform
+rewrites this file when it prepares an attempt, excludes it from artifact
+collection, and denies SDK Write/Edit access to it. The release workspace
+initializer accepts this exact attempt-root file only as a regular `0444` file;
+all other workspace entries remain subject to the owner-writable requirement.
+
+Skill writes are allowed anywhere else in the assigned workspace. The protected
+roots remain `inputs/`, `.claude/`, `.ai-platform/`, the runtime configuration
+roots, and the OpenSandbox attempt sentinel. Lexical and resolved paths must both
+remain inside the workspace, which preserves traversal and symlink-escape
+protection.
+
+Artifact collection traverses ordinary workspace directories regardless of
+whether a Skill selected `output/`, `outputs/**/delivery/`, `tasks/`,
+`artifacts/`, `review/`, or another directory name. It continues to exclude
+inputs, installed Skills, platform/runtime state, debug/audit trees, native-tool
+scratch space, and platform instruction files. OpenSandbox collection validates
+every listed path before classifying it, traverses only ordinary directories,
+and downloads only ordinary files; SDK-classified `symlink` and `other` entries
+are ignored without dereferencing them, while missing or unknown entry types
+fail closed. The former output-directory
+write allowlist and `outputs/**/delivery/`-only collection rule are retired
+together so a permitted write cannot disappear solely because of its path.
+
+## Native local tool admission
+
+The platform does not duplicate the Claude SDK's parameter schema for these local
+sandbox tools. When a real sandbox grants `sandbox_full_local`, tool identity and
+workspace boundary remain platform-authorized, while ordinary tool parameter
+names and shapes are validated by the SDK/tool implementation. Glob/Grep
+workspace patterns remain platform-checked; brace, extglob, character-class,
+and question-mark forms fail closed because their expansions can cross private
+roots or escape the authorized workspace. Skill identity and
+object constraints, platform context tools, external MCP schemas, and the
+Docker-native command proxy's command/timeout limits remain platform-owned.
+This contract does not claim support for background Bash jobs; a local Bash
+request with `run_in_background=true` currently fails closed because no
+RunAttempt-bound monitor owns that process. Its lifecycle must be separately
+bound to the RunAttempt and proved before that feature is enabled.
+
+`StructuredOutput` is separate from this local-tool capability set. When the
+adapter has enabled the SDK structured-output format, the exact SDK-generated
+`StructuredOutput` protocol call is admitted without ordinary tool lifecycle or
+capability evidence. `ResultMessage.structured_output` and the delivery manifest
+remain the sole terminal-answer and deliverable authority; a lookalike call is
+still denied when structured output is unavailable or its input shape is invalid.
 
 ## Delivery slices
 
@@ -133,3 +229,12 @@ index and column only after reverting readers and the real-provider write guard.
 Runtime acceptance remains mandatory. Source tests prove ordering and
 fail-closed contracts but do not prove provider readiness, network enforcement,
 cleanup, or orphan recovery on a deployed host.
+
+## Cross-component acceptance
+
+Use SBX-01, SBX-02, TX-01, RUN-03 and CB-01/CB-02 in the
+[system matrix](../acceptance/system-architecture-matrix.md) for failure and
+handoff coverage. These are proposed test scenarios, not passing evidence.
+The existing resource lifecycle, token scope and compatibility requirements
+remain in force; execution authorization, dispatcher ownership and cleanup
+claims must not be collapsed into a universal generation.

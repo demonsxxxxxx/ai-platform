@@ -1,4 +1,4 @@
-"""Bounded OpenSandbox cold-start sequencing and safe failure evidence."""
+"""Bounded OpenSandbox lifecycle sequencing and safe failure evidence."""
 
 from __future__ import annotations
 
@@ -6,8 +6,12 @@ import asyncio
 import inspect
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+if TYPE_CHECKING:
+    from app.runtime.sandbox.contracts import ContainerLease
 
 
 class OpenSandboxStartupStage(str, Enum):
@@ -22,6 +26,7 @@ class OpenSandboxStartupStage(str, Enum):
 
 _SDK_ERROR_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}")
 _REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_ACTIVE_STATUSES = frozenset({"running"})
 
 
 @dataclass(frozen=True)
@@ -225,6 +230,74 @@ async def resolve_executor_endpoint(
     if not isinstance(url, str) or not url.strip():
         raise error_factory("OpenSandbox executor endpoint unavailable")
     return _opensandbox_executor_url(url, settings), headers
+
+
+def _renewal_timeout(settings: Any, *, ttl_seconds: int) -> timedelta:
+    return timedelta(
+        seconds=max(
+            int(getattr(settings, "sandbox_lease_ttl_seconds", 1800) or 1800),
+            int(getattr(settings, "opensandbox_timeout_seconds", 1800) or 1800),
+            int(ttl_seconds),
+            1,
+        )
+    )
+
+
+async def renew_opensandbox_lifetime(
+    provider: Any,
+    lease: ContainerLease,
+    settings: Any,
+    *,
+    ttl_seconds: int,
+) -> datetime:
+    """Renew one active OpenSandbox after exact remote identity verification."""
+
+    from app.platform.sandbox.errors import ContainerStartFailedError, OpenSandboxUnavailableError
+    from app.runtime.sandbox.opensandbox_policy import (
+        opensandbox_renewal_identity_is_authorized,
+        opensandbox_status_from_info,
+    )
+
+    if lease.provider != "opensandbox" or getattr(provider, "provider_name", None) != "opensandbox":
+        raise ContainerStartFailedError("OpenSandbox renewal provider mismatch")
+    sandbox = provider._sandboxes.get(lease.container_id)
+    if sandbox is None:
+        sandbox = await provider._connect(
+            lease.container_id,
+            provider._connection_config(settings),
+            skip_health_check=True,
+        )
+    get_info = getattr(sandbox, "get_info", None)
+    if not callable(get_info):
+        raise ContainerStartFailedError("OpenSandbox sandbox identity unavailable")
+    status = opensandbox_status_from_info(await _maybe_await(get_info()))
+    if (
+        status is None
+        or status.container_id != lease.container_id
+        or status.provider != lease.provider
+        or status.status not in _ACTIVE_STATUSES
+        or not opensandbox_renewal_identity_is_authorized(
+            status,
+            lease,
+            settings,
+            now=datetime.now(timezone.utc),
+        )
+    ):
+        raise ContainerStartFailedError("OpenSandbox sandbox identity mismatch")
+    renew = getattr(sandbox, "renew", None)
+    if not callable(renew):
+        raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal is unavailable")
+    receipt = await _maybe_await(renew(_renewal_timeout(settings, ttl_seconds=ttl_seconds)))
+    expires_at = getattr(receipt, "expires_at", None)
+    if (
+        not isinstance(expires_at, datetime)
+        or expires_at.tzinfo is None
+        or expires_at.utcoffset() is None
+        or expires_at <= datetime.now(timezone.utc)
+    ):
+        raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal receipt is invalid")
+    provider._sandboxes[lease.container_id] = sandbox
+    return expires_at
 
 
 async def cleanup_started_sandbox(
@@ -460,6 +533,27 @@ def is_authoritative_sandbox_absent_error_code(exc: BaseException) -> bool:
         return False
     error = getattr(exc, "error", None)
     return getattr(error, "code", None) == "DOCKER::SANDBOX_NOT_FOUND"
+
+
+def opensandbox_probe_error_facts(exc: BaseException) -> dict[str, object]:
+    """Keep only typed, bounded provider facts for private probe diagnostics."""
+
+    try:
+        from opensandbox.exceptions import SandboxApiException
+    except ImportError:
+        return {}
+    if not isinstance(exc, SandboxApiException):
+        return {}
+    facts: dict[str, object] = {}
+    status_code = getattr(exc, "status_code", None)
+    if type(status_code) is int and 100 <= status_code <= 599:
+        facts["http_status"] = status_code
+    error = getattr(exc, "error", None)
+    if code := _safe_sdk_error_code(getattr(error, "code", None)):
+        facts["provider_error_code"] = code
+    if request_id := _safe_request_id(getattr(exc, "request_id", None)):
+        facts["request_id"] = request_id
+    return facts
 
 
 def is_authoritative_not_found_error(exc: BaseException) -> bool:

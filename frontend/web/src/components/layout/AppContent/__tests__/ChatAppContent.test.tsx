@@ -15,7 +15,7 @@ register(
 await new Promise<void>((resolve) => setImmediate(resolve));
 
 const {
-  AgentConversationIdentityBanner,
+  AgentConversationHeaderIdentity,
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
@@ -33,15 +33,9 @@ const safeIdentity: AgentConversationIdentity = {
   revision: 7,
   name: "支持助手",
   description: "处理已授权的支持请求。",
-  welcome_message: "欢迎使用支持助手。",
   starter_prompts: ["帮我处理支持请求"],
-  capability_summary: "在授权范围内处理企业支持请求。",
-  recommended_tasks: ["支持请求分流"],
-  supported_input_types: ["text", "file"],
-  expected_outputs: ["处理建议"],
-  permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
   avatar_ref: "builtin:assistant",
-  category: "support",
+  avatar_seed: "agt-support-avatar",
   published_at: "2026-08-04T01:00:00Z",
 };
 
@@ -68,6 +62,30 @@ test("Agent workspace history selection loads before changing its session route"
   );
 });
 
+test("Agent first send leaves route mutation to the shared session synchronizer", () => {
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  const handlerStart = source.indexOf("submitMessage: async (createdSessionId");
+  const handlerEnd = source.indexOf("return submission;", handlerStart);
+  assert.notEqual(handlerStart, -1);
+  assert.notEqual(handlerEnd, -1);
+
+  const handler = source.slice(handlerStart, handlerEnd);
+  assert.match(handler, /const submission = sendMessage\(/);
+  assert.doesNotMatch(handler, /navigate\(/);
+  assert.match(
+    source,
+    /useSessionSync\(\{[\s\S]*?sessionRouteBasePath: agentWorkspaceRouteBasePath/,
+  );
+});
+
+test("stale model selection is cleared and blocks send until explicit selection", () => {
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  assert.match(source, /hasPriorSelection && !stillAvailable[\s\S]*?setCurrentModelId\(""\)[\s\S]*?请重新选择模型/);
+  assert.match(source, /availableModels\?\.some\(\(model\) => model\.id === currentModelId[\s\S]*?return \{ status: "failed" \}/);
+  assert.match(source, /handleSelectModel[\s\S]*?setModelSelectionError\(null\)/);
+  assert.doesNotMatch(source, /localStorage\.getItem\("defaultModel/);
+});
+
 test("recovers an exact current Agent Conversation and keeps ordinary sessions generic", async () => {
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetPublished = agentProfileApi.getPublished;
@@ -85,6 +103,8 @@ test("recovers an exact current Agent Conversation and keeps ordinary sessions g
     return {
       ...safeIdentity,
       expected_revision: safeIdentity.revision,
+      market_tags: ["支持"],
+      is_favorite: false,
     };
   };
 
@@ -124,6 +144,8 @@ test("keeps immutable revision history while current access remains authorized",
   agentProfileApi.getPublished = async () => ({
     ...safeIdentity,
     expected_revision: safeIdentity.revision + 1,
+    market_tags: ["支持"],
+    is_favorite: false,
   });
 
   try {
@@ -284,6 +306,7 @@ test("first-send Agent creation is single-flight and binds before returning", as
   const coordinator = { current: null as Promise<string> | null };
   let createCalls = 0;
   let bindCalls = 0;
+  let handoffOwner: string | null = null;
   let releaseCreate!: () => void;
   const createGate = new Promise<void>((resolve) => {
     releaseCreate = resolve;
@@ -303,19 +326,25 @@ test("first-send Agent creation is single-flight and binds before returning", as
   const bindConversation = async (sessionId: string) => {
     bindCalls += 1;
     assert.equal(sessionId, "session-agent");
+    assert.equal(handoffOwner, sessionId);
     return true;
+  };
+  const onConversationCreated = (sessionId: string) => {
+    handoffOwner = sessionId;
   };
 
   const first = ensureAgentConversationForFirstSend({
     coordinator,
     profile: safeWorkspace,
     createConversation,
+    onConversationCreated,
     bindConversation,
   });
   const duplicate = ensureAgentConversationForFirstSend({
     coordinator,
     profile: safeWorkspace,
     createConversation,
+    onConversationCreated,
     bindConversation,
   });
   assert.equal(createCalls, 1);
@@ -327,6 +356,66 @@ test("first-send Agent creation is single-flight and binds before returning", as
   ]);
   assert.equal(createCalls, 1);
   assert.equal(bindCalls, 1);
+});
+
+test("a cancelled Agent first send cannot bind or submit after delayed creation", async () => {
+  const creationCoordinator = { current: null as Promise<string> | null };
+  const submissionCoordinator: Parameters<
+    typeof submitAgentFirstMessageSingleFlight
+  >[0]["coordinator"] = { current: null };
+  let generation = 0;
+  let ownerCalls = 0;
+  let bindCalls = 0;
+  let submitCalls = 0;
+  let releaseCreate!: () => void;
+  const createGate = new Promise<void>((resolve) => {
+    releaseCreate = resolve;
+  });
+  const isCurrent = () => generation === 0;
+
+  const outcome = submitAgentFirstMessageSingleFlight({
+    coordinator: submissionCoordinator,
+    submissionKey: "delayed-first-send",
+    isCurrent,
+    ensureConversation: () =>
+      ensureAgentConversationForFirstSend({
+        coordinator: creationCoordinator,
+        profile: safeWorkspace,
+        isCurrent,
+        createConversation: async () => {
+          await createGate;
+          return {
+            session_id: "session-agent",
+            workspace_id: "default",
+            agent_id: safeIdentity.agent_id,
+            title: safeIdentity.name,
+            purpose: "conversation" as const,
+            agent_conversation: safeIdentity,
+          };
+        },
+        onConversationCreated: () => {
+          ownerCalls += 1;
+        },
+        bindConversation: async () => {
+          bindCalls += 1;
+          return true;
+        },
+      }),
+    submitMessage: async () => {
+      submitCalls += 1;
+      return { status: "accepted" };
+    },
+  });
+
+  generation += 1;
+  creationCoordinator.current = null;
+  submissionCoordinator.current = null;
+  releaseCreate();
+
+  assert.deepEqual(await outcome, { status: "failed" });
+  assert.equal(ownerCalls, 0);
+  assert.equal(bindCalls, 0);
+  assert.equal(submitCalls, 0);
 });
 
 test("first-send creation rejects a mismatched pinned identity before binding", async () => {
@@ -399,7 +488,7 @@ test("a recommendation double-click creates and submits one real first user turn
   ]);
 });
 
-test("an accepted first submission releases its flight while reusing the bound conversation", async () => {
+test("first submissions preserve Thinking after binding while reusing the conversation", async () => {
   const creationCoordinator = { current: null as Promise<string> | null };
   const submissionCoordinator = {
     current: null as {
@@ -410,6 +499,7 @@ test("an accepted first submission releases its flight while reusing the bound c
   let createCalls = 0;
   let bindCalls = 0;
   const submittedSessionIds: string[] = [];
+  const submittedThinkingLevels: unknown[] = [];
   const ensureConversation = () =>
     ensureAgentConversationForFirstSend({
       coordinator: creationCoordinator,
@@ -430,8 +520,12 @@ test("an accepted first submission releases its flight while reusing the bound c
         return true;
       },
     });
-  const submitMessage = async (sessionId: string) => {
+  const submitMessage = async (
+    sessionId: string,
+    agentOptions?: Record<string, boolean | string | number>,
+  ) => {
     submittedSessionIds.push(sessionId);
+    submittedThinkingLevels.push(agentOptions?.enable_thinking);
     return { status: "accepted" as const };
   };
 
@@ -440,6 +534,7 @@ test("an accepted first submission releases its flight while reusing the bound c
       coordinator: submissionCoordinator,
       submissionKey: JSON.stringify({ content: "第一问", fileIds: [] }),
       ensureConversation,
+      agentOptions: { enable_thinking: "high" },
       submitMessage,
     }),
     { status: "accepted" },
@@ -449,6 +544,7 @@ test("an accepted first submission releases its flight while reusing the bound c
       coordinator: submissionCoordinator,
       submissionKey: JSON.stringify({ content: "第二问", fileIds: [] }),
       ensureConversation,
+      agentOptions: { enable_thinking: "auto" },
       submitMessage,
     }),
     { status: "accepted" },
@@ -457,6 +553,7 @@ test("an accepted first submission releases its flight while reusing the bound c
   assert.equal(createCalls, 1);
   assert.equal(bindCalls, 1);
   assert.deepEqual(submittedSessionIds, ["session-agent", "session-agent"]);
+  assert.deepEqual(submittedThinkingLevels, ["high", "auto"]);
 });
 
 test("a failed first submission retries on the same bound Agent conversation", async () => {
@@ -667,14 +764,12 @@ test("fails closed when Agent Conversation operation storage cannot be read or v
   }
 });
 
-test("renders only safe Agent identity and locks MCP catalog controls", () => {
+test("renders only the safe Agent identity in the compact Chat header", () => {
   const html = renderToStaticMarkup(
-    React.createElement(AgentConversationIdentityBanner, { identity: safeIdentity }),
+    React.createElement(AgentConversationHeaderIdentity, { identity: safeIdentity }),
   );
   assert.match(html, /支持助手/);
-  assert.match(html, /处理已授权的支持请求/);
-  assert.match(html, /支持服务/);
-  assert.match(html, /data-agent-conversation-profile/);
+  assert.doesNotMatch(html, /处理已授权的支持请求/);
   assert.match(html, /data-agent-avatar-ref="builtin:assistant"/);
   assert.doesNotMatch(html, /content_hash|model_id|skill_id|mcp_tool_ids|PRIVATE/);
   assert.equal(areAgentConversationControlsLocked("loading"), true);
@@ -690,22 +785,35 @@ test("renders only safe Agent identity and locks MCP catalog controls", () => {
   assert.equal(exposeGenericChatControl("bound", retryMcpCatalog), undefined);
 });
 
-test("projects the Agent welcome and recommendations only in the empty Chat UI", () => {
+test("projects the Agent description and starter prompts only in the empty Chat UI", () => {
   const chatViewSource = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
   const appContentSource = readFileSync(
     new URL("../ChatAppContent.tsx", import.meta.url),
     "utf8",
   );
 
+  assert.match(
+    appContentSource,
+    /chatIdentity=\{[\s\S]*?<AgentConversationHeaderIdentity/,
+  );
+  assert.doesNotMatch(appContentSource, /data-agent-conversation-profile/);
   assert.match(chatViewSource, /messages\.length === 0[\s\S]*agentEmptyProfile/);
   assert.match(chatViewSource, /data-agent-chat-opening/);
   assert.match(chatViewSource, /<AgentIdentityAvatar/);
   assert.match(chatViewSource, /avatarRef=\{agentEmptyProfile\.avatar_ref\}/);
   assert.match(chatViewSource, /avatarSeed=\{agentEmptyProfile\.avatar_seed\}/);
   assert.doesNotMatch(chatViewSource, /<Bot\b/);
-  assert.match(chatViewSource, /agentEmptyProfile\.welcome_message/);
+  assert.match(chatViewSource, /agentEmptyProfile\.description/);
   assert.match(chatViewSource, /data-agent-starter-prompts/);
-  assert.match(chatViewSource, /onClick=\{\(\) => setComposerDraft\(prompt\)\}/);
+  assert.match(chatViewSource, /onClick=\{\(\) => setComposerInput\(prompt\)\}/);
+  assert.match(
+    appContentSource,
+    /onConversationCreated:\s*\(createdSessionId\)\s*=>\s*\{[\s\S]*?setAgentWorkspaceDraftHandoffKey\(createdSessionId\)/,
+  );
+  assert.match(
+    appContentSource,
+    /composerDraftHandoffKey=\{[\s\S]*?agentWorkspaceDraftHandoffKey/,
+  );
   assert.doesNotMatch(chatViewSource, /onSendMessage\(prompt\)/);
   assert.doesNotMatch(appContentSource, /data-agent-workspace-welcome/);
   assert.doesNotMatch(appContentSource, /data-agent-workspace-start/);
@@ -724,7 +832,7 @@ test("Agent workspace sidebar consumes the server-paginated session source", () 
   assert.match(source, /composerPlaceholder=\{[\s\S]*agentWorkspace\.name/);
 });
 
-test("Agent workspaces preserve the shared catalog model selector and user choice", () => {
+test("Agent workspaces preserve the shared model and Thinking selectors", () => {
   const source = readFileSync(
     new URL("../ChatAppContent.tsx", import.meta.url),
     "utf8",
@@ -732,12 +840,27 @@ test("Agent workspaces preserve the shared catalog model selector and user choic
 
   assert.match(source, /const filteredModels = availableModels \?\? null;/);
   assert.match(source, /availableModels=\{filteredModels \?\? \[\]\}/);
+  assert.match(
+    source,
+    /agentOptions=\{[\s\S]*?agentConversationControlsLocked \? lockedAgentOptions/,
+  );
+  assert.match(
+    source,
+    /agentOptionValues=\{[\s\S]*?agentConversationControlsLocked[\s\S]*?lockedAgentOptionValues/,
+  );
+  assert.match(
+    source,
+    /agentConversationControlsLocked[\s\S]*?agentOptions:\s*\{\s*\.\.\.lockedAgentOptionValues/,
+  );
+  assert.match(
+    source,
+    /const lockedAgentOptionValues:[\s\S]{0,80}=\s*agentOptionValues\.enable_thinking !== undefined[\s\S]{0,100}\? \{ enable_thinking:/,
+  );
   assert.doesNotMatch(
     source,
     /availableModels=\{[\s\S]{0,80}agentConversationControlsLocked[\s\S]{0,80}\}/,
   );
 });
-
 
 test("legacy generic Agent sessions redirect to the canonical dedicated route", () => {
   const source = readFileSync(

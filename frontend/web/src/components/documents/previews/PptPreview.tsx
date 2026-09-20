@@ -1,62 +1,90 @@
 import { memo, useEffect, useState } from "react";
+import { FileWarning } from "lucide-react";
+import { pptxToHtml } from "@jvmr/pptx-to-html";
 import JSZip from "jszip";
 import type { TFunction } from "i18next";
+import FileFallbackPanel from "./FileFallbackPanel";
+import { preparePptxSlideDocument } from "./pptHtmlPreview";
+import {
+  DocumentViewerFrame,
+  ScaledDocumentContent,
+} from "./DocumentViewerFrame";
 
 interface PptPreviewProps {
   url: string;
   arrayBuffer?: ArrayBuffer | null;
   fileName: string;
   t: TFunction;
+  onDownload?: () => void;
 }
 
+const PPT_PREVIEW_WIDTH = 960;
+const PPT_PREVIEW_HEIGHT = 540;
+const PPT_SLIDE_GAP = 20;
+
 const PptPreview = memo(function PptPreview({
+  url,
   arrayBuffer,
   fileName,
   t,
+  onDownload,
 }: PptPreviewProps) {
-  const [slides, setSlides] = useState<PptSlidePreview[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [visualSlides, setVisualSlides] = useState<string[]>([]);
+  const [textSlides, setTextSlides] = useState<PptSlidePreview[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+    setVisualSlides([]);
+    setTextSlides([]);
+    setLoading(true);
+    setLoadFailed(false);
+
     if (!arrayBuffer) {
-      setSlides(null);
-      setError(null);
+      setLoading(false);
+      setLoadFailed(true);
       return;
     }
 
-    let cancelled = false;
-    setSlides(null);
-    setError(null);
-
-    void extractPptxSlides(arrayBuffer)
-      .then((nextSlides) => {
-        if (!cancelled) {
-          setSlides(nextSlides);
+    const renderPresentation = async () => {
+      try {
+        const slides = await pptxToHtml(arrayBuffer.slice(0), {
+          width: PPT_PREVIEW_WIDTH,
+          height: PPT_PREVIEW_HEIGHT,
+          scaleToFit: true,
+          letterbox: true,
+        });
+        if (cancelled) return;
+        if (slides.length > 0) {
+          setVisualSlides(slides.map(preparePptxSlideDocument));
+          setLoading(false);
+          return;
         }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setError(
-            t("documents.pptPreviewFallback", "Presentation loaded safely."),
-          );
-          setSlides([]);
-        }
-      });
+      } catch (error) {
+        console.warn("Failed to render visual PPTX preview:", error);
+      }
 
+      try {
+        const slides = await extractPptxSlides(arrayBuffer.slice(0));
+        if (cancelled) return;
+        setTextSlides(slides);
+        setLoadFailed(slides.length === 0);
+      } catch (error) {
+        console.warn("Failed to extract PPTX text preview:", error);
+        if (!cancelled) setLoadFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void renderPresentation();
     return () => {
       cancelled = true;
     };
-  }, [arrayBuffer, t]);
+  }, [arrayBuffer]);
 
-  if (arrayBuffer) {
-    if (!slides && !error) {
-      return (
-        <div className="flex h-full min-h-[400px] items-center justify-center bg-stone-50 p-6 text-sm text-stone-500 dark:bg-stone-900/40 dark:text-stone-400">
-          {t("documents.loadingFileContent")}
-        </div>
-      );
-    }
-
+  if (!loading && textSlides.length > 0) {
     return (
       <div className="h-full min-h-[400px] overflow-auto bg-stone-50 p-4 dark:bg-stone-950/40">
         <div className="mx-auto max-w-4xl space-y-3">
@@ -65,55 +93,91 @@ const PptPreview = memo(function PptPreview({
               {fileName}
             </div>
             <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-              {error ||
-                t(
-                  "documents.pptPreviewTextMode",
-                  "PowerPoint loaded through authenticated local preview.",
-                )}
-            </div>
-          </div>
-          {slides && slides.length > 0 ? (
-            slides.map((slide) => (
-              <section
-                key={slide.id}
-                className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm dark:border-stone-800 dark:bg-stone-900"
-              >
-                <h3 className="text-xs font-semibold uppercase text-stone-400 dark:text-stone-500">
-                  {slide.title}
-                </h3>
-                {slide.text.length > 0 ? (
-                  <div className="mt-3 space-y-1 text-sm leading-6 text-stone-700 dark:text-stone-200">
-                    {slide.text.map((line, index) => (
-                      <p key={`${slide.id}:${index}`}>{line}</p>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mt-3 text-sm text-stone-500 dark:text-stone-400">
-                    {t("documents.noTextContent", "没有可提取的文本内容")}
-                  </p>
-                )}
-              </section>
-            ))
-          ) : (
-            <div className="rounded-lg border border-stone-200 bg-white px-4 py-6 text-center text-sm text-stone-500 shadow-sm dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400">
               {t(
-                "documents.pptPreviewNoSlides",
-                "无法提取幻灯片文字。请下载文件查看完整演示文稿。",
+                "documents.pptPreviewTextMode",
+                "已使用安全文本模式加载 PowerPoint。",
               )}
             </div>
-          )}
+          </div>
+          {textSlides.map((slide) => (
+            <section
+              key={slide.id}
+              className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm dark:border-stone-800 dark:bg-stone-900"
+            >
+              <h3 className="text-xs font-semibold uppercase text-stone-400 dark:text-stone-500">
+                {t("documents.pptSlideLabel", "幻灯片 {{count}}", {
+                  count: slide.number,
+                })}
+              </h3>
+              <div className="mt-3 space-y-1 text-sm leading-6 text-stone-700 dark:text-stone-200">
+                {slide.text.map((line, index) => (
+                  <p key={`${slide.id}:${index}`}>{line}</p>
+                ))}
+              </div>
+            </section>
+          ))}
         </div>
       </div>
     );
   }
 
+  if (loadFailed) {
+    return (
+      <FileFallbackPanel
+        icon={FileWarning}
+        iconBg="bg-amber-100 dark:bg-amber-900/40"
+        iconColor="text-amber-600 dark:text-amber-300"
+        title={t("documents.pptPreviewUnavailable", "PPT 预览不可用")}
+        description={t(
+          "documents.pptPreviewUnavailableHint",
+          "当前浏览器无法直接渲染这个演示文稿。旧版 .ppt 或复杂版式可能需要下载后用 PowerPoint、WPS 或 Keynote 打开。",
+        )}
+        downloadUrl={url || undefined}
+        fileName={fileName}
+        downloadLabel={t("documents.downloadFile")}
+        onDownload={onDownload}
+      />
+    );
+  }
+
+  const contentHeight = Math.max(
+    PPT_PREVIEW_HEIGHT,
+    visualSlides.length * PPT_PREVIEW_HEIGHT +
+      Math.max(0, visualSlides.length - 1) * PPT_SLIDE_GAP,
+  );
+
   return (
-    <div className="flex h-full min-h-[400px] items-center justify-center bg-stone-50 p-6 text-center text-sm text-stone-500 dark:bg-stone-900/40 dark:text-stone-400">
-      {t(
-        "documents.pptPreviewNoData",
-        "没有可用于预览的本地演示数据。",
+    <DocumentViewerFrame
+      naturalWidth={PPT_PREVIEW_WIDTH}
+      loading={loading}
+      ariaLabel={t("documents.pptPreviewTitle", "PowerPoint 预览")}
+    >
+      {(displayScale) => (
+        <ScaledDocumentContent
+          naturalWidth={PPT_PREVIEW_WIDTH}
+          naturalHeight={contentHeight}
+          displayScale={displayScale}
+          className="flex flex-col gap-5"
+        >
+          {visualSlides.map((slideDocument, index) => (
+            <iframe
+              key={index}
+              srcDoc={slideDocument}
+              title={t("documents.pptSlideLabel", "幻灯片 {{count}}", {
+                count: index + 1,
+              })}
+              sandbox=""
+              referrerPolicy="no-referrer"
+              className="shrink-0 border-0 bg-white shadow-xl ring-1 ring-black/5"
+              style={{
+                width: PPT_PREVIEW_WIDTH,
+                height: PPT_PREVIEW_HEIGHT,
+              }}
+            />
+          ))}
+        </ScaledDocumentContent>
       )}
-    </div>
+    </DocumentViewerFrame>
   );
 });
 
@@ -121,7 +185,7 @@ export default PptPreview;
 
 interface PptSlidePreview {
   id: string;
-  title: string;
+  number: number;
   text: string[];
 }
 
@@ -158,7 +222,7 @@ async function extractPptxSlides(
     const slideNumber = getSlideNumber(path);
     slides.push({
       id: path,
-      title: `Slide ${slideNumber || slides.length + 1}`,
+      number: slideNumber || slides.length + 1,
       text,
     });
   }

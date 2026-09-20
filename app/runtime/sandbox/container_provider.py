@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Sequence
 import hashlib
 import hmac
 import inspect
@@ -80,6 +80,11 @@ from app.platform.sandbox.errors import (
     OpenSandboxUnavailableError,
     SandboxRuntimeError,
 )
+from app.sandbox.api import (
+    opensandbox_collection_entry,
+    opensandbox_delivery_paths,
+    opensandbox_listing_matches_file,
+)
 from app.execution_boundary import (
     GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
     GOVERNED_EGRESS_PROOF_LABEL,
@@ -116,6 +121,7 @@ from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_me
 from app.runtime.sandbox.opensandbox_policy import (
     DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
     DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
+    DIRECT_OPENSANDBOX_NETWORK_NAME,
     DIRECT_OPENSANDBOX_POLICY_SUBJECT,
     DIRECT_OPENSANDBOX_PROFILE_ID,
     SANDBOX_SECURITY_PROFILE_GOVERNED,
@@ -173,8 +179,9 @@ class ContainerProvider(Protocol):
         lease: ContainerLease,
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
+        response_files: Sequence[str] = (),
     ) -> None:
-        """Collect provider-approved attempt outputs after executor dispatch."""
+        """Collect only terminal-declared attempt outputs after dispatch."""
 
         ...
 
@@ -595,13 +602,21 @@ def _tool_policy_subject_authorized(subject: dict[str, Any], identity: str) -> b
 
 
 def _staged_skill_mount_required(request: SandboxRuntimeRequest) -> bool:
-    return any(
-        _tool_policy_subject_authorized(subject, "Skill")
-        and isinstance(subject.get("allowed_skill_names"), list)
-        and any(isinstance(name, str) and name for name in subject["allowed_skill_names"])
-        for subject in request.tool_policy_subjects
-        if isinstance(subject, dict)
-    )
+    return bool(_authorized_staged_skill_names(request))
+
+
+def _authorized_staged_skill_names(request: SandboxRuntimeRequest) -> set[str]:
+    names: set[str] = set()
+    for subject in request.tool_policy_subjects:
+        if not isinstance(subject, dict) or not _tool_policy_subject_authorized(
+            subject,
+            "Skill",
+        ):
+            continue
+        allowed = subject.get("allowed_skill_names")
+        if isinstance(allowed, list):
+            names.update(name for name in allowed if isinstance(name, str) and name)
+    return names
 
 
 def _native_tool_required(request: SandboxRuntimeRequest) -> bool:
@@ -1039,13 +1054,7 @@ def _executor_environment(
         "MODEL_CATALOG_JSON": _env_value(settings, "model_catalog_json"),
         "CLAUDE_AGENT_SDK_ENABLED": _env_bool(getattr(settings, "claude_agent_sdk_enabled", False)),
         "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS": _env_value(settings, "claude_agent_sdk_timeout_seconds", 0),
-        "CLAUDE_AGENT_SDK_MAX_TURNS": _env_value(settings, "claude_agent_sdk_max_turns", 128),
-        "CLAUDE_AGENT_SDK_EFFORT": _env_value(settings, "claude_agent_sdk_effort", "xhigh"),
-        "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS": _env_value(
-            settings,
-            "claude_agent_sdk_max_thinking_tokens",
-            16384,
-        ),
+        "CLAUDE_AGENT_SDK_MAX_TURNS": _env_value(settings, "claude_agent_sdk_max_turns", 256),
         "CLAUDE_AGENT_PERMISSION_MODE": _env_value(settings, "claude_agent_permission_mode", "dontAsk"),
         "CLAUDE_AGENT_ALLOWED_TOOLS": _env_value(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
         "CLAUDE_AGENT_DISALLOWED_TOOLS": _env_value(
@@ -1170,8 +1179,11 @@ def _opensandbox_governed_denial_subject(deny_audit_subject: str, deny_counter_s
 def _require_direct_opensandbox_settings(settings: Any) -> None:
     if not bool(getattr(settings, "opensandbox_use_server_proxy", False)):
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox server proxy is required")
-    if str(getattr(settings, "opensandbox_expected_network_mode", "") or "") != "bridge":
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox network mode must be bridge")
+    if (
+        str(getattr(settings, "opensandbox_expected_network_mode", "") or "")
+        != DIRECT_OPENSANDBOX_NETWORK_NAME
+    ):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox isolated network is required")
     if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox egress policy is required")
     for name in ("opensandbox_base_url", "opensandbox_api_key", "opensandbox_egress_proxy_url"):
@@ -1232,7 +1244,7 @@ def _opensandbox_governed_egress_binding(
             configuration["deny_counter_subject"],
         ),
         "network_id": configuration["profile_id"],
-        "network_name": configuration["endpoint"],
+        "network_name": configuration["network_mode"],
         "tenant_id": request.tenant_id,
         "workspace_id": request.workspace_id,
         "user_id": request.user_id,
@@ -1262,7 +1274,7 @@ def _direct_opensandbox_egress_proof(
     return build_governed_egress_proof(
         signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
         provider="opensandbox",
-        network_internal=False,
+        network_internal=True,
         key_id=_governed_egress_proof_key_id(settings),
         issued_at=issued_at,
         expires_at=issued_at + timedelta(seconds=GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS),
@@ -1358,13 +1370,14 @@ def _opensandbox_runtime_egress_bases(
 ) -> _ExecutorEgressBases:
     if _is_internal_test_opensandbox(settings):
         callback = _trusted_callback_target(settings)
+        proxy = _opensandbox_egress_bases(settings)
         return _ExecutorEgressBases(
             callback_base_url=callback.base_url,
-            openai_base_url=_credential_free_internal_test_model_base(
-                _env_value(settings, "openai_base_url")
+            openai_base_url=(
+                f"{proxy.callback_base_url}/openai/{request.run_id}/{request.attempt_id}/v1"
             ),
-            anthropic_base_url=_credential_free_internal_test_model_base(
-                _env_value(settings, "anthropic_base_url")
+            anthropic_base_url=(
+                f"{proxy.callback_base_url}/anthropic/{request.run_id}/{request.attempt_id}"
             ),
         )
     configuration = _direct_opensandbox_egress_configuration(settings, request)
@@ -1373,32 +1386,6 @@ def _opensandbox_runtime_egress_bases(
         openai_base_url=configuration["openai_base_url"],
         anthropic_base_url=configuration["anthropic_base_url"],
     )
-
-
-
-def _credential_free_internal_test_model_base(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return raw
-    try:
-        parsed = urlsplit(raw)
-        parsed.port
-    except ValueError:
-        raise OpenSandboxCapabilityAdmissionError(
-            "OpenSandbox internal-test model base is invalid"
-        ) from None
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise OpenSandboxCapabilityAdmissionError(
-            "OpenSandbox internal-test model base is invalid"
-        )
-    return raw
 
 
 def _assert_no_raw_model_credentials_in_environment(
@@ -1428,52 +1415,15 @@ def _ensure_opensandbox_configuration_still_valid(settings: Any) -> None:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox runtime subject is unavailable")
 
 
-def _callback_policy_host(settings: Any) -> str:
-    callback_host = str(getattr(settings, "sandbox_callback_host_gateway", "") or "").strip()
-    if callback_host:
-        return callback_host
-    try:
-        return _trusted_callback_target(settings).host
-    except CallbackTargetValidationError:
-        return ""
+def _opensandbox_network_policy(
+    settings: Any,
+    network_policy_class: Any,
+    network_rule_class: Any,
+) -> None:
+    """The governed OpenSandbox contour enforces egress at its Docker network boundary."""
 
-
-def _split_csv(value: object) -> list[str]:
-    return [item.strip() for item in str(value or "").split(",") if item.strip()]
-
-
-def _opensandbox_network_policy(settings: Any, network_policy_class: Any, network_rule_class: Any) -> Any | None:
-    if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
-        return None
-    if str(getattr(settings, "sandbox_container_provider", "") or "").strip().lower() == "opensandbox":
-        try:
-            parsed_proxy = urlsplit(str(getattr(settings, "opensandbox_egress_proxy_url", "") or "").strip())
-            proxy_host = parsed_proxy.hostname or ""
-            parsed_proxy.port
-            lifecycle_host = urlsplit(str(getattr(settings, "opensandbox_base_url", "") or "").strip()).hostname or ""
-            same_destination = proxy_host == lifecycle_host
-            if not _is_internal_test_opensandbox(settings):
-                same_destination = ipaddress.ip_address(proxy_host) == ipaddress.ip_address(lifecycle_host)
-        except ValueError as exc:
-            raise OpenSandboxCapabilityAdmissionError("OpenSandbox egress proxy configuration is invalid") from exc
-        if (
-            parsed_proxy.scheme not in {"http", "https"}
-            or not proxy_host
-            or not lifecycle_host
-            or same_destination
-            or parsed_proxy.username
-            or parsed_proxy.password
-        ):
-            raise OpenSandboxCapabilityAdmissionError("OpenSandbox egress proxy configuration is invalid")
-        allowed_hosts = [proxy_host]
-    else:
-        allowed_hosts = []
-        callback_host = _callback_policy_host(settings)
-        if callback_host:
-            allowed_hosts.append(callback_host)
-        allowed_hosts.extend(_split_csv(getattr(settings, "opensandbox_allowed_egress_hosts", "")))
-    rules = [network_rule_class(action="allow", target=host) for host in dict.fromkeys(allowed_hosts)]
-    return network_policy_class(defaultAction="deny", egress=rules)
+    del settings, network_policy_class, network_rule_class
+    return None
 
 
 def _opensandbox_volumes(
@@ -1499,9 +1449,11 @@ def _opensandbox_sentinel_path(workspace: WorkspaceLease) -> str:
 
 
 _OPENSANDBOX_STAGE_MAX_FILES = 1024
-_OPENSANDBOX_STAGE_MAX_FILE_BYTES = 32 * 1024 * 1024
-_OPENSANDBOX_STAGE_MAX_TOTAL_BYTES = 128 * 1024 * 1024
+_OPENSANDBOX_STAGE_MAX_FILE_BYTES = 128 * 1024 * 1024
+_OPENSANDBOX_STAGE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 _OPENSANDBOX_STAGE_MAX_DIRECTORIES = 512
+_OPENSANDBOX_STAGE_BATCH_MAX_FILES = 32
+_OPENSANDBOX_STAGE_BATCH_MAX_BYTES = 1024 * 1024
 _OPENSANDBOX_COLLECT_MAX_FILES = 128
 _OPENSANDBOX_COLLECT_MAX_FILE_BYTES = 64 * 1024 * 1024
 _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
@@ -2351,7 +2303,9 @@ class FakeContainerProvider:
         lease: ContainerLease,
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
+        response_files: Sequence[str] = (),
     ) -> None:
+        del response_files
         return None
 
     async def executor_control_endpoint(
@@ -3792,9 +3746,11 @@ class DockerContainerProvider:
         lease: ContainerLease,
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
+        response_files: Sequence[str] = (),
     ) -> None:
         """Docker writes directly to the controller-visible workspace bind."""
 
+        del response_files
         return None
 
     async def executor_control_endpoint(
@@ -4431,21 +4387,15 @@ class OpenSandboxContainerProvider:
             egress_bases=_opensandbox_runtime_egress_bases(settings, request),
             workspace_container_path=workspace.workspace_container_path,
         )
-        forward_model_credentials = bool(
-            getattr(settings, "opensandbox_internal_test_forward_model_credentials", False)
-        ) and _is_internal_test_opensandbox(settings)
         callback_binding = CallbackTokenBinding(run_id=request.run_id, attempt_id=request.attempt_id)
         if not callback_token_id_matches_binding(request.callback_token_id, callback_binding):
             raise ContainerStartFailedError("OpenSandbox callback token binding is invalid")
         callback_secret = str(getattr(settings, "sandbox_callback_token", "") or "")
-        if not forward_model_credentials and not callback_secret:
+        if not callback_secret:
             raise ContainerStartFailedError("OpenSandbox model proxy capability is unavailable")
         environment, credential_free_environment = prepare_opensandbox_executor_environment(
             environment,
-            forward_model_credentials=forward_model_credentials,
-            model_proxy_capability=(
-                "" if forward_model_credentials else derive_callback_token(callback_secret, request.callback_token_id)
-            ),
+            model_proxy_capability=derive_callback_token(callback_secret, request.callback_token_id),
         )
         _assert_no_raw_model_credentials_in_environment(
             credential_free_environment,
@@ -4793,20 +4743,28 @@ class OpenSandboxContainerProvider:
                 for relative_path in directories
             ]
             await _maybe_await(filesystem.create_directories(remote_directories))
+            batch = []
+            batch_bytes = 0
             for entry in files:
                 payload = _read_stable_workspace_file(entry)
                 mode = encode_execd_mode(0o700 if entry.snapshot.mode & stat.S_IXUSR else 0o600)
-                await _maybe_await(
-                    filesystem.write_files(
-                        [
-                            self._file_class(
-                                path=f"{remote_root}/{entry.relative_path}",
-                                data=payload,
-                                mode=mode,
-                            )
-                        ]
+                if batch and (
+                    len(batch) >= _OPENSANDBOX_STAGE_BATCH_MAX_FILES
+                    or batch_bytes + len(payload) > _OPENSANDBOX_STAGE_BATCH_MAX_BYTES
+                ):
+                    await _maybe_await(filesystem.write_files(batch))
+                    batch = []
+                    batch_bytes = 0
+                batch.append(
+                    self._file_class(
+                        path=f"{remote_root}/{entry.relative_path}",
+                        data=payload,
+                        mode=mode,
                     )
                 )
+                batch_bytes += len(payload)
+            if batch:
+                await _maybe_await(filesystem.write_files(batch))
             await self._write_and_verify_sentinel(sandbox, request, workspace)
         except asyncio.CancelledError:
             raise
@@ -4815,60 +4773,19 @@ class OpenSandboxContainerProvider:
         except Exception as exc:
             raise ContainerStartFailedError("OpenSandbox workspace staging failed") from exc
 
-    @staticmethod
-    def _filesystem_entry_value(entry: Any, name: str) -> Any:
-        if isinstance(entry, dict):
-            if name == "entry_type":
-                return entry.get("entry_type", entry.get("type"))
-            return entry.get(name)
-        if name == "entry_type":
-            return getattr(entry, "entry_type", getattr(entry, "type", None))
-        return getattr(entry, name, None)
-
     def _remote_workspace_entry(
         self,
         entry: Any,
         workspace: WorkspaceLease,
-    ) -> tuple[str, str, int]:
-        raw_path = self._filesystem_entry_value(entry, "path")
-        remote_root = workspace.workspace_container_path.rstrip("/")
-        if not isinstance(raw_path, str) or "\x00" in raw_path or not raw_path.startswith(f"{remote_root}/"):
-            raise ContainerStartFailedError("OpenSandbox workspace collection path is invalid")
-        relative_path = _safe_workspace_relative_path(raw_path[len(remote_root) + 1 :])
-        entry_type = str(self._filesystem_entry_value(entry, "entry_type") or "").lower()
-        if entry_type not in {"file", "directory"}:
-            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid")
+    ) -> tuple[str, str | None, int]:
         try:
-            size = int(self._filesystem_entry_value(entry, "size"))
-        except (TypeError, ValueError) as exc:
-            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid") from exc
-        if size < 0:
-            raise ContainerStartFailedError("OpenSandbox workspace collection entry is invalid")
-        return relative_path, entry_type, size
-
-    async def _list_remote_workspace_directory(
-        self,
-        filesystem: Any,
-        workspace: WorkspaceLease,
-        relative_directory: str,
-    ) -> list[tuple[str, str, int]]:
-        if self._directory_entry_class is None or not hasattr(filesystem, "list_directory"):
-            raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
-        remote_root = workspace.workspace_container_path.rstrip("/")
-        path = remote_root if not relative_directory else f"{remote_root}/{relative_directory}"
-        raw_entries = await _maybe_await(
-            filesystem.list_directory(self._directory_entry_class(path=path, depth=1))
-        )
-        if not isinstance(raw_entries, list):
-            raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
-        if len(raw_entries) > _OPENSANDBOX_COLLECT_MAX_FILES + _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
-            raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
-        entries = [self._remote_workspace_entry(entry, workspace) for entry in raw_entries]
-        expected_parent = PurePosixPath(relative_directory)
-        for relative_path, _entry_type, _size in entries:
-            if PurePosixPath(relative_path).parent != expected_parent:
-                raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
-        return entries
+            return opensandbox_collection_entry(
+                entry,
+                workspace.workspace_container_path,
+                safe_relative_path=_safe_workspace_relative_path,
+            )
+        except ValueError as exc:
+            raise ContainerStartFailedError(str(exc)) from exc
 
     async def _remote_file_matches_listing(
         self,
@@ -4882,12 +4799,7 @@ class OpenSandboxContainerProvider:
         entry = details.get(remote_path) if isinstance(details, dict) else None
         if entry is None:
             return False
-        entry_type = str(self._filesystem_entry_value(entry, "entry_type") or "").lower()
-        try:
-            size = int(self._filesystem_entry_value(entry, "size"))
-        except (TypeError, ValueError):
-            return False
-        return entry_type == "file" and size == expected_size
+        return opensandbox_listing_matches_file(entry, expected_size)
 
     async def _stream_remote_workspace_file(
         self,
@@ -5147,63 +5059,58 @@ class OpenSandboxContainerProvider:
         lease: ContainerLease,
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
+        response_files: Sequence[str] = (),
     ) -> None:
-        """Publish only bounded legacy and delivery outputs from remote OpenSandbox."""
+        """Publish only bounded files declared by the terminal response."""
 
         staging_root: Path | None = None
         try:
+            try:
+                normalized_paths, remote_paths = opensandbox_delivery_paths(
+                    response_files,
+                    remote_root=workspace.workspace_container_path,
+                    allowed_skill_names=_authorized_staged_skill_names(request),
+                    safe_relative_path=_safe_workspace_relative_path,
+                    max_files=_OPENSANDBOX_COLLECT_MAX_FILES,
+                )
+            except ValueError as exc:
+                raise ContainerStartFailedError(str(exc)) from exc
+            if not normalized_paths:
+                return
             _require_secure_workspace_transfer()
             sandbox = await self._workspace_transfer_sandbox(lease, request, workspace)
             filesystem = getattr(sandbox, "files", None)
-            if filesystem is None:
+            if filesystem is None or not hasattr(filesystem, "get_file_info"):
                 raise ContainerStartFailedError("OpenSandbox workspace collection is unavailable")
-            root_entries = await self._list_remote_workspace_directory(filesystem, workspace, "")
-            pending: list[tuple[str, bool, bool]] = []
-            seen_directories: set[str] = set()
-            for relative_path, entry_type, _size in root_entries:
-                if relative_path not in {"output", "outputs"}:
-                    continue
-                if entry_type != "directory":
-                    raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
-                pending.append((relative_path, relative_path == "output", False))
-                seen_directories.add(relative_path)
-
+            raw_details = await _maybe_await(filesystem.get_file_info(remote_paths))
+            if not isinstance(raw_details, dict):
+                raise ContainerStartFailedError(
+                    "OpenSandbox workspace collection is invalid"
+                )
             selected_files: list[tuple[str, int]] = []
-            selected_file_paths: set[str] = set()
-            while pending:
-                relative_directory, legacy_output, delivery_output = pending.pop()
-                if len(seen_directories) > _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
-                    raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
-                for relative_path, entry_type, size in await self._list_remote_workspace_directory(
-                    filesystem,
+            for relative_path, remote_path in zip(
+                normalized_paths,
+                remote_paths,
+                strict=True,
+            ):
+                entry = raw_details.get(remote_path)
+                if entry is None:
+                    raise ContainerStartFailedError(
+                        "OpenSandbox response file is unavailable"
+                    )
+                listed_path, entry_type, size = self._remote_workspace_entry(
+                    entry,
                     workspace,
-                    relative_directory,
-                ):
-                    name = PurePosixPath(relative_path).name
-                    if entry_type == "directory":
-                        if relative_path in seen_directories:
-                            raise ContainerStartFailedError("OpenSandbox workspace collection is invalid")
-                        if len(seen_directories) >= _OPENSANDBOX_COLLECT_MAX_DIRECTORIES:
-                            raise ContainerStartFailedError("workspace artifacts exceed the directory limit")
-                        seen_directories.add(relative_path)
-                        pending.append(
-                            (
-                                relative_path,
-                                legacy_output,
-                                delivery_output or (not legacy_output and name == "delivery"),
-                            )
-                        )
-                        continue
-                    if legacy_output or delivery_output:
-                        if size > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
-                            raise ContainerStartFailedError("workspace artifacts exceed the per-file byte limit")
-                        if (
-                            relative_path in selected_file_paths
-                            or len(selected_files) >= _OPENSANDBOX_COLLECT_MAX_FILES
-                        ):
-                            raise ContainerStartFailedError("workspace artifacts exceed the file count limit")
-                        selected_file_paths.add(relative_path)
-                        selected_files.append((relative_path, size))
+                )
+                if listed_path != relative_path or entry_type != "file":
+                    raise ContainerStartFailedError(
+                        "OpenSandbox response file is unavailable"
+                    )
+                if size > _OPENSANDBOX_COLLECT_MAX_FILE_BYTES:
+                    raise ContainerStartFailedError(
+                        "workspace artifacts exceed the per-file byte limit"
+                    )
+                selected_files.append((relative_path, size))
             declared_total = sum(size for _relative_path, size in selected_files)
             if declared_total > _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES:
                 raise ContainerStartFailedError("workspace artifacts exceed the total byte limit")

@@ -50,7 +50,6 @@ class SecretBearingSettings:
     sandbox_workspace_root = "/tmp/tenant-secret/workspaces"
     anthropic_auth_token = "anthropic-secret"
     llm_gateway_provider = "openai_compatible"
-    model_gateway_request_concurrency_limit = 0
     memory_retention_worker_cleanup_enabled = True
     memory_retention_worker_cleanup_limit = 200
     multi_agent_dispatch_worker_enabled = False
@@ -171,12 +170,11 @@ def _minimal_smoke_payload(commit_sha: str, *, image: str, captured_at: str = "2
                     "verified": True,
                     "real_task_statuses": {
                         "qa-file-reviewer": "succeeded",
-                        "baoyu-translate": "succeeded",
                     },
                     "run_skill_snapshots": {
-                        "row_count": 2,
-                        "used_count": 2,
-                        "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+                        "row_count": 1,
+                        "used_count": 1,
+                        "used_skill_ids": ["qa-file-reviewer"],
                         "used_skills_source": "executor_hook",
                         "pinned_snapshot_count": 2,
                         "pinned_snapshot_source": "release_decision",
@@ -260,7 +258,7 @@ def _minimal_auth_payload(commit_sha: str, *, image: str, captured_at: str = "20
         "evidence_ref": {
             "result": "ok:true",
             "runtime_checks": {
-                "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+                "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
                 "authenticated_auth_me": {
                     "route": "/api/ai/auth/me",
                     "status": 200,
@@ -354,9 +352,6 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
             "tool_permission": {
                 "status": "passed",
                 "decision_sample_count": 12,
-                "zero_click_write_probe_count": 12,
-                "zero_click_write_410_count": 12,
-                "zero_click_write_unexpected_status_count": 0,
                 "negative_reuse_probe_count": 48,
                 "negative_reuse_denied_count": 48,
                 "negative_reuse_unexpected_successes": 0,
@@ -1659,12 +1654,11 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
         "verified": True,
         "real_task_statuses": {
             "qa-file-reviewer": "succeeded",
-            "baoyu-translate": "succeeded",
         },
         "run_skill_snapshots": {
-            "row_count": 2,
-            "used_count": 2,
-            "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+            "row_count": 1,
+            "used_count": 1,
+            "used_skill_ids": ["qa-file-reviewer"],
             "used_skills_source": "executor_hook",
             "pinned_snapshot_count": 2,
             "pinned_snapshot_source": "release_decision",
@@ -4615,7 +4609,7 @@ def test_g6_followups_prioritize_s1_memory_controls_over_non_stage_signed_skill_
 def test_auth_rbac_summary_reports_platform_principal_tenant_and_gateway_checks():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
-            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
             "authenticated_auth_me": {
                 "route": "/api/ai/auth/me",
                 "status": 200,
@@ -4663,7 +4657,7 @@ def test_auth_rbac_summary_reports_platform_principal_tenant_and_gateway_checks(
 def test_auth_rbac_summary_keeps_broader_regression_open_without_company_login_audit():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
-            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
             "authenticated_auth_me": {
                 "route": "/api/ai/auth/me",
                 "status": 200,
@@ -4704,7 +4698,7 @@ def test_auth_rbac_summary_keeps_broader_regression_open_without_company_login_a
 def test_auth_rbac_summary_requires_company_login_audit_counts_for_s1_evidence():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
-            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
             "authenticated_auth_me": {
                 "route": "/api/ai/auth/me",
                 "status": 200,
@@ -4748,7 +4742,7 @@ def test_auth_rbac_summary_requires_company_login_audit_counts_for_s1_evidence()
 def test_auth_rbac_summary_accepts_redacted_company_login_audit_without_total_count():
     summary = foundation_alpha_readiness._auth_rbac_summary(
         {
-            "unauthenticated_auth_me": {"route": "/api/auth/me", "status": 401},
+            "unauthenticated_auth_me": {"route": "/api/ai/auth/me", "status": 401},
             "authenticated_auth_me": {
                 "route": "/api/ai/auth/me",
                 "status": 200,
@@ -4801,12 +4795,12 @@ def test_governed_skill_runs_summary_keeps_only_public_runtime_evidence_fields()
                 "run_skill_snapshots": {
                     "row_count": 3,
                     "used_count": 2,
-                    "used_skill_ids": ["qa-file-reviewer", 42, "baoyu-translate"],
+                    "used_skill_ids": ["qa-file-reviewer", 42, "stale-skill"],
                     "used_skills_source": "executor_hook",
                     "pinned_snapshot_count": 2,
                     "pinned_snapshot_source": "release_decision",
                     "missing_pinned_snapshots": ["unsafe-skill", {"raw": "ignored"}],
-                    "mismatched_pinned_snapshots": ["baoyu-translate", {"raw": "ignored"}],
+                    "mismatched_pinned_snapshots": ["stale-skill", {"raw": "ignored"}],
                     "executor_private_payload": {"must_not": "leak"},
                 },
                 "raw_runtime_payload": {"must_not": "leak"},
@@ -4822,11 +4816,11 @@ def test_governed_skill_runs_summary_keeps_only_public_runtime_evidence_fields()
         "run_skill_snapshots": {
             "row_count": 3,
             "used_count": 2,
-            "used_skill_ids": ["qa-file-reviewer", "baoyu-translate"],
+            "used_skill_ids": ["qa-file-reviewer", "stale-skill"],
             "used_skills_source": "executor_hook",
             "pinned_snapshot_count": 2,
             "pinned_snapshot_source": "release_decision",
             "missing_pinned_snapshots": ["unsafe-skill"],
-            "mismatched_pinned_snapshots": ["baoyu-translate"],
+            "mismatched_pinned_snapshots": ["stale-skill"],
         },
     }

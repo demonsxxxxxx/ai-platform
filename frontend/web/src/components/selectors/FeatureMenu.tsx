@@ -12,17 +12,10 @@ import {
   Wrench,
   Sparkles,
   Plus,
-  Image,
-  Video,
-  Music,
-  FileText,
   ChevronDown,
-  Upload,
   Layers,
 } from "lucide-react";
 
-import type { FileCategory, UploadLimitsBytes } from "../../types";
-import { formatUploadLimitMiB } from "../../utils/uploadLimits";
 
 export type FeaturePanel =
   | "tools"
@@ -32,13 +25,6 @@ export type FeaturePanel =
   | "thinking"
   | null;
 
-const FILE_CATEGORY_ICONS: Record<FileCategory, React.ElementType> = {
-  image: Image,
-  video: Video,
-  audio: Music,
-  document: FileText,
-};
-
 interface FeatureMenuProps {
   activePanel: FeaturePanel;
   onOpen: (panel: FeaturePanel) => void;
@@ -47,10 +33,6 @@ interface FeatureMenuProps {
   totalToolsCount: number;
   enabledSkillsCount: number;
   totalSkillsCount: number;
-  // File upload
-  uploadCategories: FileCategory[];
-  uploadLimitsBytes?: UploadLimitsBytes | null;
-  onFileCategorySelect: (category: FileCategory) => void;
 }
 
 function MenuGroup({
@@ -125,9 +107,6 @@ export const FeatureMenu = memo(function FeatureMenu({
   totalToolsCount,
   enabledSkillsCount,
   totalSkillsCount,
-  uploadCategories,
-  uploadLimitsBytes,
-  onFileCategorySelect,
 }: FeatureMenuProps) {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
@@ -164,10 +143,7 @@ export const FeatureMenu = memo(function FeatureMenu({
     };
   };
 
-  const hasFeatureItems =
-    totalToolsCount > 0 ||
-    totalSkillsCount > 0 ||
-    uploadCategories.length > 0;
+  const hasFeatureItems = totalToolsCount > 0 || totalSkillsCount > 0;
   if (!hasFeatureItems) return null;
 
   const resolvedTriggerLabel = triggerLabel ?? t("chat.features", "功能");
@@ -201,40 +177,6 @@ export const FeatureMenu = memo(function FeatureMenu({
               borderColor: "var(--theme-border)",
             }}
           >
-            {uploadCategories.length > 0 && (
-              <MenuGroup
-                label={t("featureMenu.fileReference", "文件引用")}
-                icon={<Upload size={18} />}
-                defaultExpanded
-              >
-                {uploadCategories.map((category) => {
-                  const Icon = FILE_CATEGORY_ICONS[category];
-                  return (
-                    <button
-                      key={category}
-                      type="button"
-                      onClick={() => {
-                        onFileCategorySelect(category);
-                        setIsOpen(false);
-                      }}
-                      className="feature-menu-item"
-                    >
-                      <span className="feature-menu-item-icon">
-                        <Icon size={18} />
-                      </span>
-                      <span className="flex-1 text-left truncate">
-                        {t(`fileUpload.categories.${category}`)}
-                      </span>
-                      {uploadLimitsBytes && (
-                        <span className="feature-menu-item-badge">
-                          {formatUploadLimitMiB(uploadLimitsBytes[category])}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </MenuGroup>
-            )}
             {(totalToolsCount > 0 || totalSkillsCount > 0) && (
               <MenuGroup
                 label={t("featureMenu.enhance", "增强")}

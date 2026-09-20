@@ -26,7 +26,6 @@ class SecretBearingSettings:
     sandbox_workspace_root = "/tmp/tenant-secret/workspaces"
     anthropic_auth_token = "anthropic-secret"
     llm_gateway_provider = "openai_compatible"
-    model_gateway_request_concurrency_limit = 0
     multi_agent_dispatch_worker_enabled = False
 
 
@@ -117,7 +116,6 @@ def test_observability_readiness_import_is_runtime_dependency_neutral():
         "class SettingsBlocker:\n"
         "    sandbox_container_provider = 'fake'\n"
         "    llm_gateway_provider = 'openai_compatible'\n"
-        "    model_gateway_request_concurrency_limit = 0\n"
         "    multi_agent_dispatch_worker_enabled = False\n"
         "def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):\n"
         "    if name == 'app.settings':\n"
@@ -156,8 +154,8 @@ def test_observability_readiness_records_g9_domains_and_open_gaps_without_secret
     assert domains["runtime_metrics"]["evidence"]["model_gateway_backpressure_policy"] == {
         "schema_version": "ai-platform.model-gateway-backpressure-policy.v1",
         "status": "contract_only_not_enforced",
-        "config_signal": "MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT",
-        "default_limit_policy": "0_disables_platform_request_limit",
+        "config_signal": None,
+        "default_limit_policy": "unbounded_by_platform",
         "required_admin_runtime_fields": [
             "capacity.limits.model_gateway",
             "backpressure.model_gateway",
@@ -283,14 +281,14 @@ def test_error_taxonomy_dashboard_readiness_contract_defines_safe_admin_dashboar
     assert "sk-secret" not in serialized
 
 
-def test_observability_readiness_reports_configured_model_gateway_limit_without_closing_g9():
+def test_observability_readiness_ignores_retired_model_gateway_limit_without_closing_g9():
     class ConfiguredGatewaySettings(SecretBearingSettings):
         model_gateway_request_concurrency_limit = 8
 
     readiness = build_observability_readiness(ConfiguredGatewaySettings())
 
     assert readiness["status"] == "partial_blocked"
-    assert readiness["config_signals"]["model_gateway_request_concurrency_limit"] == 8
+    assert readiness["config_signals"]["model_gateway_request_concurrency_limit"] is None
     assert "model_gateway_request_concurrency_limit" in readiness["open_gaps"]
     assert "model_gateway_request_concurrency_limit_enforcement" in readiness["open_gaps"]
     assert "model_gateway_capacity_load_test_evidence" in readiness["open_gaps"]

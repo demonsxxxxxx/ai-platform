@@ -102,10 +102,17 @@ export const PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS = {
   ),
   context_file_too_large: failed(
     "chat.runTerminal.contextFileTooLarge",
-    "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
+    "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。",
     "chat.runStatus.event.contextFileTooLarge",
     "文件超过处理上限",
     "file_preprocessing",
+  ),
+  current_request_too_large: failed(
+    "chat.runTerminal.currentRequestTooLarge",
+    "当前请求超过 16 KB 执行上限。请缩短或拆分请求后重试。",
+    "chat.runStatus.event.currentRequestTooLarge",
+    "请求超过处理上限",
+    "input_validation",
   ),
   context_file_pdf_password_required: failed(
     "chat.runTerminal.contextFilePdfPasswordRequired",
@@ -259,7 +266,9 @@ export function publicTerminalRunReference(value: unknown): string | undefined {
     : undefined;
 }
 
-export function publicTerminalPresentation(detailCode: string):
+export function publicTerminalPresentation(
+  detailCode: string,
+):
   | (PublicTerminalPresentationDefinition & { message: string })
   | undefined {
   const definition = getPublicTerminalPresentationDefinition(detailCode);

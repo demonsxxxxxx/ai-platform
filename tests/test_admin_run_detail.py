@@ -4,7 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.runs.api import RunTerminalizationProgress
+from app.runs.api import RunDiagnosticsService, RunTerminalizationProgress
+from app.sandbox.api import normalize_sdk_runtime_diagnostics
 
 
 class _RouteCancellationReceipt:
@@ -108,6 +109,48 @@ def test_admin_run_detail_requires_admin(monkeypatch):
     response = client.get("/api/ai/admin/runs/run_a", headers=headers("user"))
 
     assert response.status_code == 403
+
+
+def test_admin_run_diagnostics_requires_admin(monkeypatch):
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/admin/runs/run_a/diagnostics",
+        headers=headers("user"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not_ai_admin"
+
+
+def test_admin_run_diagnostics_keeps_not_found_tenant_scoped(monkeypatch):
+    class MissingDiagnosticsPersistence:
+        async def get_admin_snapshot(self, _conn, *, tenant_id, run_id):
+            assert tenant_id == "default"
+            assert run_id == "run_missing"
+            return None
+
+        async def append_observation(self, *_args, **_kwargs):
+            raise AssertionError("read route must not write diagnostics")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    app = create_app()
+    app.state.run_diagnostics_service = RunDiagnosticsService(
+        persistence=MissingDiagnosticsPersistence(),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version="ai-platform.sdk-runtime-diagnostics.v1",
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/ai/admin/runs/run_missing/diagnostics",
+        headers=headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run_not_found"
 
 
 def test_admin_run_list_requires_admin(monkeypatch):
@@ -348,6 +391,108 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
     assert data["skill_snapshots"][0]["skill_id"] == "qa-file-reviewer"
     assert data["skill_snapshots"][0]["used"] is True
     assert data["skill_snapshots"][0]["usage"]["used_skills_source"] == "executor_hook"
+
+
+def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch):
+    diagnostics = {
+        "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+        "error_code": "claude_agent_sdk_tool_admission_failed",
+        "tool_calls": [
+            {
+                "tool_name": "Bash",
+                "invocation_id": "tool-1",
+                "tool_input": {
+                    "command": "cat /private/file",
+                    "token": "private-token",
+                },
+            }
+        ],
+    }
+
+    async def fake_get_admin_run_detail(conn, *, tenant_id, run_id):
+        return {
+            "run": {
+                "run_id": run_id,
+                "session_id": "ses-a",
+                "user_id": "user-a",
+                "status": "failed",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "created_at": None,
+                "started_at": None,
+                "finished_at": None,
+                "input": {},
+                "result": {},
+            },
+            "events": [],
+            "steps": [],
+            "artifacts": [],
+            "sandbox_leases": [],
+            "skill_snapshots": [],
+            "audit": [],
+        }
+
+    class LegacyDiagnosticsPersistence:
+        async def get_admin_snapshot(self, _conn, *, tenant_id, run_id):
+            assert tenant_id == "default"
+            assert run_id == "run_failed"
+            return {
+                "run": {
+                    "run_id": run_id,
+                    "session_id": "ses-a",
+                    "user_id": "user-a",
+                    "workspace_id": "default",
+                    "status": "failed",
+                    "trace_id": "trace-a",
+                    "created_at": None,
+                    "queued_at": None,
+                    "started_at": None,
+                    "finished_at": None,
+                    "error_code": diagnostics["error_code"],
+                },
+                "result_json": {"runtime_diagnostics": diagnostics},
+                "diagnostic": None,
+                "attempts": [],
+            }
+
+        async def append_observation(self, *_args, **_kwargs):
+            raise AssertionError("read route must not write diagnostics")
+
+    async def forbidden_get_run(*_args, **_kwargs):
+        raise AssertionError("admin detail must not restore private diagnostics")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.get_admin_run_detail",
+        fake_get_admin_run_detail,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.get_run",
+        forbidden_get_run,
+    )
+    app = create_app()
+    app.state.run_diagnostics_service = RunDiagnosticsService(
+        persistence=LegacyDiagnosticsPersistence(),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version="ai-platform.sdk-runtime-diagnostics.v1",
+    )
+    client = TestClient(app)
+
+    detail_response = client.get("/api/ai/admin/runs/run_failed", headers=headers())
+    diagnostics_response = client.get(
+        "/api/ai/admin/runs/run_failed/diagnostics",
+        headers=headers(),
+    )
+
+    assert detail_response.status_code == 200
+    assert "runtime_diagnostics" not in detail_response.json()["run"]["result"]
+    assert diagnostics_response.status_code == 200
+    projected = diagnostics_response.json()
+    assert projected["coverage"] == "legacy_record"
+    assert projected["root"]["error_code"] == diagnostics["error_code"]
+    assert "tool_input" not in str(projected)
+    assert "private-token" not in str(projected)
 
 
 def test_admin_run_detail_includes_live_queue_context_for_queued_run(monkeypatch):

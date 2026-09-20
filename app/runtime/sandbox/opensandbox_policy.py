@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 from app.execution_boundary import (
     GOVERNED_EGRESS_PROOF_LABEL,
     governed_egress_previous_signing_keys,
+    is_governed_egress_identity_proof,
     is_governed_egress_proof,
 )
 from app.platform.sandbox.docker_governed_network import governed_egress_proof_key_id
@@ -23,11 +24,13 @@ from app.runtime.sandbox.contracts import (
     build_trusted_callback_target,
 )
 from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_metadata
+from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 
 SANDBOX_SECURITY_PROFILE_GOVERNED = "governed"
 SANDBOX_SECURITY_PROFILE_INTERNAL_TEST = "internal-test"
 SANDBOX_SECURITY_PROFILE_LABEL = "ai-platform.security_profile"
 DIRECT_OPENSANDBOX_PROFILE_ID = "direct-opensandbox"
+DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
 DIRECT_OPENSANDBOX_POLICY_SUBJECT = "stateless-nginx-egress"
 DIRECT_OPENSANDBOX_CALLBACK_SUBJECT = "api-callback-token-validation"
 DIRECT_OPENSANDBOX_DENIAL_SUBJECT = "ai-platform-sandbox-runtime"
@@ -460,7 +463,8 @@ def _governed_cleanup_expected_binding(
         != SANDBOX_SECURITY_PROFILE_GOVERNED
         or _required_remote_string(labels, "ai-platform.external_egress.runtime_identity")
         != _OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY
-        or _required_remote_string(labels, "ai-platform.external_egress.network_mode") != "bridge"
+        or _required_remote_string(labels, "ai-platform.external_egress.network_mode")
+        != DIRECT_OPENSANDBOX_NETWORK_NAME
         or _required_remote_string(labels, "ai-platform.external_egress.profile_version") != "v1"
         or _required_remote_string(labels, "ai-platform.external_egress.upstream_bridge_version") != "v1"
     ):
@@ -557,4 +561,52 @@ def opensandbox_cleanup_identity_is_authorized(
         expected_binding=expected_binding,
         now=now,
         require_fresh=False,
+    )
+
+
+def opensandbox_renewal_identity_is_authorized(
+    status: ContainerStatus,
+    lease: ContainerLease,
+    settings: Any,
+    *,
+    now: datetime,
+) -> bool:
+    """Authorize renewal from an active DB fence and immutable remote identity."""
+
+    labels = status.detail.get("labels")
+    if not isinstance(labels, dict):
+        return False
+    expected_executor_identity = {
+        "ai-platform.executor.user": f"{RUNTIME_UID}:{RUNTIME_GID}",
+        "ai-platform.executor.uid": str(RUNTIME_UID),
+        "ai-platform.executor.gid": str(RUNTIME_GID),
+        "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+    }
+    if not opensandbox_metadata.opensandbox_metadata_matches(labels, expected_executor_identity):
+        return False
+    if not opensandbox_cleanup_identity_is_authorized(status, lease, settings, now=now):
+        return False
+    lease_profile = str(
+        lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
+    )
+    if lease_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+        return True
+    encoded_proof = lease.labels.get(GOVERNED_EGRESS_PROOF_LABEL)
+    if not isinstance(encoded_proof, str):
+        return False
+    try:
+        proof = json.loads(encoded_proof)
+    except (TypeError, ValueError):
+        return False
+    expected_binding = _governed_cleanup_expected_binding(status, lease)
+    return bool(
+        expected_binding is not None
+        and is_governed_egress_identity_proof(
+            proof,
+            provider="opensandbox",
+            signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
+            signing_key_id=governed_egress_proof_key_id(settings),
+            expected_binding=expected_binding,
+            now=now,
+        )
     )

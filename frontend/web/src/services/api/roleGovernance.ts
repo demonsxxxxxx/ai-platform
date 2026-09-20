@@ -5,7 +5,6 @@ import type {
   RoleGovernanceOperationResponse,
   RoleGovernanceOverviewResponse,
   RoleGovernanceRequestCreate,
-  RoleGovernanceRequestItem,
   RoleGovernanceRollbackRequest,
 } from "../../types/roleGovernance";
 
@@ -25,12 +24,6 @@ export const roleGovernanceApi = {
   getOverview(workspaceId = "default") {
     return authFetch<RoleGovernanceOverviewResponse>(
       withWorkspace(ROLE_GOVERNANCE_OVERVIEW_API, workspaceId),
-    );
-  },
-
-  getRequest(requestId: string) {
-    return authFetch<RoleGovernanceRequestItem>(
-      `${ROLE_GOVERNANCE_REQUESTS_API}/${encodeURIComponent(requestId)}`,
     );
   },
 

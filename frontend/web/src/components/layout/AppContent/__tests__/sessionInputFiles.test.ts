@@ -59,7 +59,7 @@ test("hydrates a persisted user card only from files bound to that message run",
   assert.equal(merged[1].attachments, undefined);
 });
 
-test("side panel consumes both session file projections and renders explicit degraded states", () => {
+test("side panel combines session inputs with structured assistant response files", () => {
   const source = readFileSync(
     new URL("../../../../librechat-ui/SidePanel.tsx", import.meta.url),
     "utf8",
@@ -72,12 +72,13 @@ test("side panel consumes both session file projections and renders explicit deg
   assert.match(source, /onOpenFile/);
   assert.match(source, /onDownloadFile/);
   assert.match(chatView, /sessionApi\.getInputFiles\(sessionId\)/);
-  assert.match(chatView, /sessionApi\.getArtifactFiles\(sessionId\)/);
+  assert.doesNotMatch(chatView, /sessionApi\.getArtifactFiles\(sessionId\)/);
   assert.match(chatView, /projectSessionWorkspaceFiles/);
+  assert.match(chatView, /projectAssistantResponseFiles/);
   assert.match(chatView, /sessionWorkspaceProjectionForRender/);
   assert.match(
     chatView,
-    /\[sessionId, currentRunId, messages\.length, attachments\.length\]/,
+    /\[sessionId, currentRunId, attachments\.length\]/,
   );
   assert.match(chatView, /files=\{visibleWorkspaceProjection\.files\}/);
   assert.doesNotMatch(chatView, /<WorkbenchRightPanel[\s\S]{0,400}attachments=\{attachments\}/);

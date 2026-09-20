@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   type LucideIcon,
+  Activity,
   Bell,
+  Bug,
   CheckCircle2,
   Clock3,
   MessageSquareText,
   Megaphone,
   RotateCcw,
   Search,
-  Settings,
   ShieldCheck,
   SlidersHorizontal,
   Users,
@@ -25,12 +26,19 @@ import {
 import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { useAuth } from "../../hooks/useAuth";
 import { workbenchApi } from "../../services/api/workbench";
+import {
+  adminUsersApi,
+  type AdminUserDiagnosticsResponse,
+  type AdminUserSummary,
+} from "../../services/api/adminUsers";
 import type {
   WorkbenchGovernance,
   WorkbenchNotification,
   WorkbenchNotificationListResponse,
 } from "../../services/api/workbench";
 import { Permission } from "../../types";
+import { formatDateTimeShort } from "../../utils/datetime";
+import { AdminUserDiagnosticsDrawer } from "./AdminUserDiagnosticsDrawer";
 import { WorkbenchStateSurface } from "./WorkbenchStateSurface";
 import { workbenchSurface } from "./workbenchSurface";
 import {
@@ -45,7 +53,7 @@ type LoadState<T> = {
   isLoading: boolean;
 };
 
-type PageKind = "users" | "settings" | "feedback" | "notifications";
+type PageKind = "users" | "feedback" | "notifications";
 
 type AvailabilityState = "enabled" | "disabled" | "inherited" | "admin-only" | "unavailable";
 
@@ -80,16 +88,6 @@ const pageMeta: Record<
     adminPermission: Permission.USER_ADMIN,
     taskTitle: "workbench.projections.users.taskTitle",
     taskDescription: "workbench.projections.users.taskDescription",
-  },
-  settings: {
-    title: "workbench.projections.settings.title",
-    subtitle: "workbench.projections.settings.subtitle",
-    icon: Settings,
-    surface: "workbench-settings-projection",
-    readPermission: Permission.SETTINGS_READ,
-    adminPermission: Permission.SETTINGS_ADMIN,
-    taskTitle: "workbench.projections.settings.taskTitle",
-    taskDescription: "workbench.projections.settings.taskDescription",
   },
   feedback: {
     title: "workbench.projections.feedback.title",
@@ -171,13 +169,6 @@ function localizedText(
   return resolveChineseNotificationText(value, fallback);
 }
 
-function formatValue(value: unknown) {
-  if (value === null || value === undefined || value === "") return "-";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value);
-}
-
 function normalizedLookupKey(value: string) {
   return value
     .trim()
@@ -203,21 +194,6 @@ function translateMappedValue(
   const fallback = value ? humanizeToken(value) : "-";
   if (!value) return fallback;
   return t(`${namespace}.${normalizedLookupKey(value)}`, fallback);
-}
-
-function roleLabel(t: ReturnType<typeof useTranslation>["t"], role: string) {
-  return translateMappedValue(t, "workbench.projections.users.roleLabels", role);
-}
-
-function settingCategoryLabel(
-  t: ReturnType<typeof useTranslation>["t"],
-  category: string,
-) {
-  return translateMappedValue(
-    t,
-    "workbench.projections.settings.categories",
-    category,
-  );
 }
 
 function feedbackStatusLabel(
@@ -285,12 +261,14 @@ function ProjectionShell({
   kind,
   loadState,
   governance,
+  auditAvailable,
   metrics,
   children,
 }: {
   kind: PageKind;
   loadState: LoadState<unknown>;
   governance?: WorkbenchGovernance | null;
+  auditAvailable?: boolean;
   metrics?: ProjectionMetric[];
   children: ReactNode;
 }) {
@@ -316,7 +294,6 @@ function ProjectionShell({
     governance?.projection
       ? t("workbench.projections.governance.projection", {
           projection: governance.projection,
-          tenant: governance.tenant_id,
           workspace: governance.workspace_id,
         })
       : null,
@@ -435,7 +412,8 @@ function ProjectionShell({
             readAvailability={readAvailability}
             adminAvailability={adminAvailability}
             auditAvailable={Boolean(
-              governance?.audit_required || governance?.rollback_available,
+              auditAvailable ??
+                (governance?.audit_required || governance?.rollback_available),
             )}
             secretMaterialProjected={secretMaterialProjected}
           />
@@ -620,234 +598,172 @@ function ProjectionStatusChip({
 export function WorkbenchUsersProjectionPanel() {
   const { t } = useTranslation();
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedUser, setSelectedUser] = useState<AdminUserSummary | null>(null);
+  const [diagnostics, setDiagnostics] = useState<AdminUserDiagnosticsResponse | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const diagnosticsRequest = useRef(0);
   const users = useProjection(
-    () => workbenchApi.listUsers({ limit: 50, search: searchQuery }),
+    () => adminUsersApi.list({ limit: 50, search: searchQuery }),
     [searchQuery],
   );
-  const rows = users.data?.items?.length ? users.data.items : users.data?.users ?? [];
-  const activeCount = rows.filter((user) => user.is_active).length;
-  const roleCount = new Set(rows.flatMap((user) => user.roles)).size;
+  const rows = users.data?.users ?? [];
+  const activeCount = rows.filter((user) => user.status === "active").length;
+  const runCount = rows.reduce((total, user) => total + user.run_count, 0);
+  const failedRunCount = rows.reduce((total, user) => total + user.failed_run_count, 0);
+
+  const openDiagnostics = async (user: AdminUserSummary) => {
+    const requestId = ++diagnosticsRequest.current;
+    setSelectedUser(user);
+    setDiagnostics(null);
+    setDiagnosticsError(null);
+    setDiagnosticsLoading(true);
+    try {
+      const result = await adminUsersApi.diagnostics(user.user_id);
+      if (diagnosticsRequest.current === requestId) setDiagnostics(result);
+    } catch (error) {
+      if (diagnosticsRequest.current === requestId) {
+        setDiagnosticsError(
+          error instanceof Error ? error.message : t("workbench.projections.users.diagnosticsLoadFailed"),
+        );
+      }
+    } finally {
+      if (diagnosticsRequest.current === requestId) setDiagnosticsLoading(false);
+    }
+  };
+
+  const closeDiagnostics = () => {
+    diagnosticsRequest.current += 1;
+    setSelectedUser(null);
+    setDiagnostics(null);
+    setDiagnosticsError(null);
+    setDiagnosticsLoading(false);
+  };
 
   return (
-    <ProjectionShell
-      kind="users"
-      loadState={users}
-      governance={users.data?.governance}
-      metrics={[
-        {
-          label: t("workbench.projections.users.total"),
-          value: users.data?.total ?? rows.length,
-          detail: t("workbench.projections.users.visible", {
-            count: rows.length,
-          }),
-          icon: Users,
-        },
-        {
-          label: t("workbench.projections.users.active"),
-          value: activeCount,
-          detail: t("workbench.projections.users.inactive", {
-            count: Math.max(rows.length - activeCount, 0),
-          }),
-          icon: CheckCircle2,
-        },
-        {
-          label: t("workbench.projections.users.roles"),
-          value: roleCount,
-          detail: t("workbench.projections.users.rolesDetail"),
-          icon: ShieldCheck,
-        },
-      ]}
-    >
-      <div className={workbenchSurface.compactPanel}>
-        <div className="border-b border-[var(--theme-border)] px-4 py-3">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                {t("workbench.projections.users.directoryTitle")}
-              </h3>
-              <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
-                {t("workbench.projections.users.directoryDescription")}
-              </p>
-            </div>
-            <div className="relative min-w-0 md:w-72">
-              <Search
-                size={17}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-tertiary)]"
-              />
-              <input
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                className="panel-search h-10 pl-9"
-                placeholder={t("workbench.projections.users.search")}
-              />
-            </div>
-          </div>
-        </div>
-        <div className="divide-y divide-[var(--theme-border)]">
-          {rows.length === 0 ? (
-            <EmptyProjection message={t("workbench.projections.users.empty")} />
-          ) : (
-            rows.map((user) => (
-              <article
-                key={user.id}
-                className="grid gap-3 px-4 py-3 text-sm md:grid-cols-[minmax(0,1fr)_16rem]"
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <UserCheck
-                      size={15}
-                      className={
-                        user.is_active
-                          ? "text-[var(--theme-primary)]"
-                          : "text-[var(--theme-text-tertiary)]"
-                      }
-                    />
-                    <h3 className="truncate font-semibold text-[var(--theme-text)]">
-                      {user.full_name || user.username}
-                    </h3>
-                    <ProjectionStatusChip
-                      tone={user.is_active ? "primary" : "muted"}
-                    >
-                      {user.is_active
-                        ? t("workbench.projections.users.activeState")
-                        : t("workbench.projections.users.inactiveState")}
-                    </ProjectionStatusChip>
-                  </div>
-                  <dl className="mt-2 grid gap-1 text-xs text-[var(--theme-text-secondary)] sm:grid-cols-3">
-                    <div>
-                      <dt className={workbenchSurface.label}>
-                        {t("workbench.projections.users.account")}
-                      </dt>
-                      <dd className="truncate">{user.username}</dd>
-                    </div>
-                    <div>
-                      <dt className={workbenchSurface.label}>
-                        {t("workbench.projections.users.tenant")}
-                      </dt>
-                      <dd className="truncate">{user.tenant_id}</dd>
-                    </div>
-                    <div>
-                      <dt className={workbenchSurface.label}>
-                        {t("workbench.projections.users.department")}
-                      </dt>
-                      <dd className="truncate">{user.department_id || "-"}</dd>
-                    </div>
-                  </dl>
-                </div>
-                <div className="flex min-w-0 flex-wrap content-start gap-1.5">
-                  {user.roles.slice(0, 4).map((role) => (
-                    <span
-                      key={role}
-                      className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
-                    >
-                      {roleLabel(t, role)}
-                    </span>
-                  ))}
-                </div>
-              </article>
-            ))
-          )}
-        </div>
-      </div>
-    </ProjectionShell>
-  );
-}
-
-export function WorkbenchSettingsProjectionPanel() {
-  const { t } = useTranslation();
-  const settings = useProjection(() => workbenchApi.listSettings(), []);
-  const groups = useMemo(
-    () => Object.values(settings.data?.settings ?? {}),
-    [settings.data?.settings],
-  );
-  const settingItems = groups.flatMap((group) => group.items);
-  const secretCount = settingItems.filter((item) => item.is_secret).length;
-  const auditCount = settingItems.filter(
-    (item) => item.audit_required || item.rollback_available,
-  ).length;
-
-  return (
-    <ProjectionShell
-      kind="settings"
-      loadState={settings}
-      governance={settings.data?.governance}
-      metrics={[
-        {
-          label: t("workbench.projections.settings.groups"),
-          value: groups.length,
-          detail: t("workbench.projections.settings.items", {
-            count: settingItems.length,
-          }),
-          icon: Settings,
-        },
-        {
-          label: t("workbench.projections.settings.redactedCount"),
-          value: secretCount,
-          detail: t("workbench.projections.settings.redactedDetail"),
-          icon: ShieldCheck,
-        },
-        {
-          label: t("workbench.projections.settings.auditCount"),
-          value: auditCount,
-          detail: t("workbench.projections.settings.auditDetail"),
-          icon: RotateCcw,
-        },
-      ]}
-    >
-      <div className="grid gap-3 xl:grid-cols-2">
-        {groups.length === 0 ? (
-          <EmptyProjection message={t("workbench.projections.settings.empty")} />
-        ) : (
-          groups.map((group) => (
-            <section key={group.category} className={workbenchSurface.compactPanel}>
-              <div className="border-b border-[var(--theme-border)] px-4 py-3">
+    <>
+      <ProjectionShell
+        kind="users"
+        loadState={users}
+        auditAvailable
+        metrics={[
+          {
+            label: t("workbench.projections.users.total"),
+            value: users.data?.total ?? rows.length,
+            detail: t("workbench.projections.users.visible", { count: rows.length }),
+            icon: Users,
+          },
+          {
+            label: t("workbench.projections.users.active"),
+            value: activeCount,
+            detail: t("workbench.projections.users.inactive", {
+              count: Math.max(rows.length - activeCount, 0),
+            }),
+            icon: CheckCircle2,
+          },
+          {
+            label: t("workbench.projections.users.runs"),
+            value: runCount,
+            detail: t("workbench.projections.users.failedRuns", { count: failedRunCount }),
+            icon: Activity,
+          },
+        ]}
+      >
+        <div className={workbenchSurface.compactPanel}>
+          <div className="border-b border-[var(--theme-border)] px-4 py-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-                  {settingCategoryLabel(t, group.category)}
+                  {t("workbench.projections.users.directoryTitle")}
                 </h3>
                 <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
-                  {t("workbench.projections.settings.groupItemCount", {
-                    count: group.items.length,
-                  })}
+                  {t("workbench.projections.users.directoryDescription")}
                 </p>
               </div>
-              <div className="divide-y divide-[var(--theme-border)]">
-                {group.items.map((item) => (
-                  <div key={item.key} className="grid gap-2 px-4 py-3 text-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <h4 className="truncate font-medium text-[var(--theme-text)]">
-                          {item.label || item.key}
-                        </h4>
-                        <p className="mt-1 truncate text-xs text-[var(--theme-text-secondary)]">
-                          {item.key}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 gap-1.5">
-                        {item.is_secret ? (
-                          <ProjectionStatusChip tone="muted">
-                            {t("workbench.projections.settings.secretChip")}
-                          </ProjectionStatusChip>
-                        ) : null}
-                        {item.audit_required || item.rollback_available ? (
-                          <ProjectionStatusChip tone="primary">
-                            {t("workbench.projections.settings.auditedChip")}
-                          </ProjectionStatusChip>
-                        ) : null}
-                      </div>
+              <div className="relative min-w-0 md:w-72">
+                <Search
+                  size={17}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-tertiary)]"
+                />
+                <input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  className="panel-search h-10 pl-9"
+                  placeholder={t("workbench.projections.users.search")}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="divide-y divide-[var(--theme-border)]">
+            {rows.length === 0 ? (
+              <EmptyProjection message={t("workbench.projections.users.empty")} />
+            ) : (
+              rows.map((user) => (
+                <article
+                  key={user.user_id}
+                  className="grid gap-3 px-4 py-3 text-sm md:grid-cols-[minmax(0,1fr)_minmax(18rem,auto)]"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <UserCheck
+                        size={15}
+                        className={
+                          user.status === "active"
+                            ? "text-[var(--theme-primary)]"
+                            : "text-[var(--theme-text-tertiary)]"
+                        }
+                      />
+                      <h3 className="truncate font-semibold text-[var(--theme-text)]">
+                        {user.display_name || user.user_id}
+                      </h3>
+                      <ProjectionStatusChip tone={user.status === "active" ? "primary" : "muted"}>
+                        {user.status === "active"
+                          ? t("workbench.projections.users.activeState")
+                          : t("workbench.projections.users.inactiveState")}
+                      </ProjectionStatusChip>
                     </div>
-                    <p className="truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-                      {item.is_secret
-                        ? t("workbench.projections.settings.redacted")
-                        : formatValue(item.value)}
+                    <p className="mt-1 truncate font-mono text-xs text-[var(--theme-text-secondary)]">
+                      {user.user_id}
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--theme-text-tertiary)]">
+                      {t("workbench.projections.users.lastActivity")}: {user.last_activity_at ? formatDateTimeShort(user.last_activity_at) : "-"}
                     </p>
                   </div>
-                ))}
-              </div>
-            </section>
-          ))
-        )}
-      </div>
-    </ProjectionShell>
+                  <div className="flex flex-wrap items-center justify-between gap-2 md:justify-end">
+                    <span className="text-xs text-[var(--theme-text-secondary)]">
+                      {t("workbench.projections.users.activitySummary", {
+                        sessions: user.session_count,
+                        runs: user.run_count,
+                        failed: user.failed_run_count,
+                      })}
+                    </span>
+                    <button
+                      type="button"
+                      data-user-run-debug={user.user_id}
+                      className="btn-secondary inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs"
+                      onClick={() => void openDiagnostics(user)}
+                    >
+                      <Bug size={14} />
+                      {t("workbench.projections.users.auditDebug")}
+                    </button>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </div>
+      </ProjectionShell>
+
+      {selectedUser ? (
+        <AdminUserDiagnosticsDrawer
+          user={selectedUser}
+          diagnostics={diagnostics}
+          error={diagnosticsError}
+          loading={diagnosticsLoading}
+          onClose={closeDiagnostics}
+        />
+      ) : null}
+    </>
   );
 }
 

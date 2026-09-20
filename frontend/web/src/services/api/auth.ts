@@ -2,17 +2,9 @@
  * Auth API - 认证相关
  */
 
-import type {
-  User,
-  UserCreate,
-  LoginRequest,
-  TokenResponse,
-  PermissionsResponse,
-  RegisterResponse,
-} from "../../types";
+import type { User, LoginRequest } from "../../types";
 import { API_BASE } from "./config";
 import { ApiRequestError, authFetch } from "./fetch";
-import { refreshTokens } from "./tokenManager";
 import { projectSafeBackendError } from "../../utils/backendErrors";
 import i18n from "../../i18n";
 
@@ -21,25 +13,24 @@ interface PrincipalResponseWire {
   user_name?: string;
   display_name: string;
   tenant_id: string;
+  department_id: string;
   roles: string[];
   permissions: string[];
   is_admin: boolean;
   source: string;
 }
 
-export type AuthContextBootstrapRequest =
-  | { nonce: string; protocol_version?: 1 }
-  | {
-      nonce: string;
-      protocol_version: 2;
-      browser_incarnation: string;
-      generation: number;
-      rotation_ticket?: string;
-      recovery_only?: true;
-    };
+export interface AuthContextBootstrapRequest {
+  nonce: string;
+  protocol_version: 2;
+  browser_incarnation: string;
+  generation: number;
+  rotation_ticket?: string;
+  recovery_only?: true;
+}
 
 export type AuthContextBootstrapResponse =
-  | { status: "ready"; protocol_version?: 1 | 2; generation?: number }
+  | { status: "ready"; protocol_version: 2; generation: number }
   | {
       status: "rebootstrap_required";
       protocol_version: 2;
@@ -51,24 +42,22 @@ export type AuthContextBootstrapResult = AuthContextBootstrapResponse | void;
 
 export type BootstrapAuthContext = {
   bivarianceHack(
-    request: string | AuthContextBootstrapRequest,
+    request: AuthContextBootstrapRequest,
     signal?: AbortSignal,
   ): Promise<AuthContextBootstrapResult>;
 }["bivarianceHack"];
 
 async function bootstrapAuthContext(
-  request: string | AuthContextBootstrapRequest,
+  request: AuthContextBootstrapRequest,
   signal?: AbortSignal,
 ): Promise<AuthContextBootstrapResult> {
-  const payload: AuthContextBootstrapRequest =
-    typeof request === "string" ? { nonce: request } : request;
   return authFetch<AuthContextBootstrapResponse>(`${API_BASE}/api/ai/auth/bootstrap`, {
     method: "POST",
     skipAuth: true,
     credentials: "include",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(request),
     headers: { "Content-Type": "application/json" },
-    signal,
+    signal: withAuthRequestTimeout(signal),
   });
 }
 
@@ -76,6 +65,7 @@ function mapPrincipalToUser(principal: PrincipalResponseWire): User {
   return {
     id: principal.user_id,
     tenant_id: principal.tenant_id,
+    department_id: principal.department_id,
     username: principal.user_name || principal.user_id,
     email: "",
     avatar_url: undefined,
@@ -96,6 +86,51 @@ export function buildOAuthLoginUrl(provider: string, state?: string): string {
   const safeProvider = encodeURIComponent(provider);
   const suffix = state ? `?state=${encodeURIComponent(state)}` : "";
   return `${API_BASE}/api/auth/oauth/${safeProvider}${suffix}`;
+}
+
+const AUTH_REQUEST_TIMEOUT_MS = 15_000;
+
+function withAuthRequestTimeout(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(AUTH_REQUEST_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+export class CompanyADLoginError extends Error {
+  constructor() {
+    super("company_ad_login_failed");
+    this.name = "CompanyADLoginError";
+  }
+}
+
+async function fetchCompanyADLogin(
+  loginUrl: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const requestSignal = withAuthRequestTimeout(signal);
+  let response: Response;
+  try {
+    response = await fetch(loginUrl, {
+      credentials: "include",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal: requestSignal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new CompanyADLoginError();
+  }
+  if (!response.ok) throw new CompanyADLoginError();
+
+  const payload: unknown = await response.json().catch(() => null);
+  const firstResult = Array.isArray(payload) ? payload[0] : null;
+  const token =
+    firstResult && typeof firstResult === "object"
+      ? (firstResult as { token?: unknown }).token
+      : null;
+  if (typeof token !== "string" || !token.trim()) {
+    throw new CompanyADLoginError();
+  }
+  return token.trim();
 }
 
 export const authApi = {
@@ -127,44 +162,46 @@ export const authApi = {
         credentials: "include",
         body: JSON.stringify(credentials),
         headers,
-        signal,
+        signal: withAuthRequestTimeout(signal),
       },
     );
 
   },
 
-  /**
-   * 用户注册
-   */
-  async register(
-    userData: UserCreate,
-    turnstileToken?: string,
-  ): Promise<RegisterResponse> {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (turnstileToken) {
-      headers["X-Turnstile-Token"] = turnstileToken;
-    }
-
-    return authFetch<RegisterResponse>(`${API_BASE}/api/auth/register`, {
-      method: "POST",
-      skipAuth: true,
-      body: JSON.stringify(userData),
-      headers,
-    });
+  /** Read the canonical platform configuration for optional Windows login. */
+  async getADLoginConfig(signal?: AbortSignal): Promise<{
+    ad_login_url: string | null;
+  }> {
+    return authFetch<{ ad_login_url: string | null }>(
+      `${API_BASE}/api/ai/auth/ad-login/config`,
+      {
+        skipAuth: true,
+        signal: withAuthRequestTimeout(signal),
+      },
+    );
   },
 
-  /**
-   * 刷新 token
-   */
-  async refreshToken(): Promise<TokenResponse> {
-    const { access_token, refresh_token } = await refreshTokens();
-    return {
-      access_token,
-      refresh_token,
-      token_type: "bearer",
-    };
+  /** Obtain the browser's Windows-authenticated company JWT. */
+  async fetchCompanyADLogin(
+    loginUrl: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return fetchCompanyADLogin(loginUrl, signal);
+  },
+
+  /** Exchange one company-authenticated JWT for a platform session. */
+  async loginWithAD(companyJwt: string, signal?: AbortSignal): Promise<void> {
+    await authFetch<PrincipalResponseWire>(
+      `${API_BASE}/api/ai/auth/ad-login`,
+      {
+        method: "POST",
+        skipAuth: true,
+        credentials: "include",
+        body: JSON.stringify({ token: companyJwt }),
+        headers: { "Content-Type": "application/json" },
+        signal: withAuthRequestTimeout(signal),
+      },
+    );
   },
 
   /**
@@ -176,10 +213,28 @@ export const authApi = {
       {
         skipAuth: true,
         credentials: "include",
-        signal: options.signal,
+        signal: withAuthRequestTimeout(options.signal),
       },
     );
     return mapPrincipalToUser(principal);
+  },
+
+  /** Read the current user's company credential for the document-translator handoff. */
+  async getCompanyCredentialForHandoff(signal?: AbortSignal): Promise<string> {
+    const payload = await authFetch<{ credential?: unknown }>(
+      `${API_BASE}/api/ai/auth/company-credential-handoff`,
+      {
+        method: "POST",
+        skipAuth: true,
+        credentials: "include",
+        cache: "no-store",
+        signal,
+      },
+    );
+    if (typeof payload.credential !== "string" || !payload.credential.trim()) {
+      throw new Error("company_credential_unavailable");
+    }
+    return payload.credential.trim();
   },
 
   /**
@@ -192,7 +247,7 @@ export const authApi = {
       headers: {
         "Accept-Language": "zh-CN",
       },
-      signal,
+      signal: withAuthRequestTimeout(signal),
     });
     if (response.ok || response.status === 401 || response.status === 403) return;
 
@@ -217,39 +272,12 @@ export const authApi = {
   },
 
   /**
-   * 获取所有可用权限列表
-   */
-  async getPermissions(): Promise<PermissionsResponse> {
-    return authFetch<PermissionsResponse>(`${API_BASE}/api/auth/permissions`, {
-      skipAuth: true,
-    });
-  },
-
-  /**
-   * 更新头像
-   */
-  async updateAvatar(avatarUrl: string): Promise<User> {
-    return authFetch<User>(`${API_BASE}/api/auth/update-avatar`, {
-      method: "POST",
-      body: JSON.stringify({ avatar_url: avatarUrl }),
-    });
-  },
-
-  /**
-   * 更新用户名
-   */
-  async updateUsername(username: string): Promise<User> {
-    return authFetch<User>(`${API_BASE}/api/auth/update-username`, {
-      method: "POST",
-      body: JSON.stringify({ username }),
-    });
-  },
-
-  /**
    * 获取用户个人资料
    */
-  async getProfile(): Promise<User> {
-    return authFetch<User>(`${API_BASE}/api/auth/profile`);
+  async getProfile(options: { signal?: AbortSignal } = {}): Promise<User> {
+    return authFetch<User>(`${API_BASE}/api/auth/profile`, {
+      signal: options.signal,
+    });
   },
 
   /**
@@ -267,24 +295,18 @@ export const authApi = {
    */
   async getOAuthProviders(): Promise<{
     providers: { id: string; name: string }[];
-    registration_enabled: boolean;
     turnstile?: {
       enabled: boolean;
       site_key: string;
       require_on_login: boolean;
-      require_on_register: boolean;
-      require_on_password_change: boolean;
     };
   }> {
     return authFetch<{
       providers: { id: string; name: string }[];
-      registration_enabled: boolean;
       turnstile?: {
         enabled: boolean;
         site_key: string;
         require_on_login: boolean;
-        require_on_register: boolean;
-        require_on_password_change: boolean;
       };
     }>(`${API_BASE}/api/auth/oauth/providers`, { skipAuth: true });
   },
@@ -302,7 +324,7 @@ export const authApi = {
         method: "POST",
         skipAuth: true,
         credentials: "include",
-        signal,
+        signal: withAuthRequestTimeout(signal),
       },
     );
   },
@@ -323,82 +345,7 @@ export const authApi = {
         skipAuth: true,
         credentials: "include",
         body: JSON.stringify({ code, state }),
-        signal,
-      },
-    );
-  },
-
-  /**
-   * 忘记密码 - 发送重置邮件
-   */
-  async forgotPassword(email: string): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(
-      `${API_BASE}/api/auth/forgot-password`,
-      {
-        method: "POST",
-        skipAuth: true,
-        body: JSON.stringify({ email }),
-      },
-    );
-  },
-
-  /**
-   * 重置密码
-   */
-  async resetPassword(
-    token: string,
-    newPassword: string,
-  ): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(
-      `${API_BASE}/api/auth/reset-password`,
-      {
-        method: "POST",
-        skipAuth: true,
-        body: JSON.stringify({ token, new_password: newPassword }),
-      },
-    );
-  },
-
-  /**
-   * 验证邮箱
-   */
-  async verifyEmail(token: string): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(`${API_BASE}/api/auth/verify-email`, {
-      method: "POST",
-      skipAuth: true,
-      body: JSON.stringify({ token }),
-    });
-  },
-
-  /**
-   * 重发验证邮件
-   */
-  async resendVerification(email: string): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(
-      `${API_BASE}/api/auth/resend-verification`,
-      {
-        method: "POST",
-        skipAuth: true,
-        body: JSON.stringify({ email }),
-      },
-    );
-  },
-
-  /**
-   * 修改密码
-   */
-  async changePassword(
-    oldPassword: string,
-    newPassword: string,
-  ): Promise<{ message: string }> {
-    return authFetch<{ message: string }>(
-      `${API_BASE}/api/auth/change-password`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          old_password: oldPassword,
-          new_password: newPassword,
-        }),
+        signal: withAuthRequestTimeout(signal),
       },
     );
   },

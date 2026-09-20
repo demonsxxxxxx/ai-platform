@@ -57,7 +57,6 @@ test("PRD closure browser smoke helper covers required frontend evidence", () =>
     "/skills",
     "/mcp",
     "/settings",
-    "/shared/smoke-denied",
   ]) {
     assert.match(source, new RegExp(route.replace(/\//g, "\\/")));
   }

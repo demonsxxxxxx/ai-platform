@@ -1,6 +1,5 @@
 import { ToolSelector } from "../selectors/ToolSelector";
 import { SkillSelector } from "../selectors/SkillSelector";
-import { AgentOptionButton } from "./AgentOptionButton";
 import { ComposerModelPanel } from "./ComposerModelPanel";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { ModelOption } from "../../services/api/modelPublic";
@@ -8,7 +7,6 @@ import type {
   ToolState,
   ToolCategory,
   PublicSkillResponse,
-  AgentOption,
 } from "../../types";
 import {
   LibreChatSelectorLayer,
@@ -36,10 +34,6 @@ export interface ChatInputSelectorsProps {
   availableModels?: ModelOption[];
   currentModelId?: string;
   onSelectModel?: (modelId: string, modelValue: string) => void;
-  // Agent options
-  agentOptions?: Record<string, AgentOption>;
-  agentOptionValues?: Record<string, boolean | string | number>;
-  onToggleAgentOption?: (key: string, value: boolean | string | number) => void;
 }
 
 export function ChatInputSelectors({
@@ -60,9 +54,6 @@ export function ChatInputSelectors({
   availableModels = [],
   currentModelId,
   onSelectModel,
-  agentOptions,
-  agentOptionValues = {},
-  onToggleAgentOption,
 }: ChatInputSelectorsProps) {
   return (
     <LibreChatSelectorLayer>
@@ -118,25 +109,6 @@ export function ChatInputSelectors({
           />
         </LibreChatSelectorModal>
       )}
-      {agentOptions &&
-        onToggleAgentOption &&
-        Object.keys(agentOptions).length > 0 &&
-        Object.entries(agentOptions)
-          .filter(([, opt]) => opt.options && opt.options.length > 0)
-          .map(([key, option]) => (
-            <LibreChatSelectorModal key={key} panel="thinking">
-              <AgentOptionButton
-                optionKey={key}
-                option={option}
-                value={agentOptionValues[key] ?? option.default}
-                onChange={(value) => onToggleAgentOption(key, value)}
-                isOpen={activePanel === "thinking"}
-                onOpenChange={(open) =>
-                  onActivePanelChange(open ? "thinking" : null)
-                }
-              />
-            </LibreChatSelectorModal>
-          ))}
     </LibreChatSelectorLayer>
   );
 }

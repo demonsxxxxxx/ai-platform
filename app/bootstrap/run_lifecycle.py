@@ -10,18 +10,24 @@ from app.runs.application.cancellation import (
     RunCancellationUseCase,
     RunTerminalizationProgressor,
 )
+from app.runs.api import RunAttemptLifecycleService
 from app.runs.infrastructure.postgres import (
     PostgresRunCancellationPersistence,
     load_current_terminal_event_fact,
 )
 from app.settings import get_settings
 from app.streaming.infrastructure.run_v4_events import PostgresRunCancellationEventWriter
+from app.tool_permission_lifecycle import progress_run_terminalization
 
 
-def build_run_cancellation_use_case() -> RunCancellationUseCase:
+def build_run_cancellation_use_case(
+    *,
+    attempt_lifecycle: RunAttemptLifecycleService,
+) -> RunCancellationUseCase:
     return RunCancellationUseCase(
         transaction_factory=transaction,
         persistence=PostgresRunCancellationPersistence(
+            attempt_lifecycle=attempt_lifecycle,
             append_event=repositories.append_event,
             append_audit_log=repositories.append_audit_log,
             list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
@@ -32,6 +38,6 @@ def build_run_cancellation_use_case() -> RunCancellationUseCase:
         ),
         progress_terminalization=cast(
             RunTerminalizationProgressor,
-            repositories.progress_run_tool_permission_terminalization,
+            progress_run_terminalization,
         ),
     )

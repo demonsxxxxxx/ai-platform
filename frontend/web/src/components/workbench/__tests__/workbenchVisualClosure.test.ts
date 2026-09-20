@@ -18,9 +18,10 @@ test("workbench shell exposes dense chat regions", () => {
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
   assert.match(shell, /data-workbench-region="context"/);
+  assert.match(shell, /absolute right-3 top-2/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(surface, /workspace:/);
-  assert.match(surface, /thread:/);
+  assert.match(surface, /thread:[\s\S]*relative flex/);
   assert.match(surface, /composer:/);
   assert.match(surface, /context:/);
   assert.match(surface, /commandSurface:/);
@@ -38,7 +39,7 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
 
   assert.doesNotMatch(text, /hero-card|gradient-orb|nested-card/);
   assert.doesNotMatch(text, /rounded-3xl/);
-  assert.match(text, /rounded-\[1\.5rem\]|border-radius:\s*1\.5rem/);
+  assert.match(text, /rounded-\[1\.25rem\]|border-radius:\s*1\.25rem/);
   assert.doesNotMatch(tabContent, /max-w-4xl|sm:max-w-5xl|lg:max-w-6xl/);
   assert.match(tabContent, /data-authenticated-workbench-page/);
 });
@@ -131,6 +132,15 @@ test("narrow authenticated shell keeps a visible LibreChat rail", () => {
   );
   assert.match(chatAppContent, /onMobileOpen=\{\(\) => setMobileSidebarOpen\(true\)\}/);
   assert.match(nonChatAppContent, /onMobileOpen=\{\(\) => setMobileSidebarOpen\(true\)\}/);
+});
+
+test("company navigation exposes conversation history without chat actions", () => {
+  const nonChatAppContent = read(
+    "src/components/layout/AppContent/NonChatAppContent.tsx",
+  );
+
+  assert.match(nonChatAppContent, /navigationOnly/);
+  assert.match(nonChatAppContent, /showSessionHistory=\{activeTab === "apps"\}/);
 });
 
 test("post-login shell removes legacy LambChat runtime identifiers", () => {
@@ -385,7 +395,6 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /workbench\.projections\.currentTask/);
   assert.match(projectionPages, /workbench\.projections\.governance\.summaryTitle/);
   assert.match(projectionPages, /workbench\.projections\.users\.directoryTitle/);
-  assert.match(projectionPages, /workbench\.projections\.settings\.secretChip/);
   assert.match(projectionPages, /workbench\.projections\.feedback\.queueTitle/);
   assert.match(projectionPages, /workbench\.projections\.notifications\.streamTitle/);
   assert.equal(zh.workbench.projections.currentTask, "当前任务");
@@ -476,27 +485,24 @@ test("skills route selects the ordinary catalog while retaining the admin manage
   assert.match(ordinarySkills, /skills\.available\.fileTypes/);
   assert.doesNotMatch(ordinarySkills, /expected_version|file_count|skill\.content|skill\.files|is_published/);
   assert.equal(zh.skills.available.title, "可用技能");
-  assert.match(resolver, /requiredPermission: "skill:admin" \| "marketplace:admin"/);
+  assert.match(resolver, /requiredPermission: "skill:admin"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);
   assert.match(resolver, /effectivePermissionsSource/);
   assert.match(resolver, /hasAdminPermission/);
   assert.match(resolver, /effectivePermissionsKnown\?: boolean/);
-  assert.match(resolver, /marketplace:admin/);
   assert.match(resolver, /skill:admin/);
 });
 
-test("skills marketplace hub uses one workbench canvas instead of split page backgrounds", () => {
+test("skills hub uses one workbench canvas", () => {
   const hub = read("src/components/panels/SkillsHubPanel.tsx");
   const skillsPanel = read("src/components/panels/SkillsPanel/index.tsx");
   const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
-  const marketplace = read("src/components/panels/MarketplacePanel.tsx");
   const skillCss = read("src/styles/skill.css");
 
   for (const [name, source] of new Map([
     ["SkillsHubPanel", hub],
     ["SkillsPanel", skillsPanel],
-    ["MarketplacePanel", marketplace],
   ])) {
     assert.match(
       source,
@@ -511,32 +517,18 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   }
 
   assert.match(skillsList, /data-skills-catalog-toolbar/);
-  assert.match(marketplace, /data-marketplace-catalog-toolbar/);
   assert.match(skillsList, /skill-catalog-toolbar/);
-  assert.match(marketplace, /skill-catalog-toolbar/);
   assert.match(skillsList, /skill-catalog-toolbar__row/);
-  assert.match(marketplace, /skill-catalog-toolbar__row/);
   assert.match(skillsList, /skill-catalog-toolbar__search/);
-  assert.match(marketplace, /skill-catalog-toolbar__search/);
-  assert.match(skillsList, /skill-catalog-toolbar__actions/);
-  assert.match(marketplace, /skill-catalog-toolbar__actions/);
+  assert.match(skillsList, /skill-management-header__actions/);
   assert.match(skillsList, /workbenchSurface\.catalog\.toolbarShell/);
-  assert.match(marketplace, /workbenchSurface\.catalog\.toolbarShell/);
   assert.match(hub, /data-primary-page-scroller/);
-  assert.match(marketplace, /workbenchSurface\.catalog\.content/);
   assert.match(skillsList, /<SkillManagementTable/);
-  assert.match(marketplace, /workbenchSurface\.catalog\.cardGrid/);
   assert.match(skillsList, /workbenchSurface\.catalog\.emptyState/);
-  assert.match(marketplace, /workbenchSurface\.catalog\.emptyState/);
   assert.match(skillsList, /var\(--theme-danger-soft\)/);
-  assert.match(marketplace, /var\(--theme-danger-soft\)/);
   assert.doesNotMatch(skillsList, /auto-grid-cols/);
-  assert.doesNotMatch(marketplace, /auto-grid-cols/);
   assert.doesNotMatch(skillsList, /text-stone-(?:400|500|600|700|800|900)/);
-  assert.doesNotMatch(marketplace, /text-stone-(?:400|500|600|700|800|900)/);
-  assert.doesNotMatch(marketplace, /text-slate-(?:400|500|600|700|800|900)/);
   assert.doesNotMatch(skillsList, /\b(?:bg|text|hover:bg|hover:text)-red-/);
-  assert.doesNotMatch(marketplace, /\b(?:bg|text|hover:bg|hover:text)-red-/);
   assert.doesNotMatch(hub, /data-skills-catalog-sidebar/);
   assert.doesNotMatch(hub, /<aside/);
   assert.doesNotMatch(hub, /showTabSwitcher/);
@@ -562,7 +554,7 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   );
 });
 
-test("skills marketplace action surfaces use semantic workbench state colors", () => {
+test("skills and MCP action surfaces use semantic workbench state colors", () => {
   const batchActionBar = read("src/components/panels/SkillsPanel/BatchActionBar.tsx");
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
@@ -584,7 +576,6 @@ test("reachable catalog pages delegate page backgrounds to workbench surface tok
   const sources = new Map([
     ["SkillsHubPanel", read("src/components/panels/SkillsHubPanel.tsx")],
     ["SkillsPanel", read("src/components/panels/SkillsPanel/index.tsx")],
-    ["MarketplacePanel", read("src/components/panels/MarketplacePanel.tsx")],
     ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
   ]);
 
@@ -647,11 +638,13 @@ test("public catalog pages use semantic workbench status tokens", () => {
   }
 });
 
-test("composer and command surfaces use stable dimensions", () => {
+test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
+  const composer = read("src/librechat-ui/Composer.tsx");
   assert.match(css, /\.chat-input-container/);
-  assert.match(css, /min-height:\s*72px/);
+  assert.match(css, /min-height:\s*112px/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
+  assert.match(composer, /grid-cols-\[minmax\(0,1fr\)_auto\]/);
   assert.match(css, /\.composer-command-surface/);
   assert.match(css, /overflow:\s*hidden/);
 });

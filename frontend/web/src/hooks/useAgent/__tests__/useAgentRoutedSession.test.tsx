@@ -11,9 +11,11 @@ import type {
   ChatStreamResponse,
   ChatSubmissionResolution,
 } from "../../../services/api/session.ts";
+import { installBrowserAuthTestDb } from "../../__tests__/browserAuthTestDb.ts";
 import { installTestDom } from "./testDom.ts";
 
 const dom = installTestDom();
+installBrowserAuthTestDb();
 
 function clearPersistedSubmissionReferences() {
   for (let index = dom.window.localStorage.length - 1; index >= 0; index -= 1) {
@@ -41,6 +43,7 @@ async function loadReactHarness({
   onAuthScopeLayout,
   preserveSubmissionReferences = false,
   sessionRouteLifecycle = false,
+  sessionRouteBasePath,
   initialRoute = "/chat",
 }: {
   agentOptions?: UseAgentOptions;
@@ -48,6 +51,7 @@ async function loadReactHarness({
   onAuthScopeLayout?: () => void;
   preserveSubmissionReferences?: boolean;
   sessionRouteLifecycle?: boolean;
+  sessionRouteBasePath?: string;
   initialRoute?: string;
 } = {}) {
   if (!preserveSubmissionReferences) {
@@ -100,7 +104,11 @@ async function loadReactHarness({
     updated_at: "2026-01-01T00:00:00Z",
   };
   authApi.getCurrentUser = async () => currentAuthUser;
-  authApi.bootstrapAuthContext = async () => {};
+  authApi.bootstrapAuthContext = async (request) => ({
+    status: "ready",
+    protocol_version: 2,
+    generation: request.generation,
+  });
   const restoreAuthApi = () => {
     authApi.getCurrentUser = originalGetCurrentUser;
     authApi.bootstrapAuthContext = originalBootstrapAuthContext;
@@ -137,8 +145,8 @@ async function loadReactHarness({
     dom.window.location.href = `http://test.local${location.pathname}`;
 
     useConversationRouteIdentityReset({
-      conversationIdentityKey: `generic:${routeSessionId ?? ""}`,
-      hasAgentWorkspace: false,
+      conversationIdentityKey: `${sessionRouteBasePath ? "agent" : "generic"}:${routeSessionId ?? ""}`,
+      hasAgentWorkspace: Boolean(sessionRouteBasePath),
       routeSessionId,
       sessionId: agent.sessionId,
       onIdentityChange: () => {
@@ -147,11 +155,13 @@ async function loadReactHarness({
       },
     });
     const sessionSync = useSessionSync({
-      activeTab: routeActiveTab === "chat" ? "chat" : "skills",
+      activeTab:
+        sessionRouteBasePath || routeActiveTab === "chat" ? "chat" : "skills",
       sessionId: agent.sessionId,
       loadHistory: agent.loadHistory,
       clearMessages: agent.clearMessages,
       onConfigRestored: (config) => restoredRouteConfigs.push(config),
+      sessionRouteBasePath,
     });
     routeSnapshot = {
       navigate,
@@ -202,9 +212,17 @@ async function loadReactHarness({
               Routes,
               null,
               React.createElement(Route, {
-                path: "/:activeTab/:sessionId?",
+                path: sessionRouteBasePath
+                  ? `${sessionRouteBasePath}/:sessionId?`
+                  : "/:activeTab/:sessionId?",
                 element: children,
               }),
+              sessionRouteBasePath
+                ? React.createElement(Route, {
+                    path: "/skills",
+                    element: React.createElement("div"),
+                  })
+                : null,
             ),
           )
         : children;
@@ -374,15 +392,36 @@ function sseEventResponse(event: string, data: Record<string, unknown>) {
   });
 }
 
-function sseFramesResponse(
-  frames: Array<{ event: string; data: Record<string, unknown> }>,
+function protocolInvalidSseResponse(
+  kind: "json" | "event-id" | "envelope",
+  runId: string,
 ) {
-  return new Response(
-    frames
-      .map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-      .join(""),
-    { headers: { "content-type": "text/event-stream" } },
-  );
+  const envelope = {
+    schema: "ai-platform.public-run-stream-control.v4",
+    event_id: `stream-open-${runId}`,
+    run_id: runId,
+    message_id: null,
+    seq: null,
+    event_type: "stream.open",
+    stream_incarnation: 1,
+    replayable: true,
+    trace_ref: null,
+    causation_event_id: null,
+    emitted_at: "2026-08-21T00:00:00Z",
+    payload: { design_id: STREAM_DESIGN_ID },
+  };
+  const body =
+    kind === "json"
+      ? `id: ${runId}:1:1-0\nevent: stream.open\ndata: {\n\n`
+      : kind === "event-id"
+        ? `event: stream.open\ndata: ${JSON.stringify(envelope)}\n\n`
+        : `id: ${runId}:1:1-0\nevent: stream.open\ndata: ${JSON.stringify({
+            ...envelope,
+            schema: "invalid.public-run-stream.v4",
+          })}\n\n`;
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream" },
+  });
 }
 
 function controlledNonClosingSseResponse(body: string) {
@@ -413,15 +452,6 @@ function controlledNonClosingSseResponse(body: string) {
   };
 }
 
-function controlledNonClosingSseEventResponse(
-  event: string,
-  data: Record<string, unknown>,
-) {
-  return controlledNonClosingSseResponse(
-    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
-  );
-}
-
 function controlledNonClosingSseHeartbeatResponse() {
   return controlledNonClosingSseResponse(": keep-alive\n\n");
 }
@@ -437,6 +467,7 @@ function controlledPublicRunLifecycle(
   const streamIncarnation = 1;
   const encoder = new TextEncoder();
   let finish: (() => void) | null = null;
+  let push: ((sequence: number, delta: string) => void) | null = null;
   const response = new Response(
     new ReadableStream({
       start(controller) {
@@ -481,6 +512,25 @@ function controlledPublicRunLifecycle(
             ),
           );
         });
+        push = (sequence, delta) => {
+          const event = {
+            schema: PUBLIC_RUN_STREAM_SCHEMA,
+            event_id: `future-${runId}-${sequence}`,
+            run_id: runId,
+            message_id: `message-${runId}`,
+            seq: sequence,
+            event_type: "message.delta",
+            stream_incarnation: streamIncarnation,
+            replayable: true,
+            trace_ref: null,
+            causation_event_id: null,
+            emitted_at: "2026-08-21T00:00:01Z",
+            payload: { delta },
+          };
+          controller.enqueue(encoder.encode(
+            `id: ${runId}:${streamIncarnation}:${preceding.length + 2}-0\nevent: message.delta\ndata: ${JSON.stringify(event)}\n\n`,
+          ));
+        };
         finish = () => {
           const terminalEventType =
             status === "succeeded"
@@ -552,6 +602,10 @@ function controlledPublicRunLifecycle(
   );
   return {
     response,
+    push: (sequence: number, delta: string) => {
+      if (!push) throw new Error("stream controller not initialized");
+      push(sequence, delta);
+    },
     finish: () => {
       if (!finish) throw new Error("stream controller not initialized");
       const complete = finish;
@@ -675,6 +729,37 @@ test("queued submit clears chat-queue when the current SSE v4 stream opens", asy
   }
 });
 
+test("pending enqueue retains the created session for draft handoff", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+
+  sessionApi.submitChat = (async (...args) => ({
+    session_id: "session-pending-enqueue",
+    run_id: "run-pending-enqueue",
+    status: "accepted_pending_enqueue",
+    submission_id: String(args[7]),
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("等待入队"), {
+        status: "failed",
+      });
+    });
+    await settle(harness.act);
+
+    assert.equal(harness.hook.sessionId, "session-pending-enqueue");
+    assert.equal(
+      harness.hook.newlyCreatedSession?.id,
+      "session-pending-enqueue",
+    );
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent defers the locked Skill label until the server projects it", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -725,6 +810,83 @@ test("useAgent defers the locked Skill label until the server projects it", asyn
   }
 });
 
+test("Agent first-send URL canonicalization keeps the live SSE owner", async () => {
+  const routeBasePath = "/agent-market/agt_support/7/chat";
+  const harness = await loadReactHarness({
+    sessionRouteLifecycle: true,
+    sessionRouteBasePath: routeBasePath,
+    initialRoute: routeBasePath,
+  });
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalWindowFetch = dom.window.fetch;
+  let exactHistoryLoads = 0;
+  let streamSignal: AbortSignal | null = null;
+  let finishStream: (() => void) | null = null;
+
+  sessionApi.getAuthoritative = async (sessionId) => {
+    exactHistoryLoads += 1;
+    return originalGetAuthoritative(sessionId);
+  };
+  sessionApi.markRead = async () => {};
+  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.generateTitle = async () => ({
+    title: "专家首发会话",
+    session_id: "session-agent-first",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-agent-first",
+    run_id: "run-agent-first",
+    trace_id: "trace-agent-first",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+  const nonClosingStream = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    streamSignal = init?.signal as AbortSignal;
+    const stream = controlledPublicRunLifecycle(
+      "run-agent-first",
+      "cancelled",
+    );
+    finishStream = stream.finish;
+    return stream.response;
+  }) as typeof fetch;
+  dom.window.fetch = nonClosingStream;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("执行专家任务");
+    });
+    await settle(harness.act);
+
+    assert.equal(harness.route.pathname, `${routeBasePath}/session-agent-first`);
+    assert.equal(harness.route.sessionId, "session-agent-first");
+    assert.equal(exactHistoryLoads, 0);
+    assert.ok(streamSignal, "the first-send SSE should be open");
+    assert.equal((streamSignal as AbortSignal).aborted, false);
+    assert.equal(harness.hook.currentRunId, "run-agent-first");
+
+    await harness.act(async () => {
+      finishStream?.();
+      finishStream = null;
+      await Promise.resolve();
+    });
+    assert.equal(exactHistoryLoads, 0);
+  } finally {
+    const pendingFinish = finishStream as (() => void) | null;
+    pendingFinish?.();
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
+    dom.window.fetch = originalWindowFetch;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent preserves accepted authority through URL canonicalization for a second submit", async () => {
   const harness = await loadReactHarness({ sessionRouteLifecycle: true });
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -751,7 +913,7 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
           run_id: "run-first",
           trace_id: "trace-first",
           status: "queued",
-          intent_decision: { agent_id: "document-translation" },
+          intent_decision: { agent_id: "general-agent" },
         }
       : {
           session_id: "session-routed",
@@ -780,7 +942,7 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
     assert.equal(submissions[0]?.[1], undefined);
     assert.equal(submissions[1]?.[1], "session-routed");
     assert.equal(submissions[0]?.[8], "general-agent");
-    assert.equal(submissions[1]?.[8], "document-translation");
+    assert.equal(submissions[1]?.[8], "general-agent");
     assert.equal(harness.hook.sessionId, "session-routed");
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(sseCalls, 2);
@@ -967,7 +1129,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
   sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-restored",
-    agent_id: "document-translation",
+    agent_id: "general-agent",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     is_active: true,
@@ -976,7 +1138,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
   sessionApi.getAuthoritative = async () => ({
     session_id: "session-restored",
     workspace_id: "workspace-test",
-    agent_id: "document-translation",
+    agent_id: "general-agent",
     title: "Restored session",
     purpose: "conversation",
     agent_conversation: null,
@@ -1001,7 +1163,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
     });
 
     assert.equal(submissions.length, 1);
-    assert.equal(submissions[0]?.[8], "document-translation");
+    assert.equal(submissions[0]?.[8], "general-agent");
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
@@ -1941,23 +2103,21 @@ test("useAgent fences send, resolver, and retry through deferred same-principal 
 });
 
 test("useAgent settles its fence when refresh context setup fails before hydration", async () => {
-  const { BrowserAuthCoordinatorError } = await import(
-    "../../browserAuthCoordinator.ts"
-  );
   const { sessionApi } = await import("../../../services/api/session.ts");
   const { authApi } = await import("../../../services/api/auth.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const harness = await loadReactHarness();
-  const originalBootstrap = authApi.bootstrapAuthContext;
+  const originalIndexedDb = globalThis.indexedDB;
   const originalLogin = authApi.login;
   let submitCalls = 0;
   sessionApi.submitChat = (async () => {
     submitCalls += 1;
     return { status: "needs_confirmation", suggestions: [] };
   }) as typeof sessionApi.submitChat;
-  authApi.bootstrapAuthContext = async () => {
-    throw new BrowserAuthCoordinatorError("auth_context_coordination_unavailable");
-  };
+  Object.defineProperty(globalThis, "indexedDB", {
+    configurable: true,
+    value: undefined,
+  });
 
   try {
     let refreshOutcome!: Awaited<ReturnType<typeof harness.auth.refreshUser>>;
@@ -1971,7 +2131,10 @@ test("useAgent settles its fence when refresh context setup fails before hydrati
 
     // Restore the browser-context seam and prove the hook no longer remains
     // fenced after the pre-hydration failure.
-    authApi.bootstrapAuthContext = originalBootstrap;
+    Object.defineProperty(globalThis, "indexedDB", {
+      configurable: true,
+      value: originalIndexedDb,
+    });
     authApi.login = async () => {};
     await harness.loginAsBeforePassiveEffects("user-a", "tenant-a");
     await settle(harness.act);
@@ -1983,7 +2146,10 @@ test("useAgent settles its fence when refresh context setup fails before hydrati
     assert.equal(submitCalls, 1);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    authApi.bootstrapAuthContext = originalBootstrap;
+    Object.defineProperty(globalThis, "indexedDB", {
+      configurable: true,
+      value: originalIndexedDb,
+    });
     authApi.login = originalLogin;
     await harness.cleanup();
   }
@@ -3131,7 +3297,7 @@ async function assertStaleSubmitCannotOverwriteNewSession({
       run_id: "run-old",
       trace_id: "trace-old",
       status: "queued",
-      intent_decision: { agent_id: "document-translation" },
+      intent_decision: { agent_id: "general-agent" },
     });
     await harness.act(async () => {
       await staleSubmit;
@@ -3257,7 +3423,7 @@ test("useAgent clear invalidates delayed history get, events, and status continu
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-test",
-    agent_id: "document-translation",
+    agent_id: "general-agent",
     title: "Test session",
     purpose: "conversation",
     agent_conversation: null,
@@ -3285,7 +3451,7 @@ test("useAgent clear invalidates delayed history get, events, and status continu
     });
     resolveSession({
       id: "session-delayed",
-      agent_id: "document-translation",
+      agent_id: "general-agent",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
       is_active: true,
@@ -3752,7 +3918,7 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
         timestamp: "2026-08-21T00:00:01Z",
         data: {
           projection_version: "ai-platform.chat-public-projection.v1",
-          projection_kind: "assistant_final",
+          projection_kind: "assistant_delta",
           event_id: "run-final-success:answer",
           sequence: 2,
           run_id: "run-final-success",
@@ -3913,10 +4079,7 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
   dom.window.fetch = async () =>
-    sseFramesResponse([
-      { event: "error", data: { error: "Executor failed" } },
-      { event: "done", data: { status: "failed" } },
-    ]);
+    completedPublicRunResponse("run-public-fallback-failed", "failed");
   sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "公开失败回退会话",
@@ -3931,7 +4094,7 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
   sessionApi.getStatus = (async () => ({
     session_id: "session-public-fallback-failed",
     run_id: "run-public-fallback-failed",
-    status: "error",
+    status: "failed",
     raw_status: "failed",
   })) as typeof sessionApi.getStatus;
   sessionApi.getEvents = (async (_sessionId, options) => ({
@@ -3987,7 +4150,7 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
   }
 });
 
-test("useAgent converges a bounded status-query failure to one local unavailable card", async () => {
+test("useAgent preserves its active owner after bounded transient status-query failure", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -4022,16 +4185,18 @@ test("useAgent converges a bounded status-query failure to one local unavailable
 
     const parts = harness.hook.messages.flatMap((message) => message.parts || []);
     assert.equal(statusCalls, 3);
-    assert.equal(harness.hook.currentRunId, null);
-    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.currentRunId, "run-status-unavailable");
     assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(harness.hook.messages.some(
+      (message) => message.role === "assistant" &&
+        message.runId === "run-status-unavailable",
+    ), true);
     assert.equal(
-      parts.filter(
-        (part) =>
-          part.type === "run_status" &&
+      parts.some(
+        (part) => part.type === "run_status" &&
           part.event_id === "terminal-status-unavailable:run-status-unavailable",
-      ).length,
-      1,
+      ),
+      false,
     );
     assert.equal(
       parts.some(
@@ -4119,6 +4284,86 @@ test("useAgent fails closed once for a non-retryable SSE authentication error", 
     sessionApi.getStatus = originalGetStatus;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
+  }
+});
+
+test("useAgent fails closed for each protocol-invalid SSE frame", async () => {
+  const cases = [
+    { kind: "json" as const, label: "invalid JSON" },
+    { kind: "event-id" as const, label: "missing event id" },
+    { kind: "envelope" as const, label: "invalid V4 envelope" },
+  ];
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalFetch = dom.window.fetch;
+
+  try {
+    for (const { kind, label } of cases) {
+      const harness = await loadReactHarness();
+      const sessionId = `session-protocol-invalid-${kind}`;
+      const runId = `run-protocol-invalid-${kind}`;
+      let statusCalls = 0;
+      let sseCalls = 0;
+      dom.window.localStorage.removeItem("ai_platform_session_present");
+      dom.window.fetch = async () => {
+        sseCalls += 1;
+        return protocolInvalidSseResponse(kind, runId);
+      };
+      sessionApi.markRead = async () => {};
+      sessionApi.generateTitle = async () => ({
+        title: label,
+        session_id: sessionId,
+      });
+      sessionApi.submitChat = (async () => ({
+        session_id: sessionId,
+        run_id: runId,
+        trace_id: `trace-${kind}`,
+        status: "queued",
+      })) as typeof sessionApi.submitChat;
+      sessionApi.getStatus = (async () => {
+        statusCalls += 1;
+        return {
+          session_id: sessionId,
+          run_id: runId,
+          status: "running",
+        };
+      }) as typeof sessionApi.getStatus;
+
+      try {
+        await harness.act(async () => {
+          await harness.hook.sendMessage(label);
+        });
+        await settle(harness.act);
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        await settle(harness.act);
+
+        const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+        assert.equal(statusCalls, 0, `${label} must not reconcile status`);
+        assert.equal(sseCalls, 1, `${label} must not reconnect`);
+        assert.equal(harness.hook.currentRunId, null);
+        assert.equal(harness.hook.isLoading, false);
+        assert.equal(harness.hook.connectionStatus, "disconnected");
+        assert.equal(
+          parts.filter(
+            (part) =>
+              part.type === "run_status" &&
+              part.event_id === `terminal-status-unavailable:${runId}`,
+          ).length,
+          1,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getStatus = originalGetStatus;
+    dom.window.fetch = originalFetch;
   }
 });
 
@@ -4560,7 +4805,7 @@ test("useAgent releases the active state for succeeded and cancelled terminals",
               timestamp: "2026-08-21T00:00:01Z",
               data: {
                 projection_version: "ai-platform.chat-public-projection.v1",
-                projection_kind: "assistant_final",
+                projection_kind: "assistant_delta",
                 event_id: `${terminal.runId}:answer`,
                 run_id: terminal.runId,
                 content: "终态任务已完成",
@@ -4781,6 +5026,97 @@ test("useAgent reconnects only the backend-selected active run after reload", as
   }
 });
 
+test("session route lifecycle resets replay state before a same-session history reload", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const requestCursors: Array<string | null> = [];
+  let streamCalls = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-history-replay",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-history-replay",
+    events: [
+      {
+        id: "history-replay:user",
+        event_type: "user:message",
+        run_id: "run-history-replay",
+        timestamp: "2026-08-21T00:00:00Z",
+        data: { content: "continue" },
+      },
+      {
+        id: "history-replay:delta",
+        event_type: "message:chunk",
+        run_id: "run-history-replay",
+        timestamp: "2026-08-21T00:00:00.001Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: "history-replay:delta",
+          sequence: 1,
+          run_id: "run-history-replay",
+          content: "history",
+        },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-history-replay",
+    run_id: "run-history-replay",
+    status: "running",
+  })) as typeof sessionApi.getStatus;
+  dom.window.fetch = async (_input, init) => {
+    streamCalls += 1;
+    requestCursors.push(new Headers(init?.headers).get("Last-Event-ID"));
+    return controlledPublicRunLifecycle("run-history-replay", "cancelled", [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: " live" } },
+    ]).response;
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-history-replay");
+    });
+    await settle(harness.act);
+    assert.equal(streamCalls, 1);
+    assert.equal(
+      harness.hook.messages.find((message) => message.role === "assistant")?.content,
+      "history live",
+    );
+
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-history-replay");
+    });
+    await settle(harness.act);
+
+    assert.equal(streamCalls, 2);
+    assert.equal(requestCursors[1], null);
+    assert.equal(
+      harness.hook.messages.find((message) => message.role === "assistant")?.content,
+      "history live",
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent reloads a cancel-requested Skill run as pending without a submit POST or stream reconnect", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -4854,6 +5190,14 @@ test("useAgent reloads a cancel-requested Skill run as pending without a submit 
     assert.equal(harness.hook.sessionId, "session-cancel-requested");
     assert.equal(harness.hook.currentRunId, "run-cancel-requested");
     assert.equal(harness.hook.isLoading, false);
+    assert.equal(
+      harness.hook.messages.find(
+        (message) =>
+          message.role === "assistant" &&
+          message.runId === "run-cancel-requested",
+      )?.isStreaming,
+      false,
+    );
     const statusPart = harness.hook.messages
       .flatMap((message) => message.parts || [])
       .find(
@@ -5028,6 +5372,486 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
     sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
+  }
+});
+
+test("useAgent hydrates an active same-incarnation gap before replay resumes", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const animationWindow = dom.window as typeof dom.window &
+    Pick<Window, "requestAnimationFrame" | "cancelAnimationFrame">;
+  const originalRequestAnimationFrame = animationWindow.requestAnimationFrame;
+  const originalCancelAnimationFrame = animationWindow.cancelAnimationFrame;
+  animationWindow.requestAnimationFrame = ((callback: FrameRequestCallback) =>
+    dom.window.setTimeout(() => callback(0), 0)) as unknown as typeof animationWindow.requestAnimationFrame;
+  animationWindow.cancelAnimationFrame = ((handle: number) =>
+    dom.window.clearTimeout(handle)) as typeof animationWindow.cancelAnimationFrame;
+  const runId = "run-active-gap";
+  const messageId = "protocol-active-gap";
+  const requestCursors: Array<string | null> = [];
+  const eventQueries: Array<string | undefined> = [];
+  const initialStreams: Array<ReturnType<typeof controlledNonClosingSseResponse>> = [];
+  const replacementStreams: Array<ReturnType<typeof controlledNonClosingSseResponse>> = [];
+  let statusCalls = 0;
+
+  const envelope = (
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    payload: Record<string, unknown>,
+  ) => ({
+    schema: eventType.startsWith("stream.")
+      ? "ai-platform.public-run-stream-control.v4"
+      : PUBLIC_RUN_STREAM_SCHEMA,
+    event_id: eventId,
+    run_id: runId,
+    message_id: eventType.startsWith("message.") ? messageId : null,
+    seq: sequence,
+    event_type: eventType,
+    stream_incarnation: 1,
+    replayable: eventType !== "stream.gap",
+    trace_ref: null,
+    causation_event_id: null,
+    emitted_at: "2026-08-21T00:00:02Z",
+    payload,
+  });
+  const frame = (
+    cursor: string,
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    payload: Record<string, unknown>,
+  ) =>
+    `id: ${runId}:1:${cursor}\nevent: ${eventType}\ndata: ${JSON.stringify(
+      envelope(eventType, eventId, sequence, payload),
+    )}\n\n`;
+
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-active-gap",
+    agent_id: "general-agent",
+    created_at: "2026-08-21T00:00:00Z",
+    updated_at: "2026-08-21T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    eventQueries.push(options?.run_id);
+    if (!options?.run_id) {
+      return {
+        current_run_id: runId,
+        events: [
+          {
+            id: "active-gap:user",
+            event_type: "user:message",
+            run_id: runId,
+            timestamp: "2026-08-21T00:00:00Z",
+            data: { content: "继续恢复" },
+          },
+        ],
+      };
+    }
+    return {
+      current_run_id: runId,
+      events: [
+        {
+          id: "active-gap:user",
+          event_type: "user:message",
+          run_id: runId,
+          timestamp: "2026-08-21T00:00:00Z",
+          data: { content: "继续恢复" },
+        },
+        {
+          id: "active-gap:durable",
+          event_type: "message:chunk",
+          run_id: runId,
+          sequence: 12,
+          timestamp: "2026-08-21T00:00:01Z",
+          data: {
+            event_id: "active-gap:durable",
+            run_id: runId,
+            content: "durable-before-gap",
+            sequence: 12,
+          },
+        },
+      ],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-active-gap",
+      run_id: runId,
+      status: "running",
+      raw_status: "running",
+    };
+  };
+  dom.window.fetch = async (_input, init) => {
+    requestCursors.push(new Headers(init?.headers).get("Last-Event-ID"));
+    if (requestCursors.length === 1) {
+      const initialStream = controlledNonClosingSseResponse(
+        frame("1-0", "stream.open", "active-gap-open", null, {
+          design_id: STREAM_DESIGN_ID,
+        }) + frame("3-0", "message.started", "active-gap-started", 20, {}),
+      );
+      initialStreams.push(initialStream);
+      return initialStream.response;
+    }
+    if (requestCursors.length === 2) {
+      return new Response(
+        frame("4-0", "stream.gap", "active-gap-gap", null, {
+          reason: "retained_history_unavailable",
+          recovery: "reload_durable_state",
+          requested_event_id: "3-0",
+          requested_stream_incarnation: 1,
+          current_stream_incarnation: 1,
+          earliest_available_event_id: "4-0",
+          latest_available_event_id: "9-0",
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    const replacementStream = controlledNonClosingSseResponse(
+      frame("10-0", "stream.open", "active-gap-reopen", null, {
+        design_id: STREAM_DESIGN_ID,
+      }) +
+        frame("12-0", "message.delta", "active-gap-resumed", 21, {
+          delta: "+resumed",
+        }),
+    );
+    replacementStreams.push(replacementStream);
+    return replacementStream.response;
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-active-gap");
+    });
+    await settle(harness.act);
+    for (
+      let attempt = 0;
+      attempt < 30 &&
+      !harness.hook.messages.some(
+        (message) => message.runId === runId && message.role === "assistant",
+      );
+      attempt += 1
+    ) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+    await harness.act(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
+    );
+    for (const stream of initialStreams) stream.close();
+    for (let attempt = 0; attempt < 350 && requestCursors.length < 3; attempt += 1) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+    await settle(harness.act);
+    for (
+      let attempt = 0;
+      attempt < 30 &&
+      !harness.hook.messages.some((message) =>
+        message.content.includes("+resumed"),
+      );
+      attempt += 1
+    ) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+
+    const assistant = harness.hook.messages.find(
+      (message) => message.runId === runId && message.role === "assistant",
+    );
+    assert.equal(statusCalls, 3);
+    assert.deepEqual(requestCursors, [
+      null,
+      `${runId}:1:3-0`,
+      `${runId}:1:9-0`,
+    ]);
+    assert.deepEqual(eventQueries, [undefined, runId]);
+    assert.equal(assistant?.id, runId);
+    assert.equal(assistant?.content, "durable-before-gap+resumed");
+    assert.equal(harness.hook.currentRunId, runId);
+    assert.equal(harness.hook.connectionStatus, "connected");
+  } finally {
+    for (const stream of initialStreams) stream.close();
+    for (const stream of replacementStreams) stream.close();
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+    animationWindow.requestAnimationFrame = originalRequestAnimationFrame;
+    animationWindow.cancelAnimationFrame = originalCancelAnimationFrame;
+  }
+});
+
+test("useAgent preserves accepted body and tool state through terminal-only stream-missing convergence", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const animationWindow = dom.window as typeof dom.window &
+    Pick<Window, "requestAnimationFrame" | "cancelAnimationFrame">;
+  const originalRequestAnimationFrame = animationWindow.requestAnimationFrame;
+  const originalCancelAnimationFrame = animationWindow.cancelAnimationFrame;
+  animationWindow.requestAnimationFrame = ((callback: FrameRequestCallback) =>
+    dom.window.setTimeout(() => callback(0), 0)) as unknown as typeof animationWindow.requestAnimationFrame;
+  animationWindow.cancelAnimationFrame = ((handle: number) =>
+    dom.window.clearTimeout(handle)) as typeof animationWindow.cancelAnimationFrame;
+  const runId = "run-stream-missing-terminal";
+  const messageId = "protocol-stream-missing-terminal";
+  const requestCursors: Array<string | null> = [];
+  const eventQueries: Array<string | undefined> = [];
+  const initialStreams: Array<ReturnType<typeof controlledNonClosingSseResponse>> = [];
+  let statusCalls = 0;
+
+  const envelope = (
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    payload: Record<string, unknown>,
+  ) => ({
+    schema: eventType.startsWith("stream.")
+      ? "ai-platform.public-run-stream-control.v4"
+      : PUBLIC_RUN_STREAM_SCHEMA,
+    event_id: eventId,
+    run_id: runId,
+    message_id: eventType.startsWith("stream.") ? null : messageId,
+    seq: sequence,
+    event_type: eventType,
+    stream_incarnation: 1,
+    replayable: eventType !== "stream.gap",
+    trace_ref: null,
+    causation_event_id: null,
+    emitted_at: "2026-08-21T00:00:02Z",
+    payload,
+  });
+  const frame = (
+    cursor: string,
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    payload: Record<string, unknown>,
+  ) =>
+    `id: ${runId}:1:${cursor}\nevent: ${eventType}\ndata: ${JSON.stringify(
+      envelope(eventType, eventId, sequence, payload),
+    )}\n\n`;
+
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-stream-missing-terminal",
+    agent_id: "general-agent",
+    created_at: "2026-08-21T00:00:00Z",
+    updated_at: "2026-08-21T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    eventQueries.push(options?.run_id);
+    if (!options?.run_id) {
+      return {
+        current_run_id: runId,
+        events: [
+          {
+            id: "stream-missing:user",
+            event_type: "user:message",
+            run_id: runId,
+            timestamp: "2026-08-21T00:00:00Z",
+            data: { content: "恢复缺失流" },
+          },
+        ],
+      };
+    }
+    return {
+      current_run_id: runId,
+      events: [
+        {
+          id: "stream-missing:user",
+          event_type: "user:message",
+          run_id: runId,
+          timestamp: "2026-08-21T00:00:00Z",
+          data: { content: "恢复缺失流" },
+        },
+        {
+          id: "stream-missing:answer",
+          event_type: "message:chunk",
+          run_id: runId,
+          sequence: 2,
+          timestamp: "2026-08-21T00:00:01Z",
+          data: {
+            projection_version: "ai-platform.chat-public-projection.v1",
+            projection_kind: "assistant_delta",
+            event_id: "stream-missing:answer",
+            sequence: 2,
+            run_id: runId,
+            content: "缺失前已公开正文",
+          },
+        },
+        {
+          id: "stream-missing:tool-denied",
+          event_type: "public_tool_activity",
+          run_id: runId,
+          sequence: 3,
+          timestamp: "2026-08-21T00:00:02Z",
+          data: {
+            projection_version: "ai-platform.chat-public-projection.v1",
+            event_id: "stream-missing:tool-denied",
+            run_id: runId,
+            event_type: "public_tool_activity",
+            stage: "tool",
+            message: "Tool execution denied",
+            severity: "warning",
+            progress_kind: "blocked",
+            wait_reason: "permission",
+            operation_id: "op-stream-missing",
+            category: "write",
+            display_name: "Write",
+            denial_code: "policy_denied",
+            status: "denied",
+          },
+        },
+        {
+          id: "stream-missing:terminal",
+          event_type: "done",
+          run_id: runId,
+          timestamp: "2026-08-21T00:00:03Z",
+          data: { run_id: runId, status: "failed" },
+        },
+      ],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-stream-missing-terminal",
+      run_id: runId,
+      status: statusCalls <= 2 ? "running" : "failed",
+      raw_status: statusCalls <= 2 ? "running" : "failed",
+    };
+  };
+  dom.window.fetch = async (_input, init) => {
+    requestCursors.push(new Headers(init?.headers).get("Last-Event-ID"));
+    if (requestCursors.length === 1) {
+      const initialStream = controlledNonClosingSseResponse(
+        frame("1-0", "stream.open", "stream-missing-open", null, {
+          design_id: STREAM_DESIGN_ID,
+        }) +
+          frame("2-0", "message.started", "stream-missing-started", 1, {}) +
+          frame("3-0", "message.delta", "stream-missing-delta", 2, {
+            delta: "缺失前已公开正文",
+          }) +
+          frame("4-0", "tool.started", "stream-missing-tool", 3, {
+            operation_id: "op-stream-missing",
+            category: "write",
+            display_name: "Write",
+          }),
+      );
+      initialStreams.push(initialStream);
+      return initialStream.response;
+    }
+    return new Response(
+      frame("5-0", "stream.gap", "stream-missing-gap", null, {
+        reason: "stream_missing",
+        recovery: "reload_durable_state",
+        requested_event_id: "4-0",
+        requested_stream_incarnation: 1,
+        current_stream_incarnation: 1,
+        earliest_available_event_id: null,
+        latest_available_event_id: null,
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-stream-missing-terminal");
+    });
+    await settle(harness.act);
+    for (
+      let attempt = 0;
+      attempt < 50 &&
+      !harness.hook.messages.some(
+        (message) =>
+          message.runId === runId &&
+          message.content === "缺失前已公开正文" &&
+          message.parts?.some(
+            (part) =>
+              part.type === "tool" &&
+              part.public_operation_id === "op-stream-missing" &&
+              part.status === "started",
+          ),
+      );
+      attempt += 1
+    ) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+    for (const stream of initialStreams) stream.close();
+    for (
+      let attempt = 0;
+      attempt < 350 && harness.hook.currentRunId !== null;
+      attempt += 1
+    ) {
+      await harness.act(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      );
+    }
+    await settle(harness.act);
+
+    const assistant = harness.hook.messages.find(
+      (message) => message.runId === runId && message.role === "assistant",
+    );
+    const deniedTool = assistant?.parts?.find(
+      (part) =>
+        part.type === "tool" &&
+        part.public_operation_id === "op-stream-missing",
+    );
+    const unavailable = harness.hook.messages
+      .flatMap((message) => message.parts || [])
+      .filter(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id === `terminal-result-unavailable:${runId}`,
+      );
+
+    assert.deepEqual(requestCursors, [null, `${runId}:1:4-0`]);
+    assert.deepEqual(eventQueries, [undefined, runId]);
+    assert.equal(statusCalls, 3);
+    assert.equal(assistant?.content, "缺失前已公开正文");
+    assert.equal(deniedTool?.type, "tool");
+    if (deniedTool?.type !== "tool") {
+      throw new Error("expected hydrated public tool state");
+    }
+    assert.equal(deniedTool.status, "denied");
+    assert.equal(unavailable.length, 0);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+  } finally {
+    for (const stream of initialStreams) stream.close();
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+    animationWindow.requestAnimationFrame = originalRequestAnimationFrame;
+    animationWindow.cancelAnimationFrame = originalCancelAnimationFrame;
   }
 });
 
@@ -5558,7 +6382,6 @@ test("useAgent presents a safe local card when terminal history hydration fails"
           part.event_id ===
             "terminal-result-unavailable:run-terminal-hydrate-failure",
       );
-    assert.equal(eventQueries, 2);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(cards.length, 1);
@@ -5734,7 +6557,243 @@ test("useAgent rehydrates durable partial text and one fixed failure card", asyn
   }
 });
 
-test("useAgent fails closed after initial reload status retries are exhausted", async () => {
+test("Agent route restores a high-watermark history owner after unmount and replay", async () => {
+  const routeBasePath = "/agent-market/agt_replay/7/chat";
+  const sessionId = "session-route-replay";
+  const runId = "run-route-replay";
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const streams: Array<ReturnType<typeof controlledPublicRunLifecycle>> = [];
+  const streamSignals: AbortSignal[] = [];
+  let streamCalls = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: sessionId,
+    agent_id: "general-agent",
+    created_at: "2026-08-21T00:00:00Z",
+    updated_at: "2026-08-21T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: runId,
+    events: [
+      {
+        id: `${runId}:user`,
+        run_id: runId,
+        event_type: "user:message",
+        timestamp: "2026-08-21T00:00:00Z",
+        data: { content: "continue" },
+      },
+      {
+        id: `preceding-${runId}-1`,
+        run_id: runId,
+        sequence: 2,
+        event_type: "message:chunk",
+        timestamp: "2026-08-21T00:00:00.002Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: `preceding-${runId}-1`,
+          sequence: 2,
+          run_id: runId,
+          content: "history",
+        },
+      },
+      {
+        id: `${runId}:activity`,
+        run_id: runId,
+        sequence: 9,
+        event_type: "run_event",
+        timestamp: "2026-08-21T00:00:00.009Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          event_id: `${runId}:activity`,
+          run_id: runId,
+          event_type: "public_activity",
+          stage: "tool_started",
+          status: "running",
+          severity: "info",
+          message: "Working",
+        },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async () => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "running",
+  })) as typeof sessionApi.getStatus;
+  dom.window.fetch = async (_input, init) => {
+    streamCalls += 1;
+    streamSignals.push(init?.signal as AbortSignal);
+    const stream = controlledPublicRunLifecycle(runId, "cancelled", [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "history" } },
+      { eventType: "message.delta", payload: { delta: " live" } },
+    ]);
+    streams.push(stream);
+    return stream.response;
+  };
+  let harness: Awaited<ReturnType<typeof loadReactHarness>> | null = null;
+  try {
+    harness = await loadReactHarness({
+      sessionRouteLifecycle: true,
+      sessionRouteBasePath: routeBasePath,
+      initialRoute: routeBasePath,
+    });
+    await harness.navigateRoute(`${routeBasePath}/${sessionId}`);
+    await settle(harness.act);
+    assert.equal(harness.route.pathname, `${routeBasePath}/${sessionId}`);
+    assert.equal(harness.route.sessionId, sessionId);
+    assert.equal(harness.hook.currentRunId, runId);
+    await harness.navigateRoute("/skills");
+    assert.equal(streamSignals[0]?.aborted, true);
+    await harness.navigateRoute(`${routeBasePath}/${sessionId}`);
+    await settle(harness.act);
+
+    assert.equal(streamCalls, 2);
+    assert.equal(harness.hook.currentRunId, runId);
+    assert.equal(harness.hook.connectionStatus, "connected");
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === runId,
+      )?.content,
+      "history",
+    );
+    streams[1]?.push(10, " live");
+    await settle(harness.act);
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === runId,
+      )?.content,
+      "history live",
+    );
+    assert.equal(
+      harness.hook.messages.flatMap((message) => message.parts || []).some(
+        (part) => part.type === "run_status" &&
+          part.event_id === `terminal-status-unavailable:${runId}`,
+      ),
+      false,
+    );
+  } finally {
+    await harness?.cleanup();
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+  }
+});
+
+test("useAgent restores the v4 message owner while replay catches up with history", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const runId = "run-history-replay-owner";
+  let stream: ReturnType<typeof controlledPublicRunLifecycle> | null = null;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-history-replay-owner",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: runId,
+    events: [
+      {
+        id: `${runId}:user`,
+        run_id: runId,
+        event_type: "user:message",
+        timestamp: "2026-08-21T00:00:00Z",
+        data: { message_id: `${runId}:user`, content: "恢复进行中的回复" },
+      },
+      {
+        id: `preceding-${runId}-0`,
+        run_id: runId,
+        sequence: 1,
+        event_type: "message.started",
+        timestamp: "2026-08-21T00:00:00.001Z",
+        data: { event_id: `preceding-${runId}-0` },
+      },
+      {
+        id: `preceding-${runId}-1`,
+        run_id: runId,
+        sequence: 2,
+        event_type: "message:chunk",
+        timestamp: "2026-08-21T00:00:00.002Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: `preceding-${runId}-1`,
+          message_id: `message-${runId}`,
+          sequence: 2,
+          run_id: runId,
+          content: "已恢复正文",
+        },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-history-replay-owner",
+    run_id: runId,
+    status: "running",
+  })) as typeof sessionApi.getStatus;
+  dom.window.fetch = async () => {
+    stream = controlledPublicRunLifecycle(runId, "cancelled", [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "已恢复正文" } },
+    ]);
+    return stream.response;
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-history-replay-owner");
+    });
+    await settle(harness.act);
+
+    assert.equal(harness.hook.currentRunId, runId);
+    assert.equal(harness.hook.connectionStatus, "connected");
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === runId,
+      )?.content,
+      "已恢复正文",
+    );
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .some(
+          (part) =>
+            part.type === "run_status" &&
+            part.event_id === `terminal-status-unavailable:${runId}`,
+        ),
+      false,
+    );
+    assert.ok(stream);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent keeps transient status failure recoverable and fails closed on status authentication", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -5744,6 +6803,8 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
   const originalFetch = dom.window.fetch;
   let statusCalls = 0;
   let sseCalls = 0;
+  let statusMode: "unavailable" | "running" | "unauthorized" = "unavailable";
+  let resumedStream: ReturnType<typeof controlledPublicRunLifecycle> | null = null;
   sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-initial-status-unavailable",
@@ -5767,15 +6828,21 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
   });
   sessionApi.getStatus = (async () => {
     statusCalls += 1;
+    if (statusMode === "unauthorized") {
+      throw new ApiRequestError("authentication rejected", 401, "unauthorized");
+    }
     return {
       session_id: "session-initial-status-unavailable",
       run_id: "run-initial-status-unavailable",
-      status: "error",
+      status: statusMode === "running" ? "running" : "error",
     };
   }) as typeof sessionApi.getStatus;
   dom.window.fetch = async () => {
     sseCalls += 1;
-    return completedSseResponse();
+    resumedStream = controlledPublicRunLifecycle(
+      "run-initial-status-unavailable",
+    );
+    return resumedStream.response;
   };
 
   try {
@@ -5785,194 +6852,73 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
     await settle(harness.act);
 
     const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+    const assistant = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" &&
+        message.runId === "run-initial-status-unavailable",
+    );
     assert.equal(statusCalls, 3);
     assert.equal(sseCalls, 0);
-    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(
+      harness.hook.currentRunId,
+      "run-initial-status-unavailable",
+    );
+    assert.equal(assistant?.isStreaming, true);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(
-      parts.filter(
-        (part) =>
-          part.type === "run_status" &&
-          part.event_id ===
-            "terminal-status-unavailable:run-initial-status-unavailable",
-      ).length,
-      1,
-    );
     assert.equal(
       parts.some(
         (part) =>
           part.type === "run_status" &&
-          part.event_id === "terminal-failure:run-initial-status-unavailable",
+          part.event_id ===
+            "terminal-status-unavailable:run-initial-status-unavailable",
       ),
       false,
+    );
+
+    statusMode = "running";
+    await harness.act(async () => {
+      await harness.hook.reconnectSSE();
+    });
+    await harness.act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2_100));
+    });
+    await settle(harness.act);
+
+    assert.equal(statusCalls, 4);
+    assert.equal(sseCalls, 1);
+    assert.equal(
+      harness.hook.currentRunId,
+      "run-initial-status-unavailable",
+    );
+    assert.equal(harness.hook.connectionStatus, "connected");
+    assert.ok(resumedStream);
+
+    statusMode = "unauthorized";
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-initial-status-unavailable");
+    });
+    await settle(harness.act);
+
+    assert.equal(statusCalls, 5);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .some(
+          (part) =>
+            part.type === "run_status" &&
+            part.event_id ===
+              "terminal-status-unavailable:run-initial-status-unavailable",
+        ),
+      true,
     );
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
     sessionApi.markRead = originalMarkRead;
-    dom.window.fetch = originalFetch;
-    await harness.cleanup();
-  }
-});
-
-test("useAgent immediately reconciles a non-terminal application error without server close", async () => {
-  const harness = await loadReactHarness();
-  const { sessionApi } = await import("../../../services/api/session.ts");
-  const originalSubmitChat = sessionApi.submitChat;
-  const originalGetStatus = sessionApi.getStatus;
-  const originalGetEvents = sessionApi.getEvents;
-  const originalGetAuthoritative = sessionApi.getAuthoritative;
-  const originalMarkRead = sessionApi.markRead;
-  const originalGenerateTitle = sessionApi.generateTitle;
-  const originalFetch = dom.window.fetch;
-  let sseCalls = 0;
-  let statusCalls = 0;
-  const closeStreams: Array<() => void> = [];
-  dom.window.fetch = async () => {
-    sseCalls += 1;
-    const stream = controlledNonClosingSseEventResponse("error", {
-      error: "stream_timeout",
-    });
-    closeStreams.push(stream.close);
-    return stream.response;
-  };
-  sessionApi.markRead = async () => {};
-  sessionApi.getAuthoritative = async (sessionId) => ({
-    session_id: sessionId,
-    workspace_id: "workspace-test",
-    agent_id: "general-agent",
-    title: "Test session",
-    purpose: "conversation",
-    agent_conversation: null,
-  });
-  sessionApi.generateTitle = async () => ({
-    title: "中断会话",
-    session_id: "session-nonterminal-error",
-  });
-  sessionApi.submitChat = (async () => ({
-    session_id: "session-nonterminal-error",
-    run_id: "run-nonterminal-error",
-    trace_id: "trace-nonterminal-error",
-    status: "queued",
-  })) as typeof sessionApi.submitChat;
-  sessionApi.getStatus = (async () => {
-    statusCalls += 1;
-    return {
-      session_id: "session-nonterminal-error",
-      run_id: "run-nonterminal-error",
-      status: "error",
-      raw_status: "failed",
-    };
-  }) as typeof sessionApi.getStatus;
-  sessionApi.getEvents = (async (_sessionId, options) => ({
-    events: options?.run_id
-      ? [{
-          id: "run-nonterminal-error:partial",
-          event_type: "message:chunk",
-          run_id: "run-nonterminal-error",
-          timestamp: "2026-07-15T00:00:01Z",
-          data: { content: "中断前的部分结果" },
-        }]
-      : [],
-  })) as typeof sessionApi.getEvents;
-
-  try {
-    await harness.act(async () => {
-      await harness.hook.sendMessage("流中断后查询状态");
-    });
-    await settle(harness.act);
-    await settle(harness.act);
-
-    const cards = harness.hook.messages
-      .flatMap((message) => message.parts || [])
-      .filter(
-        (part) =>
-          part.type === "run_status" &&
-          part.event_id === "terminal-failure:run-nonterminal-error",
-      );
-    assert.equal(sseCalls, 1);
-    assert.equal(statusCalls, 1);
-    assert.equal(harness.hook.currentRunId, null);
-    assert.equal(harness.hook.isLoading, false);
-    assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(cards.length, 1);
-    assert.equal(
-      cards[0]?.type === "run_status" && cards[0].message,
-      "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
-    );
-  } finally {
-    sessionApi.submitChat = originalSubmitChat;
-    sessionApi.getStatus = originalGetStatus;
-    sessionApi.getEvents = originalGetEvents;
-    sessionApi.getAuthoritative = originalGetAuthoritative;
-    sessionApi.markRead = originalMarkRead;
-    sessionApi.generateTitle = originalGenerateTitle;
-    dom.window.fetch = originalFetch;
-    closeStreams.forEach((close) => close());
-    await harness.cleanup();
-  }
-});
-
-test("useAgent drops an application-error status continuation after clear", async () => {
-  const harness = await loadReactHarness();
-  const { sessionApi } = await import("../../../services/api/session.ts");
-  const originalSubmitChat = sessionApi.submitChat;
-  const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
-  const originalGenerateTitle = sessionApi.generateTitle;
-  const originalFetch = dom.window.fetch;
-  let resolveStatus!: (value: Awaited<ReturnType<typeof sessionApi.getStatus>>) => void;
-  let statusCalls = 0;
-  dom.window.fetch = async () =>
-    sseEventResponse("error", { error: "stream_timeout" });
-  sessionApi.markRead = async () => {};
-  sessionApi.generateTitle = async () => ({
-    title: "待清空会话",
-    session_id: "session-error-clear",
-  });
-  sessionApi.submitChat = (async () => ({
-    session_id: "session-error-clear",
-    run_id: "run-error-clear",
-    trace_id: "trace-error-clear",
-    status: "queued",
-  })) as typeof sessionApi.submitChat;
-  sessionApi.getStatus = (async () => {
-    statusCalls += 1;
-    return new Promise((resolve) => {
-      resolveStatus = resolve;
-    });
-  }) as typeof sessionApi.getStatus;
-
-  try {
-    await harness.act(async () => {
-      await harness.hook.sendMessage("错误帧后清空");
-    });
-    await settle(harness.act);
-    assert.equal(statusCalls, 1);
-
-    await harness.act(async () => {
-      harness.hook.clearMessages();
-    });
-    resolveStatus({
-      session_id: "session-error-clear",
-      run_id: "run-error-clear",
-      status: "error",
-      raw_status: "failed",
-    });
-    await settle(harness.act);
-
-    assert.equal(harness.hook.sessionId, null);
-    assert.equal(harness.hook.currentRunId, null);
-    assert.equal(harness.hook.isLoading, false);
-    assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(harness.hook.messages.length, 0);
-  } finally {
-    sessionApi.submitChat = originalSubmitChat;
-    sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
-    sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }

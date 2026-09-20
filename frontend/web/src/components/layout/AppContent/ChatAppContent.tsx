@@ -9,7 +9,7 @@ import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
 import type { SessionSidebarSessionSource } from "../../panels/SessionSidebar";
-import { useSettingsContext } from "../../../contexts/SettingsContext";
+import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { useAgent } from "../../../hooks/useAgent";
 import { useApprovals } from "../../../hooks/useApprovals";
 import { useAuth } from "../../../hooks/useAuth";
@@ -50,8 +50,8 @@ import {
   buildEffectiveSkills,
   countEnabledSkills,
   resolveComposerSkillsAvailability,
-  resolveSettingsBooleanProjection,
 } from "./skillAvailability";
+import { AgentConversationPanel } from "../../../features/agent-market/AgentConversationPanel";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
@@ -62,10 +62,9 @@ import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistent
 import { agentProfileApi } from "../../../services/api/agentProfile";
 import { sessionApi } from "../../../services/api/session";
 import { uuid } from "../../../utils/uuid";
-import {
-  AGENT_PROFILE_CATEGORY_LABELS,
-  type AgentConversationIdentity,
-  type AgentProfilePublicProjection,
+import type {
+  AgentConversationIdentity,
+  AgentProfilePublicProjection,
 } from "../../../types/agentProfile";
 import {
   buildAgentMarketDetailPath,
@@ -158,11 +157,15 @@ export async function ensureAgentConversationForFirstSend({
   coordinator,
   profile,
   createConversation,
+  isCurrent,
+  onConversationCreated,
   bindConversation,
 }: {
   coordinator: AgentFirstSendCoordinator;
   profile: Pick<AgentProfilePublicProjection, "agent_id" | "expected_revision">;
   createConversation: () => ReturnType<typeof agentProfileApi.createConversation>;
+  isCurrent?: () => boolean;
+  onConversationCreated?: (sessionId: string) => void;
   bindConversation: (sessionId: string) => Promise<boolean>;
 }): Promise<string> {
   if (!coordinator.current) {
@@ -178,16 +181,24 @@ export async function ensureAgentConversationForFirstSend({
       ) {
         throw new Error("agent_workspace_identity_mismatch");
       }
+      if (isCurrent && !isCurrent()) {
+        throw new Error("agent_workspace_creation_cancelled");
+      }
+      onConversationCreated?.(created.session_id);
       if (!(await bindConversation(created.session_id))) {
         throw new Error("agent_conversation_history_unavailable");
+      }
+      if (isCurrent && !isCurrent()) {
+        throw new Error("agent_workspace_creation_cancelled");
       }
       return created.session_id;
     })();
   }
+  const flight = coordinator.current;
   try {
-    return await coordinator.current;
+    return await flight;
   } catch (error) {
-    coordinator.current = null;
+    if (coordinator.current === flight) coordinator.current = null;
     throw error;
   }
 }
@@ -197,12 +208,19 @@ export async function submitAgentFirstMessageSingleFlight({
   coordinator,
   submissionKey,
   ensureConversation,
+  isCurrent,
+  agentOptions,
   submitMessage,
 }: {
   coordinator: AgentFirstSubmissionCoordinator;
   submissionKey: string;
   ensureConversation: () => Promise<string>;
-  submitMessage: (sessionId: string) => Promise<SubmissionOutcome>;
+  isCurrent?: () => boolean;
+  agentOptions?: Record<string, boolean | string | number>;
+  submitMessage: (
+    sessionId: string,
+    agentOptions?: Record<string, boolean | string | number>,
+  ) => Promise<SubmissionOutcome>;
 }): Promise<SubmissionOutcome> {
   const active = coordinator.current;
   if (active && active.submissionKey !== submissionKey) {
@@ -211,8 +229,15 @@ export async function submitAgentFirstMessageSingleFlight({
   let flight = active?.promise;
   if (!active) {
     flight = (async () => {
-      const createdSessionId = await ensureConversation();
-      return submitMessage(createdSessionId);
+      let createdSessionId: string;
+      try {
+        createdSessionId = await ensureConversation();
+      } catch (error) {
+        if (isCurrent && !isCurrent()) return { status: "failed" };
+        throw error;
+      }
+      if (isCurrent && !isCurrent()) return { status: "failed" };
+      return submitMessage(createdSessionId, agentOptions);
     })();
     coordinator.current = { submissionKey, promise: flight };
   }
@@ -309,40 +334,28 @@ export async function recoverAgentConversationIdentity(
   return identity;
 }
 
-/** Render only the public immutable Agent identity above canonical Chat. */
-export function AgentConversationIdentityBanner({
+/** Project the public immutable Agent identity into the compact Chat header. */
+export function AgentConversationHeaderIdentity({
   identity,
 }: {
   identity: AgentConversationIdentity;
 }) {
   return (
-    <section
-      data-agent-conversation-profile
-      className="border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3 text-[var(--theme-text)] sm:px-6"
-    >
-      <div className="mx-auto flex max-w-4xl items-center gap-3">
-        <AgentIdentityAvatar
-          agentId={identity.agent_id}
-          avatarRef={identity.avatar_ref}
-          avatarSeed={identity.avatar_seed}
-          name={identity.name}
-          size="sm"
-        />
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <strong className="text-sm font-semibold sm:text-base">{identity.name}</strong>
-            <span className="text-xs text-[var(--theme-text-secondary)]">
-              {AGENT_PROFILE_CATEGORY_LABELS[identity.category]}
-            </span>
-          </span>
-          {identity.description ? (
-            <span className="mt-1 block line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)] sm:text-sm">
-              {identity.description}
-            </span>
-          ) : null}
-        </span>
-      </div>
-    </section>
+    <>
+      <AgentIdentityAvatar
+        agentId={identity.agent_id}
+        avatarRef={identity.avatar_ref}
+        avatarSeed={identity.avatar_seed}
+        name={identity.name}
+        size="xs"
+      />
+      <strong
+        className="hidden max-w-64 truncate text-sm font-semibold text-[var(--theme-text)] sm:block"
+        title={identity.name}
+      >
+        {identity.name}
+      </strong>
+    </>
   );
 }
 
@@ -386,6 +399,23 @@ export function ChatAppContent({
   const agentWorkspaceCreationRef = useRef<Promise<string> | null>(null);
   const agentWorkspaceFirstSubmissionRef =
     useRef<AgentFirstSubmissionCoordinator["current"]>(null);
+  const agentWorkspaceFirstSendGenerationRef = useRef(0);
+  const agentWorkspaceDraftHandoffIdentityRef = useRef<string | null>(null);
+  const [agentWorkspaceDraftHandoffKey, setAgentWorkspaceDraftHandoffKey] =
+    useState<string | null>(null);
+  const invalidateAgentWorkspaceFirstSend = useCallback(() => {
+    agentWorkspaceFirstSendGenerationRef.current += 1;
+    agentWorkspaceCreationRef.current = null;
+    agentWorkspaceFirstSubmissionRef.current = null;
+    agentWorkspaceDraftHandoffIdentityRef.current = null;
+    setAgentWorkspaceDraftHandoffKey(null);
+  }, []);
+  useEffect(
+    () => () => {
+      agentWorkspaceFirstSendGenerationRef.current += 1;
+    },
+    [],
+  );
   const [agentWorkspaceError, setAgentWorkspaceError] = useState<string | null>(null);
   const agentWorkspaceRouteBasePath = agentWorkspace
     ? buildAgentMarketWorkspacePath(agentWorkspace)
@@ -407,25 +437,21 @@ export function ChatAppContent({
     sessionId: null,
   });
   const agentConversationControlsLocked = !chatToolAccess.enabled;
-  const { enableSkills, settings, availableModels, defaultModel } =
-    useSettingsContext();
+  const { availableModels, defaultModel } = useModelCatalogContext();
   const { hasPermission, isAuthenticated } = useAuth();
-  const canReadSkills = hasPermission(Permission.SKILL_READ);
-  const enableSkillsProjection = resolveSettingsBooleanProjection(
-    settings,
-    "ENABLE_SKILLS",
-  );
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
-    canReadSkills,
     catalogEffectivePermissions: [],
     catalogPermissionsKnown: false,
-    enableSkillsSettingKnown: enableSkillsProjection.known,
-    enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
-  const { isPageDragging, pageDragAttachments, setPageDragAttachments } =
-    useDragAndDrop();
+  const {
+    isPageDragging,
+    pageDragAttachments,
+    setPageDragAttachments,
+    clearPageDragAttachments,
+    uploadControls,
+  } = useDragAndDrop();
 
   const {
     approvals,
@@ -462,11 +488,8 @@ export function ChatAppContent({
   });
   const composerSkillsAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
-    canReadSkills,
     catalogEffectivePermissions: skillsEffectivePermissions,
     catalogPermissionsKnown: skillsEffectivePermissionsKnown,
-    enableSkillsSettingKnown: enableSkillsProjection.known,
-    enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
   const sessionConfigRef = useRef({
@@ -545,8 +568,14 @@ export function ChatAppContent({
     sessionId,
     onIdentityChange: () => {
       agentWorkspaceSelectionRequestIdRef.current += 1;
+      if (
+        agentWorkspaceDraftHandoffIdentityRef.current !== conversationIdentityKey
+      ) {
+        invalidateAgentWorkspaceFirstSend();
+      }
       setAgentWorkspaceError(null);
       clearMessages();
+      clearPageDragAttachments();
       // A task Skill is scoped to the composer that selected it. A route or
       // workspace identity change clears the session, so it must also clear the
       // local selector before a later submit can create an unbound conversation.
@@ -668,11 +697,7 @@ export function ChatAppContent({
 
     const serverSelection =
       sessionId && serverSelectedToolIds !== undefined
-        ? reconcileChatMcpToolSelection(
-            serverSelectedToolIds,
-            tools,
-            mcpCatalogState.status,
-          )
+        ? serverSelectedToolIds
         : undefined;
     const restoreKey =
       serverSelection === undefined ? null : `${sessionId}:${JSON.stringify(serverSelection)}`;
@@ -682,13 +707,7 @@ export function ChatAppContent({
       restoredMcpSelectionRef.current = restoreKey;
     }
 
-    const reconciled = shouldRestoreServerSelection
-      ? serverSelection
-      : reconcileChatMcpToolSelection(
-          sessionConfig.selectedMcpToolIds,
-          tools,
-          mcpCatalogState.status,
-        );
+    const reconciled = shouldRestoreServerSelection ? serverSelection : undefined;
     if (
       reconciled === undefined ||
       (sessionConfig.selectedMcpToolIds !== undefined &&
@@ -732,36 +751,37 @@ export function ChatAppContent({
 
   const canSelectMcpTools = canSelectChatMcpTools(mcpCatalogState.status);
 
-  const [currentModelId, setCurrentModelId] = useState<string>(() => {
-    return localStorage.getItem("defaultModelId") || "";
-  });
-  const [currentModelValue, setCurrentModelValue] = useState<string>(
-    () => localStorage.getItem("defaultModel") || defaultModel,
-  );
-
-  const isSessionRestoredRef = useRef(false);
+  const [currentModelId, setCurrentModelId] = useState("");
+  const [currentModelValue, setCurrentModelValue] = useState("");
+  const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isSessionRestoredRef.current) return;
+    if (!availableModels) return;
+    const hasPriorSelection = Boolean(currentModelId || currentModelValue);
+    const stillAvailable = availableModels.some((model) =>
+      (currentModelId && model.id === currentModelId)
+      || (!currentModelId && currentModelValue && model.value === currentModelValue));
+    if (hasPriorSelection && !stillAvailable) {
+      setCurrentModelId("");
+      setCurrentModelValue("");
+      setModelSelectionError("之前选择的模型已不可用，请重新选择模型。");
+      return;
+    }
+    if (modelSelectionError) return;
     const nextSelection = reconcileCurrentModelSelection({
       availableModels,
       currentModelId,
       currentModelValue,
-      storedDefaultId: localStorage.getItem("defaultModelId") || "",
-      storedDefaultValue: localStorage.getItem("defaultModel") || "",
       fallbackDefaultValue: defaultModel,
     });
 
-    if (nextSelection.modelId && nextSelection.modelId !== currentModelId) {
+    if (nextSelection.modelId !== currentModelId) {
       setCurrentModelId(nextSelection.modelId);
     }
-    if (
-      nextSelection.modelValue &&
-      nextSelection.modelValue !== currentModelValue
-    ) {
+    if (nextSelection.modelValue !== currentModelValue) {
       setCurrentModelValue(nextSelection.modelValue);
     }
-  }, [availableModels, currentModelId, currentModelValue, defaultModel]);
+  }, [availableModels, currentModelId, currentModelValue, defaultModel, modelSelectionError]);
 
   useEffect(() => {
     handleToggleAgentOption("model", currentModelValue);
@@ -779,9 +799,18 @@ export function ChatAppContent({
     (modelId: string, modelValue: string) => {
       setCurrentModelId(modelId);
       setCurrentModelValue(modelValue);
+      setModelSelectionError(null);
     },
     [],
   );
+
+  const lockedAgentOptions: typeof currentAgentOptions = currentAgentOptions.enable_thinking
+    ? { enable_thinking: currentAgentOptions.enable_thinking }
+    : {};
+  const lockedAgentOptionValues: typeof agentOptionValues =
+    agentOptionValues.enable_thinking !== undefined
+      ? { enable_thinking: agentOptionValues.enable_thinking }
+      : {};
 
   // Sync ref synchronously during render so getAgentOptions always has
   // the latest model_id — useEffect introduces a one-tick delay that
@@ -791,13 +820,14 @@ export function ChatAppContent({
         disabledSkills: [],
         selectedMcpToolIds: undefined,
         agentOptions: {
+          ...lockedAgentOptionValues,
           ...(currentModelValue ? { model: currentModelValue } : {}),
           ...(currentModelId ? { model_id: currentModelId } : {}),
         },
       }
       : {
         ...sessionConfig,
-        selectedMcpToolIds: authoritativeMcpSelection,
+        selectedMcpToolIds: sessionConfig.selectedMcpToolIds,
         agentOptions: {
           ...agentOptionValues,
           ...(currentModelValue ? { model: currentModelValue } : {}),
@@ -992,14 +1022,13 @@ export function ChatAppContent({
     }) => {
       console.log("[AppContent] Restoring session config:", config);
 
-      isSessionRestoredRef.current = true;
-
       restoreSessionConfig(config);
 
       if (config.agent_options) {
         restoreAgentOptions(config.agent_options);
 
         const restoredModelSelection = getRestoredModelSelection(config);
+        setModelSelectionError(null);
         if (restoredModelSelection.modelId) {
           setCurrentModelId(restoredModelSelection.modelId);
         }
@@ -1023,8 +1052,7 @@ export function ChatAppContent({
 
   const handleNewSessionWithReset = useCallback(() => {
     if (agentWorkspace) {
-      agentWorkspaceCreationRef.current = null;
-      agentWorkspaceFirstSubmissionRef.current = null;
+      invalidateAgentWorkspaceFirstSend();
       setAgentWorkspaceError(null);
       clearMessages();
       setAgentConversationState(conversationState("generic", null));
@@ -1033,8 +1061,6 @@ export function ChatAppContent({
     }
     const nextSelection = resolveDefaultModelSelection({
       availableModels,
-      storedDefaultId: localStorage.getItem("defaultModelId") || "",
-      storedDefaultValue: localStorage.getItem("defaultModel") || "",
       fallbackDefaultValue: defaultModel,
     });
 
@@ -1047,6 +1073,7 @@ export function ChatAppContent({
 
     setCurrentModelId(nextSelection.modelId);
     setCurrentModelValue(nextSelection.modelValue);
+    setModelSelectionError(null);
   }, [
     availableModels,
     defaultModel,
@@ -1057,6 +1084,7 @@ export function ChatAppContent({
     agentWorkspace,
     agentWorkspaceRouteBasePath,
     clearMessages,
+    invalidateAgentWorkspaceFirstSend,
     navigate,
   ]);
 
@@ -1068,6 +1096,12 @@ export function ChatAppContent({
       selectedSkill?: SelectedSkillRequest | null,
     ): Promise<SubmissionOutcome> => {
       setAgentWorkspaceError(null);
+      if (!availableModels?.some((model) => model.id === currentModelId
+        && model.value === currentModelValue)) {
+        setModelSelectionError(availableModels?.length
+          ? "请先选择当前可用的模型。" : "当前没有可用模型，请联系管理员。");
+        return { status: "failed" };
+      }
       if (!agentWorkspace || sessionId) {
         return sendMessage(content, options, attachments, selectedSkill);
       }
@@ -1087,6 +1121,9 @@ export function ChatAppContent({
         return { status: "failed" };
       }
 
+      const firstSendGeneration = agentWorkspaceFirstSendGenerationRef.current;
+      const isCurrentFirstSend = () =>
+        agentWorkspaceFirstSendGenerationRef.current === firstSendGeneration;
       try {
         const outcome = await submitAgentFirstMessageSingleFlight({
           coordinator: agentWorkspaceFirstSubmissionRef,
@@ -1094,6 +1131,7 @@ export function ChatAppContent({
             content,
             fileIds: (attachments ?? []).map((attachment) => attachment.key),
           }),
+          isCurrent: isCurrentFirstSend,
           ensureConversation: () =>
             ensureAgentConversationForFirstSend({
               coordinator: agentWorkspaceCreationRef,
@@ -1118,20 +1156,24 @@ export function ChatAppContent({
                   operationId,
                 );
               },
+              isCurrent: isCurrentFirstSend,
+              onConversationCreated: (createdSessionId) => {
+                agentWorkspaceDraftHandoffIdentityRef.current =
+                  `${startProfile.agent_id}:${startProfile.expected_revision}:${createdSessionId}`;
+                setAgentWorkspaceDraftHandoffKey(createdSessionId);
+              },
               bindConversation: async (createdSessionId) =>
                 Boolean(await loadHistory(createdSessionId)),
             }),
-          submitMessage: async (createdSessionId) => {
+          agentOptions: options,
+          submitMessage: async (createdSessionId, firstSendOptions) => {
             setAgentWorkspaceError(null);
-            const submission = sendMessage(content, undefined, attachments, null);
-            navigate(
-              buildAgentMarketWorkspacePath(startProfile, createdSessionId),
-              { replace: true },
-            );
+            const submission = sendMessage(content, firstSendOptions, attachments, null);
             onAgentWorkspaceSessionCreated?.(createdSessionId);
             return submission;
           },
         });
+        if (!isCurrentFirstSend()) return { status: "failed" };
         if (outcome.status === "accepted") {
           clearAgentConversationOperationId({
             agentId: startProfile.agent_id,
@@ -1141,7 +1183,10 @@ export function ChatAppContent({
         }
         return outcome;
       } catch (error) {
-        agentWorkspaceFirstSubmissionRef.current = null;
+        if (!isCurrentFirstSend()) {
+          return { status: "failed" };
+        }
+        invalidateAgentWorkspaceFirstSend();
         const status =
           error !== null && typeof error === "object"
             ? (error as { status?: number }).status
@@ -1164,10 +1209,14 @@ export function ChatAppContent({
       agentWorkspaceReadOnly,
       agentWorkspaceStartProfile,
       loadHistory,
+      invalidateAgentWorkspaceFirstSend,
       navigate,
       onAgentWorkspaceSessionCreated,
       sendMessage,
       sessionId,
+      availableModels,
+      currentModelId,
+      currentModelValue,
     ],
   );
 
@@ -1178,6 +1227,7 @@ export function ChatAppContent({
   const handleSelectSessionAndClose = useCallback(
     async (id: string) => {
       const selectionRequestId = ++agentWorkspaceSelectionRequestIdRef.current;
+      invalidateAgentWorkspaceFirstSend();
       setAgentConversationState(conversationState("loading", id));
       clearMessages();
       clearSelectedSkill();
@@ -1217,6 +1267,7 @@ export function ChatAppContent({
       clearMessages,
       clearSelectedSkill,
       handleSelectSession,
+      invalidateAgentWorkspaceFirstSend,
       navigate,
       setMobileSidebarOpen,
     ],
@@ -1255,7 +1306,7 @@ export function ChatAppContent({
       onNewSession={handleNewSessionWithReset}
       allowNewSessionAction={agentWorkspace !== undefined}
       newSessionActionLabel={agentWorkspace ? "开始新任务" : undefined}
-      availableModels={filteredModels}
+      availableModels={agentWorkspace ? null : filteredModels}
       currentModelId={currentModelId}
       onSelectModel={handleSelectModel}
       sessionId={sessionId}
@@ -1263,6 +1314,25 @@ export function ChatAppContent({
       onOpenRunPlayback={handleOpenRunPlayback}
       showOutlineButton={shouldShowMessageOutline(visibleMessages)}
       onToggleOutline={handleToggleOutline}
+      chatIdentity={
+        agentConversationState.phase === "bound" &&
+        agentConversationState.identity ? (
+          <AgentConversationHeaderIdentity
+            identity={agentConversationState.identity}
+          />
+        ) : undefined
+      }
+      contentSidebar={
+        agentWorkspace && agentWorkspaceSessionSource ? (
+          <AgentConversationPanel
+            currentSessionId={sessionId}
+            onNewSession={handleNewSessionWithReset}
+            onSelectSession={handleSelectSessionAndClose}
+            source={agentWorkspaceSessionSource}
+          />
+        ) : undefined
+      }
+      showHeaderUserMenu={!agentWorkspace}
       sidebar={
         <SessionSidebar
           ref={sidebarRef}
@@ -1284,11 +1354,15 @@ export function ChatAppContent({
           agentWorkspace={
             agentWorkspace
               ? {
+                  agent_id: agentWorkspace.agent_id,
+                  avatar_ref: agentWorkspace.avatar_ref,
+                  avatar_seed: agentWorkspace.avatar_seed,
                   name: agentWorkspace.name,
                   description: agentWorkspace.description,
                 }
               : undefined
           }
+          agentHistoryInMainPanel={agentWorkspace !== undefined}
           navigationOnly={agentWorkspace === undefined}
         />
       }
@@ -1328,16 +1402,11 @@ export function ChatAppContent({
             正在校验会话身份…
           </div>
         ) : null}
-        {agentConversationState.phase === "bound" &&
-        agentConversationState.identity ? (
-          <AgentConversationIdentityBanner
-            identity={agentConversationState.identity}
-          />
-        ) : null}
         <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
             <ChatView
             messages={visibleMessages}
             sessionId={visibleSessionId}
+            conversationIdentityKey={conversationIdentityKey}
             currentRunId={visibleCurrentRunId}
             isLoading={isLoading}
             isLoadingHistory={isLoadingHistory}
@@ -1345,6 +1414,11 @@ export function ChatAppContent({
             canSendMessage={canSendMessage}
             initialComposerDraft={agentWorkspaceStarterDraft}
             initialComposerDraftKey={location.key}
+            composerDraftHandoffKey={
+              agentWorkspace
+                ? agentWorkspaceDraftHandoffKey
+                : newlyCreatedSession?.id ?? null
+            }
             agentEmptyProfile={agentWorkspace}
             composerPlaceholder={
               agentWorkspaceReadOnly
@@ -1386,9 +1460,13 @@ export function ChatAppContent({
               !agentConversationControlsLocked &&
               composerSkillsAvailability.enableComposerSkills
             }
-            agentOptions={agentConversationControlsLocked ? {} : currentAgentOptions}
+            agentOptions={
+              agentConversationControlsLocked ? lockedAgentOptions : currentAgentOptions
+            }
             agentOptionValues={
-              agentConversationControlsLocked ? {} : agentOptionValues
+              agentConversationControlsLocked
+                ? lockedAgentOptionValues
+                : agentOptionValues
             }
             onToggleAgentOption={handleToggleAgentOption}
             availableModels={filteredModels ?? []}
@@ -1407,6 +1485,7 @@ export function ChatAppContent({
             }
             attachments={pageDragAttachments}
             onAttachmentsChange={setPageDragAttachments}
+            uploadControls={uploadControls}
             externalNavigationToken={externalNavigationToken}
             externalNavigationTargetFile={externalNavigationTargetFile}
             externalNavigationTargetRunId={externalNavigationTargetRunId}
@@ -1416,9 +1495,13 @@ export function ChatAppContent({
             externalScrollToBottom={externalScrollToBottom}
             outlineToggleRef={outlineToggleRef}
             WorkbenchShellComponent={WorkbenchShell}
-            sessionRouteBasePath={agentWorkspaceRouteBasePath}
             />
           </ChatMcpCatalogContext.Provider>
+        {modelSelectionError ? (
+          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger)]" role="alert">
+            {modelSelectionError}
+          </p>
+        ) : null}
         {agentWorkspaceError ? (
           <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger)]" role="alert">
             {agentWorkspaceError}

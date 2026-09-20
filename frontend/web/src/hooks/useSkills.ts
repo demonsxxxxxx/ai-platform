@@ -107,7 +107,20 @@ export function resolveSkillOperationError(
   if (error instanceof ApiRequestError && error.status === 403) {
     return i18n.t("errors.noPermission");
   }
+  if (
+    error instanceof Error &&
+    error.message === "admin_skill_lifecycle_invalid"
+  ) {
+    return i18n.t("skills.adminCatalogInvalid");
+  }
   return i18n.t(fallbackKey);
+}
+
+export function resolveSkillPreviewError(error: unknown): string {
+  if (error instanceof ApiRequestError && error.status !== 403) {
+    return error.message;
+  }
+  return resolveSkillOperationError(error, "skills.previewFailed");
 }
 
 export function useSkills(options?: {
@@ -142,6 +155,8 @@ export function useSkills(options?: {
   // Only the newest catalog request may update visible state. Search, filters,
   // and pagination can otherwise resolve out of order and restore stale rows.
   const catalogRequestSequenceRef = useRef(0);
+  const listParamsRef = useRef(listParams);
+  listParamsRef.current = listParams;
   // Archive mutations own the catalog while they are pending. Reads that
   // started before or during an archive must not restore retained history to
   // the active catalog; the final mutation refresh supplies one authoritative
@@ -179,7 +194,7 @@ export function useSkills(options?: {
       try {
         const response = allAuthorizedCatalog
           ? await skillApi.listAllAuthorized()
-          : await skillApi.list(params ?? listParams ?? {});
+          : await skillApi.list(params ?? listParamsRef.current ?? {});
         const userSkills: UserSkill[] = response.skills;
         if (
           requestSequence !== catalogRequestSequenceRef.current ||
@@ -242,7 +257,7 @@ export function useSkills(options?: {
         }
       }
     },
-    [allAuthorizedCatalog, enabled, listParams],
+    [allAuthorizedCatalog, enabled],
   );
 
   // Fetch single skill — metadata + file paths only (lazy: content loaded on demand)
@@ -677,9 +692,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminUploadZip(skillName, file);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to upload admin skill",
-        );
+        setError(resolveSkillOperationError(err, "skills.adminReleaseDraftFailed"));
         return null;
       } finally {
         setIsUploading(false);
@@ -699,9 +712,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminReviewSkillVersion(skillName, version);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to review admin skill",
-        );
+        setError(resolveSkillOperationError(err, "skills.adminReleaseReviewFailed"));
         return null;
       } finally {
         setIsUploading(false);
@@ -721,9 +732,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminPromoteSkillVersion(skillName, version);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to promote admin skill",
-        );
+        setError(resolveSkillOperationError(err, "skills.adminReleasePromoteFailed"));
         return null;
       } finally {
         setIsUploading(false);
@@ -740,11 +749,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminListSkills();
       } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to refresh admin skill catalog",
-        );
+        setError(resolveSkillOperationError(err, "skills.loadFailed"));
         return null;
       }
     },
@@ -771,7 +776,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.previewZip(file);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to preview ZIP");
+        setError(resolveSkillPreviewError(err));
         return null;
       } finally {
         setIsLoading(false);
@@ -800,80 +805,13 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminPreviewZip(file);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to preview admin ZIP",
-        );
+        setError(resolveSkillPreviewError(err));
         return null;
       } finally {
         setIsLoading(false);
       }
     },
     [enabled],
-  );
-
-  // Preview skills from GitHub repository
-  const previewGitHubSkills = useCallback(
-    async (
-      repoUrl: string,
-      branch: string = "main",
-    ): Promise<{
-      repo_url: string;
-      branch: string;
-      skills: Array<{ name: string; path: string; description: string }>;
-    } | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        return await skillApi.previewGitHub(repoUrl, branch);
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to preview GitHub skills",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled],
-  );
-
-  // Install skills from GitHub repository
-  const installGitHubSkills = useCallback(
-    async (
-      repoUrl: string,
-      skillNames: string[],
-      branch: string = "main",
-    ): Promise<{
-      message: string;
-      installed: string[];
-      errors: string[];
-    } | null> => {
-      if (!enabled) return null;
-      setIsLoading(true);
-      setError(null);
-      try {
-        const result = await skillApi.installGitHub(
-          repoUrl,
-          skillNames,
-          branch,
-        );
-        await fetchSkills();
-        return result;
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to install GitHub skills",
-        );
-        return null;
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [enabled, fetchSkills],
   );
 
   // Stats
@@ -889,9 +827,11 @@ export function useSkills(options?: {
   });
 
   // Initial load
+  const catalogLoadParams = allAuthorizedCatalog ? undefined : listParams;
+
   useEffect(() => {
-    fetchSkills(listParams);
-  }, [fetchSkills, listParams]);
+    void fetchSkills(catalogLoadParams);
+  }, [catalogLoadParams, fetchSkills]);
 
   return {
     skills,
@@ -920,8 +860,6 @@ export function useSkills(options?: {
     adminListSkills,
     previewZipSkills,
     adminPreviewZipSkills,
-    previewGitHubSkills,
-    installGitHubSkills,
     pendingSkillNames,
     isMutating,
     isUpdating,

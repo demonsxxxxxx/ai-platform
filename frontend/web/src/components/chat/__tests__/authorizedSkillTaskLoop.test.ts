@@ -81,15 +81,11 @@ test("ordinary Skill copy hides release internals and describes tenant-scoped re
     "所选技能已更新，请重新选择后再提交。",
   );
 
-  for (const namespace of [
-    zh.skills,
-    zh.marketplace,
-    zh.adminMarketplace,
-  ]) {
-    assert.match(namespace.confirmDeleteMessage, /活跃使用/);
-    assert.match(namespace.confirmDeleteMessage, /历史/);
-    assert.doesNotMatch(namespace.confirmDeleteMessage, /永久|不可撤销/);
-  }
+  assert.match(zh.skills.confirmDeleteMessage, /活跃使用/);
+  assert.match(zh.skills.confirmDeleteMessage, /历史/);
+  assert.doesNotMatch(zh.skills.confirmDeleteMessage, /永久|不可撤销/);
+  assert.equal(zh.adminMarketplace.confirmDeleteMessage, undefined);
+  assert.equal(zh.marketplace, undefined);
 });
 
 test("Skill navigation labels use the established AI-admin policy", () => {
@@ -106,24 +102,6 @@ test("Skill navigation labels use the established AI-admin policy", () => {
   assert.match(selector, /isAiAdminUser\(user\)/);
   assert.match(selector, /nav\.skillManagement/);
   assert.match(selector, /skillSelector\.viewSkills/);
-});
-
-test("browser harness checks executable candidates with the real Node filesystem API", () => {
-  const smoke = read("scripts/authorized-skill-browser-smoke.mjs");
-  assert.match(smoke, /existsSync/);
-  assert.doesNotMatch(smoke, /__nodeFs/);
-});
-
-test("browser harness exercises direct upload without the retired dedup protocol", () => {
-  const smoke = read("scripts/authorized-skill-browser-smoke.mjs");
-
-  assert.match(smoke, /class MockUploadRequest/);
-  assert.match(smoke, /url\.pathname !== "\/api\/upload\/file"/);
-  assert.match(smoke, /path: url\.pathname/);
-  assert.match(smoke, /requestEvidence\.uploads/);
-  assert.match(smoke, /key: "file-smoke-key"/);
-  assert.match(smoke, /name: "evidence\.txt"/);
-  assert.doesNotMatch(smoke, /\/api\/upload\/check/);
 });
 
 test("selected Skill state is owned by one focused hook with explicit recovery", () => {
@@ -145,9 +123,16 @@ test("composer preserves prompt and attachments until submission is accepted", (
   const chatView = read("src/components/layout/AppContent/ChatView.tsx");
 
   assert.match(inputTypes, /SubmissionOutcome/);
-  assert.match(inputTypes, /draft\?:\s*string/);
-  assert.match(chatView, /composerDraft/);
-  assert.match(chatView, /draft:\s*composerDraft/);
+  assert.match(inputTypes, /initialDraft\?:\s*string/);
+  assert.doesNotMatch(inputTypes, /onDraftChange/);
+  assert.doesNotMatch(chatView, /const \[composerDraft, setComposerDraft\]/);
+  assert.doesNotMatch(chatView, /pendingComposerInput/);
+  assert.match(chatView, /draftSnapshotRef:\s*composerDraftSnapshotRef/);
+  assert.match(chatView, /draftScopeKey:\s*sessionId/);
+  assert.match(
+    input,
+    /const \[input, setLocalInput\] = useState\(inputRef\.current\)/,
+  );
   assert.match(input, /await onSend/);
   assert.match(input, /outcome\.status === "accepted"/);
   assert.doesNotMatch(

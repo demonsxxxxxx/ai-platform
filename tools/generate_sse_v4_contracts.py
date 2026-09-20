@@ -175,6 +175,326 @@ def _constants(schema: Mapping[str, Any]) -> dict[str, object]:
     }
 
 
+def _resolve_schema(
+    node: Mapping[str, Any], definitions: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    reference = _ref_name(node)
+    if reference is not None:
+        target = definitions.get(reference)
+        if not isinstance(target, Mapping):
+            raise ValueError(f"sse_v4_schema_ref_invalid:{reference}")
+        return _resolve_schema(target, definitions)
+    return node
+
+
+def _enum_values(
+    node: Mapping[str, Any], definitions: Mapping[str, Any]
+) -> tuple[object, ...]:
+    node = _resolve_schema(node, definitions)
+    if "const" in node:
+        return (node["const"],)
+    enum = node.get("enum")
+    if isinstance(enum, list):
+        return tuple(enum)
+    values: list[object] = []
+    one_of = node.get("oneOf")
+    if isinstance(one_of, list):
+        for member in one_of:
+            if isinstance(member, Mapping):
+                for value in _enum_values(member, definitions):
+                    if value not in values:
+                        values.append(value)
+    return tuple(values)
+
+
+def _event_payload_metadata(
+    schema: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    definitions = schema["$defs"]
+    metadata: dict[str, dict[str, Any]] = {}
+    for definition_name, definition in definitions.items():
+        if not isinstance(definition, Mapping):
+            continue
+        properties, _ = _merge_object(definition, definitions)
+        event_type = properties.get("event_type")
+        if not isinstance(event_type, Mapping) or "const" not in event_type:
+            continue
+        payload = properties.get("payload")
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"sse_v4_payload_schema_invalid:{definition_name}")
+        payload = _resolve_schema(payload, definitions)
+        payload_properties = payload.get("properties", {})
+        if not isinstance(payload_properties, Mapping):
+            raise ValueError(f"sse_v4_payload_properties_invalid:{definition_name}")
+        required = payload.get("required", [])
+        if not isinstance(required, list) or not all(
+            isinstance(item, str) for item in required
+        ):
+            raise ValueError(f"sse_v4_payload_required_invalid:{definition_name}")
+        metadata[event_type["const"]] = {
+            "fields": tuple(payload_properties),
+            "required": tuple(required),
+            "properties": payload_properties,
+        }
+    return metadata
+
+
+def _payload_ref_fields(
+    metadata: Mapping[str, Mapping[str, Any]],
+    definitions: Mapping[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    safe_refs: set[str] = set()
+    nullable_refs: set[str] = set()
+    ref_arrays: set[str] = set()
+    for event in metadata.values():
+        properties = event["properties"]
+        for field_name, field_schema in properties.items():
+            if not isinstance(field_schema, Mapping):
+                continue
+            reference = _ref_name(field_schema)
+            if reference == "SafeRefV4":
+                safe_refs.add(field_name)
+            elif reference == "NullableSafeRefV4":
+                nullable_refs.add(field_name)
+            elif reference == "SafeRefArrayV4":
+                ref_arrays.add(field_name)
+    return tuple(sorted(safe_refs)), tuple(sorted(nullable_refs)), tuple(sorted(ref_arrays))
+
+
+def _payload_rules(
+    schema: Mapping[str, Any],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    definitions = schema["$defs"]
+    metadata = _event_payload_metadata(schema)
+    application = tuple(
+        event_type for event_type in metadata if not event_type.startswith("stream.")
+    )
+    controls = tuple(
+        event_type for event_type in metadata if event_type.startswith("stream.")
+    )
+    message_correlated: list[str] = []
+    for definition in definitions.values():
+        if not isinstance(definition, Mapping):
+            continue
+        properties, _ = _merge_object(definition, definitions)
+        event_type = properties.get("event_type")
+        message_id = properties.get("message_id")
+        if (
+            isinstance(event_type, Mapping)
+            and isinstance(message_id, Mapping)
+            and event_type.get("const") in metadata
+            and _ref_name(message_id) == "SafeRefV4"
+        ):
+            message_correlated.append(event_type["const"])
+    safe_refs, nullable_refs, ref_arrays = _payload_ref_fields(metadata, definitions)
+    return metadata, application, controls, tuple(message_correlated), safe_refs, nullable_refs, ref_arrays
+
+
+def _schema_type(node: Mapping[str, Any], definitions: Mapping[str, Any]) -> str | None:
+    node = _resolve_schema(node, definitions)
+    node_type = node.get("type")
+    if isinstance(node_type, str):
+        return node_type
+    one_of = node.get("oneOf")
+    if isinstance(one_of, list):
+        types = {
+            _schema_type(member, definitions)
+            for member in one_of
+            if isinstance(member, Mapping)
+        }
+        types.discard(None)
+        if len(types) == 1:
+            return next(iter(types))
+    return None
+
+
+def _render_python_runtime_rules(schema: Mapping[str, Any]) -> list[str]:
+    metadata, application, controls, correlated, safe_refs, nullable_refs, ref_arrays = _payload_rules(schema)
+    definitions = schema["$defs"]
+    lines = [
+        "PUBLIC_APPLICATION_ENVELOPE_FIELDS: Final = frozenset((",
+        *(f"    {json.dumps(value)}," for value in definitions["PublicApplicationEnvelopeV4"]["properties"]),
+        "))",
+        "PUBLIC_CONTROL_ENVELOPE_FIELDS: Final = frozenset((",
+        *(f"    {json.dumps(value)}," for value in definitions["PublicTransportControlEnvelopeV4"]["properties"]),
+        "))",
+        "PUBLIC_TOOL_CATEGORIES: Final = frozenset((",
+        *(f"    {value!r}," for value in _enum_values(definitions["ToolCategoryV4"], definitions)),
+        "))",
+        "PUBLIC_APPLICATION_EVENT_TYPES: Final = frozenset((",
+        *(f"    {json.dumps(value)}," for value in application),
+        "))",
+        "PUBLIC_CONTROL_EVENT_TYPES: Final = frozenset((",
+        *(f"    {json.dumps(value)}," for value in controls),
+        "))",
+        "PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES: Final = frozenset((",
+        *(f"    {json.dumps(value)}," for value in correlated),
+        "))",
+        "PUBLIC_PAYLOAD_FIELDS: Final = {",
+    ]
+    for event_type, event in metadata.items():
+        fields = ", ".join(json.dumps(value) for value in event["fields"])
+        lines.append(f"    {json.dumps(event_type)}: frozenset(({fields},))," if fields else f"    {json.dumps(event_type)}: frozenset(),")
+    lines.append("}")
+    lines.append("PUBLIC_REQUIRED_PAYLOAD_FIELDS: Final = {")
+    for event_type, event in metadata.items():
+        fields = ", ".join(json.dumps(value) for value in event["required"])
+        lines.append(f"    {json.dumps(event_type)}: frozenset(({fields},))," if fields else f"    {json.dumps(event_type)}: frozenset(),")
+    lines.append("}")
+    lines.append("PUBLIC_PAYLOAD_ENUMS: Final = {")
+    for event_type, event in metadata.items():
+        for field_name, field_schema in event["properties"].items():
+            if not isinstance(field_schema, Mapping):
+                continue
+            values = _enum_values(field_schema, definitions)
+            if values:
+                rendered = ", ".join(repr(value) for value in values)
+                lines.append(f"    ({event_type!r}, {field_name!r}): frozenset(({rendered},)),")
+    lines.append("}")
+    lines.append("PUBLIC_PAYLOAD_STRING_BOUNDS: Final = {")
+    for event_type, event in metadata.items():
+        for field_name, field_schema in event["properties"].items():
+            if not isinstance(field_schema, Mapping):
+                continue
+            field_schema = _resolve_schema(field_schema, definitions)
+            candidates = [field_schema]
+            if isinstance(field_schema.get("oneOf"), list):
+                candidates = [
+                    member for member in field_schema["oneOf"]
+                    if isinstance(member, Mapping)
+                    and _schema_type(member, definitions) == "string"
+                ]
+            for candidate in candidates:
+                if _schema_type(candidate, definitions) == "string" and "maxLength" in candidate:
+                    minimum = candidate.get("minLength", 0)
+                    maximum = candidate["maxLength"]
+                    lines.append(f"    ({event_type!r}, {field_name!r}): ({minimum}, {maximum}),")
+                    break
+    lines.append("}")
+    lines.append("PUBLIC_PAYLOAD_INTEGER_BOUNDS: Final = {")
+    for event_type, event in metadata.items():
+        for field_name, field_schema in event["properties"].items():
+            if not isinstance(field_schema, Mapping):
+                continue
+            field_schema = _resolve_schema(field_schema, definitions)
+            candidates = [field_schema]
+            if isinstance(field_schema.get("oneOf"), list):
+                candidates = [
+                    member for member in field_schema["oneOf"]
+                    if isinstance(member, Mapping)
+                    and _schema_type(member, definitions) == "integer"
+                ]
+            for candidate in candidates:
+                if _schema_type(candidate, definitions) != "integer":
+                    continue
+                minimum = candidate.get("minimum", 0)
+                maximum = candidate.get("maximum")
+                if maximum is not None:
+                    lines.append(f"    ({event_type!r}, {field_name!r}): ({minimum}, {maximum}),")
+                else:
+                    lines.append(f"    ({event_type!r}, {field_name!r}): ({minimum}, None),")
+                break
+    lines.append("}")
+    for name, values in (
+        ("PUBLIC_PAYLOAD_REF_FIELDS", safe_refs),
+        ("PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS", nullable_refs),
+        ("PUBLIC_PAYLOAD_REF_ARRAY_FIELDS", ref_arrays),
+    ):
+        fields = ", ".join(repr(value) for value in values)
+        lines.append(f"{name}: Final = frozenset(({fields},))" if fields else f"{name}: Final = frozenset()")
+    return lines
+
+
+def _render_typescript_runtime_rules(schema: Mapping[str, Any]) -> list[str]:
+    metadata, application, controls, correlated, safe_refs, nullable_refs, ref_arrays = _payload_rules(schema)
+    definitions = schema["$defs"]
+    lines = [
+        "export const PUBLIC_APPLICATION_ENVELOPE_FIELDS = [",
+        *(f"  {json.dumps(value)}," for value in definitions["PublicApplicationEnvelopeV4"]["properties"]),
+        "] as const;",
+        "export const PUBLIC_CONTROL_ENVELOPE_FIELDS = [",
+        *(f"  {json.dumps(value)}," for value in definitions["PublicTransportControlEnvelopeV4"]["properties"]),
+        "] as const;",
+        "export const PUBLIC_TOOL_CATEGORIES = [",
+        *(f"  {json.dumps(value)}," for value in _enum_values(definitions["ToolCategoryV4"], definitions)),
+        "] as const;",
+        "export const PUBLIC_APPLICATION_EVENT_TYPES = [",
+        *(f"  {json.dumps(value)}," for value in application),
+        "] as const;",
+        "export const PUBLIC_CONTROL_EVENT_TYPES = [",
+        *(f"  {json.dumps(value)}," for value in controls),
+        "] as const;",
+        "export const PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES = [",
+        *(f"  {json.dumps(value)}," for value in correlated),
+        "] as const;",
+        "export const PUBLIC_PAYLOAD_FIELDS = {",
+    ]
+    for event_type, event in metadata.items():
+        fields = ", ".join(json.dumps(value) for value in event["fields"])
+        lines.append(f"  {json.dumps(event_type)}: [{fields}],")
+    lines.append("} as const;")
+    lines.append("export const PUBLIC_REQUIRED_PAYLOAD_FIELDS = {")
+    for event_type, event in metadata.items():
+        fields = ", ".join(json.dumps(value) for value in event["required"])
+        lines.append(f"  {json.dumps(event_type)}: [{fields}],")
+    lines.append("} as const;")
+    lines.append("export const PUBLIC_PAYLOAD_ENUMS = {")
+    for event_type, event in metadata.items():
+        for field_name, field_schema in event["properties"].items():
+            if not isinstance(field_schema, Mapping):
+                continue
+            values = _enum_values(field_schema, definitions)
+            if values:
+                rendered = ", ".join(json.dumps(value) for value in values)
+                lines.append(f"  {json.dumps(f'{event_type}.{field_name}')}: [{rendered}],")
+    lines.append("} as const;")
+    for name, type_name, key in (
+        ("PUBLIC_PAYLOAD_STRING_BOUNDS", "string", "maxLength"),
+        ("PUBLIC_PAYLOAD_INTEGER_BOUNDS", "integer", "maximum"),
+    ):
+        lines.append(f"export const {name} = {{")
+        for event_type, event in metadata.items():
+            for field_name, field_schema in event["properties"].items():
+                if not isinstance(field_schema, Mapping):
+                    continue
+                field_schema = _resolve_schema(field_schema, definitions)
+                candidates = [field_schema]
+                if isinstance(field_schema.get("oneOf"), list):
+                    candidates = [
+                        member for member in field_schema["oneOf"]
+                        if isinstance(member, Mapping)
+                        and _schema_type(member, definitions) == type_name
+                    ]
+                for candidate in candidates:
+                    if _schema_type(candidate, definitions) != type_name:
+                        continue
+                    if type_name == "string" and "maxLength" not in candidate:
+                        continue
+                    minimum = candidate.get("minLength", candidate.get("minimum", 0))
+                    maximum = candidate.get(key)
+                    lines.append(f"  {json.dumps(f'{event_type}.{field_name}')}: [{minimum}, {json.dumps(maximum)}],")
+                    break
+        lines.append("} as const;")
+    for name, values in (
+        ("PUBLIC_PAYLOAD_REF_FIELDS", safe_refs),
+        ("PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS", nullable_refs),
+        ("PUBLIC_PAYLOAD_REF_ARRAY_FIELDS", ref_arrays),
+    ):
+        rendered = ", ".join(json.dumps(value) for value in values)
+        lines.extend([
+            f"export const {name} = [{rendered}] as const;",
+        ])
+    return lines
+
+
 def _render_python(schema: Mapping[str, Any]) -> str:
     definitions: Mapping[str, Any] = schema["$defs"]
     constants = _constants(schema)
@@ -213,6 +533,7 @@ def _render_python(schema: Mapping[str, Any]) -> str:
         "    )",
         ")",
         "",
+        *_render_python_runtime_rules(schema),
         "",
     ]
     synthetic_names: dict[tuple[str, str], str] = {}
@@ -289,7 +610,8 @@ _PUBLIC_TYPES = {
     "ToolCategoryV4", "EmptyPayloadV4", "PublicApplicationEnvelopeV4",
     "PublicMessageApplicationEnvelopeV4", "PublicTransportControlEnvelopeV4", "StreamOpenControlV4", "StreamHeartbeatControlV4",
     "StreamGapControlV4", "StreamEndControlV4", "MessageStartedEventV4",
-    "MessageDeltaEventV4", "MessageCompletedEventV4", "ThinkingStartedEventV4",
+    "MessageDeltaEventV4", "MessageCompletedEventV4", "CommentaryDeltaEventV4",
+    "ThinkingStartedEventV4",
     "ThinkingDeltaEventV4", "ThinkingCompletedEventV4", "AgentProgressEventV4", "ModelCompletedEventV4", "ToolStartedEventV4",
     "ToolCompletedEventV4", "ToolFailedEventV4", "ToolDeniedEventV4",
     "SubagentStartedEventV4", "SubagentProgressEventV4", "SubagentCompletedEventV4",
@@ -314,6 +636,8 @@ def _render_typescript(schema: Mapping[str, Any]) -> str:
     ]
     lines.extend(f"  {json.dumps(value)}," for value in constants["event_types"])
     lines.extend(["] as const;", ""])
+    lines.extend(_render_typescript_runtime_rules(schema))
+    lines.append("")
     for name, definition in definitions.items():
         if name not in _PUBLIC_TYPES:
             continue

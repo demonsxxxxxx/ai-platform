@@ -134,14 +134,6 @@ test("translates fail-closed public governance contract codes", () => {
     translateBackendError("skill_import_contract_not_backed", t),
     "translated:backendErrors.skillImportNotBacked",
   );
-  assert.equal(
-    translateBackendError("marketplace_direct_write_contract_not_backed", t),
-    "translated:backendErrors.marketplaceDirectWriteNotBacked",
-  );
-  assert.equal(
-    translateBackendError("mcp_lifecycle_contract_not_backed", t),
-    "translated:backendErrors.mcpLifecycleNotBacked",
-  );
 });
 
 test("projects stable Skill package failures to actionable Skill copy", () => {
@@ -151,6 +143,8 @@ test("projects stable Skill package failures to actionable Skill copy", () => {
     ["skill_package_multiple_skills_not_supported", "backendErrors.skillPackageMultipleSkills"],
     ["skill_package_description_required", "backendErrors.skillPackageDescriptionRequired"],
     ["skill_package_too_large", "backendErrors.skillPackageTooLarge"],
+    ["skill_package_path_too_long", "backendErrors.skillPackagePathTooLong"],
+    ["skill_package_filename_encoding_ambiguous", "backendErrors.skillPackageFilenameEncodingAmbiguous"],
     ["skill_release_review_not_verified", "backendErrors.skillReleaseReviewNotVerified"],
     ["skill_version_not_materializable", "backendErrors.skillVersionNotMaterializable"],
   ]);
@@ -168,13 +162,13 @@ test("the shipped Chinese catalog includes fail-closed governance error copy", (
     "skillFileWriteNotBacked",
     "skillFileDeleteNotBacked",
     "skillImportNotBacked",
-    "marketplaceDirectWriteNotBacked",
-    "mcpLifecycleNotBacked",
     "skillPackageInvalidZip",
     "skillPackageSkillMdRequired",
     "skillPackageMultipleSkills",
     "skillPackageDescriptionRequired",
     "skillPackageTooLarge",
+    "skillPackagePathTooLong",
+    "skillPackageFilenameEncodingAmbiguous",
     "skillPackageUnsafe",
     "skillPackageInvalidText",
     "skillPackageNameMismatch",

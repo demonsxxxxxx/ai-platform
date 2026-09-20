@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -22,12 +23,23 @@ from app.streaming.infrastructure import v4 as streaming_v4
 
 
 class CallbackEventPersistence:
+    async def load_latest_run_event(self, **kwargs):
+        return None
+
     async def append_callback_rows(self, conn, **kwargs):
         return await streaming_v4.append_callback_v4_rows(conn, **kwargs)
 
 
+class CallbackStreamTransport:
+    async def publish_callback_batch(self, envelopes):
+        return "1-0"
+
+
 def callback_event_capabilities():
-    return SimpleNamespace(event_persistence=CallbackEventPersistence())
+    return SimpleNamespace(
+        event_persistence=CallbackEventPersistence(),
+        publication_transport=CallbackStreamTransport(),
+    )
 
 
 def create_app():
@@ -106,18 +118,10 @@ def patch_active_attempt(
             lease["id"] = lease_id
         return [lease]
 
-    async def ignore_terminal_signal(**_kwargs):
-        return None
-
     monkeypatch.setattr(
         runtime_callbacks.repositories,
         "list_current_sandbox_runtime_leases_for_attempt",
         list_current_leases,
-    )
-    monkeypatch.setattr(
-        runtime_callbacks,
-        "publish_executor_terminal_signal",
-        ignore_terminal_signal,
     )
 
 
@@ -522,11 +526,20 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     except ModuleNotFoundError:
         runtime_callbacks = None
     else:
-        async def fake_record_executor_callback(callback, *, capabilities):
+
+        async def fake_record_executor_callback(
+            callback,
+            *,
+            capabilities,
+            run_diagnostics=None,
+        ):
             recorded.append(callback)
+            assert run_diagnostics is not None
             return {"accepted": True, "event_count": 1}
 
-        monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fake_record_executor_callback)
+        monkeypatch.setattr(
+            runtime_callbacks, "record_executor_callback", fake_record_executor_callback
+        )
 
     client = TestClient(create_app())
 
@@ -581,23 +594,23 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "container_lease_from_persisted_row",
+        lambda _row: pytest.fail("terminal callback must not reconstruct a lease"),
+    )
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "create_container_provider",
+        lambda _name: pytest.fail("terminal callback must not create a provider"),
+    )
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
-    signaled = []
-
-    async def record_signal(**kwargs):
-        signaled.append(kwargs)
-
     patch_active_attempt(monkeypatch, runtime_callbacks, lease_id="lease-a")
-    monkeypatch.setattr(
-        runtime_callbacks,
-        "publish_executor_terminal_signal",
-        record_signal,
-    )
     client = TestClient(create_app())
 
     response = client.post(
@@ -617,17 +630,18 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     assert len(terminal_calls) == 1
     assert terminal_calls[0][1]["lease_id"] == "lease-a"
     assert terminal_calls[0][1]["terminal_result"]["status"] == "completed"
-    assert signaled == [{}]
 
 
-def test_failed_executor_callback_persists_receipt_and_signals_reconciliation(monkeypatch):
+def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
+
+    transaction_connection = object()
 
     class FakeTransaction:
         async def __aenter__(self):
             calls.append("transaction_enter")
-            return object()
+            return transaction_connection
 
         async def __aexit__(self, exc_type, exc, traceback):
             calls.append("transaction_exit")
@@ -659,7 +673,13 @@ def test_failed_executor_callback_persists_receipt_and_signals_reconciliation(mo
 
     async def fake_record_terminal(conn, **kwargs):
         calls.append(("executor_terminal", kwargs["executor_status"]))
+        lease["executor_terminal_json"] = kwargs["terminal_result"]
         return lease
+
+    class RecordingDiagnostics:
+        async def capture_failure_result(self, conn, **kwargs):
+            calls.append(("diagnostics", conn, kwargs))
+            return {"error_code": kwargs["error_code"]}
 
     async def unexpected_fail_run(*_args, **_kwargs):
         pytest.fail("failed callback must defer Run terminalization to reconciliation")
@@ -667,54 +687,83 @@ def test_failed_executor_callback_persists_receipt_and_signals_reconciliation(mo
     async def unexpected_release(*_args, **_kwargs):
         pytest.fail("failed callback must defer lease release to reconciliation")
 
-    async def fake_publish_pending(*_args, **_kwargs):
-        pytest.fail("failed callback must not publish a terminal row directly")
-
-    async def fake_signal(**kwargs):
-        calls.append("terminal_signal")
-
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity
+    )
     monkeypatch.setattr(
         runtime_callbacks.repositories,
         "list_current_sandbox_runtime_leases_for_attempt",
         fake_list_current_leases,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories, "append_event", fake_append_event
+    )
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
-    monkeypatch.setattr(runtime_callbacks, "fail_run_with_v4", unexpected_fail_run, raising=False)
+    monkeypatch.setattr(
+        runtime_callbacks, "fail_run_with_v4", unexpected_fail_run, raising=False
+    )
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "release_sandbox_lease",
         unexpected_release,
     )
-    monkeypatch.setattr(runtime_callbacks, "publish_pending_v4_events", fake_publish_pending)
-    monkeypatch.setattr(runtime_callbacks, "publish_executor_terminal_signal", fake_signal)
 
-    client = TestClient(create_app())
+    app = create_app()
+    app.state.run_diagnostics_service = RecordingDiagnostics()
+    client = TestClient(app)
+    callback_json = callback_payload(
+        status="failed",
+        progress=100,
+        new_message=None,
+        state_patch={},
+        terminal_result={
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "executor_failed",
+            "error_message": "Executor failed",
+            "runtime_diagnostics": {
+                "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+                "error_code": "provider_timeout",
+                "failure_source": "sdk_exception",
+                "failure_stage": "model_wait",
+                "sdk": {},
+            },
+        },
+    )
     response = client.post(
         "/api/ai/runtime/callbacks/executor",
         headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json=callback_payload(
-            status="failed",
-            progress=100,
-            new_message=None,
-            state_patch={},
-        ),
+        json=callback_json,
+    )
+    duplicate = client.post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_json,
     )
 
     assert response.status_code == 200
+    assert duplicate.status_code == 200
     assert response.json() == {"accepted": True, "event_count": 1}
     assert ("executor_terminal", "failed") in calls
     assert ("list_lease", "attempt-a") in calls
     assert "transaction_exit" in calls
-    assert calls.index("transaction_exit") < calls.index("terminal_signal")
+    diagnostics_calls = [
+        item for item in calls if isinstance(item, tuple) and item[0] == "diagnostics"
+    ]
+    assert len(diagnostics_calls) == 1
+    assert diagnostics_calls[0][1] is transaction_connection
+    assert diagnostics_calls[0][2]["attempt_id"] == "attempt-a"
+    assert diagnostics_calls[0][2]["result_json"]["runtime_diagnostics"][
+        "error_code"
+    ] == ("provider_timeout")
+    assert "runtime_diagnostics" not in lease["executor_terminal_json"]
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):
@@ -1207,7 +1256,14 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
     from app.runtime.kernel_contracts import AgentEvent
     sdk_events = tuple(
         AgentEvent(**event.as_agent_event_fields())
-        for event in adapter.accept_answer_text("answer")
+        for event in (
+            *adapter.accept_commentary_text(
+                "working",
+                commentary_identity="assistant-a",
+                already_gated=True,
+            ),
+            *adapter.accept_answer_text("answer"),
+        )
     )
     authority = SimpleNamespace(attempt_id="attempt-a", state="confirmed")
     async def fake_get_authority(conn, *, tenant_id, run_id, for_update=False):
@@ -1243,9 +1299,10 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"accepted": True, "batch_id": "batch-a", "event_count": 4}
+    assert response.json() == {"accepted": True, "batch_id": "batch-a", "event_count": 5}
     assert [event["event_type"] for event in persisted] == [
         "executor_callback",
+        "executor_private_event",
         "executor_private_event",
         "executor_private_event",
         "executor_private_event",
@@ -1256,8 +1313,13 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
     assert "private callback payload" not in str(persisted)
     assert len(v4_rows) == 1
     items = v4_rows[0]["items"]
-    assert [item.callback_index for item in items] == [1, 2]
-    assert [item.batch_index for item in items] == [0, 1]
+    assert [item.callback_index for item in items] == [1, 2, 3]
+    assert [item.batch_index for item in items] == [0, 1, 2]
+    assert [item.event_type for item in items] == [
+        "commentary.delta",
+        "message.started",
+        "message.delta",
+    ]
     assert {item.message_id for item in items} == {adapter.message_id}
     assert adapter.message_id.startswith("msg_")
 
@@ -1334,7 +1396,11 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
 
     async def fake_heartbeat(conn, **kwargs):
         heartbeat_calls.append(kwargs)
-        return {"id": kwargs["lease_id"], "executor_status": "running"}
+        return {
+            "id": kwargs["lease_id"],
+            "provider": "opensandbox",
+            "executor_status": "running",
+        }
 
     async def fake_append(conn, **kwargs):
         return f"evt-{len(heartbeat_calls)}"
@@ -1350,6 +1416,11 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
         "record_sandbox_executor_heartbeat",
         fake_heartbeat,
     )
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "container_lease_from_persisted_row",
+        lambda _row: pytest.fail("ordinary callback must not renew the OpenSandbox lifetime"),
+    )
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
         headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
@@ -1359,6 +1430,242 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
     assert heartbeat_calls
     assert heartbeat_calls[0]["ttl_seconds"] == 731
     assert heartbeat_calls[0]["executor_status"] == "running"
+
+
+def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    heartbeat_calls = []
+    reconstruction_calls = []
+    provider_calls = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
+        return [
+            {
+                "id": "lease-attempt-a",
+                "provider": "opensandbox",
+                "lease_payload_json": {"attempt_id": attempt_id},
+            }
+        ]
+
+    async def fake_heartbeat(conn, **kwargs):
+        heartbeat_calls.append(kwargs)
+        return None
+
+    async def fake_append(conn, **kwargs):
+        return "evt-a"
+
+    def unexpected_reconstruction(_row):
+        reconstruction_calls.append(True)
+        raise AssertionError("inactive heartbeat must not reconstruct a lease")
+
+    def unexpected_provider(_name):
+        provider_calls.append(True)
+        raise AssertionError("inactive heartbeat must not create a provider")
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        exact_lease,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append)
+    monkeypatch.setattr(
+        runtime_callbacks.sandbox_lease_repository,
+        "record_sandbox_executor_heartbeat",
+        fake_heartbeat,
+    )
+    monkeypatch.setattr(runtime_callbacks, "container_lease_from_persisted_row", unexpected_reconstruction)
+    monkeypatch.setattr(runtime_callbacks, "create_container_provider", unexpected_provider)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(new_message=None, state_patch={"executor_heartbeat": True}),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "sandbox_runtime_attempt_inactive"}
+    assert heartbeat_calls
+    assert reconstruction_calls == []
+    assert provider_calls == []
+
+
+def test_opensandbox_callback_renews_after_heartbeat_in_same_transaction(monkeypatch):
+    patch_callback_settings(monkeypatch, callback_settings("secret", lease_ttl_seconds=731))
+    order = []
+    heartbeat_row = {
+        "id": "lease-attempt-a",
+        "provider": "opensandbox",
+        "lease_payload_json": {"attempt_id": "attempt-a"},
+    }
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            order.append("begin")
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            order.append("commit" if exc_type is None else "rollback")
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
+        return [{**heartbeat_row, "provider": "docker"}]
+
+    async def fake_heartbeat(conn, **kwargs):
+        order.append("heartbeat")
+        return heartbeat_row
+
+    async def fake_append(conn, **kwargs):
+        return "evt-a"
+
+    class FakeProvider:
+        pass
+
+    provider_expires_at = datetime.now(timezone.utc) + timedelta(minutes=35)
+
+    async def fake_renew(_provider, lease, _settings, *, ttl_seconds):
+        order.append(("renew", lease, ttl_seconds))
+        return provider_expires_at
+
+    async def fake_receipt(conn, **kwargs):
+        order.append(("receipt", kwargs))
+        return heartbeat_row
+
+    from app.routes import runtime_callbacks
+
+    persisted_lease = SimpleNamespace(provider="opensandbox")
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        exact_lease,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append)
+    monkeypatch.setattr(
+        runtime_callbacks.sandbox_lease_repository,
+        "record_sandbox_executor_heartbeat",
+        fake_heartbeat,
+    )
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "container_lease_from_persisted_row",
+        lambda row: persisted_lease,
+    )
+    monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: FakeProvider())
+    monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)
+    monkeypatch.setattr(
+        runtime_callbacks.sandbox_lease_repository,
+        "record_opensandbox_renewal_receipt",
+        fake_receipt,
+    )
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(new_message=None, state_patch={"executor_heartbeat": True}),
+    )
+
+    assert response.status_code == 200
+    assert order[0] == "begin"
+    assert order[1] == "heartbeat"
+    assert order[2] == ("renew", persisted_lease, 731)
+    assert order[3] == ("receipt", {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "lease_id": "lease-attempt-a",
+        "provider_expires_at": provider_expires_at,
+    })
+    assert order[4] == "commit"
+
+
+def test_opensandbox_callback_renewal_failure_rolls_back_and_hides_provider_error(monkeypatch):
+    from fastapi import HTTPException
+
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    transaction_exit = []
+    heartbeat_row = {
+        "id": "lease-attempt-a",
+        "provider": "opensandbox",
+        "lease_payload_json": {"attempt_id": "attempt-a"},
+    }
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            transaction_exit.append(exc_type)
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
+
+    async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
+        return [{**heartbeat_row, "provider": "docker"}]
+
+    async def fake_heartbeat(conn, **kwargs):
+        return heartbeat_row
+
+    async def fake_append(conn, **kwargs):
+        return "evt-a"
+
+    class FakeProvider:
+        pass
+
+    async def fake_renew(_provider, _lease, _settings, *, ttl_seconds):
+        raise RuntimeError("provider secret must not escape")
+
+    from app.routes import runtime_callbacks
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        exact_lease,
+    )
+    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append)
+    monkeypatch.setattr(
+        runtime_callbacks.sandbox_lease_repository,
+        "record_sandbox_executor_heartbeat",
+        fake_heartbeat,
+    )
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "container_lease_from_persisted_row",
+        lambda row: SimpleNamespace(provider="opensandbox"),
+    )
+    monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: FakeProvider())
+    monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/executor",
+        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+        json=callback_payload(new_message=None, state_patch={"executor_heartbeat": True}),
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "sandbox_runtime_renewal_failed"}
+    assert transaction_exit == [HTTPException]
+    assert "provider secret" not in response.text
 
 
 def test_executor_callback_publishes_real_adapter_lifecycle_and_platform_progress(monkeypatch):

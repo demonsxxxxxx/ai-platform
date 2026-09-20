@@ -49,7 +49,7 @@ test("admin lifecycle URLs target review and fully rolled-out stable promotion",
   );
 });
 
-test("admin catalog normalizer exposes draft rediscovery without private package fields", () => {
+test("admin catalog normalizer exposes active skills and draft versions without private package fields", () => {
   const catalog = normalizeAdminSkillCatalogResponse({
     items: [
       {
@@ -59,10 +59,13 @@ test("admin catalog normalizer exposes draft rediscovery without private package
         lifecycle_status: "active",
         distribution_status: "disabled",
         visible_to_user: false,
-        latest_version: "sha-123",
+        latest_version: "sha-456",
         latest_version_status: "draft",
-        current_version: null,
-        rollout_percent: null,
+        current_version: "sha-123",
+        latest_display_version: "1.0.1",
+        current_display_version: "1.0.0",
+        latest_uploaded_at: "2026-09-15T02:30:00+00:00",
+        rollout_percent: 100,
         source: { storage_key: "private/skill.zip" },
       },
     ],
@@ -75,13 +78,36 @@ test("admin catalog normalizer exposes draft rediscovery without private package
       lifecycleStatus: "active",
       distributionStatus: "disabled",
       visibleToUser: false,
-      latestVersion: "sha-123",
+      latestVersion: "sha-456",
       latestVersionStatus: "draft",
-      currentVersion: null,
-      rolloutPercent: null,
+      currentVersion: "sha-123",
+      latestDisplayVersion: "1.0.1",
+      currentDisplayVersion: "1.0.0",
+      latestUploadedAt: "2026-09-15T02:30:00+00:00",
+      rolloutPercent: 100,
     },
   ]);
   assert.doesNotMatch(JSON.stringify(catalog), /source|storage|package/i);
+  assert.throws(
+    () => normalizeAdminSkillCatalogResponse({
+      items: [{
+        skill_id: "research",
+        name: "research",
+        description: "Research workflow",
+        lifecycle_status: "active",
+        distribution_status: "disabled",
+        visible_to_user: false,
+        latest_version: "sha-456",
+        latest_version_status: "draft",
+        current_version: "sha-123",
+        latest_display_version: "1.0.1",
+        current_display_version: "1.0.0",
+        latest_uploaded_at: "invalid-date",
+        rollout_percent: 100,
+      }],
+    }),
+    /admin_skill_lifecycle_invalid/,
+  );
 });
 
 test("admin lifecycle normalizers drop raw source, storage, and package fields", () => {
@@ -119,6 +145,48 @@ test("admin lifecycle normalizers drop raw source, storage, and package fields",
 });
 
 test("admin lifecycle normalizers reject unrecognized state and unsafe ZIP fields", () => {
+  for (const lifecycleStatus of ["inactive", "released", "disabled"]) {
+    assert.throws(
+      () =>
+        normalizeAdminSkillCatalogResponse({
+          items: [
+            {
+              skill_id: "retired-skill",
+              name: "Retired skill",
+              description: "No longer managed",
+              lifecycle_status: lifecycleStatus,
+              distribution_status: "disabled",
+              visible_to_user: false,
+              latest_version: null,
+              latest_version_status: null,
+              current_version: null,
+              rollout_percent: null,
+            },
+          ],
+        }),
+      /admin_skill_lifecycle_invalid/,
+    );
+  }
+  assert.throws(
+    () =>
+      normalizeAdminSkillCatalogResponse({
+        items: [
+          {
+            skill_id: "missing-display-version",
+            name: "Missing display version",
+            description: "Invalid admin projection",
+            lifecycle_status: "active",
+            distribution_status: "active",
+            visible_to_user: true,
+            latest_version: "sha-123",
+            latest_version_status: "released",
+            current_version: "sha-123",
+            rollout_percent: 100,
+          },
+        ],
+      }),
+    /admin_skill_lifecycle_invalid/,
+  );
   assert.throws(
     () =>
       normalizeAdminSkillUploadResponse({
@@ -188,7 +256,7 @@ test("normalizeSkillListResponse preserves projected PR177 skill permissions", (
       skip: 20,
       limit: 10,
       available_tags: ["planning", "review"],
-      effective_permissions: ["skill:read", "marketplace:read"],
+      effective_permissions: ["skill:read"],
     }),
     {
       skills: [userSkill],
@@ -196,7 +264,7 @@ test("normalizeSkillListResponse preserves projected PR177 skill permissions", (
       skip: 20,
       limit: 10,
       available_tags: ["planning", "review"],
-      effective_permissions: ["skill:read", "marketplace:read"],
+      effective_permissions: ["skill:read"],
       effective_permissions_known: true,
       catalog_read_resolved: true,
     },

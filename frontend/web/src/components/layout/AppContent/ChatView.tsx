@@ -1,9 +1,11 @@
 import {
+  createContext,
   useMemo,
   useCallback,
   useState,
   useEffect,
   useRef,
+  useContext,
   type ComponentType,
   type ReactNode,
 } from "react";
@@ -11,7 +13,6 @@ import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import toast from "react-hot-toast";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
@@ -27,7 +28,10 @@ import {
   updatePersistentToolPanel,
   type PersistentToolPanelState,
 } from "../../chat/ChatMessage/items/persistentToolPanelState";
-import { ChatInput } from "../../chat/ChatInput";
+import {
+  ChatInput,
+  type ChatInputDraftSnapshot,
+} from "../../chat/ChatInput";
 import { WelcomePage } from "../../chat/WelcomePage";
 import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
@@ -51,7 +55,9 @@ import {
   extractMessageOutline,
 } from "./messageOutline";
 import { MessageOutlinePanel } from "./MessageOutlinePanel";
+import { ChatConnectionStatus } from "./ChatConnectionStatus";
 import {
+  getVisibleConnectionStatus,
   isSessionRunning,
   shouldShowStreamingFooterSkeleton,
 } from "./sessionState";
@@ -77,9 +83,6 @@ import type {
   SelectedSkillTaskState,
 } from "../../../hooks/useSelectedSkillTask";
 import type { RevealPreviewRequest } from "../../chat/ChatMessage/items/revealPreviewData";
-import { clearFileRevealAutoOpenState } from "../../chat/ChatMessage/items/fileRevealAutoOpen";
-import { clearProjectRevealAutoOpenState } from "../../chat/ChatMessage/items/projectRevealAutoOpen";
-import { getLatestChatAutoPreviewTarget } from "../../chat/ChatMessage/autoPreviewEligibility";
 import {
   createActiveRevealPreviewState,
   markRevealPreviewInteracted,
@@ -107,6 +110,7 @@ import {
   createArtifactDownloadScopeContext,
 } from "../../chat/ChatMessage/items/artifactDownloadRegistry";
 import {
+  projectAssistantResponseFiles,
   projectSessionWorkspaceFiles,
   sessionWorkspaceFileToAttachment,
   sessionWorkspaceProjectionForRender,
@@ -114,12 +118,25 @@ import {
   type SessionWorkspaceProjection,
 } from "./sessionWorkspaceFiles";
 import { mergeProjectedSessionFiles } from "./sessionInputFiles";
+import type { FileUploadControls } from "../../../hooks/useFileUpload";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
+
+const AssistantUiMessageContentContext = createContext<ReactNode>(null);
+
+function AssistantUiProjectedMessage() {
+  const content = useContext(AssistantUiMessageContentContext);
+  return <AssistantUiMessageFrame>{content}</AssistantUiMessageFrame>;
+}
+
+const ASSISTANT_UI_MESSAGE_COMPONENTS = {
+  Message: AssistantUiProjectedMessage,
+};
 
 interface ChatViewProps {
   messages: Message[];
   sessionId: string | null;
+  conversationIdentityKey: string;
   currentRunId: string | null;
   isLoading: boolean;
   isLoadingHistory: boolean;
@@ -128,6 +145,7 @@ interface ChatViewProps {
   composerPlaceholder?: string;
   initialComposerDraft?: string;
   initialComposerDraftKey?: string;
+  composerDraftHandoffKey?: string | null;
   agentEmptyProfile?: AgentProfilePublicProjection;
   tools: ToolState[];
   onToggleTool: (name: string) => void;
@@ -177,6 +195,7 @@ interface ChatViewProps {
   onAttachmentsChange: React.Dispatch<
     React.SetStateAction<MessageAttachment[]>
   >;
+  uploadControls: FileUploadControls;
   externalNavigationToken?: string | null;
   externalNavigationTargetFile?: ExternalNavigationTargetFile | null;
   externalNavigationTargetRunId?: string | null;
@@ -188,12 +207,12 @@ interface ChatViewProps {
     composer?: ReactNode;
     rightPanel?: ReactNode;
   }>;
-  sessionRouteBasePath?: string;
 }
 
 export function ChatView({
   messages,
   sessionId,
+  conversationIdentityKey,
   currentRunId,
   isLoading,
   isLoadingHistory,
@@ -202,6 +221,7 @@ export function ChatView({
   composerPlaceholder,
   initialComposerDraft,
   initialComposerDraftKey,
+  composerDraftHandoffKey,
   agentEmptyProfile,
   tools,
   onToggleTool,
@@ -237,6 +257,7 @@ export function ChatView({
   onLoadHistory,
   attachments,
   onAttachmentsChange,
+  uploadControls,
   externalNavigationToken,
   externalNavigationTargetFile,
   externalNavigationTargetRunId,
@@ -244,10 +265,8 @@ export function ChatView({
   externalScrollToBottom,
   outlineToggleRef,
   WorkbenchShellComponent,
-  sessionRouteBasePath = "/chat",
 }: ChatViewProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { user } = useAuth();
   const artifactDownloadScopeContext = useMemo(
     () =>
@@ -261,8 +280,21 @@ export function ChatView({
     [sessionId, user?.id, user?.is_active, user?.roles, user?.tenant_id],
   );
   const previousArtifactDownloadScopeRef = useRef(artifactDownloadScopeContext);
-  const [composerDraft, setComposerDraft] = useState("");
-  const appliedInitialDraftKeyRef = useRef<string | null>(null);
+  const composerDraftSnapshotRef = useRef<ChatInputDraftSnapshot>({
+    value: "",
+    appliedInitialDraftKey: null,
+    scopeKey: sessionId,
+    revision: 0,
+    selectedSkillState,
+    selectedSkillRevision: 0,
+    pendingScopeHandoff: false,
+  });
+  const setComposerInput = useCallback((value: string) => {
+    const snapshot = composerDraftSnapshotRef.current;
+    snapshot.revision += 1;
+    snapshot.value = value;
+    snapshot.apply?.(value);
+  }, []);
   const [workspaceProjection, setWorkspaceProjection] =
     useState<SessionWorkspaceProjection>({
       session_id: null,
@@ -270,21 +302,23 @@ export function ChatView({
       files: [],
       status: "idle",
     });
-  const visibleWorkspaceProjection = sessionWorkspaceProjectionForRender(
-    workspaceProjection,
-    sessionId,
+  const visibleWorkspaceProjection = useMemo(
+    () =>
+      projectAssistantResponseFiles(
+        sessionWorkspaceProjectionForRender(workspaceProjection, sessionId),
+        messages,
+      ),
+    [messages, sessionId, workspaceProjection],
   );
-  const sessionRunning = isSessionRunning(messages, isLoading);
+  const sessionRunning = isSessionRunning(
+    messages,
+    isLoading,
+    isLoadingHistory,
+  );
+  const canSendInCurrentView = canSendMessage && !isLoadingHistory;
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
-
-  useEffect(() => {
-    if (!initialComposerDraft || !initialComposerDraftKey) return;
-    if (appliedInitialDraftKeyRef.current === initialComposerDraftKey) return;
-    appliedInitialDraftKeyRef.current = initialComposerDraftKey;
-    setComposerDraft((current) => current || initialComposerDraft);
-  }, [initialComposerDraft, initialComposerDraftKey]);
 
   const showStreamingFooterSkeleton = shouldShowStreamingFooterSkeleton({
     connectionStatus,
@@ -292,6 +326,14 @@ export function ChatView({
     messageCount: messages.length,
     hasVisibleStreamingMessage,
   });
+  const visibleConnectionStatus = getVisibleConnectionStatus({
+    connectionStatus,
+    sessionId,
+    currentRunId,
+    sessionRunning,
+  });
+  const activeConnectionOwner =
+    sessionId && currentRunId ? `${sessionId}:${currentRunId}` : null;
 
   const getGreetingKey = () => {
     const h = new Date().getHours();
@@ -335,7 +377,7 @@ export function ChatView({
     isLoadingHistory,
     messageListSessionKey,
   );
-  const [visibleRange, setVisibleRange] = useState<ListRange | null>(null);
+  const visibleRangeRef = useRef<ListRange | null>(null);
 
   useEffect(() => {
     const previousSessionId = previousSessionIdRef.current;
@@ -385,19 +427,18 @@ export function ChatView({
             status: "loading",
           },
     );
-    void Promise.allSettled([
-      sessionApi.getInputFiles(sessionId),
-      sessionApi.getArtifactFiles(sessionId),
-    ]).then(([inputResult, artifactResult]) => {
-      if (!current) return;
-      setWorkspaceProjection(
-        projectSessionWorkspaceFiles(sessionId, inputResult, artifactResult),
-      );
-    });
+    void Promise.allSettled([sessionApi.getInputFiles(sessionId)]).then(
+      ([inputResult]) => {
+        if (!current) return;
+        setWorkspaceProjection(
+          projectSessionWorkspaceFiles(sessionId, inputResult),
+        );
+      },
+    );
     return () => {
       current = false;
     };
-  }, [sessionId, currentRunId, messages.length, attachments.length]);
+  }, [sessionId, attachments.length]);
 
   const displayMessages = useMemo(
     () =>
@@ -408,18 +449,16 @@ export function ChatView({
     [messages, visibleWorkspaceProjection.inputFiles],
   );
 
-  const activeOutlineId = useMemo(() => {
-    const rangeActiveId = getOutlineActiveAnchorIdForRange(
-      messages,
-      visibleRange,
-    );
-    if (rangeActiveId) {
-      return rangeActiveId;
-    }
+  const getActiveOutlineId = useCallback(
+    (range: ListRange | null) => {
+      const rangeActiveId = getOutlineActiveAnchorIdForRange(messages, range);
+      if (rangeActiveId) return rangeActiveId;
 
-    const latestMessage = messages[messages.length - 1];
-    return latestMessage ? createMessageAnchorId(latestMessage.id) : null;
-  }, [messages, visibleRange]);
+      const latestMessage = messages[messages.length - 1];
+      return latestMessage ? createMessageAnchorId(latestMessage.id) : null;
+    },
+    [messages],
+  );
 
   const handleOutlineNavigate = useCallback(
     (anchorId: string, messageIndex: number) => {
@@ -442,6 +481,17 @@ export function ChatView({
     [virtuosoRef],
   );
 
+  const renderOutlinePanel = useCallback(
+    (range: ListRange | null) => (
+      <MessageOutlinePanel
+        items={outlineItems}
+        activeId={getActiveOutlineId(range)}
+        onNavigate={handleOutlineNavigate}
+      />
+    ),
+    [getActiveOutlineId, handleOutlineNavigate, outlineItems],
+  );
+
   const handleOpenOutline = useCallback(() => {
     if (isPersistentToolPanelOpen("outline")) {
       closePersistentToolPanel();
@@ -454,20 +504,9 @@ export function ChatView({
       status: "idle",
       panelKey: "outline",
       viewMode: isMobile ? "center" : "sidebar",
-      children: (
-        <MessageOutlinePanel
-          items={outlineItems}
-          activeId={activeOutlineId}
-          onNavigate={handleOutlineNavigate}
-        />
-      ),
+      children: renderOutlinePanel(visibleRangeRef.current),
     });
-  }, [
-    outlineItems,
-    activeOutlineId,
-    handleOutlineNavigate,
-    t,
-  ]);
+  }, [renderOutlinePanel, t]);
 
   useEffect(() => {
     if (outlineToggleRef) {
@@ -480,17 +519,11 @@ export function ChatView({
     updatePersistentToolPanel(
       (prev: PersistentToolPanelState) => ({
         ...prev,
-        children: (
-          <MessageOutlinePanel
-            items={outlineItems}
-            activeId={activeOutlineId}
-            onNavigate={handleOutlineNavigate}
-          />
-        ),
+        children: renderOutlinePanel(visibleRangeRef.current),
       }),
       "outline",
     );
-  }, [outlineItems, activeOutlineId, handleOutlineNavigate]);
+  }, [renderOutlinePanel]);
 
   const [, forcePreviewRender] = useState(0);
   const activePreviewStateRef = useRef<ActiveRevealPreviewState | null>(
@@ -617,39 +650,13 @@ export function ChatView({
 
   useEffect(() => {
     dismissedPreviewKeysRef.current.clear();
-    clearFileRevealAutoOpenState();
-    clearProjectRevealAutoOpenState();
     clearSidebarHistory();
     setActiveRevealPreviewState(null);
     closePersistentToolPanel();
   }, [sessionId]);
 
-  const latestAutoPreview = useMemo(
-    () =>
-      getLatestChatAutoPreviewTarget({
-        messages,
-        suppressAutoPreview: false,
-      }),
-    [messages],
-  );
   const isMobileViewport =
     typeof window !== "undefined" ? window.innerWidth < 640 : false;
-
-  const handleForkMessage = useCallback(
-    async (messageId: string) => {
-      if (!sessionId) return;
-      try {
-        const response = await sessionApi.forkMessage(sessionId, messageId);
-        toast.success(t("chat.message.forkSuccess"));
-        navigate(`${sessionRouteBasePath}/${response.session.id}`);
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : t("chat.message.forkFailed"),
-        );
-      }
-    },
-    [navigate, sessionId, sessionRouteBasePath, t],
-  );
 
   const handleOpenWorkspaceFile = useCallback(
     (file: SessionWorkspaceFile) => {
@@ -684,14 +691,27 @@ export function ChatView({
     [t],
   );
 
-  const handleVirtuosoRangeChanged = useCallback((range: ListRange) => {
-    setVisibleRange((current) =>
-      current?.startIndex === range.startIndex &&
-      current?.endIndex === range.endIndex
-        ? current
-        : range,
-    );
-  }, []);
+  const handleVirtuosoRangeChanged = useCallback(
+    (range: ListRange) => {
+      const current = visibleRangeRef.current;
+      if (
+        current?.startIndex === range.startIndex &&
+        current?.endIndex === range.endIndex
+      ) {
+        return;
+      }
+      visibleRangeRef.current = range;
+      if (!isPersistentToolPanelOpen("outline")) return;
+      updatePersistentToolPanel(
+        (panel: PersistentToolPanelState) => ({
+          ...panel,
+          children: renderOutlinePanel(range),
+        }),
+        "outline",
+      );
+    },
+    [renderOutlinePanel],
+  );
   const virtuosoComponents = useMemo(
     () => ({
       Scroller: (
@@ -737,47 +757,41 @@ export function ChatView({
 
   const virtuosoItemContent = useCallback(
     (index: number, message: (typeof messages)[number]) => (
-      <ThreadPrimitive.Unstable_MessageById
-        messageId={message.id}
-        components={{
-          Message: () => (
-            <AssistantUiMessageFrame>
-              <ChatMessage
-          message={message}
-          artifactDownloadScopeContext={artifactDownloadScopeContext}
-          sessionId={sessionId ?? undefined}
-          runId={currentRunId ?? undefined}
-          isLastMessage={index === messages.length - 1}
-          activePreview={activePreview}
-          latestAutoPreview={latestAutoPreview}
-          onOpenPreview={handleOpenPreview}
-          onForkMessage={handleForkMessage}
-              />
-            </AssistantUiMessageFrame>
-          ),
-        }}
-      />
+      <AssistantUiMessageContentContext.Provider
+        value={
+          <ChatMessage
+            message={message}
+            artifactDownloadScopeContext={artifactDownloadScopeContext}
+            isLastMessage={index === messages.length - 1}
+            onOpenPreview={handleOpenPreview}
+          />
+        }
+      >
+        <ThreadPrimitive.Unstable_MessageById
+          messageId={message.id}
+          components={ASSISTANT_UI_MESSAGE_COMPONENTS}
+        />
+      </AssistantUiMessageContentContext.Provider>
     ),
     [
-      sessionId,
       artifactDownloadScopeContext,
-      currentRunId,
       messages.length,
-      activePreview,
-      latestAutoPreview,
       handleOpenPreview,
-      handleForkMessage,
     ],
   );
 
   // Shared ChatInput props to avoid duplication
   const chatInputProps = {
-    draft: composerDraft,
-    onDraftChange: setComposerDraft,
+    initialDraft: initialComposerDraft,
+    initialDraftKey: initialComposerDraftKey,
+    draftSnapshotRef: composerDraftSnapshotRef,
+    draftScopeKey: sessionId,
+    attachmentScopeKey: conversationIdentityKey,
+    draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
     onStop: onStopGeneration,
     isLoading: sessionRunning,
-    canSend: canSendMessage,
+    canSend: canSendInCurrentView,
     placeholder: composerPlaceholder,
     acceptedFileTypes: undefined,
     disableSlashCommands: Boolean(agentEmptyProfile),
@@ -806,6 +820,7 @@ export function ChatView({
     onSelectModel,
     attachments,
     onAttachmentsChange,
+    uploadControls,
   };
 
   const assistantUiActions = useMemo(
@@ -875,8 +890,19 @@ export function ChatView({
         </button>
       )}
 
+      {visibleConnectionStatus && activeConnectionOwner && (
+        <ChatConnectionStatus
+          status={visibleConnectionStatus}
+          owner={activeConnectionOwner}
+          label={t(`chat.connectionStatus.${visibleConnectionStatus}`)}
+          reconnectLabel={t("chat.connectionStatus.reconnect")}
+          reconnectingLabel={t("chat.connectionStatus.reconnectingAction")}
+          onReconnect={onReconnect}
+        />
+      )}
+
       {canRetryPendingSubmission && (
-        <div className="mx-auto mb-2 flex max-w-4xl px-2">
+        <div className="mx-auto mb-2 flex max-w-[68rem] px-2">
           <button
             type="button"
             onClick={() => void onRetryPendingSubmission()}
@@ -890,7 +916,7 @@ export function ChatView({
       )}
       {messages.length === 0 && agentEmptyProfile?.starter_prompts.length ? (
         <div
-          className="mx-auto mb-3 flex max-w-4xl flex-wrap gap-2 px-2"
+          className="mx-auto mb-3 flex max-w-[68rem] flex-wrap gap-2 px-2"
           data-agent-starter-prompts
         >
           <p className="w-full text-xs font-medium text-[var(--theme-text-secondary)]">
@@ -900,8 +926,8 @@ export function ChatView({
             <button
               className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
               key={prompt}
-              disabled={!canSendMessage || isLoading}
-              onClick={() => setComposerDraft(prompt)}
+              disabled={!canSendInCurrentView || isLoading}
+              onClick={() => setComposerInput(prompt)}
               type="button"
             >
               {prompt}
@@ -911,7 +937,7 @@ export function ChatView({
       ) : null}
       <ChatInput
         {...chatInputProps}
-        className="mx-auto max-w-4xl px-2"
+        className="mx-auto max-w-[68rem] px-2"
       />
     </div>
   );
@@ -959,9 +985,9 @@ export function ChatView({
                     <h1 className="mt-3 text-2xl font-semibold text-[var(--theme-text)]">
                       {agentEmptyProfile.name}
                     </h1>
-                    {agentEmptyProfile.welcome_message ? (
+                    {agentEmptyProfile.description ? (
                       <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)]">
-                        {agentEmptyProfile.welcome_message}
+                        {agentEmptyProfile.description}
                       </p>
                     ) : null}
                   </div>

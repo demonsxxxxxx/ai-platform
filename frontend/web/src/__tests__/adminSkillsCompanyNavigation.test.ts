@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
-import { launchpadTabs } from "../components/launchpad/catalog.ts";
 
 const root = process.cwd();
 
@@ -45,40 +44,43 @@ test("authenticated sidebar treats skills as admin skill management and removes 
   assert.doesNotMatch(navigationState, /\|\s*"roles"/);
 });
 
-test("marketplace route is folded into admin skill management", () => {
+test("retired marketplace route is absent from admin skill management", () => {
   const app = readApp();
   const tabContent = readSource("src/components/layout/AppContent/TabContent.tsx");
   const skillsHub = readSource("src/components/panels/SkillsHubPanel.tsx");
   const state = readSource("src/components/panels/SkillsHubPanel/state.ts");
 
-  assert.match(app, /path="\/marketplace"[\s\S]*?<Navigate to="\/skills" replace \/>/);
+  assert.doesNotMatch(app, /path="\/marketplace"/);
   assert.match(tabContent, /skills:\s*SkillsHubPanel/);
   assert.doesNotMatch(tabContent, /marketplace:\s*SkillsHubPanel/);
   assert.doesNotMatch(skillsHub, /location\.pathname === "\/marketplace"/);
   assert.doesNotMatch(state, /marketplace:read/);
   assert.match(state, /skill:admin/);
-  assert.match(state, /marketplace:admin/);
+  assert.doesNotMatch(state, /marketplace:/);
 });
 
-test("company navigation owns legacy webUI links without iframe embedding", () => {
+test("company navigation owns copied webUI links without iframe embedding", () => {
   const catalog = readSource("src/components/launchpad/catalog.ts");
   const panel = readSource("src/components/launchpad/LaunchpadPanel.tsx");
   const zh = readSource("src/i18n/locales/zh.json");
-  const lingxiTab = launchpadTabs.find((tab) => tab.key === "lingxi");
 
-  assert.equal(lingxiTab?.runtimeUrlKey, "lingxi");
   assert.match(panel, /data-company-navigation-shell/);
-  assert.match(panel, /openUrl\(tab\.url\)/);
-  assert.match(panel, /window\.open/);
-  assert.doesNotMatch(catalog, /"icon":/);
-  assert.doesNotMatch(catalog, /icon\?:/);
+  assert.match(panel, /resolveLaunchpadDestination/);
+  assert.match(panel, /href=\{destination\.href\}/);
+  assert.match(panel, /target="_blank"/);
+  assert.match(panel, /getLaunchpadIconUrl/);
+  assert.match(panel, /authApi[\s\S]{0,40}\.getProfile/);
+  assert.match(panel, /authApi\.updateMetadata/);
+  assert.match(panel, /LAUNCHPAD_FAVORITES_METADATA_KEY/);
+  assert.doesNotMatch(panel, /localStorage/);
+  assert.match(catalog, /icon\?: string/);
+  assert.doesNotMatch(catalog, /runtimeUrlKey/);
   assert.doesNotMatch(catalog, /systemKey/);
   assert.doesNotMatch(catalog, /VITE_LEGACY_WEBUI_FRAME_URL/);
   assert.doesNotMatch(catalog, /VITE_LEGACY_NONGMP_URL/);
   assert.doesNotMatch(catalog, /buildLegacySystemUrl/);
   assert.doesNotMatch(panel, /data-legacy-webui-frame/);
   assert.doesNotMatch(panel, /<iframe/);
-  assert.doesNotMatch(panel, /sandbox=/);
-  assert.doesNotMatch(panel, /allow="clipboard-read; clipboard-write"/);
+  assert.doesNotMatch(panel, /window\.open/);
   assert.match(zh, /"companyNavigation"/);
 });

@@ -7,6 +7,7 @@ export const PUBLIC_STREAM_EVENT_TYPES = [
   "message.started",
   "message.delta",
   "message.completed",
+  "commentary.delta",
   "thinking.started",
   "thinking.delta",
   "thinking.completed",
@@ -37,6 +38,252 @@ export const PUBLIC_STREAM_EVENT_TYPES = [
   "stream.end",
 ] as const;
 
+export const PUBLIC_APPLICATION_ENVELOPE_FIELDS = [
+  "schema",
+  "event_id",
+  "run_id",
+  "message_id",
+  "seq",
+  "event_type",
+  "stream_incarnation",
+  "replayable",
+  "trace_ref",
+  "causation_event_id",
+  "emitted_at",
+  "payload",
+] as const;
+export const PUBLIC_CONTROL_ENVELOPE_FIELDS = [
+  "schema",
+  "event_id",
+  "run_id",
+  "message_id",
+  "seq",
+  "event_type",
+  "stream_incarnation",
+  "replayable",
+  "trace_ref",
+  "causation_event_id",
+  "emitted_at",
+  "payload",
+] as const;
+export const PUBLIC_TOOL_CATEGORIES = [
+  "skill",
+  "mcp",
+  "read",
+  "write",
+  "edit",
+  "search",
+  "execute",
+] as const;
+export const PUBLIC_APPLICATION_EVENT_TYPES = [
+  "message.started",
+  "message.delta",
+  "message.completed",
+  "commentary.delta",
+  "thinking.started",
+  "thinking.delta",
+  "thinking.completed",
+  "agent.progress",
+  "model.completed",
+  "tool.started",
+  "tool.completed",
+  "tool.failed",
+  "tool.denied",
+  "subagent.started",
+  "subagent.progress",
+  "subagent.completed",
+  "subagent.failed",
+  "subagent.cancelled",
+  "artifact.created",
+  "artifact.ready",
+  "artifact.failed",
+  "policy.checking",
+  "policy.allowed",
+  "policy.denied",
+  "run.cancel_requested",
+  "run.succeeded",
+  "run.cancelled",
+  "run.failed",
+] as const;
+export const PUBLIC_CONTROL_EVENT_TYPES = [
+  "stream.open",
+  "stream.heartbeat",
+  "stream.gap",
+  "stream.end",
+] as const;
+export const PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES = [
+  "message.started",
+  "message.delta",
+  "message.completed",
+  "commentary.delta",
+  "thinking.started",
+  "thinking.delta",
+  "thinking.completed",
+  "model.completed",
+  "tool.started",
+  "tool.completed",
+  "tool.failed",
+  "tool.denied",
+  "subagent.started",
+  "subagent.progress",
+  "subagent.completed",
+  "subagent.failed",
+  "subagent.cancelled",
+] as const;
+export const PUBLIC_PAYLOAD_FIELDS = {
+  "stream.open": ["design_id"],
+  "stream.heartbeat": ["status"],
+  "stream.gap": ["reason", "recovery", "requested_event_id", "requested_stream_incarnation", "current_stream_incarnation", "earliest_available_event_id", "latest_available_event_id"],
+  "stream.end": ["terminal_event_id"],
+  "message.started": [],
+  "message.delta": ["delta"],
+  "message.completed": ["delta_count", "text_length"],
+  "commentary.delta": ["summary_id", "delta"],
+  "thinking.started": ["thinking_id", "public_summary"],
+  "thinking.delta": ["thinking_id", "delta"],
+  "thinking.completed": ["thinking_id", "public_summary"],
+  "agent.progress": ["schema_version", "step_id", "phase", "lifecycle", "message"],
+  "model.completed": ["duration_ms", "turn_count", "stop_category"],
+  "tool.started": ["operation_id", "category", "display_name", "input_summary", "evidence_refs"],
+  "tool.completed": ["operation_id", "category", "display_name", "duration_ms", "result_summary", "evidence_refs", "artifact_refs"],
+  "tool.failed": ["operation_id", "category", "display_name", "duration_ms", "failure_category", "evidence_refs"],
+  "tool.denied": ["operation_id", "category", "display_name", "denial_code"],
+  "subagent.started": ["subagent_id", "display_name"],
+  "subagent.progress": ["subagent_id", "display_name", "duration_ms", "current_category", "progress_percent"],
+  "subagent.completed": ["subagent_id", "display_name", "duration_ms"],
+  "subagent.failed": ["subagent_id", "display_name", "duration_ms", "failure_category"],
+  "subagent.cancelled": ["subagent_id", "display_name", "duration_ms", "reason_code"],
+  "artifact.created": ["artifact_id", "filename", "media_type", "size_bytes", "status", "evidence_ref"],
+  "artifact.ready": ["artifact_id", "filename", "media_type", "size_bytes", "status", "evidence_ref"],
+  "artifact.failed": ["artifact_id", "status", "failure_category", "filename", "media_type"],
+  "policy.checking": ["decision_id", "category", "display_name"],
+  "policy.allowed": ["decision_id", "category", "display_name", "decision_code"],
+  "policy.denied": ["decision_id", "category", "display_name", "decision_code"],
+  "run.cancel_requested": ["source"],
+  "run.succeeded": ["terminal_event_id", "hydrate_required"],
+  "run.cancelled": ["terminal_event_id", "hydrate_required", "reason_code"],
+  "run.failed": ["terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"],
+} as const;
+export const PUBLIC_REQUIRED_PAYLOAD_FIELDS = {
+  "stream.open": ["design_id"],
+  "stream.heartbeat": ["status"],
+  "stream.gap": ["reason", "recovery", "requested_event_id", "requested_stream_incarnation", "current_stream_incarnation", "earliest_available_event_id", "latest_available_event_id"],
+  "stream.end": ["terminal_event_id"],
+  "message.started": [],
+  "message.delta": ["delta"],
+  "message.completed": ["delta_count", "text_length"],
+  "commentary.delta": ["summary_id", "delta"],
+  "thinking.started": [],
+  "thinking.delta": ["thinking_id", "delta"],
+  "thinking.completed": [],
+  "agent.progress": ["schema_version", "step_id", "phase", "lifecycle", "message"],
+  "model.completed": ["duration_ms", "turn_count", "stop_category"],
+  "tool.started": ["operation_id", "category", "display_name"],
+  "tool.completed": ["operation_id", "category", "display_name", "duration_ms"],
+  "tool.failed": ["operation_id", "category", "display_name", "duration_ms", "failure_category"],
+  "tool.denied": ["operation_id", "category", "display_name", "denial_code"],
+  "subagent.started": ["subagent_id", "display_name"],
+  "subagent.progress": ["subagent_id", "display_name", "duration_ms", "current_category"],
+  "subagent.completed": ["subagent_id", "display_name", "duration_ms"],
+  "subagent.failed": ["subagent_id", "display_name", "duration_ms", "failure_category"],
+  "subagent.cancelled": ["subagent_id", "display_name", "duration_ms", "reason_code"],
+  "artifact.created": ["artifact_id", "filename", "media_type", "size_bytes", "status"],
+  "artifact.ready": ["artifact_id", "filename", "media_type", "size_bytes", "status"],
+  "artifact.failed": ["artifact_id", "status", "failure_category"],
+  "policy.checking": ["decision_id", "category", "display_name"],
+  "policy.allowed": ["decision_id", "category", "display_name", "decision_code"],
+  "policy.denied": ["decision_id", "category", "display_name", "decision_code"],
+  "run.cancel_requested": ["source"],
+  "run.succeeded": ["terminal_event_id", "hydrate_required"],
+  "run.cancelled": ["terminal_event_id", "hydrate_required", "reason_code"],
+  "run.failed": ["terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"],
+} as const;
+export const PUBLIC_PAYLOAD_ENUMS = {
+  "stream.open.design_id": ["ai-platform.redis-streams-sse-event-channel.v4"],
+  "stream.heartbeat.status": ["queued", "running"],
+  "stream.gap.reason": ["retained_history_unavailable", "stream_missing", "stream_continuity_unproven", "stream_incarnation_mismatch"],
+  "stream.gap.recovery": ["reload_durable_state"],
+  "thinking.started.public_summary": ["Analyzing the request"],
+  "thinking.completed.public_summary": ["Analysis step completed"],
+  "agent.progress.schema_version": ["ai-platform.public-agent-progress.v1"],
+  "agent.progress.phase": ["attachment_materialization", "skill_staging", "sandbox_preparation", "sandbox_submission", "model_wait", "artifact_validation", "artifact_recovery"],
+  "agent.progress.lifecycle": ["started", "progress", "completed", "failed"],
+  "model.completed.stop_category": ["completed", "max_turns", "cancelled", "failed", "unknown"],
+  "tool.started.category": ["skill", "mcp", "read", "write", "edit", "search", "execute"],
+  "tool.completed.category": ["skill", "mcp", "read", "write", "edit", "search", "execute"],
+  "tool.failed.category": ["skill", "mcp", "read", "write", "edit", "search", "execute"],
+  "tool.failed.failure_category": ["invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"],
+  "tool.denied.category": ["skill", "mcp", "read", "write", "edit", "search", "execute"],
+  "tool.denied.denial_code": ["capability_not_authorized", "policy_denied"],
+  "subagent.progress.current_category": ["skill", "mcp", "read", "write", "edit", "search", "execute"],
+  "subagent.failed.failure_category": ["subagent_failed"],
+  "subagent.cancelled.reason_code": ["user_cancelled", "run_cancelled", "timeout"],
+  "artifact.created.status": ["created"],
+  "artifact.ready.status": ["ready"],
+  "artifact.failed.status": ["failed"],
+  "artifact.failed.failure_category": ["artifact_failed", "unavailable"],
+  "policy.checking.category": ["skill", "mcp", "read", "write", "edit", "search", "execute"],
+  "policy.allowed.category": ["skill", "mcp", "read", "write", "edit", "search", "execute"],
+  "policy.allowed.decision_code": ["allowed"],
+  "policy.denied.category": ["skill", "mcp", "read", "write", "edit", "search", "execute"],
+  "policy.denied.decision_code": ["capability_not_authorized", "policy_denied"],
+  "run.cancel_requested.source": ["user", "system"],
+  "run.succeeded.hydrate_required": [true],
+  "run.cancelled.hydrate_required": [true],
+  "run.cancelled.reason_code": ["user_cancelled", "policy_cancelled", "timeout"],
+  "run.failed.hydrate_required": [true],
+  "run.failed.projection_version": ["ai-platform.chat-public-projection.v1"],
+} as const;
+export const PUBLIC_PAYLOAD_STRING_BOUNDS = {
+  "message.delta.delta": [1, 8192],
+  "commentary.delta.delta": [1, 8192],
+  "thinking.delta.delta": [1, 8192],
+  "agent.progress.message": [1, 128],
+  "tool.started.display_name": [1, 128],
+  "tool.started.input_summary": [0, 512],
+  "tool.completed.display_name": [1, 128],
+  "tool.completed.result_summary": [0, 2048],
+  "tool.failed.display_name": [1, 128],
+  "tool.denied.display_name": [1, 128],
+  "subagent.started.display_name": [1, 128],
+  "subagent.progress.display_name": [1, 128],
+  "subagent.completed.display_name": [1, 128],
+  "subagent.failed.display_name": [1, 128],
+  "subagent.cancelled.display_name": [1, 128],
+  "artifact.created.filename": [1, 255],
+  "artifact.created.media_type": [1, 128],
+  "artifact.ready.filename": [1, 255],
+  "artifact.ready.media_type": [1, 128],
+  "artifact.failed.filename": [1, 255],
+  "artifact.failed.media_type": [1, 128],
+  "policy.checking.display_name": [1, 128],
+  "policy.allowed.display_name": [1, 128],
+  "policy.denied.display_name": [1, 128],
+  "run.failed.code": [1, 128],
+  "run.failed.default_message": [1, 1024],
+  "run.failed.detail": [0, 2048],
+} as const;
+export const PUBLIC_PAYLOAD_INTEGER_BOUNDS = {
+  "stream.gap.requested_stream_incarnation": [1, null],
+  "stream.gap.current_stream_incarnation": [1, null],
+  "message.completed.delta_count": [1, null],
+  "message.completed.text_length": [1, null],
+  "model.completed.duration_ms": [0, 86400000],
+  "model.completed.turn_count": [0, 10000],
+  "tool.completed.duration_ms": [0, 86400000],
+  "tool.failed.duration_ms": [0, 86400000],
+  "subagent.progress.duration_ms": [0, 86400000],
+  "subagent.progress.progress_percent": [0, 100],
+  "subagent.completed.duration_ms": [0, 86400000],
+  "subagent.failed.duration_ms": [0, 86400000],
+  "subagent.cancelled.duration_ms": [0, 86400000],
+  "artifact.created.size_bytes": [0, 1099511627776],
+  "artifact.ready.size_bytes": [0, 1099511627776],
+} as const;
+export const PUBLIC_PAYLOAD_REF_FIELDS = ["artifact_id", "decision_id", "operation_id", "step_id", "subagent_id", "summary_id", "terminal_event_id", "thinking_id"] as const;
+export const PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS = ["earliest_available_event_id", "evidence_ref", "latest_available_event_id", "requested_event_id"] as const;
+export const PUBLIC_PAYLOAD_REF_ARRAY_FIELDS = ["artifact_refs", "evidence_refs"] as const;
+
 export type SafeRefV4 = string;
 
 export type TraceRefV4 = string;
@@ -65,7 +312,7 @@ export type PublicApplicationEnvelopeV4 = {
   "run_id": RunIdV4;
   "message_id": NullableSafeRefV4;
   "seq": number;
-  "event_type": "message.started" | "message.delta" | "message.completed" | "thinking.started" | "thinking.delta" | "thinking.completed" | "model.completed" | "agent.progress" | "tool.started" | "tool.completed" | "tool.failed" | "tool.denied" | "subagent.started" | "subagent.progress" | "subagent.completed" | "subagent.failed" | "subagent.cancelled" | "artifact.created" | "artifact.ready" | "artifact.failed" | "policy.checking" | "policy.allowed" | "policy.denied" | "run.cancel_requested" | "run.succeeded" | "run.cancelled" | "run.failed";
+  "event_type": "message.started" | "message.delta" | "message.completed" | "commentary.delta" | "thinking.started" | "thinking.delta" | "thinking.completed" | "model.completed" | "agent.progress" | "tool.started" | "tool.completed" | "tool.failed" | "tool.denied" | "subagent.started" | "subagent.progress" | "subagent.completed" | "subagent.failed" | "subagent.cancelled" | "artifact.created" | "artifact.ready" | "artifact.failed" | "policy.checking" | "policy.allowed" | "policy.denied" | "run.cancel_requested" | "run.succeeded" | "run.cancelled" | "run.failed";
   "stream_incarnation": number;
   "replayable": true;
   "trace_ref": NullableTraceRefV4;
@@ -146,7 +393,16 @@ export type MessageDeltaEventV4 = PublicMessageApplicationEnvelopeV4 & {
 export type MessageCompletedEventV4 = PublicMessageApplicationEnvelopeV4 & {
   "event_type": "message.completed";
   "payload": {
-  "content": string;
+  "delta_count": number;
+  "text_length": number;
+};
+};
+
+export type CommentaryDeltaEventV4 = PublicMessageApplicationEnvelopeV4 & {
+  "event_type": "commentary.delta";
+  "payload": {
+  "summary_id": SafeRefV4;
+  "delta": string;
 };
 };
 
@@ -388,7 +644,7 @@ export type RunFailedEventV4 = PublicApplicationEnvelopeV4 & {
 };
 };
 
-export type PublicApplicationEventV4 = MessageStartedEventV4 | MessageDeltaEventV4 | MessageCompletedEventV4 | ThinkingStartedEventV4 | ThinkingDeltaEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | AgentProgressEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4;
+export type PublicApplicationEventV4 = MessageStartedEventV4 | MessageDeltaEventV4 | MessageCompletedEventV4 | CommentaryDeltaEventV4 | ThinkingStartedEventV4 | ThinkingDeltaEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | AgentProgressEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4;
 
 export type PublicTransportControlEventV4 = StreamOpenControlV4 | StreamHeartbeatControlV4 | StreamGapControlV4 | StreamEndControlV4;
 

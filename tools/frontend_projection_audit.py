@@ -110,7 +110,6 @@ SAFE_PUBLIC_ROUTE_PREFIXES = [
     "/api/notifications/active",
     "/api/role-governance",
     "/api/skills",
-    "/api/settings",
     "/api/users",
 ]
 SAFE_ADMIN_ROUTE_PREFIXES = [
@@ -141,6 +140,7 @@ LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES = [
     "/api/env-vars",
     "/api/memory",
     "/api/roles",
+    "/api/settings",
 ]
 LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
     "/api/admin/": {
@@ -184,6 +184,13 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
         "ordinary_user_exposure": "fail_closed",
         "admin_exposure": "same_tenant_admin_projection_only",
         "required_action": "remap_to_ai_platform_admin_projection_or_hide",
+    },
+    "/api/settings": {
+        "domain": "retired_generic_settings",
+        "governance_gate": "G6",
+        "ordinary_user_exposure": "fail_closed",
+        "admin_exposure": "fail_closed",
+        "required_action": "use_the_governed_domain_configuration_page_or_remove",
     },
 }
 

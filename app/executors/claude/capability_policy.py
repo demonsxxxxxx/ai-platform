@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.required_tool_contract import RequiredCapabilityDeclaration
-from app.tool_policy import evaluate_tool_policy
+from app.tool_policy import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_session_messages",
@@ -18,6 +17,8 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "search_memory",
 )
 _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
+_SDK_INTERNAL_RESPONSE_TOOLS = ("attach_file",)
+_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX = "mcp__ai-platform-response__"
 _SKILL_INPUT_MAX_BYTES = 64 * 1024
 _SKILL_INPUT_MAX_DEPTH = 16
 _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
@@ -32,48 +33,9 @@ _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
     "stage_context_file_to_workspace": ("file_id",),
     "stage_run_artifact_to_workspace": ("artifact_id",),
 }
-_BUILTIN_PARAMETER_KEYS = {
-    "Read": ("file_path",),
-    "Glob": ("pattern", "path"),
-    "Grep": (
-        "pattern",
-        "path",
-        "glob",
-        "output_mode",
-        "-i",
-        "multiline",
-        "head_limit",
-        "offset",
-        "context",
-        "-A",
-        "-B",
-        "-C",
-        "-n",
-        "-o",
-        "type",
-    ),
-    "LS": ("path",),
-    "Bash": ("command",),
-    "Write": ("file_path", "content"),
-    "Edit": ("file_path", "old_string", "new_string", "replace_all"),
-    "NotebookEdit": (
-        "notebook_path",
-        "new_source",
-        "cell_id",
-        "cell_type",
-        "edit_mode",
-    ),
-    "Agent": ("agent", "prompt", "description"),
-    "WebFetch": ("url", "prompt"),
-    "WebSearch": ("query",),
-    "Skill": ("skill",),
-}
-_BUILTIN_REQUIRED_PARAMETER_KEYS = {
-    "Grep": ("pattern",),
-    "Bash": ("command",),
-    "Write": ("file_path", "content"),
-    "Skill": ("skill",),
-}
+_SANDBOX_LOCAL_TOOL_IDENTITIES = frozenset(
+    {"Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"}
+)
 
 
 def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
@@ -99,6 +61,16 @@ def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
                 ):
                     continue
                 tool_name = internal_tool
+            elif server_id == "ai-platform-response":
+                internal_tool = identity.removeprefix(
+                    _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX
+                )
+                if (
+                    not identity.startswith(_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+                    or internal_tool not in _SDK_INTERNAL_RESPONSE_TOOLS
+                ):
+                    continue
+                tool_name = internal_tool
             if (
                 not isinstance(server_id, str)
                 or not server_id
@@ -107,6 +79,11 @@ def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
                 or identity != f"mcp__{server_id}__{tool_name}"
             ):
                 continue
+        existing = subjects.get(identity)
+        if existing and identity.startswith("mcp__") and (
+            existing.get("mcp_server"), existing.get("mcp_tool")
+        ) != (raw.get("mcp_server"), raw.get("mcp_tool")):
+            raise ValueError("mcp_identity_collision")
         validation = evaluate_tool_policy(
             tool={
                 "requested_identity": identity,
@@ -139,14 +116,12 @@ class CapabilityExecutionPlan:
     """Separate available capabilities from explicit execution requirements."""
 
     available: frozenset[tuple[str, str]]
-    required: tuple[RequiredCapabilityDeclaration, ...]
 
     @classmethod
     def from_tool_policy_subjects(
         cls,
         value: object,
         *,
-        required_skill_identity: str | None = None,
         available_skill_identities: object = (),
         registered_mcp_servers: dict[str, object] | None = None,
     ) -> "CapabilityExecutionPlan":
@@ -159,7 +134,7 @@ class CapabilityExecutionPlan:
             if (
                 not isinstance(server_id, str)
                 or not server_id
-                or server_id == "ai-platform-context"
+                or server_id in {"ai-platform-context", "ai-platform-response"}
                 or not isinstance(tool_name, str)
                 or not tool_name
                 or identity != f"mcp__{server_id}__{tool_name}"
@@ -174,15 +149,7 @@ class CapabilityExecutionPlan:
             for identity in available_skill_identities:
                 if isinstance(identity, str) and identity:
                     available.add(("skill", identity))
-        required: tuple[RequiredCapabilityDeclaration, ...] = ()
-        if required_skill_identity:
-            declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-                capability_kind="skill",
-                canonical_identity=required_skill_identity,
-            )
-            required = (declaration,)
-            available.add(("skill", required_skill_identity))
-        return cls(available=frozenset(available), required=required)
+        return cls(available=frozenset(available))
 
 
 def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, Any]]:
@@ -224,6 +191,28 @@ def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, 
     return subjects
 
 
+def internal_response_tool_policy_subjects() -> list[dict[str, Any]]:
+    """Build the private platform tool that binds files to the final response."""
+
+    return [
+        {
+            "identity": f"{_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX}attach_file",
+            "mcp_server": "ai-platform-response",
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+            "risk_level": "medium",
+            "write_capable": True,
+            "allowed_parameter_keys": ["path"],
+            "required_parameter_keys": ["path"],
+        }
+    ]
+
+
 def _extract_skill_names_from_tool_input(
     tool_input: Any,
     allowed_skill_names: set[str],
@@ -245,7 +234,28 @@ def _authorized_parameter_keys(
         isinstance(item, str) and item for item in configured
     ):
         return set(configured)
-    return set(_BUILTIN_PARAMETER_KEYS.get(tool_name, ()))
+    contract = BUILTIN_TOOL_PARAMETER_CONTRACTS.get(tool_name)
+    return set(contract.allowed_parameter_keys if contract is not None else ())
+
+
+def _delegates_external_mcp_parameters(
+    subject: dict[str, Any],
+    tool_name: str,
+) -> bool:
+    identity = subject.get("identity")
+    server_id = subject.get("mcp_server")
+    mcp_tool = subject.get("mcp_tool")
+    return (
+        subject.get("parameter_delegation") == "external_mcp"
+        and isinstance(identity, str)
+        and isinstance(server_id, str)
+        and bool(server_id)
+        and server_id not in {"ai-platform-context", "ai-platform-response"}
+        and isinstance(mcp_tool, str)
+        and bool(mcp_tool)
+        and identity == f"mcp__{server_id}__{mcp_tool}"
+        and tool_name == identity
+    )
 
 
 def _skill_input_is_bounded_json(tool_input: object) -> bool:
@@ -320,18 +330,58 @@ def _parameters_match_subject(
     tool_name: str,
     tool_input: object,
 ) -> bool:
+    if (
+        subject.get("execution_strategy") == "sandbox_full_local"
+        and subject.get("parameter_validation") == "sdk"
+        and subject.get("identity") == tool_name
+        and tool_name in _SANDBOX_LOCAL_TOOL_IDENTITIES
+    ):
+        if not isinstance(tool_input, dict):
+            return False
+        if (
+            tool_name == "Bash"
+            and "run_in_background" in tool_input
+            and tool_input["run_in_background"] is not False
+        ):
+            return False
+        expected_objects = subject.get("object_constraints")
+        return not isinstance(expected_objects, dict) or not any(
+            tool_input.get(key) != value
+            for key, value in expected_objects.items()
+        )
     if tool_name == "Skill":
         return _skill_parameters_match_subject(subject, tool_input)
     if not isinstance(tool_input, dict):
         return False
-    allowed_keys = _authorized_parameter_keys(subject, tool_name)
-    if not allowed_keys or not set(tool_input).issubset(allowed_keys):
+    schema = subject.get("mcp_tool_schema")
+    delegates_external_mcp = _delegates_external_mcp_parameters(subject, tool_name)
+    schema_properties = schema.get("properties") if isinstance(schema, dict) else None
+    if isinstance(schema_properties, dict):
+        allowed_keys = (
+            {str(key) for key in schema_properties if isinstance(key, str) and key}
+            if schema.get("additionalProperties") is False
+            else set(tool_input)
+        )
+    elif isinstance(schema, dict) and schema.get("additionalProperties") is False:
+        allowed_keys = set()
+    elif isinstance(schema, dict) or delegates_external_mcp:
+        allowed_keys = set(tool_input)
+    else:
+        allowed_keys = _authorized_parameter_keys(subject, tool_name)
+    if (
+        not allowed_keys
+        and not isinstance(schema, dict)
+        and not delegates_external_mcp
+    ) or not set(tool_input).issubset(allowed_keys):
         return False
-    required = (
-        subject["required_parameter_keys"]
-        if "required_parameter_keys" in subject
-        else list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ()))
-    )
+    required = subject.get("required_parameter_keys")
+    if required is None and isinstance(schema, dict):
+        required = schema.get("required", [])
+    if required is None:
+        contract = BUILTIN_TOOL_PARAMETER_CONTRACTS.get(tool_name)
+        required = list(
+            contract.required_parameter_keys if contract is not None else ()
+        )
     if not isinstance(required, list) or not all(
         isinstance(key, str) and key for key in required
     ):
@@ -353,8 +403,8 @@ def _parameters_match_subject(
 
 def _mcp_server_options(
     subjects: dict[str, dict[str, Any]],
-) -> dict[str, dict[str, str]]:
-    servers: dict[str, dict[str, str]] = {}
+) -> dict[str, dict[str, Any]]:
+    servers: dict[str, dict[str, Any]] = {}
     for identity, subject in subjects.items():
         config = subject.get("mcp_server_config")
         if not identity.startswith("mcp__") or not isinstance(config, dict):
@@ -371,7 +421,17 @@ def _mcp_server_options(
             or any((parsed.username, parsed.password, parsed.query, parsed.fragment))
         ):
             continue
-        candidate = {"type": transport, "url": endpoint}
+        raw_headers = config.get("headers", {})
+        if not isinstance(raw_headers, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in raw_headers.items()
+        ):
+            continue
+        candidate = {
+            "type": transport,
+            "url": endpoint,
+            "headers": dict(raw_headers),
+        }
         existing = servers.get(server_id)
         if existing is not None and existing != candidate:
             raise ValueError("conflicting MCP server registration")

@@ -5,27 +5,27 @@ export const DEFAULT_THINKING_LEVEL_STORAGE_KEY = "defaultThinkingLevel";
 const EMPTY_AGENT_OPTION_DEFINITIONS: Record<string, AgentOption> = {};
 
 const THINKING_LEVEL_OPTION_DEFS = [
-  { value: "off", label_key: "agentOptions.enableThinking.options.off" },
+  { value: "auto", label_key: "agentOptions.enableThinking.options.auto" },
   { value: "low", label_key: "agentOptions.enableThinking.options.low" },
   { value: "medium", label_key: "agentOptions.enableThinking.options.medium" },
   { value: "high", label_key: "agentOptions.enableThinking.options.high" },
-  { value: "max", label_key: "agentOptions.enableThinking.options.max" },
 ] as const;
 
 function normalizeThinkingOptionValue(value: boolean | string | number) {
   if (value === true) return "medium";
-  if (value === false) return "off";
+  if (value === false) return "auto";
   if (typeof value !== "string") return value;
 
   const normalized = value.trim().toLowerCase();
-  if (["off", "low", "medium", "high", "max"].includes(normalized)) {
+  if (["off", "disabled", "disable", "false", "none"].includes(normalized)) {
+    return "auto";
+  }
+  if (normalized === "max") return "high";
+  if (["auto", "low", "medium", "high"].includes(normalized)) {
     return normalized;
   }
   if (["enabled", "enable", "on", "true"].includes(normalized)) {
     return "medium";
-  }
-  if (["disabled", "disable", "false", "none"].includes(normalized)) {
-    return "off";
   }
   return value;
 }
@@ -70,9 +70,7 @@ export function normalizeAgentOptions(
           description_key:
             option.description_key || "agentOptions.enableThinking.description",
           icon: option.icon || "Brain",
-          options: option.options?.length
-            ? option.options
-            : [...THINKING_LEVEL_OPTION_DEFS],
+          options: [...THINKING_LEVEL_OPTION_DEFS],
         },
       ];
     }),

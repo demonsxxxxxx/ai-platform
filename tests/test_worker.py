@@ -11,11 +11,15 @@ import pytest
 
 import app.bootstrap.model_services as model_services
 import app.execution.application.model_control_plane as model_control_plane_module
+import app.execution.application.worker_attempt_lifecycle as worker_attempt_lifecycle_module
 import app.runs.application.model_snapshot as run_model_snapshot_module
 import app.worker as worker_module
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
+from app.control_plane_contracts import standard_trace_id
 from app.execution.api import (
+    reconciliation_agent_profile_binding_matches,
+    restored_executor_reconciliation_queue_payload,
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
     validated_context_file_diagnostic,
@@ -32,7 +36,13 @@ from app.executors.base import (
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.mcp.infrastructure import postgres as mcp_postgres
+from app.mcp.infrastructure import runtime as mcp_runtime
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
+from app.platform.sandbox.errors import (
+    ContainerStartFailedError,
+    ExecutorHealthTimeoutError,
+)
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -42,10 +52,11 @@ from app.required_tool_contract import (
     RequiredCapabilityEvidence,
     declaration_from_input,
 )
-from app.runs.api import RunTerminalizationProgress
+from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
 from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
+from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.streaming.application.durable_v4 import V4PendingAdmission
 from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
@@ -65,8 +76,28 @@ from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutor
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
+_TEST_ATTEMPT_PERSISTENCE = None
+_TEST_RUN_ATTEMPT_LIFECYCLE = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
+
+
+@pytest.fixture(autouse=True)
+def _stub_terminal_context_ports(monkeypatch):
+    async def usage(_conn, **_kwargs):
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
+        usage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
 
 
 class _FakeWorkerV4Admission:
@@ -112,9 +143,6 @@ class _FakeWorkerV4Admission:
             attempt_id=attempt_id,
         )
 
-    async def list_pending_admissions(self, *, limit):
-        return ()
-
     async def confirm_pending_admission(self, admission, *, redis_id):
         assert redis_id
         return SimpleNamespace(
@@ -125,12 +153,10 @@ class _FakeWorkerV4Admission:
         )
 
 
-class _FakeWorkerV4Authority:
-    async def get(self, *, tenant_id, run_id):
-        return SimpleNamespace(attempt_id="qat-test-attempt", stream_incarnation=1)
-
-
 class _FakeWorkerV4Persistence:
+    async def load_latest_run_event(self, *, tenant_id, run_id):
+        return None
+
     async def append_terminal_row(self, _conn, *, tenant_id, run_id):
         return None
 
@@ -174,28 +200,110 @@ class _FakeWorkerV4Persistence:
             )
 
 
-class _FakeWorkerV4Claims:
-    async def claim_next(self, **kwargs):
-        return None
-
-
 class _FakeWorkerV4Transport:
     async def publish(self, canonical_envelope_bytes):
         return "0-1"
 
 
 _FAKE_WORKER_V4_CAPABILITIES = WorkerV4Capabilities(
-    authority=_FakeWorkerV4Authority(),
     pending_admissions=_FakeWorkerV4Admission(),
     event_persistence=_FakeWorkerV4Persistence(),
-    publication_claims=_FakeWorkerV4Claims(),
     publication_transport=_FakeWorkerV4Transport(),
 )
 
 
 async def process_run_payload(*args, **kwargs):
     kwargs.setdefault("v4_capabilities", _FAKE_WORKER_V4_CAPABILITIES)
+    if _TEST_RUN_ATTEMPT_LIFECYCLE is None:
+        raise RuntimeError("test_run_attempt_lifecycle_unavailable")
+    kwargs.setdefault("run_attempt_lifecycle", _TEST_RUN_ATTEMPT_LIFECYCLE)
     return await _process_run_payload(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monkeypatch):
+    class JwtStore:
+        async def get(self, principal):
+            assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
+            return "current.jwt"
+
+    async def runtime_target(_conn, *, tenant_id, server_name):
+        assert (tenant_id, server_name) == ("tenant-a", "gateway")
+        return {"transport": "streamable_http", "credential_envelope": "sealed"}
+
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: JwtStore())
+    monkeypatch.setattr(
+        mcp_postgres,
+        "get_mcp_server_runtime_target",
+        runtime_target,
+    )
+    monkeypatch.setattr(
+        mcp_runtime,
+        "open_mcp_server_credentials",
+        lambda **_kwargs: (
+            "https://gateway.example/mcp",
+            {"X-Static-Key": "configured"},
+        ),
+    )
+    subject = {
+        "identity": "mcp__gateway__search",
+        "mcp_server": "gateway",
+        "mcp_tool": "search",
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": "high",
+        "write_capable": True,
+        "parameter_delegation": "external_mcp",
+    }
+    principal = AuthPrincipal(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        display_name="User A",
+        source="company-login",
+    )
+
+    payload = RunPayload(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        agent_id="general-agent",
+        skill_id=None,
+        file_ids=[],
+        input={"_runtime_tool_policy_subjects": [subject]},
+        execution_kind=RUN_EXECUTION_KIND_HARNESS_CHAT,
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
+    )
+    injected = await mcp_runtime.attach_mcp_server_configs(
+        object(), principal=principal, run_payload=payload
+    )
+    expected_config = {
+        "gateway": {
+            "type": "http",
+            "url": "https://gateway.example/mcp",
+            "headers": {
+                "X-Static-Key": "configured",
+                "JWT-Authorization": "Bearer current.jwt",
+            },
+        }
+    }
+    injected_subject = injected.input["_runtime_tool_policy_subjects"][0]
+    assert injected_subject["mcp_server_config"] == expected_config["gateway"]
+    assert "mcp_server_config" not in subject
+
+    persisted = sandbox_reconciliation_payload(injected)
+    persisted_subject = persisted["execution_payload"]["input"][
+        "_runtime_tool_policy_subjects"
+    ][0]
+    assert "mcp_server_config" not in persisted_subject
+    assert "current.jwt" not in json.dumps(persisted)
 
 
 def test_worker_preserves_only_typed_safe_executor_failures():
@@ -204,22 +312,79 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     native_error = NativeToolAdmissionError()
     native_error.__context__ = RuntimeError(f"{private_token} at {private_path}")
 
-    assert worker_module._executor_exception_failure(native_error) == (
+    native_failure = worker_module._executor_exception_failure(native_error)
+    assert native_failure[:2] == (
         "native_tool_admission_failed",
         "Native tool sandbox admission failed",
     )
-    assert worker_module._executor_exception_failure(
+    assert native_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "native_tool_admission_failed"
+    )
+    assert native_failure[2]["runtime_diagnostics"]["sdk"]["exception_type"] == (
+        "NativeToolAdmissionError"
+    )
+    generic_failure = worker_module._executor_exception_failure(
         RuntimeError("ordinary executor failure")
-    ) == ("executor_failure", "Executor failed")
-    assert worker_module._executor_exception_failure(
-        SandboxExecutorHttpError(
-            status_code=401,
-            error_code="invalid_executor_credential",
-            detail="invalid_executor_credential",
+    )
+    assert generic_failure[:2] == ("executor_failure", "Executor failed")
+    assert generic_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "executor_failure"
+    )
+    health_failure = worker_module._executor_exception_failure(
+        ExecutorHealthTimeoutError(
+            readiness_evidence=ExecutorReadinessEvidence(
+                readiness_phase="health_probe",
+                container_state="running",
+                published_port_observed=True,
+                health_outcome="timeout",
+                elapsed_ms=321,
+            )
         )
-    ) == (
+    )
+    assert health_failure[:2] == ("executor_failure", "Executor failed")
+    assert health_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "executor_health_timeout"
+    )
+    assert health_failure[2]["runtime_diagnostics"]["failure_stage"] == (
+        "health_probe"
+    )
+    assert health_failure[2]["runtime_diagnostics"]["sdk"]["errors"] == {
+        "readiness": {
+            "readiness_phase": "health_probe",
+            "container_state": "running",
+            "exit_code": None,
+            "oom_killed": None,
+            "published_port_observed": True,
+            "health_outcome": "timeout",
+            "elapsed_ms": 321,
+        }
+    }
+    start_failure = worker_module._executor_exception_failure(
+        ContainerStartFailedError()
+    )
+    assert start_failure[:2] == ("executor_failure", "Executor failed")
+    assert start_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "container_start_failed"
+    )
+    http_error = SandboxExecutorHttpError(
+        status_code=401,
+        error_code="invalid_executor_credential",
+        detail="invalid_executor_credential",
+        runtime_diagnostics={
+            "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+            "error_code": "executor_authentication_failed",
+            "failure_source": "executor_http",
+            "failure_stage": "dispatch",
+            "sdk": {},
+        },
+    )
+    http_failure = worker_module._executor_exception_failure(http_error)
+    assert http_failure[:2] == (
         "invalid_executor_credential",
         "Executor authentication failed (HTTP 401)",
+    )
+    assert http_failure[2]["runtime_diagnostics"]["error_code"] == (
+        "executor_authentication_failed"
     )
     hostile_error = SandboxExecutorHttpError(
         status_code=502,
@@ -229,11 +394,16 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     assert worker_module._executor_exception_failure(hostile_error) == (
         "executor_http_failure",
         "Executor request failed (HTTP 502)",
+        None,
     )
-    assert private_token not in str(worker_module._executor_exception_failure(native_error))
-    assert private_path not in str(worker_module._executor_exception_failure(native_error))
-    assert "private-secret" not in str(worker_module._executor_exception_failure(hostile_error))
-    assert "private-prompt" not in str(worker_module._executor_exception_failure(hostile_error))
+    assert private_token not in str(native_failure)
+    assert private_path not in str(native_failure)
+    assert "private-secret" not in str(
+        worker_module._executor_exception_failure(hostile_error)
+    )
+    assert "private-prompt" not in str(
+        worker_module._executor_exception_failure(hostile_error)
+    )
 
 
 @pytest.mark.asyncio
@@ -656,10 +826,20 @@ def test_worker_keeps_bash_available_without_required_completion():
     payload = parse_queue_payload(
         base_payload(
             _leased=False,
+            executor_type="claude-agent-worker",
             input={"message": "请执行 Bash 命令 pwd"},
             skill_id="qa-file-reviewer",
             skill_version="hash-qa-file-reviewer",
             skill_manifests=[primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")],
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-existing",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 1,
+                "memory_record_count": 0,
+                "execution_tier": "sdk_only_writing",
+            },
         )
     )
     subjects = worker_module._builtin_capability_subjects(
@@ -672,6 +852,16 @@ def test_worker_keeps_bash_available_without_required_completion():
     assert set(by_identity) == {"Bash", "Write", "Skill"}
     assert by_identity["Bash"]["declared"] is True
     assert by_identity["Bash"]["required_parameter_keys"] == ["command"]
+    sandbox_subjects = worker_module.with_boundary_sandbox_local_tool_subjects(
+        subjects,
+        decision=worker_module._worker_execution_boundary_decision(payload),
+        sandbox_provider="opensandbox",
+    )
+    assert {subject["identity"] for subject in sandbox_subjects} == {
+        "Bash",
+        "Write",
+        "Skill",
+    }
 
     authorization = worker_module.required_tool_authorization_for_run(
         payload=payload,
@@ -767,8 +957,8 @@ def primary_manifest_version(skill_id: str, manifests: list[dict]) -> str:
 
 def reviewed_docx_artifact() -> ArtifactManifest:
     return ArtifactManifest(
-        artifact_type="reviewed_docx",
-        label="Reviewed Word",
+        artifact_type="result_docx",
+        label="Word 文件",
         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
         size_bytes=1,
@@ -806,6 +996,8 @@ def _test_current_principal(
 @pytest.fixture(autouse=True)
 def default_cancel_not_requested(monkeypatch):
     global _CURRENT_QUEUE_PAYLOAD
+    global _TEST_ATTEMPT_PERSISTENCE
+    global _TEST_RUN_ATTEMPT_LIFECYCLE
     _CURRENT_QUEUE_PAYLOAD = None
     original_locked_agent_profile_identity_valid = (
         worker_module._locked_agent_profile_identity_valid
@@ -861,6 +1053,13 @@ def default_cancel_not_requested(monkeypatch):
             ),
         )
 
+    async def no_ready_provider_epoch(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(
+        "app.context.api.matching_ready_provider_epoch",
+        no_ready_provider_epoch,
+    )
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
     monkeypatch.setattr(
@@ -901,6 +1100,99 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.worker.repositories.get_run", get_run, raising=False)
 
+    locked_run_for_model_snapshot: dict[str, object] = {}
+
+    async def load_test_model(conn, **kwargs):
+        locked_run = locked_run_for_model_snapshot.get("value")
+        if not isinstance(locked_run, dict):
+            locked_run = await worker_module.repositories.get_run(
+                conn,
+                tenant_id=kwargs["tenant_id"],
+                run_id=kwargs["run_id"],
+                for_update=kwargs.get("for_update", False),
+            )
+        if not isinstance(locked_run, dict):
+            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        return {
+            field: locked_run.get(field)
+            for field in (
+                "model_id",
+                "model_value",
+                "model_gateway_revision",
+                "max_input_tokens",
+                "max_output_tokens",
+            )
+        }
+
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_test_model)
+
+    async def no_checkpoint_in_fake_transaction(**_kwargs):
+        return None, False
+
+    monkeypatch.setattr("app.worker.prepare_worker_checkpoint", no_checkpoint_in_fake_transaction)
+
+    async def ready_fence(_conn, **_kwargs):
+        return "ready"
+
+    monkeypatch.setattr("app.worker.worker_dispatch_fence", ready_fence)
+
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        locked_run = await worker_module.repositories.mark_run_running(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
+        if locked_run is True:
+            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        locked_run_for_model_snapshot["value"] = locked_run
+        return locked_run
+
+    async def start_worker_run_attempt(conn, **kwargs):
+        return {
+            "id": worker_attempt_lifecycle_module.run_attempt_id_for_queue_attempt(
+                tenant_id=kwargs["tenant_id"],
+                run_id=kwargs["run_id"],
+                queue_attempt_id=kwargs["queue_attempt_id"],
+            ),
+            "status": "running",
+            "owner_kind": "queue_worker",
+            "owner_id": kwargs["worker_id"],
+            "owner_generation": 4,
+            "queue_attempt_id": kwargs["queue_attempt_id"],
+            "execution_spec_sha256": kwargs["execution_spec"].spec_sha256,
+        }
+
+    async def get_run_attempt_for_queue_attempt(conn, **kwargs):
+        return None
+
+    async def get_run_attempt(conn, **kwargs):
+        return None
+
+    async def assert_worker_run_attempt_current(conn, **kwargs):
+        return None
+
+    async def request_run_attempt_cancel(conn, **kwargs):
+        return None
+
+    async def terminalize_run_attempt(conn, **kwargs):
+        return None
+
+    _TEST_ATTEMPT_PERSISTENCE = SimpleNamespace(
+        lock_queued_run_for_attempt=lock_queued_run_for_attempt,
+        start_worker_run_attempt=start_worker_run_attempt,
+        get_run_attempt_for_queue_attempt=get_run_attempt_for_queue_attempt,
+        get_run_attempt=get_run_attempt,
+        assert_worker_run_attempt_current=assert_worker_run_attempt_current,
+        request_run_attempt_cancel=request_run_attempt_cancel,
+        terminalize_run_attempt=terminalize_run_attempt,
+    )
+    _TEST_RUN_ATTEMPT_LIFECYCLE = RunAttemptLifecycleService(
+        persistence=_TEST_ATTEMPT_PERSISTENCE
+    )
+    monkeypatch.setattr(
+        "app.execution.application.worker_attempt_lifecycle.run_attempt_id_for_queue_attempt",
+        lambda **kwargs: kwargs["queue_attempt_id"],
+    )
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
 
@@ -925,6 +1217,21 @@ def default_cancel_not_requested(monkeypatch):
     async def create_artifact(conn, **kwargs):
         return None
 
+    async def persist_test_assistant(
+        conn, *, append_message, tenant_id, session_id, run_id, content, metadata_json, **_kwargs
+    ):
+        return await append_message(
+            conn,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            run_id=run_id,
+            role="assistant",
+            content=content,
+            metadata_json=metadata_json,
+        )
+
+    monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_test_assistant)
+
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run, raising=False)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run, raising=False)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact, raising=False)
@@ -934,7 +1241,7 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.worker.drain_run_tool_permission_terminalization",
+        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
         drain_run_tool_permission_terminalization,
         raising=False,
     )
@@ -1050,7 +1357,15 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
-    async def reconcile_terminalized_permission_run(*, tenant_id, run_id, progress, transaction_factory):
+    async def reconcile_terminalized_permission_run(
+        *,
+        tenant_id,
+        run_id,
+        progress,
+        transaction_factory,
+        attempt_lifecycle,
+    ):
+        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         if not progress.did_transition or not progress.needs_reconcile:
             return None
         async with transaction_factory() as conn:
@@ -1143,7 +1458,7 @@ def default_cancel_not_requested(monkeypatch):
                 "risk_level": str(policy.get("risk_level") or "low"),
                 "allowed_tools": ["query"],
                 "transport_type": "streamable_http",
-                "endpoint": "https://mcp.example.test/v1",
+                "endpoint": "",
                 "auth_mode": "none",
             }
         return {
@@ -1158,7 +1473,7 @@ def default_cancel_not_requested(monkeypatch):
             "risk_level": "low",
             "allowed_tools": ["query"],
             "transport_type": "streamable_http",
-            "endpoint": "https://mcp.example.test/v1",
+            "endpoint": "",
             "auth_mode": "none",
         }
 
@@ -1173,9 +1488,13 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.worker.repositories.get_mcp_tool_registry_entry",
+        "app.worker.mcp_api.get_mcp_tool_registry_entry",
         get_mcp_tool_registry_entry,
         raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker.mcp_api.mcp_runtime_metadata_usable",
+        mcp_postgres.mcp_runtime_metadata_usable,
     )
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log, raising=False)
 
@@ -1204,7 +1523,7 @@ def default_cancel_not_requested(monkeypatch):
             )
             self.snapshot = _DefaultCatalogSnapshot(skill_id, materialized_skill_ids)
 
-        def runtime_input_updates(self):
+        def runtime_input_updates(self, *, pinned_manifests=None):
             return {}
 
     async def resolve_authorized_skill_catalog(*_args, **kwargs):
@@ -1296,18 +1615,24 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
     assert captured["requested_tool_ids"] == ["search-a"]
     assert [
         subject["identity"] for subject in captured["tool_policy_subjects"]
-    ] == ["Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"]
+    ] == [
+        "Read",
+        "Glob",
+        "Grep",
+        "LS",
+        "Bash",
+        "Write",
+        "Edit",
+        "NotebookEdit",
+    ]
     bash_subject = next(
         subject
         for subject in captured["tool_policy_subjects"]
         if subject["identity"] == "Bash"
     )
-    assert bash_subject["allowed_parameter_keys"] == [
-        "command",
-        "timeout",
-        "description",
-    ]
-    assert bash_subject["required_parameter_keys"] == ["command"]
+    assert bash_subject["parameter_validation"] == "sdk"
+    assert "allowed_parameter_keys" not in bash_subject
+    assert "required_parameter_keys" not in bash_subject
     assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
 
 
@@ -1326,6 +1651,8 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
         "model_id": "catalog-model",
         "model_value": "provider/catalog-model",
         "model_gateway_revision": 3,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
         "input_json": {
             "input": {"message": "hello"},
             "file_ids": [],
@@ -1358,7 +1685,7 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
         ((None, "provider/partial", None), ("queue-model", "provider/queue-model"), None),
         ((None, None, 1), ("queue-model", "provider/queue-model"), None),
         ((None, None, None), (None, None), None),
-        ((None, None, None), ("legacy-model", "provider/legacy-model"), ("legacy-model", "provider/legacy-model")),
+        ((None, None, None), ("legacy-model", "provider/legacy-model"), None),
     ],
 )
 def test_locked_run_uses_one_complete_model_authority(
@@ -1716,11 +2043,13 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         reconciliation,
         transaction_factory,
         v4_capabilities,
+        run_attempt_lifecycle,
     ):
         del registry, reconciliation
         assert worker_id == "worker-a"
         assert transaction_factory is None
         assert v4_capabilities is _FAKE_WORKER_V4_CAPABILITIES
+        assert run_attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         assert raw["_queue_attempt_id"] == "attempt-a"
         queue_payload = QueueRunPayload.model_validate(
             {key: value for key, value in raw.items() if key != "_queue_attempt_id"}
@@ -1768,6 +2097,7 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         worker_id="worker-a",
         claim_token="claim-a",
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
+        run_attempt_lifecycle=_TEST_RUN_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -1806,6 +2136,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     locked_run["status"] = "running"
     get_run_calls = []
     terminal_calls = []
+    profile_reauthorization_calls = []
 
     async def get_run(
         _conn,
@@ -1830,6 +2161,14 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         assert kwargs == {"lease_id": "lease-a", "claim_token": "claim-a"}
         return True
 
+    async def reauthorize_profile(_conn, **kwargs):
+        profile_reauthorization_calls.append(kwargs)
+        return types.SimpleNamespace(
+            private_execution_input=profile,
+            skill={"skill_id": "general-chat"},
+            mcp_tool_ids=(),
+        )
+
     def unexpected_transaction():
         raise AssertionError("reconciliation must use the claim-owning transaction factory")
 
@@ -1838,6 +2177,10 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(
+        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        reauthorize_profile,
+    )
     monkeypatch.setattr(
         "app.worker.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
@@ -1873,7 +2216,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         "executor_reconciliation_context_json": {
             "adapter_name": "claude-agent-worker",
             "adapter_context": {},
-            "run_payload": asdict(run_payload),
+            "run_payload": sandbox_reconciliation_payload(run_payload),
         },
     }
     result = ExecutorResult(
@@ -1894,12 +2237,19 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         claim_token="claim-a",
         transaction_factory=fake_transaction,
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
+        run_attempt_lifecycle=_TEST_RUN_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
     assert get_run_calls.count(False) >= 2
     assert True in get_run_calls
     assert ("complete", "run-a") in terminal_calls
+    assert profile_reauthorization_calls == [{
+        "principal": _test_current_principal(user_id="user-a", tenant_id="tenant-a"),
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+    }]
     assert not any(
         call == ("event", "capability_not_authorized") for call in terminal_calls
     )
@@ -1947,11 +2297,56 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     async def has_reconciliation_claim(_conn, **kwargs):
         return kwargs == {"lease_id": "lease-a", "claim_token": "claim-a"}
 
+    durable_attempt = {
+        "id": "rat-attempt-a",
+        "status": "running",
+        "queue_attempt_id": "qat-attempt-a",
+        "owner_kind": "queue_worker",
+        "owner_id": "worker-original",
+        "owner_generation": 4,
+    }
+
+    async def get_run_attempt(_conn, **kwargs):
+        assert kwargs["attempt_id"] == "rat-attempt-a"
+        return dict(durable_attempt)
+
+    async def assert_current_attempt(_conn, **kwargs):
+        calls.append(("attempt_fence", kwargs["worker_id"], kwargs["queue_attempt_id"]))
+        return dict(durable_attempt)
+
+    async def terminalize_attempt(_conn, **kwargs):
+        calls.append(("attempt_terminal", kwargs["attempt_id"], kwargs["status"]))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
+    async def promote_artifact_cleanup(_conn, **kwargs):
+        calls.append(("promote_artifact", kwargs["artifact_id"], kwargs["storage_key"]))
+        return True
+
+    async def create_artifact(_conn, **kwargs):
+        calls.append(("create_artifact", kwargs["storage_key"]))
+        return kwargs["artifact_id"]
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(
+        "app.worker.promote_provisional_artifact_cleanup",
+        promote_artifact_cleanup,
+    )
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_run_attempt", get_run_attempt)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        assert_current_attempt,
+    )
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "terminalize_run_attempt",
+        terminalize_attempt,
+    )
     monkeypatch.setattr(
         "app.worker.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
@@ -1964,7 +2359,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         user_id=queue_payload.user_id,
         session_id=queue_payload.session_id,
         run_id=queue_payload.run_id,
-        attempt_id="attempt-a",
+        attempt_id="rat-attempt-a",
         agent_id=queue_payload.agent_id,
         execution_kind=queue_payload.execution_kind,
         skill_id=queue_payload.skill_id,
@@ -1978,7 +2373,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     )
     lease_row = {
         "id": "lease-a",
-        "attempt_id": "attempt-a",
+        "attempt_id": "rat-attempt-a",
         "executor_reconciliation_context_json": {
             "adapter_name": "claude-agent-worker",
             "adapter_context": {},
@@ -1992,6 +2387,16 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         executor_version="1",
         capabilities={},
         result={"message": "done"},
+        artifacts=[
+            ArtifactManifest(
+                artifact_type="text",
+                label="Result",
+                content_type="text/plain",
+                storage_key="private/reconciliations/claim-a/result.txt",
+                size_bytes=6,
+                provisional_cleanup_id="art_cleanup_a",
+            )
+        ],
         executor_payload={},
     )
 
@@ -1999,16 +2404,26 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         lease_row=lease_row,
         result=result,
         registry=AdapterRegistry({"claude-agent-worker": SuccessfulExecutorStub()}),
-        worker_id="worker-a",
+        worker_id="reconciler-a",
         claim_token="claim-a",
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
+        run_attempt_lifecycle=_TEST_RUN_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
-    assert messages == ["done"]
+    assert len(messages) == 1 and messages[0].startswith("done\n\n输出文件:\n- Result:")
     assert ("complete", "run-a") in calls
+    assert ("attempt_fence", "worker-original", "qat-attempt-a") in calls
+    assert ("attempt_terminal", "rat-attempt-a", "succeeded") in calls
     assert ("event", "assistant_message_created") in calls
     assert ("event", "run_succeeded") in calls
+    promote_call = (
+        "promote_artifact",
+        "art_cleanup_a",
+        "private/reconciliations/claim-a/result.txt",
+    )
+    create_call = ("create_artifact", "private/reconciliations/claim-a/result.txt")
+    assert calls.index(promote_call) < calls.index(create_call) < calls.index(("complete", "run-a"))
 
 
 def test_run_payload_accepts_only_complete_pinned_harness_profile():
@@ -2123,11 +2538,12 @@ def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeyp
 
 
 def test_worker_propagates_exact_authorized_mcp_subject_without_permission_lookup_or_consume():
+    tool_reference = "corp-search-server::query"
     payload = QueueRunPayload.model_validate(
-        {key: value for key, value in base_payload(input={"mode": "file", "mcp_tool_ids": ["corp-search"]}).items() if key != "_queue_attempt_id"}
+        {key: value for key, value in base_payload(input={"mode": "file", "mcp_tool_ids": [tool_reference]}).items() if key != "_queue_attempt_id"}
     )
     tool = {
-        "tool_id": "corp-search",
+        "tool_id": tool_reference,
         "server_id": "corp-search-server",
         "name": "Corporate Search",
         "registry_status": "active",
@@ -2136,7 +2552,7 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
         "risk_level": "high",
         "write_capable": True,
         "transport_type": "streamable_http",
-        "endpoint": "https://mcp.example.test/v1",
+        "endpoint": "",
         "auth_mode": "none",
         "allowed_tools": ["query"],
     }
@@ -2150,17 +2566,15 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
         tool_policy_subjects=[subject],
     )
 
-    assert authorized.input["mcp_tool_ids"] == ["corp-search"]
+    assert authorized.input["mcp_tool_ids"] == [tool_reference]
     assert authorized.input["_runtime_tool_policy_subjects"] == [
         {
             **subject,
             "identity": "mcp__corp-search-server__query",
         }
     ]
-    assert subject["mcp_server_config"] == {
-        "type": "http",
-        "url": "https://mcp.example.test/v1",
-    }
+    assert "mcp_server_config" not in subject
+    assert subject["parameter_delegation"] == "external_mcp"
     assert subject["public_tool_label"] == "Corporate Search"
     assert subject["public_tool_category"] == "mcp"
     assert worker_module._mcp_capability_subject(
@@ -2194,45 +2608,28 @@ async def test_registry_entry_returns_tenant_scoped_external_mcp_runtime_metadat
     class Cursor:
         async def fetchone(self):
             return {
-                "tool_id": "corp-search",
-                "server_id": "corp-search",
-                "name": "中文展示名",
-                "description": "search",
-                "transport_type": "streamable_http",
-                "endpoint": "https://mcp.example.test/v1",
-                "auth_mode": "none",
-                "allowed_tools": ["query"],
-                "registry_status": "active",
-                "server_status": "active",
-                "registry_write_capable": False,
-                "registry_risk_level": "low",
-                "registry_visible_to_user": True,
-                "policy_status": "active",
-                "policy_write_capable": False,
-                "policy_risk_level": "low",
-                "policy_visible_to_user": True,
+                "name": "corp-search",
+                "transport": "streamable_http",
+                "status": "active",
             }
 
     class Connection:
         async def execute(self, query, params):
-            assert params == ("tenant-a", "corp-search", "tenant-a")
-            assert "mcp_tools.endpoint" in query
-            assert "mcp_tools.auth_mode" in query
-            assert "mcp_tools.allowed_tools" in query
-            assert "catalog_entry.tenant_id = %s" in query
-            assert "catalog_any" not in query
+            assert params == ("tenant-a", "corp-search")
+            assert "from mcp_servers" in query
+            assert "mcp_tools" not in query
             return Cursor()
 
-    entry = await repository_module.get_mcp_tool_registry_entry(
-        Connection(), tenant_id="tenant-a", tool_id="corp-search"
+    entry = await mcp_postgres.get_mcp_tool_registry_entry(
+        Connection(), tenant_id="tenant-a", tool_id="corp-search::query"
     )
 
     assert entry is not None
     assert entry["allowed_tools"] == ["query"]
     assert entry["transport_type"] == "streamable_http"
-    assert entry["endpoint"] == "https://mcp.example.test/v1"
+    assert entry["endpoint"] == ""
     assert entry["auth_mode"] == "none"
-    assert entry["name"] == "中文展示名"
+    assert entry["name"] == "query"
 
 
 def locked_run_from_payload(payload):
@@ -2251,8 +2648,10 @@ def locked_run_from_payload(payload):
         "skill_id": validated["skill_id"],
         "model_id": validated.get("model_id"),
         "model_value": validated.get("model_value"),
-        "model_gateway_revision": validated.get("model_gateway_revision"),
-        "trace_id": f"trace_{validated['run_id']}",
+        "model_gateway_revision": 1 if validated.get("model_id") and validated.get("model_value") else None,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
+        "trace_id": standard_trace_id(validated["run_id"]),
         "principal_roles": [],
         "principal_department_id": "",
         "auth_source": "test",
@@ -2429,8 +2828,13 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
     authorized_profile = worker_module.parse_leased_queue_envelope(raw).payload.agent_profile
 
     class CaptureAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload))
+        async def submit_run(
+            self,
+            payload,
+            event_sink=None,
+            execution_owner=None,
+        ):
+            calls.append(("adapter", payload, execution_owner))
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="capture/1",
@@ -2463,6 +2867,11 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         reauthorize,
     )
 
+    async def load_frozen_model(_conn, **_kwargs):
+        return locked_run
+
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
+
     outcome = await process_run_payload(
         raw,
         AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
@@ -2472,6 +2881,9 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         assert outcome.status == "succeeded", (outcome, calls)
         assert outcome.error_code is None
         adapter_payload = next(call[1] for call in calls if call[0] == "adapter")
+        execution_owner = next(call[2] for call in calls if call[0] == "adapter")
+        assert execution_owner.artifact_storage_scope == adapter_payload.attempt_id
+        assert callable(execution_owner.reserve_artifact_storage)
         assert adapter_payload.model_id == raw["model_id"]
         assert adapter_payload.model_value == raw["model_value"]
         assert adapter_payload.agent_profile == {
@@ -2593,10 +3005,8 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
 
         monkeypatch.setattr("app.worker.resolve_current_principal", deny_current_principal)
         v4_capabilities = WorkerV4Capabilities(
-            authority=_FakeWorkerV4Authority(),
             pending_admissions=_FakeWorkerV4Admission(calls),
             event_persistence=_FakeWorkerV4Persistence(),
-            publication_claims=_FakeWorkerV4Claims(),
             publication_transport=_FakeWorkerV4Transport(),
         )
 
@@ -2792,6 +3202,12 @@ def test_multi_agent_result_summary_preserves_step_governance_context():
 @pytest.mark.asyncio
 async def test_worker_completes_successful_adapter_run(monkeypatch):
     calls = []
+    private_runtime_diagnostics = {
+        "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+        "error_code": "non_terminal_tool_warning",
+        "failure_source": "sdk_tool",
+        "failure_stage": "tool_completion",
+    }
     diagnostics = {
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
         "terminal_class": "completed",
@@ -2822,9 +3238,20 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
                 result={**result.result, "sdk_turn_diagnostics": diagnostics},
                 executor_payload={
                     "sdk_turn_diagnostics": diagnostics,
+                    "runtime_diagnostics": private_runtime_diagnostics,
                     "private_raw_error": "private-token=must-not-persist",
                 },
             )
+
+    class RecordingDiagnosticsService:
+        async def capture_failure_result(self, _conn, **kwargs):
+            carried = kwargs["result_json"]["runtime_diagnostics"]
+            calls.append(("diagnostics", carried["error_code"]))
+            return {
+                key: value
+                for key, value in kwargs["result_json"].items()
+                if key != "runtime_diagnostics"
+            }
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -2844,6 +3271,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
             "used_skills": [],
         }
         assert result_json["sdk_turn_diagnostics"] == diagnostics
+        assert "runtime_diagnostics" not in result_json
         assert "private-token" not in str(result_json)
         calls.append(("complete", result_json["executor"]["adapter_version"]))
         return True
@@ -2854,6 +3282,10 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.build_run_diagnostics_service",
+        lambda: RecordingDiagnosticsService(),
+    )
 
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
@@ -2864,6 +3296,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     assert ("running", "tenant-a", "run-a") in calls
     assert any(item[0] == "artifact" for item in calls)
     assert ("complete", "fake-adapter/1") in calls
+    assert ("diagnostics", "non_terminal_tool_warning") in calls
     assert calls[-1] == ("event", "status", "worker", "Run succeeded")
     assert sum(1 for item in calls if item[0] == "complete") == 1
     assert not any(
@@ -2956,10 +3389,28 @@ async def test_sandbox_reconciliation_payload_persists_non_secret_agent_profile(
     result = {}
     restored = restored_sandbox_run_payload(stored, RunPayload, result)
     assert restored.agent_profile == {}
-    assert result["diagnostics"] == ["agent_profile_transport_lost"]
+    assert result == {}
+
+    queue_payload, attempt_id = restored_executor_reconciliation_queue_payload(
+        {
+            "adapter_name": "claude-agent-worker",
+            "adapter_context": {},
+            "run_payload": stored,
+        },
+        result={},
+        run_payload_factory=RunPayload,
+        queue_payload_factory=QueueRunPayload,
+    )
+    assert attempt_id == "attempt-1"
+    assert reconciliation_agent_profile_binding_matches(
+        queue_payload.input, payload.agent_profile,
+    )
+    assert not reconciliation_agent_profile_binding_matches(
+        queue_payload.input, {**payload.agent_profile, "content_hash": "b" * 64},
+    )
 
 
-def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
+def test_restored_sandbox_run_payload_rejects_missing_expected_profile_identity():
     payload = RunPayload(
         tenant_id="tenant-1",
         workspace_id="workspace-1",
@@ -2979,15 +3430,13 @@ def test_restored_sandbox_run_payload_diagnoses_expected_profile_loss():
     stored["metadata"]["agent_profile_expected"] = True
     result = {}
 
-    restored = restored_sandbox_run_payload(stored, RunPayload, result)
+    with pytest.raises(
+        ValueError,
+        match="executor_reconciliation_agent_profile_identity_invalid",
+    ):
+        restored_sandbox_run_payload(stored, RunPayload, result)
 
-    assert restored.agent_profile == {}
-    assert result["diagnostics"] == ["agent_profile_transport_lost"]
-
-    invalid_result = {"diagnostics": "invalid"}
-    restored_sandbox_run_payload(stored, RunPayload, invalid_result)
-
-    assert invalid_result["diagnostics"] == ["agent_profile_transport_lost"]
+    assert result == {}
 
 
 async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeypatch):
@@ -3073,9 +3522,9 @@ async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_byp
 @pytest.mark.parametrize(
     ("case", "artifact_types", "required_artifact_types", "skill_id", "expected_status"),
     [
-        ("correct_type", ["reviewed_docx"], [], "qa-file-reviewer", "succeeded"),
+        ("correct_type", ["result_docx"], [], "qa-file-reviewer", "succeeded"),
         ("wrong_type_only", ["execution_log"], [], "qa-file-reviewer", "failed"),
-        ("mixed_types", ["execution_log", "reviewed_docx"], [], "qa-file-reviewer", "succeeded"),
+        ("mixed_types", ["execution_log", "result_docx"], [], "qa-file-reviewer", "succeeded"),
         ("non_required_non_claude", [], [], "general-chat", "succeeded"),
     ],
 )
@@ -3169,14 +3618,14 @@ async def test_worker_enforces_declared_required_artifact_types(
     [
         ("document_resume_without_artifact", "qa-file-reviewer", "qa-word-review", ["file-a"], [], "failed"),
         (
-            "document_resume_with_reviewed_docx",
+            "document_resume_with_result_docx",
             "qa-file-reviewer",
             "qa-word-review",
             ["file-a"],
             [
                 ArtifactManifest(
-                    artifact_type="reviewed_docx",
-                    label="Reviewed Word",
+                    artifact_type="result_docx",
+                    label="Word 文件",
                     content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
                     size_bytes=1024,
@@ -3325,7 +3774,10 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
-    monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
+        drain_terminalization,
+    )
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -3645,6 +4097,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     assert create_call["user_id"] == "user-a"
     assert create_call["session_id"] == "session-a"
     assert create_call["run_id"] == "run-a"
+    assert create_call["attempt_id"] == "qat-test-attempt"
     assert create_call["trace_id"] == "trace-run-a"
     assert create_call["sandbox_mode"] == "ephemeral"
     assert create_call["provider"] == "fake"
@@ -3658,6 +4111,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
         "source": "sdk_only_lifecycle_placeholder",
         "evidence_class": "sdk_only_lifecycle_placeholder",
         "executor_type": "fake",
+        "attempt_id": "qat-test-attempt",
         "worker_id": "worker-a",
     }
     assert create_call["lease_payload_json"].get("probe") != "foundation_runtime"
@@ -3676,6 +4130,320 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     assert next(index for index, item in enumerate(calls) if item[0] == "complete") < next(
         index for index, item in enumerate(calls) if item[0] == "lease_release"
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(monkeypatch):
+    calls = []
+
+    class CapturingSuccessfulExecutor(SuccessfulExecutorStub):
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter_attempt", payload.attempt_id))
+            return await super().submit_run(payload, event_sink=event_sink)
+
+    locked_run = locked_run_from_payload(
+        base_payload(
+            workspace_id="workspace-locked",
+            file_ids=[],
+            skill_id="general-chat",
+            agent_id="general-agent",
+        )
+    )
+
+    async def legacy_mark_run_running(*_args, **_kwargs):
+        raise AssertionError("durable attempt claim must replace the legacy running writer")
+
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return locked_run
+
+    async def start_worker_run_attempt(conn, **kwargs):
+        calls.append(("start", kwargs))
+        return {
+            "id": "rat-run-a",
+            "status": "running",
+            "owner_kind": "queue_worker",
+            "owner_id": kwargs["worker_id"],
+            "owner_generation": 4,
+            "queue_attempt_id": kwargs["queue_attempt_id"],
+            "execution_spec_sha256": kwargs["execution_spec"].spec_sha256,
+        }
+
+    async def assert_worker_run_attempt_current(conn, **kwargs):
+        calls.append(("fence", kwargs))
+        return {
+            "id": "rat-run-a",
+            "status": "running",
+            "owner_kind": "queue_worker",
+            "owner_id": kwargs["worker_id"],
+            "owner_generation": 4,
+            "queue_attempt_id": kwargs["queue_attempt_id"],
+        }
+
+    async def terminalize_run_attempt(conn, **kwargs):
+        calls.append(("terminal", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
+    async def append_event(conn, **kwargs):
+        return "evt-run-attempt"
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr(
+        "app.worker.repositories.mark_run_running",
+        legacy_mark_run_running,
+    )
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "lock_queued_run_for_attempt",
+        lock_queued_run_for_attempt,
+    )
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "start_worker_run_attempt",
+        start_worker_run_attempt,
+    )
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.execution.application.worker_attempt_lifecycle.run_attempt_id_for_queue_attempt",
+        lambda **_kwargs: "rat-run-a",
+    )
+
+    outcome = await process_run_payload(
+        base_payload(
+            workspace_id="workspace-locked",
+            file_ids=[],
+            skill_id="general-chat",
+            agent_id="general-agent",
+        ),
+        AdapterRegistry({"fake": CapturingSuccessfulExecutor()}),
+        worker_id="worker-a",
+    )
+
+    assert outcome.status == "succeeded"
+    start_call = next(item[1] for item in calls if item[0] == "start")
+    assert start_call["queue_attempt_id"] == "qat-test-attempt"
+    assert start_call["worker_id"] == "worker-a"
+    assert start_call["execution_spec"].to_mapping()["run_id"] == "run-a"
+    assert ("adapter_attempt", "rat-run-a") in calls
+    terminal_call = next(item[1] for item in calls if item[0] == "terminal")
+    assert terminal_call == {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "rat-run-a",
+        "status": "succeeded",
+        "terminal_reason": "run_succeeded",
+    }
+    assert next(index for index, item in enumerate(calls) if item[0] == "start") < next(
+        index for index, item in enumerate(calls) if item[0] == "terminal"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "helper_name",
+    (
+        "_fail_worker_pre_dispatch_error",
+        "_fail_locked_run_snapshot",
+        "_fail_worker_capability_authorization",
+    ),
+)
+async def test_worker_early_failure_helpers_preserve_attempt_lifecycle(
+    monkeypatch,
+    helper_name,
+):
+    captured = {}
+    raw = base_payload()
+    payload = worker_module.parse_leased_queue_envelope(raw).payload
+    run_identity = worker_module._payload_identity(payload)
+    attempt_lifecycle = object()
+
+    async def fail_run_and_reconcile_with_write(_conn, **kwargs):
+        captured.update(kwargs)
+        return False, None
+
+    monkeypatch.setattr(
+        worker_module,
+        "_fail_run_and_reconcile_with_write",
+        fail_run_and_reconcile_with_write,
+    )
+
+    common = {
+        "payload": payload,
+        "run_identity": run_identity,
+        "v4_capabilities": _FAKE_WORKER_V4_CAPABILITIES,
+        "attempt_lifecycle": attempt_lifecycle,
+    }
+    if helper_name == "_fail_worker_pre_dispatch_error":
+        outcome = await worker_module._fail_worker_pre_dispatch_error(
+            object(),
+            **common,
+            error_code="early_failure",
+            error_message="early failure",
+            event_stage="worker",
+            event_payload={"visible_to_user": False},
+        )
+    elif helper_name == "_fail_locked_run_snapshot":
+        outcome = await worker_module._fail_locked_run_snapshot(
+            object(),
+            **common,
+            locked_run=locked_run_from_payload(raw),
+            trace_id="trace-run-a",
+        )
+    else:
+        denial = worker_module._worker_capability_record(
+            "skill",
+            "general-chat",
+            worker_module._denied_capability_decision("test_denial"),
+        )
+        outcome = await worker_module._fail_worker_capability_authorization(
+            object(),
+            **common,
+            authorization=worker_module._WorkerCapabilityAuthorization(
+                payload,
+                SimpleNamespace(),
+                (),
+                denial,
+            ),
+            trace_id="trace-run-a",
+        )
+
+    assert outcome.outcome.status == "skipped"
+    assert captured["attempt_lifecycle"] is attempt_lifecycle
+
+
+@pytest.mark.asyncio
+async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_transfer(
+    monkeypatch,
+):
+    calls = []
+
+    async def get_run(*_args, **_kwargs):
+        calls.append(("lock_run",))
+        return {"id": "run-a", "status": "running"}
+
+    async def assert_current(*_args, **kwargs):
+        calls.append(("fence", kwargs))
+        return {
+            "id": "rat-run-a",
+            "status": "cancel_requested",
+            "queue_attempt_id": "qat-test-attempt",
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-a",
+            "owner_generation": 5,
+        }
+
+    async def request_cancel(*_args, **kwargs):
+        calls.append(("request_cancel", kwargs))
+        return {
+            "id": kwargs["attempt_id"],
+            "status": "cancel_requested",
+            "owner_kind": "queue_worker",
+            "owner_id": "worker-a",
+            "owner_generation": 5,
+        }
+
+    async def cancel_run(*_args, **_kwargs):
+        calls.append(("cancel_run",))
+        return RunTerminalizationProgress(True, "cancelled", True, True)
+
+    async def terminalize(*_args, **kwargs):
+        calls.append(("terminal", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        assert_current,
+    )
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "request_run_attempt_cancel",
+        request_cancel,
+    )
+    monkeypatch.setattr("app.bootstrap.worker_attempt_lifecycle.cancel_run_with_v4", cancel_run)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "terminalize_run_attempt",
+        terminalize,
+    )
+    monkeypatch.setattr(
+        "app.execution.application.worker_attempt_lifecycle.run_attempt_id_for_queue_attempt",
+        lambda **_kwargs: "rat-run-a",
+    )
+
+    attempt_lifecycle = worker_attempt_lifecycle_module.WorkerAttemptLifecycle.from_leased_attempt(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        leased_attempt_id="qat-test-attempt",
+        worker_id="worker-a",
+        is_reconciliation=False,
+        ports=worker_module.build_worker_attempt_lifecycle_ports(
+            _TEST_RUN_ATTEMPT_LIFECYCLE
+        ),
+    )
+    progress = await attempt_lifecycle.cancel(
+        object(),
+        capabilities=_FAKE_WORKER_V4_CAPABILITIES,
+        result_json={"message": "cancelled"},
+    )
+
+    assert progress.is_terminal("cancelled")
+    assert [item[0] for item in calls] == [
+        "lock_run",
+        "fence",
+        "request_cancel",
+        "cancel_run",
+        "terminal",
+    ]
+    assert calls[1][1]["queue_attempt_id"] == "qat-test-attempt"
+    assert calls[-1][1]["attempt_id"] == "rat-run-a"
+
+
+@pytest.mark.asyncio
+async def test_worker_cancel_observes_an_already_cancelled_run_without_refencing_attempt(
+    monkeypatch,
+):
+    async def get_run(*_args, **_kwargs):
+        return {"id": "run-a", "status": "cancelled"}
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("terminal Run must not re-fence its immutable attempt")
+
+    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        forbidden,
+    )
+
+    attempt_lifecycle = worker_attempt_lifecycle_module.WorkerAttemptLifecycle.from_leased_attempt(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        leased_attempt_id="qat-test-attempt",
+        worker_id="worker-a",
+        is_reconciliation=False,
+        ports=worker_module.build_worker_attempt_lifecycle_ports(
+            _TEST_RUN_ATTEMPT_LIFECYCLE
+        ),
+    )
+    progress = await attempt_lifecycle.cancel(
+        object(),
+        capabilities=_FAKE_WORKER_V4_CAPABILITIES,
+    )
+
+    assert progress.is_terminal("cancelled")
 
 
 @pytest.mark.asyncio
@@ -3880,6 +4648,88 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
 
 
 @pytest.mark.asyncio
+async def test_worker_moves_http_failure_diagnostics_before_terminal_result(
+    monkeypatch,
+):
+    calls = []
+    diagnostics = {
+        "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+        "error_code": "executor_health_timeout",
+        "failure_source": "executor_http",
+        "failure_stage": "dispatch",
+        "sdk": {"exception_message": "private diagnostic detail"},
+    }
+
+    class RaisingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise SandboxExecutorHttpError(
+                status_code=504,
+                error_code="executor_health_timeout",
+                detail="executor_health_timeout",
+                runtime_diagnostics=diagnostics,
+            )
+
+    class RecordingDiagnosticsService:
+        async def capture_failure_result(self, conn, **kwargs):
+            calls.append(("diagnostics", conn, kwargs))
+            return None
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def assert_current_attempt(conn, **kwargs):
+        return {"id": kwargs["queue_attempt_id"], "status": "running"}
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def fail_run(conn, **kwargs):
+        calls.append(("fail", conn, kwargs))
+        return RunTerminalizationProgress(True, "failed", True)
+
+    async def create_sandbox_lease(conn, **kwargs):
+        return {"id": "lease-http-a", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        assert_current_attempt,
+    )
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.build_run_diagnostics_service",
+        lambda: RecordingDiagnosticsService(),
+    )
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.create_sandbox_lease",
+        create_sandbox_lease,
+    )
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.release_sandbox_lease",
+        release_sandbox_lease,
+    )
+
+    outcome = await process_run_payload(
+        base_payload(),
+        AdapterRegistry({"fake": RaisingAdapter()}),
+    )
+
+    assert outcome.error_code == "executor_health_timeout"
+    assert [item[0] for item in calls] == ["diagnostics", "fail"]
+    assert calls[0][1] is calls[1][1]
+    assert calls[0][2]["result_json"]["runtime_diagnostics"]["error_code"] == (
+        "executor_health_timeout"
+    )
+    assert calls[1][2]["result_json"] is None
+
+
+@pytest.mark.asyncio
 async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(monkeypatch):
     calls = []
 
@@ -4014,7 +4864,10 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
-    monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
+        drain_terminalization,
+    )
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
@@ -4509,8 +5362,11 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
         calls.append(("complete", run_id, result_json["message"]))
         return True
 
-    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+    async def reconcile(
+        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
+    ):
         assert transaction_factory is fake_transaction
+        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -4591,7 +5447,10 @@ async def test_worker_retries_multi_agent_parent_rollup_after_child_transaction_
         calls.append(("complete", conn, run_id))
         return True
 
-    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+    async def reconcile(
+        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
+    ):
+        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -4641,7 +5500,10 @@ async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
         calls.append(("fail", run_id, error_code, error_message, result_json))
         return RunTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+    async def reconcile(
+        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
+    ):
+        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -4714,7 +5576,10 @@ async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
         calls.append(("cancel", run_id, result_json))
         return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True, needs_reconcile=True)
 
-    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+    async def reconcile(
+        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
+    ):
+        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -4826,7 +5691,10 @@ async def test_worker_reconciles_multi_agent_child_after_executor_exception(monk
         calls.append(("fail", run_id, error_code, error_message, result_json))
         return RunTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+    async def reconcile(
+        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
+    ):
+        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -4875,7 +5743,17 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
         calls.append(("fail", run_id, error_code, error_message, result_json))
         return RunTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+    async def assert_worker_run_attempt_current(_conn, **_kwargs):
+        return {"id": "rat-run-child", "status": "running"}
+
+    async def terminalize_run_attempt(_conn, **kwargs):
+        calls.append(("attempt_terminal", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
+    async def reconcile(
+        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
+    ):
+        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -4883,6 +5761,16 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
     outcome = await process_run_payload(
@@ -4897,6 +5785,15 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
     reconcile_call = calls[reconcile_index][1]
     assert reconcile_call["run_id"] == "run-child"
     assert reconcile_call["progress"].status == "failed"
+    attempt_terminal = next(item[1] for item in calls if item[0] == "attempt_terminal")
+    assert attempt_terminal == {
+        "tenant_id": "tenant-a",
+        "run_id": "run-child",
+        "attempt_id": "rat-run-child",
+        "status": "failed",
+        "terminal_reason": "run_failed",
+        "error_code": "unknown_executor_type",
+    }
 
 
 @pytest.mark.asyncio
@@ -4942,7 +5839,10 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
         calls.append(("fail", conn, error_code))
         return RunTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+    async def reconcile(
+        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
+    ):
+        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
@@ -5090,14 +5990,22 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="capture-adapter/1",
-                executor_type="claude-agent-worker",
+                executor_type="fake",
                 executor_version="capture/1",
                 capabilities={},
                 result={"message": "done"},
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+        return locked_run_from_payload(base_payload(
+            executor_type="fake", agent_id="general-agent", skill_id="general-chat",
+            context_snapshot={"source": "tampered_queue_copy"},
+        ))
+
+    async def load_frozen_model(_conn, **_kwargs):
+        return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
+                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -5148,18 +6056,19 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
 
     outcome = await process_run_payload(
         base_payload(
-            executor_type="claude-agent-worker",
+            executor_type="fake",
             agent_id="general-agent",
             skill_id="general-chat",
             context_snapshot={"source": "tampered_queue_copy"},
         ),
-        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+        AdapterRegistry({"fake": CaptureAdapter()}),
     )
 
-    assert outcome.status == "succeeded"
+    assert outcome.status == "succeeded", outcome
     assert captured["payload"].context_snapshot_id == "ctx-existing"
     assert captured["payload"].context_snapshot["source"] == "stored_context_snapshot"
     assert captured["payload"].context_snapshot["used_context_summary"]["source"] == "stored_context_snapshot"
@@ -5182,7 +6091,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="Reviewed Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
@@ -5192,7 +6101,15 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+        return locked_run_from_payload(base_payload(
+            executor_type="claude-agent-worker",
+            context_snapshot={"source": "tampered_queue_copy"},
+        ))
+
+    async def load_frozen_model(_conn, **_kwargs):
+        return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
+                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
         return "evt-context-manifest"
@@ -5254,8 +6171,14 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
     async def create_artifact(conn, **kwargs):
         return None
 
+    async def persist_assistant(*args, **kwargs):
+        return "msg-a"
+
+    monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_assistant)
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -5270,7 +6193,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
         AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
     )
 
-    assert outcome.status == "succeeded"
+    assert outcome.status == "succeeded", outcome
     assert captured["payload"].context_pack["source"] == "context_manifest"
     assert captured["payload"].context_pack["context_manifest"]["files"] == [
         {"file_id": "file-a", "requires_retrieval": True}
@@ -5298,7 +6221,15 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+        return locked_run_from_payload(base_payload(
+            executor_type="claude-agent-worker", agent_id="general-agent", skill_id="general-chat",
+            context_snapshot={},
+        ))
+
+    async def load_frozen_model(_conn, **_kwargs):
+        return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
+                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
         return "evt-context-id-only"
@@ -5330,8 +6261,13 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
     async def complete_run(conn, **kwargs):
         return True
 
+    async def persist_assistant(*args, **kwargs):
+        return "msg-a"
+
+    monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_assistant)
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -5935,7 +6871,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("lock", conn, tenant_id, run_id))
 
-    async def get_run(conn, *, tenant_id, run_id):
+    async def get_run(conn, *, tenant_id, run_id, for_update=False):
         calls.append(("get_run", tenant_id, run_id))
         return {
             "id": run_id,
@@ -5956,6 +6892,13 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
         calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
+    async def assert_worker_run_attempt_current(_conn, **_kwargs):
+        return {"id": "rat-run-a", "status": "running"}
+
+    async def terminalize_run_attempt(_conn, **kwargs):
+        calls.append(("attempt_terminal", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("scope-invalid queued run must not refresh context snapshot")
 
@@ -5964,6 +6907,16 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
 
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker"),
@@ -5977,6 +6930,14 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
     assert outcome.status == "failed"
     assert outcome.error_code == "queue_payload_identity_mismatch"
     assert ("fail", "queue_payload_identity_mismatch", "Queued run identity is invalid") in calls
+    assert ("attempt_terminal", {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "rat-run-a",
+        "status": "failed",
+        "terminal_reason": "run_failed",
+        "error_code": "queue_payload_identity_mismatch",
+    }) in calls
     prepare_index = next(
         index for index, item in enumerate(calls) if item[0] == "prepare_v4_authority"
     )
@@ -5990,7 +6951,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
 
 
 @pytest.mark.asyncio
-async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered(monkeypatch):
+async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are_tampered(monkeypatch):
     captured = {}
     calls = []
     version = "hash-qa-file-reviewer"
@@ -6023,7 +6984,7 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             "trace_id": "trace_run_a",
             "input_json": {
                 "input": {"mode": "db", "message": "authoritative"},
-                "file_ids": ["file-db"],
+                "file_ids": ["file-db-input"],
                     "executor_type": "claude-agent-worker",
                 "skill_version": version,
                 "release_decision": release_decision(version),
@@ -6039,7 +7000,9 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             return {
                 "model_id": "platform-default",
                 "model_value": "provider/default",
-                "model_gateway_revision": None,
+                "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
             }
 
     async def append_event(conn, **kwargs):
@@ -6058,7 +7021,7 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             "schema_version": "ai-platform.context-snapshot.v1",
             "context_kind": "executor",
             "included_message_ids": [],
-            "included_file_ids": ["file-db"],
+            "included_file_ids": ["file-snapshot"],
             "included_artifact_ids": [],
             "included_memory_record_ids": [],
             "redaction_summary_json": {},
@@ -6075,6 +7038,10 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
     monkeypatch.setattr(run_model_snapshot_module, "_service", run_model_snapshot_module._service)
     monkeypatch.setattr(model_services, "PostgresRunModelSnapshotRepository", SnapshotRepository)
     model_services.configure_model_services()
+    monkeypatch.setattr(
+        "app.worker._load_run_model_snapshot",
+        run_model_snapshot_module.load_run_model_snapshot,
+    )
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
@@ -6099,10 +7066,12 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
         for key, value in captured["payload"].input.items()
         if key != "_runtime_tool_policy_subjects"
     } == {"mode": "db", "message": "authoritative"}
-    assert captured["payload"].file_ids == ["file-db"]
+    assert captured["payload"].file_ids == ["file-snapshot"]
     assert captured["payload"].skill_version == version
     assert captured["payload"].release_decision == release_decision(version)
     assert captured["payload"].model_id == "platform-default"
+    assert captured["payload"].model_max_input_tokens == 32000
+    assert captured["payload"].model_max_output_tokens == 2048
     model_snapshot_call = next(item for item in calls if item[0] == "model_snapshot")
     assert model_snapshot_call[2:] == ("tenant-a", "run-a")
     assert captured["payload"].context_snapshot_id == "ctx-db"
@@ -6250,7 +7219,6 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
             "staged": True,
             "used": True,
             "used_skills_source": "executor_hook",
-            "inferred_used": False,
         }
     ]
 
@@ -6730,7 +7698,6 @@ async def test_worker_persists_platform_controlled_runner_as_actually_used(monke
                     "used_skills_source": "platform_controlled_runner",
                     "staged_skills": ["qa-file-reviewer", "minimax-docx"],
                     "capability_evidence": capability_evidence,
-                    "inferred_used_skills": ["qa-file-reviewer", "minimax-docx"],
                     "skill_manifests": [
                         {
                             "skill_id": "qa-file-reviewer",
@@ -6811,17 +7778,15 @@ async def test_worker_persists_platform_controlled_runner_as_actually_used(monke
     assert snapshots[0]["skill_id"] == "qa-file-reviewer"
     assert snapshots[0]["used"] is True
     assert snapshots[0]["used_skills_source"] == "platform_controlled_runner"
-    assert snapshots[0]["inferred_used"] is False
     assert snapshots[1]["skill_id"] == "minimax-docx"
     assert snapshots[1]["used"] is False
-    assert snapshots[1]["used_skills_source"] == "inferred"
-    assert snapshots[1]["inferred_used"] is True
+    assert snapshots[1]["used_skills_source"] == ""
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "source",
-    ["executor_native", "inferred", "platform_controlled_runner"],
+    ["executor_native", "untrusted_claim", "platform_controlled_runner"],
 )
 async def test_optional_agent_skill_claim_cannot_bypass_required_artifact_contract(monkeypatch, source):
     failures = []
@@ -6998,7 +7963,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     snapshots = []
     completed = {}
 
-    class InferredSkillAdapter:
+    class UntrustedSkillAdapter:
         async def submit_run(self, payload, event_sink=None):
             return ExecutorResult(
                 status="succeeded",
@@ -7011,8 +7976,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
                     "allowed_skills": ["qa-file-reviewer"],
                     "staged_skills": ["qa-file-reviewer"],
                     "used_skills": ["qa-file-reviewer"],
-                    "used_skills_source": "inferred",
-                    "inferred_used_skills": ["qa-file-reviewer"],
+                    "used_skills_source": "untrusted_claim",
                     "skill_manifests": [
                         {
                             "skill_id": "qa-file-reviewer",
@@ -7027,7 +7991,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
                     ],
                 },
                 artifacts=[reviewed_docx_artifact()],
-                executor_payload={"inferred_used_skills": ["qa-file-reviewer"]},
+                executor_payload={},
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -7050,7 +8014,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": InferredSkillAdapter()}))
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": UntrustedSkillAdapter()}))
 
     assert outcome.status == "succeeded"
     assert completed["result_json"]["used_skills"] == []
@@ -7058,8 +8022,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     assert "inferred_used_skills" not in completed["result_json"]
     assert completed["result_json"]["skills"]["used_skills"] == []
     assert snapshots[0]["used"] is False
-    assert snapshots[0]["used_skills_source"] == "inferred"
-    assert snapshots[0]["inferred_used"] is True
+    assert snapshots[0]["used_skills_source"] == ""
 
 
 @pytest.mark.asyncio
@@ -7222,13 +8185,16 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="批注 Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/runs/run-a/artifacts/1/reviewed.docx",
                         size_bytes=10,
                         manifest={
                             "local_path": "/tmp/worker/output.docx",
+                            "delivery_scope": "assistant_response",
+                            "delivery_role": "primary",
+                            "delivery_description": "最终批注文档",
                             "source_file_id": "file-a",
                             "source_step_id": "step-a",
                             "producer_kind": "subagent",
@@ -7267,12 +8233,15 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
     assert outcome.status == "succeeded"
     assert created[0]["trace_id"] == "trace_run_a"
     assert created[0]["manifest_json"]["schema_version"] == "ai-platform.artifact-manifest.v1"
-    assert created[0]["manifest_json"]["artifact_type"] == "reviewed_docx"
+    assert created[0]["manifest_json"]["artifact_type"] == "result_docx"
+    assert created[0]["manifest_json"]["delivery_scope"] == "assistant_response"
+    assert created[0]["manifest_json"]["delivery_role"] == "primary"
+    assert created[0]["manifest_json"]["delivery_description"] == "最终批注文档"
     assert created[0]["manifest_json"]["source_file_id"] == "file-a"
     assert "local_path" not in created[0]["manifest_json"]
     artifact_event = next(item for item in events if item["event_type"] == "artifact_ready")
     assert artifact_event["payload"]["artifact_id"] == created[0]["artifact_id"]
-    assert artifact_event["payload"]["artifact_type"] == "reviewed_docx"
+    assert artifact_event["payload"]["artifact_type"] == "result_docx"
     assert artifact_event["payload"]["download_url"] == f"/api/ai/artifacts/{created[0]['artifact_id']}/download"
     assert artifact_event["payload"]["lineage"] == {
         "source_run_id": "run-a",
@@ -7727,7 +8696,7 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
     assert outcome.status == "skipped"
     assert outcome.error_code == "stale_terminal_state"
     assert any(call[0] == "cancel" for call in calls)
-    assert [call[1] for call in calls if call[0] == "event"] == ["worker_started"]
+    assert [call[1] for call in calls if call[0] == "event"] == []
 
 
 @pytest.mark.asyncio
@@ -7835,12 +8804,20 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
 
-    async def submit_until_cancelled(adapter, run_payload, *, event_sink, cancel_requested):
+    async def submit_until_cancelled(
+        adapter,
+        run_payload,
+        *,
+        event_sink,
+        cancel_requested,
+        execution_owner=None,
+    ):
         return await original_submit_until_cancelled(
             adapter,
             run_payload,
             event_sink=event_sink,
             cancel_requested=cancel_requested,
+            execution_owner=execution_owner,
             poll_interval_seconds=0.01,
         )
 
@@ -7943,12 +8920,20 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
 
-    async def submit_until_cancelled(adapter, run_payload, *, event_sink, cancel_requested):
+    async def submit_until_cancelled(
+        adapter,
+        run_payload,
+        *,
+        event_sink,
+        cancel_requested,
+        execution_owner=None,
+    ):
         return await original_submit_until_cancelled(
             adapter,
             run_payload,
             event_sink=event_sink,
             cancel_requested=cancel_requested,
+            execution_owner=execution_owner,
             poll_interval_seconds=0.005,
             stop_timeout_seconds=0.01,
             progress_interval_seconds=60,
@@ -8778,7 +9763,7 @@ async def test_worker_adds_artifact_links_to_success_result_message(monkeypatch)
                 },
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="审核 Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/workspaces/workspace-a/sessions/session-a/runs/run-a/artifacts/1/reviewed.docx",
@@ -8837,7 +9822,7 @@ async def test_worker_sanitizes_artifact_manifest_paths_before_persisting(monkey
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="审核 Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/workspaces/workspace-a/sessions/session-a/runs/run-a/artifacts/1/reviewed.docx",
@@ -8878,7 +9863,7 @@ async def test_worker_sanitizes_artifact_manifest_paths_before_persisting(monkey
     manifest = created[0]["manifest_json"]
     assert manifest == {
         "schema_version": "ai-platform.artifact-manifest.v1",
-        "artifact_type": "reviewed_docx",
+        "artifact_type": "result_docx",
         "source_executor": "qa-file-reviewer-local",
     }
     assert "/tmp/" not in str(manifest)
@@ -8900,7 +9885,7 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="批注 Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key=(
@@ -9075,7 +10060,10 @@ async def test_worker_follow_up_terminalization_reconciles_one_final_drain_only(
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
+        drain,
+    )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
@@ -9164,17 +10152,19 @@ def _task6_distribution(
 
 
 def _task6_tool(tool_id, server_id, *, server_status="active", write_capable=False, risk_level="low"):
+    builtin_ragflow = tool_id == "ragflow-knowledge-search"
+    public_tool_name = "ragflow_search" if builtin_ragflow else tool_id.partition("::")[2]
     return {
         "tool_id": tool_id,
         "server_id": server_id,
-        "allowed_tools": ["query"],
+        "allowed_tools": [public_tool_name],
         "effective_status": "active",
         "registry_status": "active",
         "policy_status": "active",
         "server_status": server_status,
-        "transport_type": "streamable_http",
-        "endpoint": "https://mcp.example.test/v1",
-        "auth_mode": "none",
+        "transport_type": "http" if builtin_ragflow else "streamable_http",
+        "endpoint": "",
+        "auth_mode": "platform-managed" if builtin_ragflow else "none",
         "visible_to_user": True,
         "write_capable": write_capable,
         "risk_level": risk_level,
@@ -9230,7 +10220,9 @@ def _install_task6_worker_fakes(
         "skill_id": skill_id,
         "model_id": "platform-default",
         "model_value": "provider/default",
-        "model_gateway_revision": None,
+        "model_gateway_revision": 1,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": list(principal_roles or ["qa_operator"]),
         "principal_department_id": principal_department_id,
@@ -9273,7 +10265,7 @@ def _install_task6_worker_fakes(
                 result={"message": "done"},
                 artifacts=[
                     ArtifactManifest(
-                        artifact_type="reviewed_docx",
+                        artifact_type="result_docx",
                         label="Reviewed Word",
                         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
@@ -9343,6 +10335,18 @@ def _install_task6_worker_fakes(
         calls.append(("sandbox_release", kwargs))
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
+    class JwtStore:
+        async def get(self, principal):
+            assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
+            return "current.jwt"
+
+    async def get_mcp_server_runtime_target(_conn, *, tenant_id, server_name):
+        calls.append(("mcp_runtime_target", tenant_id, server_name))
+        return {
+            "transport": "streamable_http",
+            "credential_envelope": f"sealed-{server_name}",
+        }
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(
         "app.worker.resolve_current_principal",
@@ -9358,7 +10362,7 @@ def _install_task6_worker_fakes(
         raising=False,
     )
     monkeypatch.setattr(
-        "app.worker.repositories.get_mcp_tool_registry_entry",
+        "app.worker.mcp_api.get_mcp_tool_registry_entry",
         get_mcp_tool_registry_entry,
         raising=False,
     )
@@ -9371,6 +10375,35 @@ def _install_task6_worker_fakes(
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: JwtStore())
+    monkeypatch.setattr(
+        mcp_postgres,
+        "get_mcp_server_runtime_target",
+        get_mcp_server_runtime_target,
+    )
+    monkeypatch.setattr(
+        mcp_runtime,
+        "open_mcp_server_credentials",
+        lambda **kwargs: (
+            f"https://{kwargs['server_id']}.example/mcp",
+            {"X-Static": "configured"},
+        ),
+    )
+    monkeypatch.setattr(
+        worker_module.mcp_api,
+        "get_mcp_tool_registry_entry",
+        get_mcp_tool_registry_entry,
+    )
+    monkeypatch.setattr(
+        worker_module.mcp_api,
+        "mcp_runtime_metadata_usable",
+        mcp_postgres.mcp_runtime_metadata_usable,
+    )
+    monkeypatch.setattr(
+        worker_module.mcp_api,
+        "attach_mcp_server_configs",
+        mcp_runtime.attach_mcp_server_configs,
+    )
 
     raw = base_payload(
         input=dict(queue_input or {"mode": "queue"}),
@@ -9718,14 +10751,16 @@ async def test_worker_capability_distribution_rechecks_skill_changes_after_enque
 
 @pytest.mark.asyncio
 async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monkeypatch):
+    global_reference = "server-global::tool-global"
+    step_reference = "server-step::tool-step"
     locked_input = {
         "mode": "file",
-        "mcp_tool_ids": ["tool-global"],
+        "mcp_tool_ids": [global_reference],
         "multi_agent_steps": [
             {
                 "step_key": "review",
                 "role": "review",
-                "mcp_tool_ids": ["tool-step"],
+                "mcp_tool_ids": [step_reference],
             }
         ],
     }
@@ -9735,8 +10770,8 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
     raw["executor_type"] = "claude-agent-worker"
     state["tools"].update(
         {
-            "tool-global": _task6_tool("tool-global", "server-global"),
-            "tool-step": _task6_tool("tool-step", "server-step"),
+            global_reference: _task6_tool(global_reference, "server-global"),
+            step_reference: _task6_tool(step_reference, "server-step"),
         }
     )
     state["distributions"].update(
@@ -9749,21 +10784,22 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
     outcome = await process_run_payload(raw, registry=registry)
 
     assert outcome.status == "succeeded"
-    assert ("tool_lookup", "tenant-a", "tool-global") in calls
-    assert ("tool_lookup", "tenant-a", "tool-step") in calls
+    assert ("tool_lookup", "tenant-a", global_reference) in calls
+    assert ("tool_lookup", "tenant-a", step_reference) in calls
     registered_input = next(call[1] for call in calls if call[0] == "adapter")
-    assert registered_input["mcp_tool_ids"] == ["tool-global"]
-    assert registered_input["multi_agent_steps"][0]["mcp_tool_ids"] == ["tool-step"]
+    assert registered_input["mcp_tool_ids"] == [global_reference]
+    assert registered_input["multi_agent_steps"][0]["mcp_tool_ids"] == [step_reference]
     assert "mcpToolIds" not in registered_input
 
 
 @pytest.mark.asyncio
 async def test_worker_rejects_external_mcp_before_non_claude_executor_dispatch(monkeypatch):
+    tool_reference = "server-global::tool-global"
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
-        locked_input={"mode": "file", "mcp_tool_ids": ["tool-global"]},
+        locked_input={"mode": "file", "mcp_tool_ids": [tool_reference]},
     )
-    state["tools"]["tool-global"] = _task6_tool("tool-global", "server-global")
+    state["tools"][tool_reference] = _task6_tool(tool_reference, "server-global")
     state["distributions"][("mcp_server", "server-global")] = _task6_distribution(
         "mcp_server",
         "server-global",
@@ -9802,11 +10838,11 @@ async def test_worker_rejects_ragflow_backing_mcp_before_adapter_dispatch(monkey
     raw["executor_type"] = "ragflow"
     state["tools"][backing_tool_id] = _task6_tool(
         backing_tool_id,
-        "ragflow-server",
+        "ragflow",
     )
-    state["distributions"][("mcp_server", "ragflow-server")] = _task6_distribution(
+    state["distributions"][("mcp_server", "ragflow")] = _task6_distribution(
         "mcp_server",
-        "ragflow-server",
+        "ragflow",
     )
 
     outcome = await process_run_payload(raw, registry=registry)
@@ -9830,15 +10866,16 @@ async def test_worker_rejects_ragflow_backing_mcp_before_adapter_dispatch(monkey
 
 @pytest.mark.asyncio
 async def test_worker_rejects_pinned_external_mcp_before_non_claude_dispatch(monkeypatch):
+    pinned_reference = "pinned-server::pinned-external"
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"mode": "file"},
     )
     manifest = primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")
-    manifest["mcp_tool_ids"] = ["pinned-external"]
+    manifest["mcp_tool_ids"] = [pinned_reference]
     state["locked_run"]["input_json"]["skill_manifests"] = [manifest]
-    state["tools"]["pinned-external"] = _task6_tool(
-        "pinned-external",
+    state["tools"][pinned_reference] = _task6_tool(
+        pinned_reference,
         "pinned-server",
     )
     state["distributions"][("mcp_server", "pinned-server")] = _task6_distribution(
@@ -9862,14 +10899,15 @@ async def test_worker_rejects_pinned_external_mcp_before_non_claude_dispatch(mon
 
 @pytest.mark.asyncio
 async def test_worker_reauthorizes_historical_ragflow_mcp_after_current_skill_changes_executor(monkeypatch):
+    historical_reference = "historical-server::historical-search"
     raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch, locked_input={"mode": "file"})
     historical_manifest = primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")
-    historical_manifest["mcp_tool_ids"] = ["historical-search"]
+    historical_manifest["mcp_tool_ids"] = [historical_reference]
     state["locked_run"]["input_json"]["executor_type"] = "ragflow"
     state["locked_run"]["input_json"]["skill_manifests"] = [historical_manifest]
     state["skill"].update(executor_type="capture", backing_mcp_tool_id=None)
-    state["tools"]["historical-search"] = _task6_tool(
-        "historical-search",
+    state["tools"][historical_reference] = _task6_tool(
+        historical_reference,
         "historical-server",
     )
     state["distributions"][("mcp_server", "historical-server")] = _task6_distribution(
@@ -9882,7 +10920,7 @@ async def test_worker_reauthorizes_historical_ragflow_mcp_after_current_skill_ch
 
     assert outcome.status == "failed"
     assert outcome.error_code == "capability_not_authorized"
-    assert ("tool_lookup", "tenant-a", "historical-search") in calls
+    assert ("tool_lookup", "tenant-a", historical_reference) in calls
     _task6_assert_no_executor_calls(calls)
     denied_event = next(
         call[1]
@@ -9910,9 +10948,10 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
     change,
     expected_reason,
 ):
+    tool_reference = "server-a::tool-a"
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
-        locked_input={"mode": "file", "mcp_tool_ids": ["tool-a"]},
+        locked_input={"mode": "file", "mcp_tool_ids": [tool_reference]},
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
@@ -9920,7 +10959,7 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
             roles=["qa_operator"],
         ),
     )
-    state["tools"]["tool-a"] = _task6_tool("tool-a", "server-a")
+    state["tools"][tool_reference] = _task6_tool(tool_reference, "server-a")
     state["distributions"][("mcp_server", "server-a")] = _task6_distribution(
         "mcp_server",
         "server-a",
@@ -9939,9 +10978,9 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
     elif change == "distribution_missing":
         state["distributions"].pop(("mcp_server", "server-a"))
     elif change == "parent_disabled":
-        state["tools"]["tool-a"]["server_status"] = "disabled"
+        state["tools"][tool_reference]["server_status"] = "disabled"
     elif change == "tool_missing":
-        state["tools"].pop("tool-a")
+        state["tools"].pop(tool_reference)
 
     outcome = await process_run_payload(raw, registry=registry)
 
@@ -9954,20 +10993,22 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
         if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
     )
     assert denied_event["payload"]["capability_kind"] == "mcp_tool"
-    assert denied_event["payload"]["capability_id"] == "tool-a"
+    assert denied_event["payload"]["capability_id"] == tool_reference
     assert denied_event["payload"]["reason"] == expected_reason
 
 
 @pytest.mark.asyncio
 async def test_worker_registered_tools_never_receive_partially_authorized_mcp_set(monkeypatch):
+    allowed_reference = "server-allowed::tool-allowed"
+    denied_reference = "server-denied::tool-denied"
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
-        locked_input={"mode": "file", "mcp_tool_ids": ["tool-allowed", "tool-denied"]},
+        locked_input={"mode": "file", "mcp_tool_ids": [allowed_reference, denied_reference]},
     )
     state["tools"].update(
         {
-            "tool-allowed": _task6_tool("tool-allowed", "server-allowed"),
-            "tool-denied": _task6_tool("tool-denied", "server-denied"),
+            allowed_reference: _task6_tool(allowed_reference, "server-allowed"),
+            denied_reference: _task6_tool(denied_reference, "server-denied"),
         }
     )
     state["distributions"].update(
@@ -10024,9 +11065,10 @@ async def test_worker_reauthorization_denies_archived_skill_before_admin_bypass(
 
 @pytest.mark.asyncio
 async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypatch):
+    tool_reference = "server-admin::tool-admin"
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
-        locked_input={"mode": "file", "mcp_tool_ids": ["tool-admin"]},
+        locked_input={"mode": "file", "mcp_tool_ids": [tool_reference]},
         principal_roles=["user"],
         principal_department_id="rd",
         current_principal=_test_current_principal(
@@ -10040,7 +11082,7 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
     state["skill"]["executor_type"] = "claude-agent-worker"
     state["locked_run"]["input_json"]["executor_type"] = "claude-agent-worker"
     raw["executor_type"] = "claude-agent-worker"
-    state["tools"]["tool-admin"] = _task6_tool("tool-admin", "server-admin")
+    state["tools"][tool_reference] = _task6_tool(tool_reference, "server-admin")
     state["distributions"][("mcp_server", "server-admin")] = _task6_distribution(
         "mcp_server",
         "server-admin",
@@ -10058,7 +11100,7 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
     assert len(bypass_audits) == 2
     assert {(audit["target_type"], audit["target_id"]) for audit in bypass_audits} == {
         ("skill", "qa-file-reviewer"),
-        ("mcp_tool", "tool-admin"),
+        ("mcp_tool", tool_reference),
     }
     for audit in bypass_audits:
         assert audit["payload_json"]["admin_bypass"] is True
@@ -10130,8 +11172,9 @@ async def test_worker_malformed_distribution_scope_becomes_terminal_audited_deni
     invalid_scope,
 ):
     locked_input = {"mode": "file"}
+    malformed_reference = "server-malformed::tool-malformed"
     if invalid_scope == "mcp_server":
-        locked_input["mcp_tool_ids"] = ["tool-malformed"]
+        locked_input["mcp_tool_ids"] = [malformed_reference]
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input=locked_input,
@@ -10140,9 +11183,12 @@ async def test_worker_malformed_distribution_scope_becomes_terminal_audited_deni
         key = ("skill", "qa-file-reviewer")
         expected_target = ("skill", "qa-file-reviewer")
     else:
-        state["tools"]["tool-malformed"] = _task6_tool("tool-malformed", "server-malformed")
+        state["tools"][malformed_reference] = _task6_tool(
+            malformed_reference,
+            "server-malformed",
+        )
         key = ("mcp_server", "server-malformed")
-        expected_target = ("mcp_tool", "tool-malformed")
+        expected_target = ("mcp_tool", malformed_reference)
     state["distribution_errors"][key] = RepositoryConflictError(
         "capability_distribution_scope_invalid"
     )
@@ -10164,12 +11210,13 @@ async def test_worker_malformed_distribution_scope_becomes_terminal_audited_deni
 
 @pytest.mark.asyncio
 async def test_worker_capability_distribution_audits_synchronous_mcp_risk_write_policy(monkeypatch):
+    tool_reference = "server-write::tool-write"
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
-        locked_input={"mode": "file", "mcp_tool_ids": ["tool-write"]},
+        locked_input={"mode": "file", "mcp_tool_ids": [tool_reference]},
     )
-    state["tools"]["tool-write"] = _task6_tool(
-        "tool-write",
+    state["tools"][tool_reference] = _task6_tool(
+        tool_reference,
         "server-write",
         write_capable=True,
         risk_level="high",
@@ -10187,7 +11234,7 @@ async def test_worker_capability_distribution_audits_synchronous_mcp_risk_write_
     assert outcome.status == "succeeded"
     policy_audit = next(call[1] for call in calls if call[0] == "audit")
     assert policy_audit["action"] == "mcp_tool_policy_allowed"
-    assert policy_audit["target_id"] == "tool-write"
+    assert policy_audit["target_id"] == tool_reference
     assert policy_audit["payload_json"]["risk_level"] == "high"
     assert policy_audit["payload_json"]["write_capable"] is True
 
@@ -10207,15 +11254,16 @@ async def test_worker_locked_snapshot_invalid_never_falls_back_to_queue_mcp_inpu
     monkeypatch,
     snapshot_change,
 ):
+    queue_reference = "queue-server::queue-only-tool"
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         queue_input={
             "mode": "queue",
-            "mcp_tool_ids": ["queue-only-tool"],
+            "mcp_tool_ids": [queue_reference],
             "private_payload": "queue-private-marker",
         },
     )
-    state["tools"]["queue-only-tool"] = _task6_tool("queue-only-tool", "queue-server")
+    state["tools"][queue_reference] = _task6_tool(queue_reference, "queue-server")
     state["distributions"][("mcp_server", "queue-server")] = _task6_distribution(
         "mcp_server",
         "queue-server",
@@ -10288,7 +11336,10 @@ async def test_worker_invalid_locked_child_snapshot_reconciles_parent_after_comm
     )
     state["locked_run"]["input_json"]["skill_manifests"] = []
 
-    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+    async def reconcile(
+        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
+    ):
+        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 

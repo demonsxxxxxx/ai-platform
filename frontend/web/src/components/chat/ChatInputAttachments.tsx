@@ -1,22 +1,17 @@
-import { uploadApi } from "../../services/api";
 import { AttachmentCard } from "../common/AttachmentCard";
 import { openAttachmentPreview } from "./attachmentPreviewStore";
 import type { MessageAttachment } from "../../types";
 
 interface ChatInputAttachmentsProps {
   attachments: MessageAttachment[];
-  onAttachmentsChange: (
-    attachments:
-      | MessageAttachment[]
-      | ((prev: MessageAttachment[]) => MessageAttachment[]),
-  ) => void;
+  onRemoveAttachment: (attachment: MessageAttachment) => void;
   onCancelUpload: (id: string) => void;
   onImageViewerOpen: (url: string) => void;
 }
 
 export function ChatInputAttachments({
   attachments,
-  onAttachmentsChange,
+  onRemoveAttachment,
   onCancelUpload,
   onImageViewerOpen,
 }: ChatInputAttachmentsProps) {
@@ -28,21 +23,16 @@ export function ChatInputAttachments({
       data-composer-file-reference-list
     >
       {attachments.map((attachment) => {
-        const handleRemove = () => {
-          onAttachmentsChange((prev) =>
-            prev.filter((a) => a.id !== attachment.id),
-          );
-          uploadApi.deleteFile(attachment.key).catch((error) => {
-            console.error("Failed to delete file from server:", error);
-          });
-        };
+        const handleRemove = () => onRemoveAttachment(attachment);
 
         return (
           <div
             key={attachment.id}
             data-composer-file-reference={attachment.id}
             data-composer-file-state={
-              attachment.isUploading ? "uploading" : "ready"
+              attachment.isUploading
+                ? (attachment.uploadStatus ?? "uploading")
+                : "ready"
             }
             data-composer-file-type={attachment.type}
           >

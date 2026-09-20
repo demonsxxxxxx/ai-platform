@@ -23,9 +23,12 @@ ordinary-user acceptance.
   private `instructions` field. It is system-level initialization owned by the
   published Agent Profile; it is not a user message and is never returned in a
   public projection.
-- **Agent Skill Set** is the exact set of professional capabilities pinned by
-  the Agent Profile and made available to the Agent SDK. It is not ordinary
-  chat, and membership does not require invocation on every task.
+- **Agent Skill Set** is the set of professional capabilities authorized by the
+  Agent Profile and made available to the Agent SDK. The profile stores stable
+  Skill names; publication or Run admission resolves each name against the
+  tenant-authorized catalog, and the accepted Run freezes the resolved versions.
+  It is not ordinary chat, and membership does not require invocation on every
+  task.
 - **Task** is the user-facing name for work created inside an Agent Workspace.
   The UI should use task-oriented labels instead of generic Chat labels.
 - **Archive Skill** means disabling and removing the tenant distribution from
@@ -73,7 +76,7 @@ The initial editing surface contains only these core fields:
 | --- | --- | --- |
 | `name` | Expert name | Public identity |
 | `instructions` | Agent.md initial instructions | Private system initialization |
-| `skill_set` | Skill Set | One or more exact governed Skill/version bindings |
+| `skill_set` | Skill Set | One or more authorized Skill-name references; publication or Run admission resolves and freezes versions |
 
 All other fields remain supported but are progressive configuration:
 
@@ -108,16 +111,19 @@ the browser.
 - Agent Conversations are created only after explicit user action and remain
   pinned to `agent_id`, immutable Revision, and `content_hash`.
 - Every run, retry, resume, and copy reauthorizes ownership, tenant,
-  publication, ACL, the Run-pinned model, Skill version, and MCP capability
-  server-side.
+  publication, ACL, the Run-pinned model, the current authorized Skill versions,
+  and MCP capability server-side. Agent Profile configuration stores Skill names;
+  accepted Run snapshots carry the immutable resolved versions.
 - Browser requests may select only an administrator-enabled public model. They
   cannot override private instructions, Skill, MCP, ACL, revision hash, or
   execution identity; the backend resolves and freezes the selected model and
   active connection revision when admitting the Run.
 - Agent Profile `instructions` stay in private execution input and the executor
   system prompt. They never become user content or a safe public field.
-- Expert Agents continue to require at least one exact governed Skill in their
-  immutable Skill Set. The Agent SDK autonomously decides whether and which
+- Expert Agents continue to require at least one authorized Skill name in their
+  profile Skill Set. Publication or Run admission resolves each name against the
+  current tenant-authorized catalog and freezes the resulting versions in the
+  immutable Run snapshot. The Agent SDK autonomously decides whether and which
   registered Skill to invoke for each task. Ordinary Harness chat remains
   `execution_kind=harness_chat` with `skill_id=null`; historical `general-chat`
   is compatibility data, not a new product Skill.
@@ -134,8 +140,39 @@ the browser.
 | Agent-first routing | `frontend/web/src/App.tsx`, auth and shell navigation | Root/login/bare Chat resolve to Agent Market; generic controls hidden |
 | Market task language | `frontend/web/src/features/agent-market/AgentMarketRoute.tsx` | Task-oriented hierarchy, CTA, examples, and recovery states |
 | Workspace task navigation | `ChatAppContent.tsx`, `SessionSidebar.tsx`, sidebar parts | Agent-scoped “new task” and “task history”; no generic Chat discovery |
-| Builder progressive disclosure | `AgentBuilderWorkbench.tsx`, `AgentBuilderEnterpriseFields.tsx`, `agentBuilderAdapter.ts` | Four-field initial surface; presentation and governance grouped as optional |
+| Builder progressive disclosure | `AgentBuilderWorkbench.tsx`, `AgentBuilderEnterpriseFields.tsx`, `agentBuilderAdapter.ts` | Three-field initial surface; presentation and governance grouped as optional |
 | Skill archive UX | `SkillsPanel/*`, `useSkills.ts`, locale files | Truthful archive semantics, optimistic removal/rollback, partial-result handling |
+
+### Change Contract: run-scoped Thinking preference
+
+- **Owner:** Execution model-option policy; Agent Profile admission only verifies
+  that the option cannot alter the admitted capability set.
+- **Bounded paths:** Chat request validation and admission, Run input projection,
+  sandbox task configuration, Claude Agent SDK options, prompt language policy,
+  Agent workspace composition, and structurally identified legacy Thinking
+  presentation.
+- **Reached invariants:** profile Skill/MCP/model authority remains unchanged;
+  the existing platform-governed shared model selector remains available;
+  caller-supplied server control metadata remains stripped; `auto` enables SDK
+  adaptive thinking without an explicit effort, while `low`, `medium`, and
+  `high` send the selected effort. Every level uses `display=omitted`, no SDK
+  Thinking block is published, and private signatures and provider-internal
+  reasoning remain outside public events.
+- **Acceptance:** `auto`, `low`, `medium`, and `high` survive admission and
+  reach the SDK exactly once; legacy `off` normalizes to `auto`; `max` and other
+  unsupported values fail before persistence. Agent workspaces expose the
+  selected level through the visible composer toolbar while keeping Skill and
+  MCP controls locked and preserving the established platform-governed model
+  selector; Chinese requests keep the final answer in Simplified Chinese.
+- **Regression proof:** focused tests cover profile admission, trust-boundary
+  validation, sandbox transport, all SDK effort levels, Agent workspace option
+  composition, and public display fallbacks. Local evidence cannot prove gateway,
+  model, or deployed behavior.
+- **Rollback:** revert the source change as one unit; no schema or stored-data
+  migration is introduced.
+- **Stop conditions:** stop if the change admits a Skill, MCP, prompt, or model
+  selector not already authorized, exposes raw provider reasoning, introduces
+  model capability probing, or requires an SSE wire-contract change.
 
 ## Acceptance Checklist
 
@@ -180,8 +217,11 @@ and artifact download remain bound to
 
 ## Rollout and Rollback
 
-This slice adds a version-pinned Agent Skill Set and autonomous SDK dispatch to
-the API, persistence, and execution contracts, alongside the UI changes.
+This slice stores authorized Agent Skill Set names in profile revisions and
+resolves current governed versions at publication or Run admission before the
+Agent SDK dispatches autonomously. The API, persistence, and execution
+contracts remain compatible with historical version-bearing profile rows,
+alongside the UI changes.
 Rollback requires application and schema compatibility with legacy singleton
 Skill revisions; it must not delete Agent revisions, conversations, Skill
 distributions, Runs, or historical compatibility rows. Do not use rollback to

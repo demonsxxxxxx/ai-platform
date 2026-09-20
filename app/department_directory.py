@@ -4,17 +4,19 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+import json
 import unicodedata
 
 import httpx
 
 from app.models import DepartmentDirectoryNodeResponse, DepartmentDirectoryResponse
+from app.validation import assert_safe_department_authority_id
 
 PURE_DEPARTMENT_DIRECTORY_URL = "http://10.56.0.25:5033/api/DingTalk/departs/pure"
 PURE_DEPARTMENT_DIRECTORY_TIMEOUT_SECONDS = 5.0
+MAX_DIRECTORY_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_DIRECTORY_NODES = 5_000
 MAX_DIRECTORY_DEPTH = 12
-MAX_DIRECTORY_LABEL_LENGTH = 160
 MAX_DISTRIBUTION_DEPARTMENTS = 128
 ROOT_PARENT_ID = "1"
 _PURE_NODE_KEYS = frozenset({"value", "parentId", "label", "children"})
@@ -43,15 +45,10 @@ def _safe_numeric_id(value: object) -> str:
 def _safe_label(value: object) -> str:
     if not isinstance(value, str):
         raise DepartmentDirectoryError("department_directory_shape_invalid")
-    candidate = value
-    if (
-        not candidate
-        or candidate != candidate.strip()
-        or len(candidate) > MAX_DIRECTORY_LABEL_LENGTH
-        or any(unicodedata.category(character).startswith("C") for character in candidate)
-    ):
-        raise DepartmentDirectoryError("department_directory_shape_invalid")
-    return candidate
+    try:
+        return assert_safe_department_authority_id(value, "department")
+    except ValueError as exc:
+        raise DepartmentDirectoryError("department_directory_shape_invalid") from exc
 
 
 def _authority_key(label: str) -> str:
@@ -154,13 +151,33 @@ async def fetch_department_directory() -> DepartmentDirectoryResponse:
             follow_redirects=False,
             trust_env=False,
         ) as client:
-            response = await client.get(PURE_DEPARTMENT_DIRECTORY_URL)
-        if response.status_code < 200 or response.status_code >= 300:
-            raise DepartmentDirectoryError("department_directory_upstream_unavailable")
-        return normalize_department_directory(response.json())
+            async with client.stream("GET", PURE_DEPARTMENT_DIRECTORY_URL) as response:
+                if response.status_code < 200 or response.status_code >= 300:
+                    raise DepartmentDirectoryError("department_directory_upstream_unavailable")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > MAX_DIRECTORY_RESPONSE_BYTES:
+                        raise DepartmentDirectoryError("department_directory_upstream_unavailable")
+                    body.extend(chunk)
+        return normalize_department_directory(json.loads(body))
     except DepartmentDirectoryError:
         raise
     except httpx.TimeoutException as exc:
         raise DepartmentDirectoryError("department_directory_timeout") from exc
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx.HTTPError, UnicodeError, ValueError, RecursionError) as exc:
         raise DepartmentDirectoryError("department_directory_upstream_unavailable") from exc
+
+
+async def validate_profile_department_authorities(values: list[str]) -> str | None:
+    """Return the bounded Agent Profile ACL membership result."""
+
+    if not values:
+        return None
+    try:
+        directory = await fetch_department_directory()
+        validate_distribution_department_authorities(values, directory)
+    except DepartmentDirectoryError as exc:
+        if str(exc) == "capability_distribution_department_authority_invalid":
+            return "invalid"
+        return "unavailable"
+    return None

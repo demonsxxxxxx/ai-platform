@@ -4,10 +4,6 @@ const inheritedPermissions: Partial<Record<Permission, Permission[]>> = {
   [Permission.ROLE_MANAGE]: [Permission.ROLE_READ, Permission.ROLE_REQUEST],
   [Permission.ROLE_REQUEST]: [Permission.ROLE_READ],
   [Permission.USER_ADMIN]: [Permission.USER_READ],
-  [Permission.SETTINGS_ADMIN]: [
-    Permission.SETTINGS_READ,
-    Permission.SETTINGS_MANAGE,
-  ],
   [Permission.FEEDBACK_ADMIN]: [Permission.FEEDBACK_READ],
   [Permission.NOTIFICATION_ADMIN]: [
     Permission.NOTIFICATION_READ,
@@ -17,10 +13,6 @@ const inheritedPermissions: Partial<Record<Permission, Permission[]>> = {
     Permission.SKILL_READ,
     Permission.SKILL_WRITE,
     Permission.SKILL_DELETE,
-  ],
-  [Permission.MARKETPLACE_ADMIN]: [
-    Permission.MARKETPLACE_READ,
-    Permission.MARKETPLACE_PUBLISH,
   ],
 };
 

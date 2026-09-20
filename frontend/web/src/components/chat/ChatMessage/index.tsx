@@ -14,20 +14,14 @@ import { MarkdownContent } from "./MarkdownContent";
 import { ToolCallItem } from "./ToolCallItem";
 import { UserMessageBubble } from "./UserMessageBubble";
 import { createMessagePartRenderKeys, MessagePartRenderer } from "./MessagePartRenderer";
-import { RevealArtifactsSummary } from "./RevealArtifactsSummary";
-import { FeedbackButtons } from "./FeedbackButtons";
 import { AssistantAvatar } from "./AssistantAvatar";
 import { CollapsiblePill } from "../../common/CollapsiblePill";
-import { useSettingsContext } from "../../../contexts/SettingsContext";
-import { useAuth } from "../../../hooks/useAuth";
+import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { ModelIconImg } from "../../agent/modelIcon.tsx";
 import { shouldCloseTokenDetailsPopover } from "./tokenDetailsPopoverGuards";
 import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
-import {
-  shouldAllowAutoPreviewForPart,
-  type AutoPreviewTarget,
-} from "./autoPreviewEligibility";
 import { getVisibleMessageParts } from "./messagePartVisibility";
+import { MessageWorkActivity } from "./MessageWorkActivity";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
@@ -71,21 +65,20 @@ function ThinkingIndicator() {
 interface ChatMessageProps {
   message: Message;
   artifactDownloadScopeContext?: ArtifactDownloadScopeContext;
-  sessionId?: string;
-  runId?: string;
   isLastMessage?: boolean;
-  onStop?: () => void;
-  activePreview?: RevealPreviewRequest | null;
-  latestAutoPreview?: AutoPreviewTarget | null;
   onOpenPreview?: (
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
   ) => boolean;
-  onForkMessage?: (messageId: string) => void | Promise<void>;
-  showFeedbackAndShareActions?: boolean;
 }
 
 // Token usage statistics button component
+function formatDurationMs(durationMs: number): string {
+  return durationMs < 1000
+    ? `${durationMs}毫秒`
+    : `${(durationMs / 1000).toFixed(2)}秒`;
+}
+
 function TokenDetailsButton({
   tokenUsage,
   duration,
@@ -198,13 +191,13 @@ function TokenDetailsButton({
                 </div>
               </>
             )}
-            {duration && (
+            {duration !== undefined && (
               <div className="mt-1.5 flex justify-between gap-4 border-t border-[var(--theme-border)] pt-1.5">
                 <span className="text-[var(--theme-text-secondary)]">
                   {t("chat.message.duration")}
                 </span>
                 <span className="font-medium text-[var(--theme-text)]">
-                  {(duration / 1000).toFixed(2)}s
+                  {formatDurationMs(duration)}
                 </span>
               </div>
             )}
@@ -243,17 +236,11 @@ function TokenDetailsButton({
 export const ChatMessage = memo(function ChatMessage({
   message,
   artifactDownloadScopeContext,
-  sessionId,
-  runId,
   isLastMessage,
-  activePreview,
-  latestAutoPreview,
   onOpenPreview,
-  showFeedbackAndShareActions = true,
 }: ChatMessageProps) {
   const { t } = useTranslation();
-  const { availableModels } = useSettingsContext();
-  const { isAuthenticated } = useAuth();
+  const { availableModels } = useModelCatalogContext();
   const isUser = message.role === "user";
   const isStreaming = message.isStreaming && !message.content;
   const artifactDownloadScope = createArtifactDownloadScope(
@@ -314,14 +301,14 @@ export const ChatMessage = memo(function ChatMessage({
       data-outline-id={createMessageAnchorId(message.id)}
       className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-amber-50/85 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/60 dark:data-[external-navigation-highlighted=true]:bg-amber-500/12 dark:data-[external-navigation-highlighted=true]:ring-amber-400/50"
     >
-      <div className="mx-auto flex flex-col max-w-3xl lg:max-w-4xl xl:max-w-5xl px-4 sm:px-6">
+      <div className="mx-auto flex max-w-[68rem] flex-col px-3 sm:px-5">
         {/* Content */}
-        <div className="min-w-0 min-h-0 py-1 sm:py-2">
+        <div className="min-h-0 min-w-0 py-1">
           {/* Header: Avatar + Role label + Stop button */}
-          <div className="mb-3 flex items-center gap-2">
+          <div className="mb-2 flex items-center gap-2">
             <AssistantAvatar className="size-6 shrink-0 rounded-full" />
             <span
-              className="text-base sm:text-lg font-semibold tracking-tight font-serif"
+              className="text-sm font-semibold"
               style={{ color: "var(--theme-text)" }}
             >
               {t("chat.message.assistant")}
@@ -342,29 +329,24 @@ export const ChatMessage = memo(function ChatMessage({
           {isStreaming && !hasParts && <ThinkingIndicator />}
 
           {hasParts ? (
-            <div className="space-y-3 px-2 my-2">
-              {visibleParts.map((part: MessagePart, index: number) => (
-                <MessagePartRenderer
-                  key={visiblePartKeys[index]}
-                  part={part}
-                  messageId={message.id}
-                  partIndex={index}
-                  isStreaming={message.isStreaming}
-                  isLast={index === visibleParts.length - 1}
-                  activePreview={activePreview}
-                  onOpenPreview={onOpenPreview}
-                  artifactDownloadScope={artifactDownloadScope}
-                  allowAutoPreview={shouldAllowAutoPreviewForPart({
-                    messageId: message.id,
-                    partIndex: index,
-                    latestAutoPreview: latestAutoPreview ?? null,
-                  })}
-                />
-              ))}
-              <RevealArtifactsSummary
-                parts={visibleParts}
+            <div className="my-1.5 space-y-2">
+              <MessageWorkActivity
+                messageId={message.id}
                 isStreaming={message.isStreaming}
-                onOpenPreview={onOpenPreview}
+                parts={visibleParts}
+                partKeys={visiblePartKeys}
+                renderPart={(part, index, withinWorkDetails) => (
+                  <MessagePartRenderer
+                    part={part}
+                    messageId={message.id}
+                    partIndex={index}
+                    isStreaming={message.isStreaming}
+                    isLast={index === visibleParts.length - 1}
+                    onOpenPreview={onOpenPreview}
+                    artifactDownloadScope={artifactDownloadScope}
+                    withinWorkDetails={withinWorkDetails}
+                  />
+                )}
               />
             </div>
           ) : (
@@ -438,7 +420,7 @@ export const ChatMessage = memo(function ChatMessage({
               <Copy size={16} />
             </button>
             {/* Token usage statistics button */}
-            {(message.tokenUsage || message.duration) && (
+            {(message.tokenUsage || message.duration !== undefined) && (
               <TokenDetailsButton
                 tokenUsage={message.tokenUsage}
                 duration={message.duration}
@@ -446,19 +428,6 @@ export const ChatMessage = memo(function ChatMessage({
                 modelDetails={modelDetails}
                 isLastMessage={isLastMessage}
               />
-            )}
-            {showFeedbackAndShareActions && (
-              <>
-                {/* Feedback buttons */}
-                {isAuthenticated && sessionId && (message.runId || runId) && (
-                  <FeedbackButtons
-                    sessionId={sessionId}
-                    runId={message.runId || runId!}
-                    currentFeedback={message.feedback}
-                    isLastMessage={isLastMessage}
-                  />
-                )}
-              </>
             )}
           </div>
         )}

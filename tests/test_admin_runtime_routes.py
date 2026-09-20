@@ -77,8 +77,10 @@ def signed_runtime_lease(
         callback_subject="http://api.sandbox.internal:8020",
         denial_subject="network-a:default-deny" if provider == "docker" else "deny-a",
         network_id="network-a" if provider == "docker" else "profile-a",
-        network_name="ai-platform-sandbox-egress-internal-v1" if provider == "docker" else "opensandbox-a",
-        network_internal=provider == "docker",
+        network_name="ai-platform-sandbox-egress-internal-v1"
+        if provider == "docker"
+        else "ai-platform-opensandbox-egress-internal-v1",
+        network_internal=True,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         user_id=user_id,
@@ -1260,7 +1262,6 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     runtime_settings = Settings(
         frontend_poc_auth_enabled=True,
         max_active_worker_runs=3,
-        model_gateway_request_concurrency_limit=12,
     )
     monkeypatch.setattr("app.auth.get_settings", lambda: runtime_settings)
     monkeypatch.setattr("app.routes.admin_runtime.get_settings", lambda: runtime_settings)
@@ -1339,12 +1340,12 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert body["capacity"]["limits"]["model_gateway"] == {
         "provider": "openai_compatible",
         "request_concurrency_limit": None,
-        "configured_request_concurrency_limit": 12,
+        "configured_request_concurrency_limit": None,
         "limit_enforcement": "not_implemented",
         "capacity_evidence": "unproven_without_load_test",
     }
     assert "model_gateway_concurrency_unbounded_by_platform" in body["capacity"]["warnings"]
-    assert "model_gateway_configured_limit_not_enforced" in body["capacity"]["warnings"]
+    assert "model_gateway_configured_limit_not_enforced" not in body["capacity"]["warnings"]
     assert body["capacity"]["production_default_policy"] == "do_not_raise_without_recorded_load_test_evidence"
     assert "password" not in str(body["capacity"]).lower()
     assert "api_key" not in str(body["capacity"]).lower()
@@ -1394,11 +1395,11 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert body["backpressure"]["model_gateway"] == {
         "provider": "openai_compatible",
         "request_concurrency_limit": None,
-        "configured_request_concurrency_limit": 12,
+        "configured_request_concurrency_limit": None,
         "limit_enabled": False,
         "limit_enforced": False,
         "limit_enforcement": "not_implemented",
-        "config_only": True,
+        "config_only": False,
         "capacity_evidence": "unproven_without_load_test",
     }
     assert "ai-platform:runs:queued" not in str(body["backpressure"])

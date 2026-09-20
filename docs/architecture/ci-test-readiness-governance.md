@@ -124,3 +124,19 @@ request or task, not this durable contract. A new governance rule must replace
 or consolidate an existing rule, name a deterministic detector and owner, and
 show that a less restrictive test or platform control cannot protect the same
 boundary.
+
+## Cross-component architecture acceptance
+
+The [system matrix](../acceptance/system-architecture-matrix.md) supplies
+proposed falsifiable scenarios for the affected slice; it neither defines
+another evidence hierarchy nor claims tests exist or have passed. Record
+scenario ID, exact subject, concrete selector/command, injected failure,
+expected state/identity/effects, deadline, result, and cleanup in the issue/PR.
+Map each new scenario to a real owning test before claiming coverage.
+
+A docs-only consolidation checks inventory, current-versus-proposed labels,
+local links, unique requirement IDs, preserved detailed invariants and unchanged
+runtime/config/schema scope. It does not claim runtime proof or require a
+fabricated all-system test pass. For behavior changes, retain the existing
+trusted-base governance and smallest owning regression/integration stages.
+No new checker is a trusted merge gate merely because its author ran it.

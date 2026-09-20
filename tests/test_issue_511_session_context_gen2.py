@@ -15,15 +15,32 @@ from app.routes.runs import (
     retry_run,
     run_context_ref_from_snapshot_row,
 )
-from app.worker import _ensure_worker_context_snapshot
+from app.bootstrap.context import materialize_queued_worker_context_snapshot
+from app.worker import _context_snapshot_ref_from_row
+from app.worker_principal_authority import _payload_identity
+
+
+async def _materialize_scoped_worker_snapshot(conn, payload):
+    return await materialize_queued_worker_context_snapshot(
+        conn, payload=payload, run_identity=_payload_identity(payload),
+        context_projector=_context_snapshot_ref_from_row,
+        prepared_checkpoint_id=None,
+    )
 
 
 @pytest.fixture(autouse=True)
-def _stub_run_model_inheritance_for_route_fakes(monkeypatch):
+def _stub_run_model_and_provider_lineage_for_route_fakes(monkeypatch):
     async def inherit_run_model(*_args, **_kwargs):
         return None
 
+    async def release_provider_lineage(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr("app.routes.runs.inherit_run_model", inherit_run_model)
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release_provider_lineage,
+    )
 
 
 @asynccontextmanager
@@ -78,7 +95,7 @@ async def test_worker_missing_physical_snapshot_never_rebuilds_context(monkeypat
 
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", missing_snapshot)
 
-    context_ref = await _ensure_worker_context_snapshot(object(), payload, trace_id="trace-run-a")
+    context_ref = await _materialize_scoped_worker_snapshot(object(), payload)
 
     assert context_ref is None
     assert calls == [{
@@ -160,11 +177,7 @@ async def test_worker_materializes_complete_snapshot_authorized_conversation(mon
         list_messages,
     )
 
-    context_ref = await _ensure_worker_context_snapshot(
-        object(),
-        payload,
-        trace_id="trace-run-current",
-    )
+    context_ref = await _materialize_scoped_worker_snapshot(object(), payload)
 
     assert context_ref is not None
     conversation = context_ref["conversation_context"]
@@ -229,9 +242,7 @@ async def test_worker_rejects_incomplete_snapshot_message_materialization(monkey
     )
 
     assert (
-        await _ensure_worker_context_snapshot(
-            object(), payload, trace_id="trace-run-current"
-        )
+        await _materialize_scoped_worker_snapshot(object(), payload)
         is None
     )
 
@@ -334,6 +345,9 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
     async def no_existing_operation(_conn, **_kwargs):
         return None
 
+    async def retryable_source(_conn, **_kwargs):
+        return {"status": "failed", "error_code": None}
+
     async def record_operation(_conn, **_kwargs):
         return "event-operation"
 
@@ -374,7 +388,10 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
 
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", allow_admission)
-    monkeypatch.setattr("app.routes.runs.reauthorize_pinned_run_for_replay", allow_reauthorization)
+    monkeypatch.setattr(
+        "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
+        allow_reauthorization,
+    )
     monkeypatch.setattr(
         "app.routes.runs.repositories.acquire_run_control_operation_lock",
         acquire_operation_lock,
@@ -382,6 +399,10 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
     monkeypatch.setattr(
         "app.routes.runs.repositories.get_run_control_operation",
         no_existing_operation,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        retryable_source,
     )
     monkeypatch.setattr(
         "app.routes.runs.repositories.record_run_control_operation",

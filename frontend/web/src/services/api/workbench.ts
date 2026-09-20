@@ -35,30 +35,6 @@ export interface WorkbenchUserListResponse {
   governance: WorkbenchGovernance;
 }
 
-export interface WorkbenchSettingItem {
-  key: string;
-  value: unknown;
-  type: string;
-  category: string;
-  label: string;
-  description: string;
-  is_public: boolean;
-  is_secret: boolean;
-  audit_required: boolean;
-  rollback_available: boolean;
-  updated_at: string | null;
-}
-
-export interface WorkbenchSettingGroup {
-  category: string;
-  items: WorkbenchSettingItem[];
-}
-
-export interface WorkbenchSettingsResponse {
-  settings: Record<string, WorkbenchSettingGroup>;
-  governance: WorkbenchGovernance;
-}
-
 export interface WorkbenchFeedbackStats {
   total_count: number;
   up_count: number;
@@ -121,7 +97,6 @@ export interface WorkbenchNotificationListResponse {
 }
 
 const WORKBENCH_USERS_API = `${API_BASE}/api/users/`;
-const WORKBENCH_SETTINGS_API = `${API_BASE}/api/settings/`;
 const WORKBENCH_FEEDBACK_API = `${API_BASE}/api/feedback/`;
 const WORKBENCH_NOTIFICATIONS_ACTIVE_API = `${API_BASE}/api/notifications/active`;
 const WORKBENCH_NOTIFICATIONS_ADMIN_API = `${API_BASE}/api/notifications/admin`;
@@ -140,10 +115,6 @@ export const workbenchApi = {
     return authFetch<WorkbenchUserListResponse>(
       withQuery(WORKBENCH_USERS_API, params),
     );
-  },
-
-  listSettings() {
-    return authFetch<WorkbenchSettingsResponse>(WORKBENCH_SETTINGS_API);
   },
 
   listFeedback(params: { skip?: number; limit?: number } = {}) {

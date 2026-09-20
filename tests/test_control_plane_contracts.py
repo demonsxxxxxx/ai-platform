@@ -15,6 +15,7 @@ from app.control_plane_contracts import (
     ToolPolicy,
     artifact_lineage_contract,
     artifact_manifest_contract,
+    attach_run_thinking_effort,
     is_standard_event_type,
     sanitize_public_payload,
     sanitize_public_text,
@@ -38,6 +39,14 @@ def test_control_plane_versions_are_stable():
     assert SKILL_MANIFEST_SCHEMA_VERSION == "ai-platform.skill-manifest.v1"
     assert TOOL_POLICY_SCHEMA_VERSION == "ai-platform.tool-policy.v1"
     assert CONTEXT_SNAPSHOT_SCHEMA_VERSION == "ai-platform.context-snapshot.v1"
+
+
+def test_run_thinking_effort_omits_auto_and_attaches_explicit_level():
+    assert attach_run_thinking_effort({"message": "hello"}, None) == {"message": "hello"}
+    assert attach_run_thinking_effort({}, {"enable_thinking": "off"}) == {}
+    assert attach_run_thinking_effort({}, {"enable_thinking": "high"}) == {
+        "_thinking_effort": "high"
+    }
 
 
 def test_trace_ids_and_error_codes_are_normalized():
@@ -169,6 +178,7 @@ def test_public_payload_sanitizer_removes_runtime_private_aliases():
                 "path": "/app/runtime/private.py",
                 "var_path": "/var/lib/ai-platform/private.log",
                 "message": "failed in /home/xinlin.jiang/qa-review-queue-runtime",
+                "runtime_diagnostics": {"token": "hidden"},
             },
             "tuple_payload": (
                 {"runtime_private_payload": {"token": "hidden"}, "safe": "done"},
@@ -400,7 +410,7 @@ def test_public_payload_sanitizer_preserves_safe_token_like_text():
     }
 
 
-def test_public_payload_sanitizer_preserves_public_urls_but_drops_runtime_paths():
+def test_public_payload_sanitizer_keeps_runtime_paths_out_of_payloads():
     payload = sanitize_public_payload(
         {
             "message": "See https://example.com/doc and http://example.com/home",

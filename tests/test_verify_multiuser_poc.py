@@ -19,7 +19,17 @@ def load_verify_multiuser_poc():
     return module
 
 
-def test_default_sample_docx_contains_translatable_text(tmp_path):
+def test_foundation_fixture_does_not_write_retired_inferred_skill_usage():
+    module = load_verify_multiuser_poc()
+    sql = module.build_foundation_runtime_fixture_sql(
+        [module.Account(label="user-a", username="user-a", password="pw", tenant_id="frc-test-user-a")]
+    )
+
+    assert "inferred_used" not in sql
+    assert "used_skills_source, inferred_used" not in sql
+
+
+def test_default_sample_docx_contains_review_text(tmp_path):
     module = load_verify_multiuser_poc()
     sample_path = tmp_path / "sample.docx"
 
@@ -29,7 +39,7 @@ def test_default_sample_docx_contains_translatable_text(tmp_path):
         document_xml = archive.read("word/document.xml").decode("utf-8")
 
     assert "This document contains text" in document_xml
-    assert "请将这段中文内容翻译为英文" in document_xml
+    assert "请审核这份文档并保留原始含义。" in document_xml
 
 
 def test_run_case_fetches_context_snapshot_public_projection(monkeypatch):
@@ -323,9 +333,9 @@ def test_main_fails_closed_when_context_pack_version_is_missing(monkeypatch, tmp
             "queue_position": 1,
             "status": "completed",
             "raw_status": "succeeded",
-            "artifact_ids": ["art_a"] if case_name in {"word-review", "word-translate"} else [],
+            "artifact_ids": ["art_a"] if case_name == "word-review" else [],
             "downloads": [{"artifact_id": "art_a", "owner_status": 200, "owner_bytes": 42}]
-            if case_name in {"word-review", "word-translate"}
+            if case_name == "word-review"
             else [],
             "has_tmp_path": False,
             "context_snapshot_public_projection": {
@@ -477,11 +487,6 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                     "cross_tenant_queue_leak": False,
                     "admission_limit_violation": False,
                 },
-                "tool_permission_probe": {
-                    "request_status": 410,
-                    "decision_status": 410,
-                    "no_side_effect": True,
-                },
                 "skill_snapshot": {
                     "run_skill_snapshot_count": 1,
                     "used_count": 1,
@@ -544,9 +549,6 @@ def test_foundation_runtime_evidence_from_results_includes_context_pack_projecti
     assert evidence["checks"]["queue_admission"]["queue_probe_sample_count"] == 12
     assert evidence["checks"]["queue_admission"]["queue_probe_source"] == "redis_metadata"
     assert evidence["checks"]["artifact_acl"]["cross_tenant_statuses"] == [404] * 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_probe_count"] == 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_410_count"] == 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_unexpected_status_count"] == 0
     assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
     assert evidence["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
     assert evidence["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
@@ -667,7 +669,6 @@ def test_foundation_runtime_cli_evidence_mode_fails_closed_without_public_contex
 
     monkeypatch.setattr(module, "run_case", fake_run_case)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         sys,
@@ -747,7 +748,7 @@ def test_foundation_runtime_fixture_agents_use_isolated_ids_and_workspaces():
     assert len(specs) == 12
     assert all(spec.workspace_id.startswith("frc_test_") for spec in specs)
     assert all(spec.agent_id.startswith("frc_agent_") for spec in specs)
-    assert {spec.skill_id for spec in specs} == {"general-chat", "qa-file-reviewer", "baoyu-translate"}
+    assert {spec.skill_id for spec in specs} == {"general-chat", "qa-file-reviewer"}
     assert {
         module.fixture_agent_id_for_skill(spec.account, spec.skill_id)
         for spec in specs
@@ -1542,15 +1543,9 @@ def test_attach_run_detail_probe_results_ignores_post_run_sandbox_probe_leases(m
     assert "sandbox_lease_samples_missing" in readiness["failures"]
 
 
-def test_foundation_runtime_evidence_counts_zero_click_probe_and_skill_snapshot_samples():
+def test_foundation_runtime_evidence_counts_skill_snapshot_samples():
     module = load_verify_multiuser_poc()
     results = complete_foundation_runtime_results()
-    for item in results:
-        item["tool_permission_probe"] = {
-            "request_status": 410,
-            "decision_status": 410,
-            "no_side_effect": True,
-        }
 
     evidence = module.build_foundation_runtime_concurrency_evidence(
         results,
@@ -1558,52 +1553,9 @@ def test_foundation_runtime_evidence_counts_zero_click_probe_and_skill_snapshot_
         runtime_subject_commit_sha="ac9a86bbea14a28748867cade8d80b2f9ff420ec",
     )
 
-    assert evidence["checks"]["tool_permission"]["zero_click_write_probe_count"] == 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_410_count"] == 12
-    assert evidence["checks"]["tool_permission"]["zero_click_write_unexpected_status_count"] == 0
     assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
     readiness = build_foundation_runtime_concurrency_readiness(evidence)
-    assert "tool_permission_zero_click_probe_missing" not in readiness["failures"]
     assert "skill_snapshots_missing_for_runs" not in readiness["failures"]
-
-
-def test_attach_tool_permission_probe_results_expects_no_side_effect_410_writes(monkeypatch):
-    module = load_verify_multiuser_poc()
-    account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")
-    same_tenant_other_user = module.Account(label="tenant-a-user-2", username="a2", password="pw", tenant_id="tenant-a")
-    cross_tenant_user = module.Account(label="tenant-b-user-1", username="b1", password="pw", tenant_id="tenant-b")
-    results = [{"account": account.label, "tenant_id": account.tenant_id, "run_id": "run-a"}]
-    calls = []
-
-    monkeypatch.setattr(module, "login", lambda _api_url, user: {"X-AI-User-ID": user.username})
-
-    def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
-        calls.append((method, url, payload, headers))
-        if url.endswith("/api/ai/runs/run-a/tool-permissions/request"):
-            return 410, {"detail": "tool_permission_runtime_write_retired"}
-        if url.endswith("/api/ai/runs/run-a/tool-permissions/compatibility-probe/decision"):
-            return 410, {"detail": "tool_permission_runtime_write_retired"}
-        raise AssertionError(url)
-
-    monkeypatch.setattr(module, "json_request", fake_json_request)
-
-    module.attach_tool_permission_probe_results(
-        "http://api.test",
-        results,
-        [account, same_tenant_other_user, cross_tenant_user],
-    )
-
-    assert results[0]["tool_permission_probe"] == {
-        "request_status": 410,
-        "decision_status": 410,
-        "no_side_effect": True,
-    }
-    assert [call[0] for call in calls] == ["POST", "POST"]
-    assert [call[1] for call in calls] == [
-        "http://api.test/api/ai/runs/run-a/tool-permissions/request",
-        "http://api.test/api/ai/runs/run-a/tool-permissions/compatibility-probe/decision",
-    ]
-    assert [call[3]["X-AI-User-ID"] for call in calls] == ["a1", "a1"]
 
 
 def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkeypatch, tmp_path, capsys):
@@ -1630,9 +1582,6 @@ def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkey
     def fake_attach_context(api_url, results, accounts, **_kwargs):
         calls.append("context")
 
-    def fake_attach_tool(api_url, results, accounts, **_kwargs):
-        calls.append("tool")
-
     def fake_attach_sandbox(api_url, results, accounts, **_kwargs):
         calls.append("sandbox")
 
@@ -1642,7 +1591,6 @@ def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkey
     monkeypatch.setattr(module, "run_case", fake_run_case)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", fake_attach_acl)
     monkeypatch.setattr(module, "attach_context_scope_probe_results", fake_attach_context)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", fake_attach_tool)
     monkeypatch.setattr(module, "attach_sandbox_lease_probe_results", fake_attach_sandbox)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", fake_attach_details)
     monkeypatch.setattr(
@@ -1669,7 +1617,7 @@ def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkey
     )
 
     assert module.main() == 0
-    assert calls == ["acl", "context", "tool", "sandbox", "details"]
+    assert calls == ["acl", "context", "sandbox", "details"]
     evidence = json.loads(capsys.readouterr().out)
     assert evidence["checks"]["memory_context"]["context_pack_version_sample_count"] == 12
 
@@ -1725,9 +1673,6 @@ def test_foundation_runtime_cli_trusted_header_mode_reaches_run_and_probe_calls(
     def fake_attach_context(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
         observed_roles.append(("context", auth_mode, trusted_header_role))
 
-    def fake_attach_tool(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
-        observed_roles.append(("tool", auth_mode, trusted_header_role))
-
     def fake_attach_sandbox(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
         observed_roles.append(("sandbox", auth_mode, trusted_header_role))
 
@@ -1737,7 +1682,6 @@ def test_foundation_runtime_cli_trusted_header_mode_reaches_run_and_probe_calls(
     monkeypatch.setattr(module, "run_case", fake_run_case)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", fake_attach_acl)
     monkeypatch.setattr(module, "attach_context_scope_probe_results", fake_attach_context)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", fake_attach_tool)
     monkeypatch.setattr(module, "attach_sandbox_lease_probe_results", fake_attach_sandbox)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", fake_attach_details)
     monkeypatch.setattr(
@@ -1769,7 +1713,6 @@ def test_foundation_runtime_cli_trusted_header_mode_reaches_run_and_probe_calls(
     assert {item for item in observed_roles if item[0] != "run"} == {
         ("acl", "trusted-header", "user"),
         ("context", "trusted-header", "user"),
-        ("tool", "trusted-header", "user"),
         ("sandbox", "trusted-header", "user"),
         ("details", "trusted-header", "user"),
     }
@@ -1849,9 +1792,6 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     def fake_attach_context(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
         probe_calls.append(("context", auth_mode, trusted_header_role))
 
-    def fake_attach_tool(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
-        probe_calls.append(("tool", auth_mode, trusted_header_role))
-
     def fake_attach_sandbox(api_url, results, accounts, *, auth_mode="login", trusted_header_role="user"):
         probe_calls.append(("sandbox", auth_mode, trusted_header_role))
 
@@ -1863,7 +1803,6 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     monkeypatch.setattr(module, "run_case", fake_run_case)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", fake_attach_acl)
     monkeypatch.setattr(module, "attach_context_scope_probe_results", fake_attach_context)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", fake_attach_tool)
     monkeypatch.setattr(module, "attach_sandbox_lease_probe_results", fake_attach_sandbox)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", fake_attach_details)
     monkeypatch.setattr(
@@ -1921,7 +1860,6 @@ def test_foundation_runtime_cli_can_prepare_and_cleanup_test_fixtures(monkeypatc
     assert all(call["workspace_id"] == module.fixture_workspace_id(call["account"].tenant_id) for call in run_calls)
     assert ("acl", "trusted-header", "user") in probe_calls
     assert ("context", "trusted-header", "user") in probe_calls
-    assert ("tool", "trusted-header", "user") in probe_calls
     assert ("sandbox", "trusted-header", "user") in probe_calls
     assert ("details", "trusted-header", "developer") in probe_calls
     assert evidence["role_provenance"]["run_creation_role"] == "developer"
@@ -2033,7 +1971,6 @@ def test_foundation_runtime_cli_outputs_blocked_evidence_when_one_case_times_out
     monkeypatch.setattr(module, "json_request", fake_json_request)
     monkeypatch.setattr(module, "attach_artifact_acl_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_context_scope_probe_results", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "attach_tool_permission_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_sandbox_lease_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "attach_run_detail_probe_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(

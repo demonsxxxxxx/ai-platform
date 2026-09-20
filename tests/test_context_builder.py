@@ -12,6 +12,20 @@ from app.context_builder import (
 )
 
 
+@pytest.fixture(autouse=True)
+def fake_provider_lineage_port_for_context_builder(monkeypatch):
+    async def fake_claim(_conn, *, scope, run_id):
+        assert scope.session_id and run_id
+
+    async def fake_checkpoint(_conn, *, scope, run_id, checkpoint_id=None):
+        assert scope["session_id"] and run_id and checkpoint_id is None
+        return None
+
+    monkeypatch.setattr("app.context_builder.claim_provider_lineage", fake_claim)
+    monkeypatch.setattr("app.context_builder.load_ready_checkpoint", fake_checkpoint)
+
+
+
 @pytest.mark.asyncio
 async def test_record_initial_context_snapshot_persists_context_manifest_for_executor_pack(monkeypatch):
     calls = []
@@ -422,9 +436,9 @@ def test_initial_context_summary_adds_attachment_signal_for_file_context():
 def test_initial_context_summary_routes_document_skill_to_document_worker():
     summary = initial_context_summary(
         source="chat_stream",
-        agent_id="baoyu-translate",
-        skill_id="baoyu-translate",
-        input_payload={"message": "Translate this DOCX and return a Word document."},
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "Review this DOCX and return a Word document."},
         message_ids=["msg-a"],
         file_ids=["file-a"],
     )
@@ -830,12 +844,14 @@ async def test_record_initial_context_snapshot_keeps_messages_without_implicit_s
             "user_id": "user-a",
             "session_id": "session-a",
             "run_id": "run-current",
-            "limit": 64,
+            "limit": 4,
+            "oldest_first": True,
+            "after_created_at": None,
+            "after_id": None,
         }
         return [
             {"id": "msg-prior-user", "run_id": "run-prior", "role": "user", "content": "translate it", "session_generation": 1, "created_at": "2026-07-19T00:00:01Z"},
             {"id": "msg-prior-assistant", "run_id": "run-prior", "role": "assistant", "content": "done", "session_generation": 1, "created_at": "2026-07-19T00:00:02Z"},
-            {"id": "msg-current", "run_id": "run-current", "role": "user", "content": "is it still available?", "session_generation": 2, "created_at": "2026-07-19T00:00:03Z"},
         ]
 
     async def fake_list_artifacts(conn, **kwargs):
@@ -879,9 +895,13 @@ async def test_record_initial_context_snapshot_keeps_messages_without_implicit_s
     async def no_legacy(*args, **kwargs):
         return False
 
+    async def fake_current_run(_conn, **_kwargs):
+        return {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "session_id": "session-a",
+                "agent_id": "general-agent", "session_generation": 2}
+
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_current_run)
     monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", fake_count_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", fake_list_messages)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", fake_list_files)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", fake_list_artifacts)
     monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_memory_policy)
     monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create)
@@ -907,11 +927,9 @@ async def test_record_initial_context_snapshot_keeps_messages_without_implicit_s
         include_session_files=False,
     )
 
-    assert captured["included_message_ids"] == [
-        "msg-prior-user",
-        "msg-prior-assistant",
-        "msg-current",
-    ]
+    assert captured["included_message_ids"] == ["msg-current"]
+    assert captured["conversation_authority_json"]["message_count"] == 2
+    assert captured["conversation_authority_json"]["current_message_id"] == "msg-current"
     assert captured["included_artifact_ids"] == ["art-prior"]
     assert captured["included_file_ids"] == ["file-current"]
     manifest = captured["payload_json"]["context_manifest"]
@@ -958,6 +976,10 @@ async def test_record_initial_context_snapshot_preserves_more_than_eight_current
     async def ignore(*_args, **_kwargs):
         return None
 
+    async def current_run(*_args, **_kwargs):
+        return {"workspace_id": "workspace-a", "session_id": "session-a", "agent_id": "document-review", "session_generation": 2}
+
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", current_run)
     monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", no_history)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", empty)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", historical_files)
@@ -998,11 +1020,16 @@ async def test_session_history_snapshot_authorizes_candidate_tail_without_manife
     async def fake_count_messages(_conn, **_kwargs):
         return 10
 
-    async def fake_list_messages(_conn, **_kwargs):
-        return [
-            {"id": f"msg-prior-{index}", "run_id": "run-prior", "role": "user", "content": f"prior-{index}"}
-            for index in range(1, 11)
-        ] + [{"id": "msg-current", "run_id": "run-current", "role": "user", "content": "current"}]
+    history = [
+        {"id": f"msg-prior-{index:02d}", "run_id": "run-prior", "role": "user", "content": f"prior-{index}",
+         "created_at": f"2026-07-19T00:00:{index:02d}Z", "session_generation": 1}
+        for index in range(1, 11)
+    ]
+
+    async def fake_list_messages(_conn, **kwargs):
+        after = kwargs["after_id"]
+        remaining = [row for row in history if after is None or row["id"] > after]
+        return remaining[:kwargs["limit"]]
 
     async def fake_empty(*_args, **_kwargs):
         return []
@@ -1014,6 +1041,10 @@ async def test_session_history_snapshot_authorizes_candidate_tail_without_manife
         captured.update(kwargs)
         return {"id": "ctx-current"}
 
+    async def current_run(*_args, **_kwargs):
+        return {"workspace_id": "workspace-a", "session_id": "session-a", "agent_id": "general-agent", "session_generation": 2}
+
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", current_run)
     monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", fake_count_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", fake_list_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", fake_empty)
@@ -1033,7 +1064,8 @@ async def test_session_history_snapshot_authorizes_candidate_tail_without_manife
 
     included = captured["included_message_ids"]
     manifest = captured["payload_json"]["context_manifest"]
-    assert included == [*(f"msg-prior-{index}" for index in range(1, 11)), "msg-current"]
+    assert included == ["msg-current"]
+    assert captured["conversation_authority_json"]["message_count"] == 10
     assert "recent_messages" not in manifest
     assert manifest["selection"]["history_authorized_count"] == 10
 
@@ -1048,20 +1080,17 @@ async def test_context_builder_counts_history_before_fetching_authorized_candida
         assert kwargs["run_id"] == "run-current"
         return 13
 
+    history = [
+        {"id": f"msg-{index:02d}", "run_id": f"run-{index}", "role": "user", "content": f"历史内容 {index}",
+         "session_generation": index, "created_at": f"2026-07-19T00:00:{index:02d}Z"}
+        for index in range(1, 14)
+    ]
+
     async def list_messages(_conn, **kwargs):
         call_order.append("list")
-        assert kwargs["limit"] == 64
-        return [
-            {
-                "id": f"msg-{index}",
-                "run_id": f"run-{index}",
-                "role": "user",
-                "content": f"历史内容 {index}",
-                "session_generation": index,
-                "created_at": f"2026-07-19T00:00:{index:02d}Z",
-            }
-            for index in range(6, 14)
-        ]
+        assert kwargs["limit"] == 4 and kwargs["oldest_first"] is True
+        remaining = [row for row in history if kwargs["after_id"] is None or row["id"] > kwargs["after_id"]]
+        return remaining[:kwargs["limit"]]
 
     async def empty(*_args, **_kwargs):
         return []
@@ -1076,6 +1105,10 @@ async def test_context_builder_counts_history_before_fetching_authorized_candida
         captured.update(kwargs)
         return {"id": "ctx-current"}
 
+    async def current_run(*_args, **_kwargs):
+        return {"workspace_id": "workspace-a", "session_id": "session-a", "agent_id": "general-agent", "session_generation": 14}
+
+    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", current_run)
     monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", count_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", list_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", empty)
@@ -1094,11 +1127,12 @@ async def test_context_builder_counts_history_before_fetching_authorized_candida
     )
 
     manifest = captured["payload_json"]["context_manifest"]
-    assert call_order == ["count", "list"]
+    assert call_order == ["count", "list", "list", "list", "list"]
     assert manifest["selection"]["history_candidate_count"] == 13
-    assert manifest["selection"]["history_authorized_count"] == 8
-    assert manifest["selection"]["history_omitted_count"] == 5
-    assert manifest["selection"]["status"] == "trimmed"
+    assert manifest["selection"]["history_authorized_count"] == 13
+    assert manifest["selection"]["history_omitted_count"] == 0
+    assert captured["conversation_authority_json"]["range_start"]["id"] == "msg-01"
+    assert captured["conversation_authority_json"]["range_end"]["id"] == "msg-13"
     assert "recent_messages" not in manifest
 
 

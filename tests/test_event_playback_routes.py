@@ -142,8 +142,8 @@ def test_public_terminal_detail_maps_only_fixed_actionable_categories():
     }
     assert public_terminal_detail("failed", "claude_agent_sdk_runtime_error") == {
         "detail_kind": "failed",
-        "detail_code": "model_service_unavailable",
-        "message": "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+        "detail_code": "execution_service_unavailable",
+        "message": "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
     }
     assert public_terminal_detail("failed", "executor_deadline_exceeded") == {
         "detail_kind": "failed",
@@ -192,8 +192,8 @@ def test_run_event_response_projects_fixed_public_terminal_code_and_message():
 
     projected = run_event_response("run-a", row, principal=principal)
 
-    assert projected["error_code"] == "model_service_unavailable"
-    assert projected["message"] == "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    assert projected["error_code"] == "execution_service_unavailable"
+    assert projected["message"] == "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
     assert projected["payload"] == {}
     serialized = str(projected)
     assert "claude_agent_sdk_runtime_error" not in serialized
@@ -423,8 +423,8 @@ def test_subagent_failed_event_routes_use_fixed_public_activity(monkeypatch):
             "claude_agent_sdk_runtime_error",
             "provider-model=solstice-3 sdk diagnostic",
             "url=https://executor.internal.example.invalid/v1",
-            "model_service_unavailable",
-            "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
+            "execution_service_unavailable",
+            "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
         ),
     ],
 )

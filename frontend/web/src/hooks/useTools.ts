@@ -73,8 +73,10 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
   if (
     !isNonEmptyString(value.tool_id) ||
     !isNonEmptyString(value.label) ||
+    !isNonEmptyString(value.server) ||
     typeof value.description !== "string" ||
-    value.category !== "mcp"
+    value.category !== "mcp" ||
+    typeof value.cached !== "boolean"
   ) {
     return null;
   }
@@ -84,7 +86,7 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
     label: value.label,
     description: value.description,
     category: "mcp",
-    server: undefined,
+    server: value.server,
     parameters: [],
     system_disabled: false,
     user_disabled: false,
@@ -210,7 +212,8 @@ export function useTools(options?: { enabled?: boolean; sessionId?: string | nul
       const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
       const rawResponse = await authenticatedRequest(`/api/mcp/chat-tools${query}`);
       if (!rawResponse.ok) throw new Error("chat_mcp_catalog_request_failed");
-      const parsed = parseChatMcpCatalogResponse(await rawResponse.json());
+      const payload: unknown = await rawResponse.json();
+      const parsed = parseChatMcpCatalogResponse(payload);
       if (generation !== requestGeneration.current) return;
       setCatalog((current) => publishChatMcpCatalogSuccess(current, generation, {
         ...parsed,
@@ -231,7 +234,9 @@ export function useTools(options?: { enabled?: boolean; sessionId?: string | nul
       void fetchTools();
     };
     window.addEventListener("mcp-tools-changed", handleMcpToolsChanged);
-    return () => window.removeEventListener("mcp-tools-changed", handleMcpToolsChanged);
+    return () => {
+      window.removeEventListener("mcp-tools-changed", handleMcpToolsChanged);
+    };
   }, [fetchTools]);
 
   const catalogState = useMemo<ChatMcpCatalogState>(

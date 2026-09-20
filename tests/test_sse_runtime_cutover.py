@@ -30,8 +30,8 @@ def test_release_atomic_cutover_rejects_optional_v3_runtime_markers():
 def test_assistant_delta_ownership_guard_rejects_a_second_worker_ingress():
     valid = {
         "worker_source": "raise WorkerDirectAssistantDeltaError",
-        "redis_source": "class RunStreamPublisher: pass",
-        "callback_source": "canonical_assistant_delta_event(); await bridge.append(event)",
+        "redis_source": "class RedisStreamBridge: pass",
+        "callback_source": "append_callback_v4_rows(); await publish_callback_rows(capabilities, rows)",
         "executor_source": "async def run(): pass",
         "adr_source": (
             "assistant_text_delta` has one ingress\n"
@@ -92,8 +92,8 @@ async def publish(bridge, payload):
 def test_assistant_delta_ownership_guard_requires_an_adr_for_a_second_ingress():
     failures = cutover._assistant_delta_ownership_failures(
         worker_source="raise WorkerDirectAssistantDeltaError",
-        redis_source="class RunStreamPublisher: pass",
-        callback_source="canonical_assistant_delta_event(); await bridge.append(event)",
+        redis_source="class RedisStreamBridge: pass",
+        callback_source="append_callback_v4_rows(); await publish_callback_rows(capabilities, rows)",
         executor_source="async def run(): pass",
         adr_source="producer ownership is unspecified",
     )
@@ -206,7 +206,7 @@ def test_checker_detects_active_v4_application_publisher_inside_transaction():
         """
 async def callback(transaction):
     async with transaction():
-        await publish_pending_v4_events(capabilities)
+        await publish_callback_rows(capabilities, rows)
 """
     ).body[0]
 
@@ -225,6 +225,7 @@ location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
     assert any("Accept-Encoding" in failure for failure in failures)
     assert any("proxy_buffering off" in failure for failure in failures)
     assert any("proxy_cache off" in failure for failure in failures)
+    assert any("X-Accel-Buffering" in failure for failure in failures)
 
 
 def test_checker_rejects_commented_sse_nginx_contract():
@@ -237,6 +238,7 @@ def test_checker_rejects_commented_sse_nginx_contract():
 #     proxy_cache off;
 #     gzip off;
 #     add_header Cache-Control "no-cache, no-transform" always;
+#     add_header X-Accel-Buffering no always;
 #     proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
 #     proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
 # }
@@ -257,6 +259,7 @@ location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/runs/[A-Za-z0-9_-]+/stream$ {
     proxy_cache off;
     gzip off;
     add_header Cache-Control "no-cache, no-transform" always;
+    add_header X-Accel-Buffering no always;
     proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
     proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
 }
@@ -265,6 +268,137 @@ location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/runs/[A-Za-z0-9_-]+/stream$ {
     assert cutover._nginx_sse_contract_failures(source) == [
         "nginx.conf.template:sse_location_missing"
     ]
+
+
+def test_checker_rejects_duplicate_dedicated_sse_locations():
+    block = """
+location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
+    proxy_set_header Connection "";
+    proxy_set_header Accept-Encoding "";
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_cache off;
+    gzip off;
+    add_header Cache-Control "no-cache, no-transform" always;
+    add_header X-Accel-Buffering no always;
+    proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
+    proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
+}
+"""
+
+    assert cutover._nginx_sse_contract_failures(block + block) == [
+        "nginx.conf.template:sse_location_ambiguous"
+    ]
+
+
+def test_checker_rejects_an_earlier_regex_that_can_steal_the_sse_request():
+    broad_regex = """
+location ~ ^/api/chat/ {
+    proxy_buffering on;
+}
+"""
+    dedicated = """
+location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
+    proxy_set_header Connection "";
+    proxy_set_header Accept-Encoding "";
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_cache off;
+    gzip off;
+    add_header Cache-Control "no-cache, no-transform" always;
+    add_header X-Accel-Buffering no always;
+    proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
+    proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
+}
+"""
+
+    assert cutover._nginx_sse_contract_failures(broad_regex + dedicated) == [
+        "nginx.conf.template:sse_location_precedence_ambiguous"
+    ]
+
+
+def test_checker_accepts_an_earlier_regex_that_cannot_match_the_sse_request():
+    unrelated_regex = """
+location ~ ^/health/ {
+    return 404;
+}
+"""
+    dedicated = """
+location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
+    proxy_set_header Connection "";
+    proxy_set_header Accept-Encoding "";
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_cache off;
+    gzip off;
+    add_header Cache-Control "no-cache, no-transform" always;
+    add_header X-Accel-Buffering no always;
+    proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
+    proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
+}
+"""
+
+    assert cutover._nginx_sse_contract_failures(
+        unrelated_regex + dedicated
+    ) == []
+
+
+def test_checker_rejects_a_preferred_prefix_that_bypasses_the_sse_regex():
+    preferred_prefix = """
+location ^~ /api/chat/ {
+    proxy_buffering on;
+}
+"""
+    dedicated = """
+location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
+    proxy_set_header Connection "";
+    proxy_set_header Accept-Encoding "";
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_cache off;
+    gzip off;
+    add_header Cache-Control "no-cache, no-transform" always;
+    add_header X-Accel-Buffering no always;
+    proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
+    proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
+}
+"""
+
+    assert cutover._nginx_sse_contract_failures(preferred_prefix + dedicated) == [
+        "nginx.conf.template:sse_location_precedence_ambiguous"
+    ]
+
+
+def test_checker_scopes_regex_precedence_to_the_dedicated_location_server():
+    unrelated_server = """
+server {
+    listen 8443;
+    location ~ ^/api/chat/ {
+        return 404;
+    }
+}
+"""
+    accepted_server = """
+server {
+    listen 8080;
+    location ~ ^/api/chat/sessions/[A-Za-z0-9_-]+/stream$ {
+        proxy_set_header Connection "";
+        proxy_set_header Accept-Encoding "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        gzip off;
+        add_header Cache-Control "no-cache, no-transform" always;
+        add_header X-Accel-Buffering no always;
+        proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};
+        proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};
+    }
+}
+"""
+
+    assert cutover._nginx_sse_contract_failures(
+        unrelated_server + accepted_server
+    ) == []
 
 
 def test_worker_admission_guard_accepts_multiple_terminal_branches_with_predispatch_admission():
@@ -326,7 +460,7 @@ export async function connectToSSE(): Promise<void> {
   const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
     commitTransportCursor(semanticApplied);
   };
-  handlePublicRunStreamFrameV4({
+  handlePublicRunStreamFrameV4Result({
     frame,
     onCommitted: commitAcceptedStreamEvent,
   });
@@ -343,7 +477,7 @@ export async function connectToSSE(): Promise<void> {
     )
     calls = cutover._typescript_call_arguments(
         connect,
-        "handlePublicRunStreamFrameV4",
+        "handlePublicRunStreamFrameV4Result",
     )
 
     assert "fake.acceptedStreamCursorRef" not in connect
@@ -359,7 +493,7 @@ export async function connectToSSE(): Promise<void> {
     ctx.acceptedStreamCursorRef.current = accepted;
   };
   const commitAcceptedStreamEvent = (semanticApplied: boolean) => {};
-  handlePublicRunStreamFrameV4({
+  handlePublicRunStreamFrameV4Result({
     frame,
     onCommitted: commitAcceptedStreamEvent,
   });

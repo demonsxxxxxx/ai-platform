@@ -1,4 +1,5 @@
 from app.auth import AuthPrincipal, is_ai_admin
+from app.runs.api import run_retry_block_reason
 from app.run_projection import (
     normalize_run_status,
     normalize_step_status,
@@ -14,7 +15,6 @@ from app.run_provenance import (
 RUN_CONTROL_READINESS_CONTRACT_VERSION = "ai-platform.run-control-readiness.v1"
 RUN_CONTROL_ACTIVE_STATUSES = {"queued", "running"}
 RUN_CONTROL_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
-RUN_CONTROL_RETRY_PREVIEW_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
 
 
 def _control_action(*, enabled: bool, reason: str, method: str | None, href: str | None) -> dict[str, object]:
@@ -100,8 +100,9 @@ def run_control_readiness_snapshot(
         resume_reason = "no_checkpoint_outputs"
     resume_enabled = resume_reason == "checkpoint_outputs_available"
 
-    retry_enabled = status in RUN_CONTROL_RETRY_PREVIEW_STATUSES
-    retry_reason = "retry_available" if retry_enabled else "status_not_retryable"
+    retry_reason = run_retry_block_reason(status, run.get("error_code"))
+    retry_enabled = retry_reason is None
+    retry_reason = retry_reason or "retry_available"
     return {
         "contract_version": RUN_CONTROL_READINESS_CONTRACT_VERSION,
         "run": run_playback_summary(run, principal),

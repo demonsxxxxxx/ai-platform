@@ -42,30 +42,24 @@ function profile(
   return {
     agent_id: "agt_document_review",
     revision: 7,
+    published_revision: null,
     status: "draft",
     name: "文档审阅助手",
-    description: "审阅授权文档。",
-    welcome_message: "欢迎使用企业专家。",
+    description: "在授权范围内审阅企业文档。",
     starter_prompts: ["请审阅这份材料"],
-    capability_summary: "在授权范围内审阅企业文档。",
-    recommended_tasks: ["文档审阅"],
-    supported_input_types: ["text", "file"],
-    expected_outputs: ["审阅意见"],
-    permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
     avatar_ref: "builtin:document",
-    avatar_asset_id: null,
-    category: "operations",
+    avatar_seed: "agt-document-review",
+    market_tags: ["文档"],
     visibility: "tenant",
     allowed_department_ids: [],
     allowed_roles: [],
     allowed_user_ids: [],
     instructions: "仅使用已授权资料。",
-    selected_skill: {
-      skill_id: "document-review",
-      expected_version: "2026.07.28",
-    },
-    mcp_tool_ids: ["mcp:knowledge:search"],
+    skill_set: [{ skill_id: "document-review" }],
+    mcp_tool_ids: ["gateway::knowledge.search"],
     content_hash: "a".repeat(64),
+    created_at: "2026-08-01T00:00:00Z",
+    published_at: null,
     ...overrides,
   };
 }
@@ -77,7 +71,7 @@ function catalog(
     skills: [skill()],
     mcpTools: [
       {
-        id: "mcp:knowledge:search",
+        id: "gateway::knowledge.search",
         label: "Knowledge search",
         description: "Search the authorized knowledge base.",
       },
@@ -117,7 +111,7 @@ test("initial load exposes loading then hydrates exact server profiles", async (
 
   assert.equal(loaded.listPhase, "ready");
   assert.equal(loaded.profiles.length, 1);
-  assert.deepEqual(loaded.activeEditor?.selectedSkills, [profile().selected_skill]);
+  assert.deepEqual(loaded.activeEditor?.selectedSkills, [{ skill_id: "document-review" }]);
   assert.deepEqual(loaded.activeEditor?.selectedMcpToolIds, profile().mcp_tool_ids);
   assert.equal(loaded.activeEditor?.revision, 7);
 });
@@ -214,27 +208,31 @@ test("successful create materializes server identity and enables publish", async
   controller.updateActiveEditor((editor) => ({
     ...editor,
     name: "新智能体",
-    capabilitySummary: "在授权范围内处理企业任务。",
-    recommendedTasks: ["企业任务处理"],
-    expectedOutputs: ["处理建议"],
-    permissionsAndDataAccessNotice: "仅访问当前用户授权的数据。",
+    description: "在授权范围内处理企业任务。",
+    starterPrompts: ["处理企业任务"],
     instructions: "服务端说明",
     selectedSkills: [{
       skill_id: "document-review",
       expected_version: "2026.07.28",
     }],
-    selectedMcpToolIds: ["mcp:knowledge:search"],
+    selectedMcpToolIds: ["gateway::knowledge.search"],
+    allowedDepartmentIds: ["药品注册"],
   }));
 
-  await controller.saveActiveProfile(catalog());
+  const unavailableMcpCatalog = catalog({ mcpTools: [], mcpToolsResolved: false });
+  await controller.saveActiveProfile(unavailableMcpCatalog);
 
   assert.equal(saveCalls.length, 1);
   assert.equal(saveCalls[0].agentId, undefined);
   assert.equal(saveCalls[0].draft.expected_draft_revision, 0);
+  assert.deepEqual(saveCalls[0].draft.allowed_department_ids, ["药品注册"]);
   assert.equal(controller.state.activeEditor?.agentId, "agt_document_review");
   assert.equal(controller.state.activeEditor?.revision, 1);
   assert.equal(controller.state.localEditor, null);
-  assert.equal(getAgentProfilePublishBlock(controller.state.activeEditor, catalog()), null);
+  assert.equal(
+    getAgentProfilePublishBlock(controller.state.activeEditor, unavailableMcpCatalog),
+    null,
+  );
 });
 
 test("edit disables publish, save fences the exact revision, then publish adopts its response", async () => {
@@ -277,28 +275,16 @@ test("edit disables publish, save fences the exact revision, then publish adopts
     agentId: "agt_document_review",
     draft: {
       name: "文档审阅助手",
-      description: "审阅授权文档。",
-      welcome_message: "欢迎使用企业专家。",
+      description: "在授权范围内审阅企业文档。",
       starter_prompts: ["请审阅这份材料"],
-      capability_summary: "在授权范围内审阅企业文档。",
-      recommended_tasks: ["文档审阅"],
-      supported_input_types: ["text", "file"],
-      expected_outputs: ["审阅意见"],
-      permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
       instructions: "更新后的说明",
-      selected_skill: {
-        skill_id: "document-review",
-        expected_version: "2026.07.28",
-      },
       skill_set: [{
         skill_id: "document-review",
-        expected_version: "2026.07.28",
       }],
-      mcp_tool_ids: ["mcp:knowledge:search"],
+      mcp_tool_ids: ["gateway::knowledge.search"],
       avatar_ref: "builtin:document",
-      avatar_seed: "agt_document_review",
-      avatar_asset_id: null,
-      category: "operations",
+      avatar_seed: "agt-document-review",
+      market_tags: ["文档"],
       visibility: "tenant",
       allowed_department_ids: [],
       allowed_roles: [],
@@ -319,7 +305,7 @@ test("edit disables publish, save fences the exact revision, then publish adopts
   );
 });
 
-test("catalog drift fails closed before save or publish calls", async () => {
+test("Skill catalog drift fails closed while MCP discovery drift still permits publish", async () => {
   let saves = 0;
   let publishes = 0;
   const controller = new AgentBuilderController(fakeApi({
@@ -344,9 +330,12 @@ test("catalog drift fails closed before save or publish calls", async () => {
     /Skill/,
   );
 
-  await controller.loadProfiles();
-  await controller.publishActiveProfile(catalog({ mcpTools: [] }));
-  assert.equal(publishes, 0);
+  await controller.loadProfiles(true);
+  await controller.publishActiveProfile(catalog({
+    mcpTools: [],
+    mcpToolsResolved: false,
+  }));
+  assert.equal(publishes, 1);
 });
 
 test("safe save errors expose typed status and code but never raw messages", async () => {

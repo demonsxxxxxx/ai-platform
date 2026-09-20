@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { authApi, buildOAuthLoginUrl } from "../auth.ts";
+import {
+  CompanyADLoginError,
+  authApi,
+  buildOAuthLoginUrl,
+} from "../auth.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 import { ApiRequestError } from "../fetch.ts";
 import {
@@ -13,11 +17,14 @@ import {
 import { uploadApi } from "../upload.ts";
 
 function installAuthApiBrowserStubs(
-  responseBody: Record<string, unknown> = {
+  responseBody:
+    | Record<string, unknown>
+    | ((callIndex: number) => unknown) = {
     user_id: "dev001",
     user_name: "dev001",
     display_name: "Developer",
     tenant_id: "default",
+    department_id: "研发一部",
     roles: ["developer"],
     permissions: ["agent:use"],
     is_admin: true,
@@ -39,9 +46,14 @@ function installAuthApiBrowserStubs(
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     value: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const callIndex = fetchCalls.length;
       fetchCalls.push(String(input));
       fetchInit.push(init ?? {});
-      return new Response(JSON.stringify(responseBody), {
+      const body =
+        typeof responseBody === "function"
+          ? responseBody(callIndex)
+          : responseBody;
+      return new Response(JSON.stringify(body), {
         status,
         headers: { "Content-Type": "application/json" },
       });
@@ -102,13 +114,101 @@ test("buildOAuthLoginUrl keeps same-origin deployments relative and preserves op
   );
 });
 
-test("current-user projection preserves the authenticated tenant subject", async () => {
+test("current-user projection preserves the authenticated tenant and department subject", async () => {
   const stubs = installAuthApiBrowserStubs();
   try {
     const user = await authApi.getCurrentUser();
 
     assert.equal(user.id, "dev001");
     assert.equal(user.tenant_id, "default");
+    assert.equal(user.department_id, "研发一部");
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("AD login fetches GetADName before exchanging only its JWT", async () => {
+  const token = "signed-company-jwt";
+  const stubs = installAuthApiBrowserStubs((callIndex) =>
+    callIndex === 0
+      ? [
+          {
+            workid: "ad001",
+            username: "ad001",
+            cnname: "AD User",
+            depart: "研发一部",
+            role: "user",
+            token,
+          },
+        ]
+      : {
+          user_id: "ad001",
+          display_name: "AD User",
+          tenant_id: "default",
+          department_id: "研发一部",
+          roles: ["user"],
+          permissions: ["agent:use"],
+          is_admin: false,
+          source: "company-login",
+        },
+  );
+  const controller = new AbortController();
+  try {
+    const companyJwt = await authApi.fetchCompanyADLogin(
+      "http://company.test/api/login/GetADName",
+      controller.signal,
+    );
+    await authApi.loginWithAD(companyJwt, controller.signal);
+
+    assert.equal(companyJwt, token);
+    assert.deepEqual(stubs.fetchCalls, [
+      "http://company.test/api/login/GetADName",
+      "/api/ai/auth/ad-login",
+    ]);
+    assert.equal(stubs.fetchInit[0].credentials, "include");
+    assert.equal(stubs.fetchInit[0].cache, "no-store");
+    const companySignal = stubs.fetchInit[0].signal as AbortSignal;
+    const exchangeSignal = stubs.fetchInit[1].signal as AbortSignal;
+    assert.equal(companySignal instanceof AbortSignal, true);
+    assert.equal(exchangeSignal instanceof AbortSignal, true);
+    assert.notEqual(companySignal, controller.signal);
+    assert.notEqual(exchangeSignal, companySignal);
+    controller.abort();
+    assert.equal(companySignal.aborted, true);
+    assert.equal(exchangeSignal.aborted, true);
+    assert.deepEqual(JSON.parse(String(stubs.fetchInit[1].body)), { token });
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("GetADName failure has one explicit company login error", async () => {
+  const stubs = installAuthApiBrowserStubs({}, 401);
+  try {
+    await assert.rejects(
+      () => authApi.fetchCompanyADLogin("http://company.test/api/login/GetADName"),
+      (error: unknown) => error instanceof CompanyADLoginError,
+    );
+    assert.deepEqual(stubs.fetchCalls, [
+      "http://company.test/api/login/GetADName",
+    ]);
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("AD configuration composes the caller cancellation signal", async () => {
+  const stubs = installAuthApiBrowserStubs({ ad_login_url: null });
+  const controller = new AbortController();
+  try {
+    await authApi.getADLoginConfig(controller.signal);
+
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/ad-login/config"]);
+    const requestSignal = stubs.fetchInit[0].signal as AbortSignal;
+    assert.equal(requestSignal instanceof AbortSignal, true);
+    assert.notEqual(requestSignal, controller.signal);
+    controller.abort();
+    assert.equal(requestSignal.aborted, true);
   } finally {
     stubs.restore();
   }
@@ -138,11 +238,19 @@ test("current-user hydration returns owned 401 without legacy refresh or logout 
   }
 });
 
-test("subject-changing auth transports forward their operation abort signal", async () => {
+test("subject-changing auth transports compose cancellation with a bounded timeout", async () => {
   const stubs = installAuthApiBrowserStubs();
   const controller = new AbortController();
   try {
-    await authApi.bootstrapAuthContext("A".repeat(43), controller.signal);
+    await authApi.bootstrapAuthContext(
+      {
+        nonce: "A".repeat(43),
+        protocol_version: 2,
+        browser_incarnation: "I".repeat(43),
+        generation: 1,
+      },
+      controller.signal,
+    );
     await authApi.getCurrentUser({ signal: controller.signal });
     await authApi.login(
       { username: "user@example.com", password: "safe-test" },
@@ -159,10 +267,17 @@ test("subject-changing auth transports forward their operation abort signal", as
     await authApi.logout(controller.signal);
 
     assert.equal(stubs.fetchInit.length, 6);
+    const requestSignals = stubs.fetchInit.map(
+      (init) => init.signal as AbortSignal,
+    );
     assert.equal(
-      stubs.fetchInit.every((init) => init.signal === controller.signal),
+      requestSignals.every(
+        (signal) => signal instanceof AbortSignal && signal !== controller.signal,
+      ),
       true,
     );
+    controller.abort();
+    assert.equal(requestSignals.every((signal) => signal.aborted), true);
   } finally {
     stubs.restore();
   }
@@ -371,6 +486,24 @@ test("legacy upload 401 cannot refresh or replay through the compatibility firew
       delete (globalThis as { XMLHttpRequest?: typeof XMLHttpRequest })
         .XMLHttpRequest;
     }
+    stubs.restore();
+  }
+});
+
+test("file deletion uses the protected Files route", async () => {
+  const stubs = installAuthApiBrowserStubs({
+    file_id: "file-a",
+    lifecycle_state: "delete_pending",
+    deletion_state: "file_pending",
+    reconcile_required: false,
+  });
+
+  try {
+    await uploadApi.deleteFile("file/a");
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/files/file%2Fa"]);
+    assert.equal(stubs.fetchInit[0].method, "DELETE");
+    assert.equal(stubs.fetchInit[0].credentials, "include");
+  } finally {
     stubs.restore();
   }
 });

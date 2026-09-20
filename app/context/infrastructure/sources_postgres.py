@@ -159,11 +159,27 @@ async def list_session_context_messages(
     session_id: str,
     run_id: str,
     limit: int = 8,
+    oldest_first: bool = False,
+    after_created_at: str | None = None,
+    after_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return a bounded ordered message tail for one exact owned session."""
-
+    """Return bounded recent candidates or an ascending history source page."""
+    if type(limit) is not int or not 1 <= limit <= 64:
+        raise ValueError("conversation_source_page_invalid")
+    if oldest_first:
+        if (after_created_at is None) != (after_id is None):
+            raise ValueError("conversation_source_cursor_invalid")
+        after_clause = "and (messages.created_at, messages.id) > (%s::timestamptz, %s)" if after_id else ""
+        source_order = "messages.created_at asc, messages.id asc"
+        result_order = "created_at asc, id asc"
+    else:
+        if after_created_at is not None or after_id is not None:
+            raise ValueError("conversation_source_cursor_invalid")
+        after_clause = ""
+        source_order = "runs.session_generation desc, messages.created_at desc, messages.id desc"
+        result_order = "session_generation asc, created_at asc, id asc"
     cursor = await conn.execute(
-        """
+        f"""
         with current_run as (
           select runs.session_generation
           from runs
@@ -175,6 +191,7 @@ async def list_session_context_messages(
             and runs.session_id = %s
             and runs.id = %s
             and sessions.status = 'active'
+            and runs.agent_id = sessions.agent_id
             and runs.session_generation is not null
         )
         select *
@@ -192,12 +209,15 @@ async def list_session_context_messages(
             and runs.workspace_id = sessions.workspace_id
             and runs.user_id = sessions.user_id
             and runs.session_id = sessions.id
+            and runs.agent_id = sessions.agent_id
             and runs.session_generation is not null
+            and messages.role in ('user', 'assistant')
             and runs.session_generation < (select session_generation from current_run)
-          order by runs.session_generation desc, messages.created_at desc, messages.id desc
+            {after_clause}
+          order by {source_order}
           limit %s
         ) recent_messages
-        order by session_generation asc, created_at asc, id asc
+        order by {result_order}
         """,
         (
             tenant_id,
@@ -209,7 +229,8 @@ async def list_session_context_messages(
             session_id,
             workspace_id,
             user_id,
-            max(1, int(limit)),
+            *((after_created_at, after_id) if after_id else ()),
+            limit,
         ),
     )
     return list(await cursor.fetchall())
@@ -239,6 +260,7 @@ async def count_session_context_messages(
             and runs.session_id = %s
             and runs.id = %s
             and sessions.status = 'active'
+            and runs.agent_id = sessions.agent_id
             and runs.session_generation is not null
         )
         select count(*) as context_message_count
@@ -253,7 +275,9 @@ async def count_session_context_messages(
           and runs.workspace_id = sessions.workspace_id
           and runs.user_id = sessions.user_id
           and runs.session_id = sessions.id
+          and runs.agent_id = sessions.agent_id
           and runs.session_generation is not null
+          and messages.role in ('user', 'assistant')
           and runs.session_generation < (select session_generation from current_run)
         """,
         (

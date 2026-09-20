@@ -1,6 +1,7 @@
 import re
 
 from app.control_plane_contracts import sanitize_public_payload
+from app.platform.public_payload import sanitize_public_answer_text
 from app.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
@@ -8,11 +9,13 @@ from app.public_execution import (
     validate_versioned_public_execution_step_payload,
 )
 from app.runtime.kernel_contracts import AgentEvent
+from app.streaming.events import PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES
 
 _V4_EVENT_STAGES = {
     "message.started": "message",
     "message.delta": "message",
     "message.completed": "message",
+    "commentary.delta": "message",
     "thinking.started": "message",
     "thinking.delta": "message",
     "thinking.completed": "message",
@@ -70,25 +73,9 @@ EVENT_STAGE_MAP = {
     "run_cancelled": "control",
 }
 
-_V4_MESSAGE_EVENT_TYPES = frozenset(
-    {
-        "message.started",
-        "message.delta",
-        "message.completed",
-        "thinking.started",
-        "thinking.delta",
-        "thinking.completed",
-        "model.completed",
-        "tool.started",
-        "tool.completed",
-        "tool.failed",
-        "tool.denied",
-        "subagent.started",
-        "subagent.progress",
-        "subagent.completed",
-        "subagent.failed",
-        "subagent.cancelled",
-    }
+_V4_MESSAGE_EVENT_TYPES = PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES
+_V4_PATH_PRESERVING_TEXT_PAYLOAD_EVENT_TYPES = frozenset(
+    {"message.delta", "thinking.delta"}
 )
 _V4_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _V4_SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
@@ -182,7 +169,27 @@ def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
         return _private_executor_event()
     if not _v4_envelope_identity_is_valid(event):
         return _private_executor_event()
-    if not _public_strings_are_identity_safe(_v4_public_candidate(event)):
+    candidate = _v4_public_candidate(event)
+    identity_candidate = {**candidate, "payload": {}}
+    if not _public_strings_are_identity_safe(identity_candidate):
+        return _private_executor_event()
+    if event.type in _V4_PATH_PRESERVING_TEXT_PAYLOAD_EVENT_TYPES:
+        if not isinstance(event.payload, dict):
+            return _private_executor_event()
+        delta = event.payload.get("delta")
+        structured_payload = {
+            key: value for key, value in event.payload.items() if key != "delta"
+        }
+        if (
+            not isinstance(delta, str)
+            or sanitize_public_answer_text(delta) != delta
+            or sanitize_public_payload(structured_payload)
+            != _without_none_public_values(structured_payload)
+        ):
+            return _private_executor_event()
+    elif sanitize_public_payload(
+        event.payload
+    ) != _without_none_public_values(event.payload):
         return _private_executor_event()
     stage = _V4_EVENT_STAGES.get(event.type)
     if stage is None or not event.run_id or not event.event_id:

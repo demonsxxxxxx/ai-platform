@@ -36,24 +36,24 @@ test("external message conversion keeps assistant-only status off user messages"
 });
 
 
-test("external message conversion preserves only authorized public tool summaries", () => {
+test("external message conversion preserves only authorized public tool metadata", () => {
   const converted = toAssistantUiMessage({
     id: "message-1",
     role: "assistant",
     content: "",
     timestamp: new Date("2026-01-01T00:00:00Z"),
-    parts: [{ type: "tool", id: "operation-1", name: "Search authorized sources", args: { category: "search", summary: "Query: stability evidence" }, result: "Search authorized sources completed", public_operation_id: "operation-1", public_category: "search", public_input_summary: "Query: stability evidence" }],
+    parts: [{ type: "tool", id: "operation-1", name: "Search authorized sources", args: {}, public_operation_id: "operation-1", public_category: "search", duration_ms: 1200 }],
   });
   assert.deepEqual(converted.content, [{
     type: "tool-call",
     toolCallId: "operation-1",
     toolName: "Search authorized sources",
-    args: { category: "search", summary: "Query: stability evidence" },
-    argsText: "Query: stability evidence",
+    args: {},
+    argsText: "",
     isError: false,
     data: {
-      inputSummary: "Query: stability evidence",
-      resultSummary: "Search authorized sources completed",
+      category: "search",
+      durationMs: 1200,
     },
   }]);
 });
@@ -107,49 +107,42 @@ test("external message conversion preserves public subagent identity and parent 
   }]);
 });
 
-test("external message conversion keeps stable ids and redacts unvalidated reasoning content", () => {
+test("external message conversion drops thinking parts", () => {
   const converted = toAssistantUiMessage({
     id: "message-1",
     role: "assistant",
     content: "answer",
     timestamp: new Date("2026-01-01T00:00:00Z"),
     parts: [
-      { type: "thinking", content: "public model reasoning", isStreaming: true },
+      { type: "thinking", content: "private model reasoning", isStreaming: true },
       { type: "text", content: "answer" },
     ],
   });
   assert.equal(converted.id, "message-1");
-  assert.deepEqual(converted.content, [
-    { type: "reasoning", text: "Thinking", status: { type: "running" } },
-    { type: "text", text: "answer" },
-  ]);
+  assert.deepEqual(converted.content, [{ type: "text", text: "answer" }]);
 });
 
-test("external message conversion preserves model-provided public reasoning", () => {
+test("external message conversion drops messages containing only thinking parts", () => {
   const converted = toAssistantUiMessage({
     id: "message-public-thinking",
     role: "assistant",
     content: "",
     timestamp: new Date("2026-01-01T00:00:00Z"),
     parts: [
-      { type: "thinking", content: "Analyzing the request", isStreaming: true },
-      { type: "thinking", content: "Analysis step completed", isStreaming: false },
       {
         type: "thinking",
-        content: "Compare the public evidence before answering.",
+        content: "private model reasoning",
+        public_reasoning: true,
+        isStreaming: true,
+      },
+      {
+        type: "thinking",
+        content: "another private block",
         public_reasoning: true,
         isStreaming: false,
       },
     ],
   });
 
-  assert.deepEqual(converted.content, [
-    { type: "reasoning", text: "Analyzing the request", status: { type: "running" } },
-    { type: "reasoning", text: "Analysis step completed", status: { type: "complete" } },
-    {
-      type: "reasoning",
-      text: "Compare the public evidence before answering.",
-      status: { type: "complete" },
-    },
-  ]);
+  assert.equal(converted.content, "");
 });

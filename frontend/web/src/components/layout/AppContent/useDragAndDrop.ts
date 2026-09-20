@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useFileUpload } from "../../../hooks/useFileUpload";
+import type { FileUploadControls } from "../../../hooks/useFileUpload";
 import type { MessageAttachment } from "../../../types";
 import { shouldHandleGlobalFileDrop } from "./globalFileDropGuards";
 
@@ -9,11 +10,12 @@ export function useDragAndDrop(acceptedFileTypes?: readonly string[]) {
     MessageAttachment[]
   >([]);
 
-  const { uploadFiles, validateCount } = useFileUpload({
+  const uploadControls: FileUploadControls = useFileUpload({
     attachments: pageDragAttachments,
     onAttachmentsChange: setPageDragAttachments,
     acceptedFileTypes,
   });
+  const { uploadFiles, validateCount } = uploadControls;
   const uploadsEnabled = acceptedFileTypes === undefined || acceptedFileTypes.length > 0;
 
   const dragCounterRef = useRef(0);
@@ -99,5 +101,7 @@ export function useDragAndDrop(acceptedFileTypes?: readonly string[]) {
     isPageDragging,
     pageDragAttachments,
     setPageDragAttachments,
+    uploadControls,
+    clearPageDragAttachments: uploadControls.clearUploads,
   };
 }

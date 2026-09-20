@@ -178,12 +178,24 @@ class AuthorizedSkillCatalogResolution:
 
         return self.snapshot.materialized_skill_ids
 
-    def runtime_input_updates(self) -> dict[str, Any]:
-        """Return the server-owned input fields consumed by the executor adapter."""
+    def runtime_input_updates(
+        self, *, pinned_manifests: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        """Return catalog metadata and packages absent from the execution pin."""
 
+        pinned_json = {
+            str(item.get("skill_id") or ""): _canonical_json(item)
+            for item in pinned_manifests or []
+            if isinstance(item, dict)
+        }
+        manifests = self.manifests
         return {
             RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY: self.snapshot.to_runtime_payload(),
-            RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY: self.manifests,
+            RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY: [
+                manifest
+                for manifest, canonical in zip(manifests, self.manifest_json, strict=True)
+                if pinned_json.get(str(manifest["skill_id"])) != canonical
+            ],
         }
 
 
@@ -472,6 +484,7 @@ def load_runtime_authorized_skill_catalog(
     input_payload: dict[str, Any],
     *,
     expected_binding: AuthorizedSkillCatalogBinding,
+    pinned_manifests: list[dict[str, Any]] | None = None,
 ) -> AuthorizedSkillCatalogResolution | None:
     """Load and revalidate the worker-issued catalog at the executor seam."""
 
@@ -490,13 +503,32 @@ def load_runtime_authorized_skill_catalog(
         raise AuthorizedSkillCatalogError("authorized_skill_materializations_invalid")
     manifests = [_validated_manifest(item) for item in raw_manifests]
     manifest_by_id = {str(item["skill_id"]): item for item in manifests}
-    manifest_ids = tuple(str(item["skill_id"]) for item in manifests)
-    manifest_json = tuple(_canonical_json(item) for item in manifests)
+    selected_ids = snapshot.materialized_skill_ids
     if (
         len(manifest_by_id) != len(manifests)
-        or manifest_ids != snapshot.materialized_skill_ids
-        or _manifest_set_digest(manifest_json) != snapshot.materialization_sha256
+        or any(skill_id not in selected_ids for skill_id in manifest_by_id)
+        or tuple(str(item["skill_id"]) for item in manifests)
+        != tuple(skill_id for skill_id in selected_ids if skill_id in manifest_by_id)
     ):
+        raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
+    for item in pinned_manifests or []:
+        if not isinstance(item, dict):
+            continue
+        skill_id = str(item.get("skill_id") or "")
+        if skill_id not in selected_ids:
+            continue
+        existing = manifest_by_id.get(skill_id)
+        if existing is not None:
+            if _canonical_json(existing) != _canonical_json(item):
+                raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
+        else:
+            manifest_by_id[skill_id] = _validated_manifest(item)
+    if any(skill_id not in manifest_by_id for skill_id in selected_ids):
+        raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
+    manifests = [manifest_by_id[skill_id] for skill_id in selected_ids]
+    manifest_ids = tuple(str(item["skill_id"]) for item in manifests)
+    manifest_json = tuple(_canonical_json(item) for item in manifests)
+    if _manifest_set_digest(manifest_json) != snapshot.materialization_sha256:
         raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
     entry_by_id = {entry.skill_id: entry for entry in snapshot.entries}
     for skill_id, manifest in manifest_by_id.items():
@@ -923,8 +955,15 @@ async def resolve_authorized_skill_catalog(
     if any(skill_id not in discoverable_candidates for skill_id in required_skill_ids):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_required_skill_unavailable")
 
+    model_candidates = discoverable_candidates
+    if skill_set is not None:
+        model_candidates = {
+            skill_id: discoverable_candidates[skill_id]
+            for skill_id in required_skill_ids
+        }
+
     selected, omitted_count = _bounded_candidates(
-        discoverable_candidates,
+        model_candidates,
         selected_skill_id=binding.selected_skill_id,
         required_skill_ids=required_skill_ids,
     )

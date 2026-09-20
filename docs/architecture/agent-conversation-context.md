@@ -15,14 +15,21 @@ admission.
 
 ## Problem
 
-The current path stores immutable context snapshots but projects recent
-conversation messages through a public-safe manifest before execution. A prior
-message that exceeds a per-message inline limit is reduced to an identifier and
-`requires_retrieval`. The Claude Agent SDK then receives no message body unless
-the model elects to call `read_session_messages`.
+The motivating pre-cutover path stored immutable context snapshots but
+projected recent conversation messages through a public-safe manifest before
+execution. This paragraph records the original failure mode, not a fresh
+implementation or deployment assessment. A prior message that exceeds a
+per-message inline limit is reduced to an identifier and `requires_retrieval`.
+The Claude Agent SDK then received no message body unless the model elected
+to call `read_session_messages`.
 
-That behavior breaks ordinary follow-ups such as `A`, `continue`, or `use the
-second option`: the current request may depend on choices in the latest
+Claude bootstrap now receives bounded reconstructed recent conversation through
+the executor-private context pack. After a committed provider transcript exists,
+later Claude turns use native `SessionStore` resume. Platform Messages and
+immutable context snapshots remain the audit and fallback authorities.
+
+That previous behavior breaks ordinary follow-ups such as `A`, `continue`, or
+`use the second option`: the current request may depend on choices in the latest
 assistant answer, while only an older user question remains inline. A snapshot
 that proves an omitted message was authorized does not make that message
 available to the model.
@@ -128,23 +135,40 @@ input, not a runtime dependency or implementation authority.
    one complete turn; the Engine adapter may reject an assembled request that
    exceeds the model's hard context limit rather than silently deleting half of
    the turn.
-5. Future context checkpoints may replace older removed turns only through a
-   separately versioned, testable summarization contract. They are not required
-   for the initial cutover.
+5. Context checkpoints may replace older removed turns only through their
+   separately versioned, testable summarization contract.
 
-### 5. Engine adaptation
+### 5. Checkpoint build recovery
+
+1. A `building` checkpoint is owned by one queued Run and one expiring builder
+   lease. Token counting and summarization renew that exact lease while the
+   provider operation remains pending.
+2. Every progress write and final transition rechecks the checkpoint, lease,
+   owner Run, and source snapshot fences. A superseded builder cannot commit.
+3. Worker maintenance converges expired or missing builder leases from
+   `building` to `failed` in bounded, lock-skipping batches.
+4. The same Run, source snapshot, predecessor, and deterministic build key may
+   reopen a failed or expired build with a new lease and reuse validated partial
+   progress. A different identity cannot take it over.
+5. A waiter does not fail merely because one fixed wall-clock interval elapsed;
+   it waits while the exact owner remains dispatchable and fails when the source
+   or owner fence is no longer valid.
+
+### 6. Engine adaptation
 
 1. Engine-neutral conversation records terminate at the Engine adapter.
 2. An adapter that accepts native message arrays receives role-preserving
    messages.
-3. The Claude Agent SDK adapter renders a bounded structured transcript because
-   each platform run intentionally uses an isolated SDK session.
+3. The Claude Agent SDK adapter uses bounded reconstructed conversation during
+   bootstrap. After a committed provider transcript exists, later Claude turns
+   use native `SessionStore` resume; platform Messages and immutable context
+   snapshots remain the audit and fallback authorities.
 4. The transcript distinguishes historical data from system instructions and
    the current request.
 5. The model is not instructed to call `read_session_messages` to understand the
    latest prior turn.
 
-### 6. Projection and observability
+### 7. Projection and observability
 
 1. Executor-private message text must not enter ordinary-user context summaries,
    operational logs, or public events.
@@ -170,7 +194,9 @@ The conversation execution path must stop relying on:
 - `Context pack: N message(s)` as a substitute for the selected text;
 - model-initiated `read_session_messages` as the recovery path for recent
   conversation history;
-- process-local or cross-run SDK session state as conversation authority.
+- process-local SDK session state as cross-run conversation authority; committed
+  Claude provider transcripts are used only for native continuation. Platform
+  Messages and immutable context snapshots remain audit and fallback authorities.
 
 The retrieval API itself remains for explicitly older history and authorized
 inspection. File, artifact, and memory manifest behavior is not removed by this
@@ -199,14 +225,13 @@ cutover.
 
 ## Delivery Boundaries
 
-The initial delivery includes the PRD, an executor-private message
-materialization seam, complete-turn selection, Claude transcript rendering, and
-focused regression tests.
+The delivered source contract includes the PRD, an executor-private message
+materialization seam, complete-turn selection, Claude transcript rendering,
+versioned checkpoint summarization, and focused regression tests.
 
-It excludes schema migrations, UI changes, checkpoint summarization, changes to
-message retention, native cross-run Claude SDK resume, file content inlining,
-and deployment. Runtime claims require a later controlled-host acceptance run
-of the exact deployed subject.
+It excludes UI changes, changes to message retention, file content inlining, and
+deployment. Runtime claims require a controlled-host acceptance run of the exact
+deployed subject.
 
 ## Rollback
 

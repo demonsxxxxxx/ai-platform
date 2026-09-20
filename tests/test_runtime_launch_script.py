@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shlex
+import shutil
+import socket
+import subprocess
+import threading
+import time
 
+import pytest
 import yaml
 
 
@@ -14,9 +22,17 @@ DEPLOY_DIR = Path("deploy/ai-platform")
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
+OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE = (
+    DEPLOY_DIR / "docker-compose.opensandbox-internal-test.yml"
+)
 OPENSANDBOX_EGRESS_TEMPLATE = DEPLOY_DIR / "opensandbox-egress-nginx.conf.template"
+OPENSANDBOX_NETWORK_GUARD_SERVICE = Path(
+    "deploy/opensandbox/ai-platform-opensandbox-network-guard.service"
+)
+OPENSANDBOX_PRODUCTION_SERVICE = Path(
+    "deploy/opensandbox/opensandbox-production.service"
+)
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
-REPOSITORY_DEPLOY_ENV = "${PROJECT_DIR}/deploy/ai-platform/.env"
 
 
 def compose_service_text(compose_text: str, service_name: str) -> str:
@@ -37,7 +53,7 @@ def env_example_values(env_example_text: str) -> dict[str, str]:
     }
 
 
-def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
+def test_company_auth_requires_operator_managed_endpoints_and_api_only_jwt_verification():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
     env_values = env_example_values(env_example_text)
@@ -46,6 +62,19 @@ def test_company_auth_requires_operator_managed_endpoints_for_api_and_worker():
         service = compose_service_text(compose_text, service_name)
         assert "EXISTING_AUTH_BASE_URL: ${EXISTING_AUTH_BASE_URL:?set EXISTING_AUTH_BASE_URL}" in service
         assert "EXISTING_USER_INFO_BASE_URL: ${EXISTING_USER_INFO_BASE_URL:?set EXISTING_USER_INFO_BASE_URL}" in service
+    api_service = compose_service_text(compose_text, "api")
+    worker_service = compose_service_text(compose_text, "worker")
+    for name in (
+        "COMPANY_LOGIN_JWT_SECRET",
+        "COMPANY_LOGIN_JWT_ISSUER",
+        "COMPANY_LOGIN_JWT_AUDIENCE",
+    ):
+        assert f"{name}: ${{{name}:?set {name}}}" in api_service
+        assert name not in worker_service
+        assert name in env_values
+    assert env_values["COMPANY_LOGIN_JWT_SECRET"] == ""
+    assert env_values["COMPANY_LOGIN_JWT_ISSUER"]
+    assert env_values["COMPANY_LOGIN_JWT_AUDIENCE"]
     assert "10.56.0.25" not in compose_text
     assert env_values["EXISTING_AUTH_BASE_URL"] == "http://10.56.0.25:7263"
     assert env_values["EXISTING_USER_INFO_BASE_URL"] == "http://10.56.0.25:5166"
@@ -122,26 +151,6 @@ def test_skill_manifest_reference_transport_has_no_rollout_switch():
     assert "SKILL_MANIFEST_REFERENCE_WRITES_ENABLED" not in env_values
 
 
-def test_run_api_with_deploy_env_derives_database_and_s3_settings():
-    script = Path("tools/run_api_with_deploy_env.sh")
-
-    text = script.read_text(encoding="utf-8")
-
-    assert REPOSITORY_DEPLOY_ENV in text
-    assert "/home/" not in text
-    assert 'PORT="${AI_PLATFORM_PORT:-8020}"' in text
-    assert "Default: 8020" in text
-    assert "18080" not in text
-    assert 'DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/${POSTGRES_DB}"' in text
-    assert 'S3_ENDPOINT_URL="http://localhost:${MINIO_API_PORT}"' in text
-    assert 'S3_ACCESS_KEY_ID="${MINIO_ROOT_USER}"' in text
-    assert 'S3_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}"' in text
-    assert 'CLAUDE_AGENT_SDK_ENABLED=false' in text
-    assert "--check-env" in text
-    assert "sed -E 's/=.*/=SET/'" in text
-    assert "TRUSTED_PRINCIPAL_SECRET|CLAUDE_AGENT_SDK_ENABLED" not in text
-
-
 def test_compose_forwards_database_pool_settings_to_api_and_worker():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
@@ -194,7 +203,7 @@ def test_worker_compose_forwards_worker_concurrency_setting_only_to_worker():
     assert name not in api_section
 
 
-def test_compose_and_example_use_unbounded_sdk_timeout_by_default():
+def test_compose_and_example_use_sdk_execution_defaults():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     env_example_text = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
 
@@ -206,6 +215,14 @@ def test_compose_and_example_use_unbounded_sdk_timeout_by_default():
         == 2
     )
     assert "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-1200}" not in compose_text
+    assert "CLAUDE_AGENT_SDK_MAX_TURNS=256" in env_example_text
+    assert (
+        compose_text.count(
+            "CLAUDE_AGENT_SDK_MAX_TURNS: ${CLAUDE_AGENT_SDK_MAX_TURNS:-256}"
+        )
+        == 2
+    )
+    assert "CLAUDE_AGENT_SDK_MAX_TURNS:-128}" not in compose_text
 
 
 def test_compose_forwards_bounded_redis_pool_to_api_and_worker_without_limiting_server():
@@ -271,10 +288,10 @@ def test_dockerfile_precreates_private_workspace_before_nonroot_executor():
     assert "/workspace" not in dependency_layer
 
 
-def test_dockerfile_installs_git_and_pandoc_for_sdk_agent_worktrees():
+def test_dockerfile_installs_required_runtime_packages():
     content = Path("Dockerfile").read_text(encoding="utf-8")
 
-    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git pandoc passwd" in content
+    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git libexpat1 libssh2-1 pandoc passwd" in content
 
 
 def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabling_apt_security():
@@ -479,10 +496,14 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
         assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
-        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
-        assert environment["OPENSANDBOX_EGRESS_PROXY_URL"].startswith("${")
-        assert ":?set " in environment["OPENSANDBOX_EGRESS_PROXY_URL"]
+        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == (
+            "ai-platform-opensandbox-egress-internal-v1"
+        )
+        assert environment["OPENSANDBOX_EGRESS_PROXY_URL"] == (
+            "http://egress.opensandbox.internal:8080"
+        )
         for required in (
+            "MODEL_CONNECTION_ENCRYPTION_KEY",
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
             "OPENSANDBOX_BASE_URL",
             "OPENSANDBOX_API_KEY",
@@ -491,12 +512,36 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         ):
             assert environment[required].startswith("${")
             assert ":?set " in environment[required]
+        assert "MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS" in environment
+        for retired_direct_key in (
+            "OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+        ):
+            assert environment[retired_direct_key] == ""
 
+    assert overlay["services"]["api"]["environment"]["MODEL_PROXY_INTERNAL_TOKEN"].startswith("${")
     proxy = overlay["services"]["opensandbox-egress-proxy"]
-    assert proxy["ports"] == [
-        "${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:${OPENSANDBOX_EGRESS_PROXY_PORT:-18043}:8080"
-    ]
+    assert "ports" not in proxy
+    assert proxy["networks"] == {
+        "default": None,
+        "opensandbox_egress_internal_v1": {
+            "aliases": ["egress.opensandbox.internal"],
+            "ipv4_address": "172.31.75.2",
+        },
+    }
     assert proxy["labels"]["ai-platform.release-role"] == "opensandbox-egress-proxy"
+    assert overlay["networks"] == {
+        "opensandbox_egress_internal_v1": {
+            "name": "ai-platform-opensandbox-egress-internal-v1",
+            "driver": "bridge",
+            "internal": True,
+            "driver_opts": {
+                "com.docker.network.bridge.name": "br-osb-egress",
+                "com.docker.network.bridge.enable_ip_masquerade": "false",
+                "com.docker.network.bridge.enable_icc": "false",
+            },
+            "ipam": {"config": [{"subnet": "172.31.75.0/24"}]},
+        }
+    }
     assert set(overlay["services"]) == {
         "api",
         "worker",
@@ -516,9 +561,316 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         ]
     for service_name in ("postgres", "redis", "minio"):
         assert overlay["services"][service_name]["ports"] == []
-    assert "SANDBOX_SECURITY_PROFILE=governed" in env_example
+    assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS=172.17.0.1" in env_example
+    assert "OPENSANDBOX_EGRESS_PROXY_URL=http://172.17.0.1:18043" in env_example
+    for fixed_key in (
+        "DEPLOYMENT_ENVIRONMENT",
+        "SANDBOX_SECURITY_PROFILE",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE",
+        "AI_PLATFORM_BUILD_COMMIT",
+        "AI_PLATFORM_BUILD_DIRTY",
+    ):
+        assert f"{fixed_key}=" not in env_example
     assert "trusted_internal" not in env_example
     assert "OPENSANDBOX_TRUSTED_INTERNAL_" not in env_example
+
+    guard = OPENSANDBOX_NETWORK_GUARD_SERVICE.read_text(encoding="utf-8")
+    assert "Before=docker.service opensandbox.service" in guard
+    assert "RequiredBy=docker.service opensandbox.service" in guard
+    assert "-I INPUT 1 -i br-osb-egress -j AI_PLATFORM_OPENSANDBOX" in guard
+    assert (
+        "-A AI_PLATFORM_OPENSANDBOX -m conntrack --ctstate "
+        "RELATED,ESTABLISHED -j ACCEPT"
+    ) in guard
+    assert "-A AI_PLATFORM_OPENSANDBOX -j DROP" in guard
+    assert (
+        "-I DOCKER-USER 1 -i br-osb-egress -o br-osb-egress "
+        "-j AI_PLATFORM_OSB_FORWARD"
+    ) in guard
+    assert "-d 172.31.75.2/32" in guard
+    assert "--dport 8080" in guard
+    assert "-A AI_PLATFORM_OSB_FORWARD -j DROP" in guard
+
+    server_unit = OPENSANDBOX_PRODUCTION_SERVICE.read_text(encoding="utf-8")
+    assert "tomllib" in server_unit
+    assert "/etc/ai-platform/opensandbox/server.toml" in server_unit
+    assert "host == expected" in server_unit
+
+
+def test_internal_test_opensandbox_uses_the_same_model_proxy_authority():
+    overlay = yaml.safe_load(
+        OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE.read_text(encoding="utf-8")
+    )
+    for service_name in ("api", "worker"):
+        environment = overlay["services"][service_name]["environment"]
+        assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
+        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
+        assert environment["OPENSANDBOX_EGRESS_PROXY_URL"].startswith("${")
+        assert environment["MODEL_CONNECTION_ENCRYPTION_KEY"].startswith("${")
+        assert "MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS" in environment
+        for retired_direct_key in (
+            "OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+        ):
+            assert environment[retired_direct_key] == ""
+    assert overlay["services"]["api"]["environment"]["MODEL_PROXY_INTERNAL_TOKEN"].startswith("${")
+    proxy = overlay["services"]["opensandbox-egress-proxy"]
+    assert proxy["ports"] == [
+        "${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:18043:8080"
+    ]
+    assert proxy["environment"]["MODEL_PROXY_INTERNAL_TOKEN"].startswith("${")
+    assert proxy["volumes"] == [
+        "./opensandbox-egress-nginx.conf.template:/etc/nginx/templates-opensandbox/default.conf.template:ro"
+    ]
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or os.environ.get("GITHUB_ACTIONS") != "true",
+    reason="requires the Docker-capable GitHub Linux runner",
+)
+def test_opensandbox_network_guard_enforces_proxy_only_connectivity():
+    def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            command,
+            check=check,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    for executable in ("docker", "sudo", "ip"):
+        assert shutil.which(executable), f"required executable is unavailable: {executable}"
+    assert Path("/usr/sbin/iptables").is_file()
+    run(["sudo", "-n", "true"])
+    run(["docker", "info"])
+
+    network = "ai-platform-opensandbox-egress-internal-v1"
+    bridge = "br-osb-egress"
+    chains = ("AI_PLATFORM_OPENSANDBOX", "AI_PLATFORM_OSB_FORWARD")
+    assert run(["docker", "network", "inspect", network], check=False).returncode != 0
+    assert run(["ip", "link", "show", "dev", bridge], check=False).returncode != 0
+    for chain in chains:
+        assert (
+            run(
+                ["sudo", "-n", "/usr/sbin/iptables", "-S", chain],
+                check=False,
+            ).returncode
+            != 0
+        )
+
+    suffix = str(os.getpid())
+    proxy = f"ai-platform-osb-guard-proxy-{suffix}"
+    peer = f"ai-platform-osb-guard-peer-{suffix}"
+    client = f"ai-platform-osb-guard-client-{suffix}"
+    containers = (proxy, peer, client)
+    network_created = False
+    guard_owned = False
+    listener: socket.socket | None = None
+    listener_thread: threading.Thread | None = None
+    stop_listener = threading.Event()
+
+    try:
+        run(
+            [
+                "docker",
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--internal",
+                "--subnet",
+                "172.31.75.0/24",
+                "--opt",
+                "com.docker.network.bridge.name=br-osb-egress",
+                "--opt",
+                "com.docker.network.bridge.enable_ip_masquerade=false",
+                "--opt",
+                "com.docker.network.bridge.enable_icc=false",
+                network,
+            ]
+        )
+        network_created = True
+        run(["docker", "pull", "redis:7.4-alpine"])
+        for name, address, port in (
+            (proxy, "172.31.75.2", "8080"),
+            (peer, "172.31.75.3", "9090"),
+        ):
+            run(
+                [
+                    "docker",
+                    "run",
+                    "--detach",
+                    "--name",
+                    name,
+                    "--network",
+                    network,
+                    "--ip",
+                    address,
+                    "redis:7.4-alpine",
+                    "sh",
+                    "-c",
+                    f"while true; do nc -l -p {port} >/dev/null 2>&1; done",
+                ]
+            )
+        run(
+            [
+                "docker",
+                "run",
+                "--detach",
+                "--name",
+                client,
+                "--network",
+                network,
+                "--ip",
+                "172.31.75.4",
+                "redis:7.4-alpine",
+                "sh",
+                "-c",
+                "while true; do sleep 3600; done",
+            ]
+        )
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("172.31.75.1", 18080))
+        listener.listen()
+        listener.settimeout(0.2)
+
+        def accept_host_connections() -> None:
+            assert listener is not None
+            while not stop_listener.is_set():
+                try:
+                    connection, _ = listener.accept()
+                except TimeoutError:
+                    continue
+                except OSError:
+                    if stop_listener.is_set():
+                        return
+                    raise
+                connection.close()
+
+        listener_thread = threading.Thread(target=accept_host_connections, daemon=True)
+        listener_thread.start()
+
+        deadline = time.monotonic() + 15
+        for address, port in (("172.31.75.2", 8080), ("172.31.75.3", 9090)):
+            while True:
+                try:
+                    with socket.create_connection((address, port), timeout=1):
+                        break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.1)
+
+        unit_lines = OPENSANDBOX_NETWORK_GUARD_SERVICE.read_text(
+            encoding="utf-8"
+        ).splitlines()
+        environment = {
+            key: value
+            for line in unit_lines
+            if line.startswith("Environment=")
+            for key, value in (shlex.split(line.removeprefix("Environment="))[0].split("=", 1),)
+        }
+        guard_commands = [
+            shlex.split(line.removeprefix("ExecStart="))
+            for line in unit_lines
+            if line.startswith("ExecStart=")
+        ]
+        assert guard_commands
+        guard_owned = True
+        for command in guard_commands:
+            ignore_failure = command[0].startswith("-")
+            if ignore_failure:
+                command[0] = command[0][1:]
+            expanded = [
+                next(
+                    (
+                        token.replace(f"${{{key}}}", value)
+                        for key, value in environment.items()
+                        if f"${{{key}}}" in token
+                    ),
+                    token,
+                )
+                for token in command
+            ]
+            assert expanded[0] == "/usr/sbin/iptables"
+            run(["sudo", "-n", *expanded], check=not ignore_failure)
+
+        assert (
+            run(
+                [
+                    "docker",
+                    "exec",
+                    client,
+                    "nc",
+                    "-z",
+                    "-w",
+                    "2",
+                    "172.31.75.2",
+                    "8080",
+                ],
+                check=False,
+            ).returncode
+            == 0
+        )
+        assert (
+            run(
+                [
+                    "docker",
+                    "exec",
+                    client,
+                    "nc",
+                    "-z",
+                    "-w",
+                    "2",
+                    "172.31.75.3",
+                    "9090",
+                ],
+                check=False,
+            ).returncode
+            != 0
+        )
+        assert (
+            run(
+                [
+                    "docker",
+                    "exec",
+                    client,
+                    "nc",
+                    "-z",
+                    "-w",
+                    "2",
+                    "172.31.75.1",
+                    "18080",
+                ],
+                check=False,
+            ).returncode
+            != 0
+        )
+        with socket.create_connection(("172.31.75.3", 9090), timeout=2):
+            pass
+    finally:
+        stop_listener.set()
+        if listener is not None:
+            listener.close()
+        if listener_thread is not None:
+            listener_thread.join(timeout=2)
+        if guard_owned:
+            for command in (
+                ["-D", "INPUT", "-i", bridge, "-j", chains[0]],
+                ["-D", "DOCKER-USER", "-i", bridge, "-o", bridge, "-j", chains[1]],
+                ["-F", chains[0]],
+                ["-X", chains[0]],
+                ["-F", chains[1]],
+                ["-X", chains[1]],
+            ):
+                run(
+                    ["sudo", "-n", "/usr/sbin/iptables", *command],
+                    check=False,
+                )
+        run(["docker", "rm", "--force", *containers], check=False)
+        if network_created:
+            run(["docker", "network", "rm", network], check=False)
 
 
 def test_opensandbox_egress_proxy_preserves_existing_model_and_callback_authorities():
@@ -562,13 +914,11 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
 
     for expected in [
         "SANDBOX_CONTAINER_PROVIDER=opensandbox",
-        "SANDBOX_SECURITY_PROFILE=governed",
         "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
         "SANDBOX_EXECUTOR_PUBLISHED_HOST=host.docker.internal",
         "SANDBOX_WORKSPACE_ROOT=/tmp/ai-platform-sandbox-workspaces",
         "SANDBOX_CALLBACK_BASE_URL=http://api.sandbox.internal:8020",
         "SANDBOX_EGRESS_POLICY_ENABLED=false",
-        "SANDBOX_EGRESS_NETWORK_NAME=ai-platform-sandbox-egress-internal-v1",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY=replace_me_with_a_random_32_byte_minimum_value",
         "SANDBOX_EGRESS_PROOF_KEY_ID=current",
         "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON=",
@@ -581,7 +931,9 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
     assert direct_text.count("SANDBOX_CONTAINER_PROVIDER: opensandbox") == 2
     assert direct_text.count("SANDBOX_SECURITY_PROFILE: governed") == 2
     assert direct_text.count('OPENSANDBOX_USE_SERVER_PROXY: "true"') == 2
-    assert direct_text.count("OPENSANDBOX_EXPECTED_NETWORK_MODE: bridge") == 2
+    assert direct_text.count(
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1"
+    ) == 2
     assert direct_text.count("      OPENSANDBOX_EGRESS_PROXY_URL:") == 2
 
 
@@ -592,7 +944,6 @@ def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():
         service_text = compose_service_text(compose_text, service_name)
         for expected in [
             "SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}",
-            "SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress-internal-v1}",
             "SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:-}",
             "SANDBOX_EGRESS_PROOF_KEY_ID: ${SANDBOX_EGRESS_PROOF_KEY_ID:-current}",
             "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON: ${SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON:-}",

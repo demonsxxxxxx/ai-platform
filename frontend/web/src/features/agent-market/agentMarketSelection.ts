@@ -41,6 +41,12 @@ export function buildAgentMarketWorkspacePath(
   return sessionId ? `${base}/${encodeURIComponent(sessionId)}` : base;
 }
 
+export function marketTagsForProfile(
+  profile: Pick<AgentProfilePublicProjection, "market_tags">,
+): string[] {
+  return [...new Set(profile.market_tags.map((tag) => tag.trim()).filter(Boolean))];
+}
+
 /** Search only the safe current public projection. */
 export function filterPublishedMarketProfiles(
   profiles: readonly AgentProfilePublicProjection[],
@@ -52,12 +58,25 @@ export function filterPublishedMarketProfiles(
     const searchableProjection = [
       profile.name,
       profile.description,
-      profile.capability_summary,
-      ...profile.recommended_tasks,
+      ...marketTagsForProfile(profile),
+      ...profile.starter_prompts,
     ].join("\n");
     return searchableProjection
       .normalize("NFKC")
       .toLocaleLowerCase()
       .includes(normalizedQuery);
+  });
+}
+
+/** Filter by the selected tag union; empty selection leaves the catalog unchanged. */
+export function filterPublishedMarketProfilesByTags(
+  profiles: readonly AgentProfilePublicProjection[],
+  selectedTags: readonly string[],
+): readonly AgentProfilePublicProjection[] {
+  const normalizedTags = [...new Set(selectedTags.map((tag) => tag.trim()).filter(Boolean))];
+  if (normalizedTags.length === 0) return profiles;
+  return profiles.filter((profile) => {
+    const profileTags = marketTagsForProfile(profile);
+    return normalizedTags.some((tag) => profileTags.includes(tag));
   });
 }

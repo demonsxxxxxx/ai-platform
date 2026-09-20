@@ -4,21 +4,27 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.execution.api import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
 )
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from app.platform.public_payload import (
+    sanitize_public_answer_text,
+    sanitize_public_event_candidate,
     sanitize_public_payload,
     sanitize_public_reasoning_text,
-    sanitize_public_text,
 )
+from app.required_tool_contract import with_sandbox_local_tool_capability_subjects
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import (
     CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+    SUPPORTED_AGENT_EVENT_TYPES,
     AgentEvent,
 )
+from app.streaming.events import EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES
 from app.streaming.application.callback_events_v4 import (
     callback_thinking_summary_to_v4,
 )
@@ -28,9 +34,8 @@ def _adapter():
     return ClaudeSdkAgentEventAdapter(
         run_id="run-1187",
         attempt_id="attempt-1",
-        sanitizer=sanitize_public_text,
-        payload_sanitizer=sanitize_public_payload,
-        reasoning_sanitizer=sanitize_public_reasoning_text,
+        sanitizer=sanitize_public_answer_text,
+        payload_sanitizer=sanitize_public_event_candidate,
         authorized_capabilities={
             "Read": ("read", "Read file"),
             "WebSearch": ("search", "Web search"),
@@ -40,7 +45,38 @@ def _adapter():
     )
 
 
-def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
+def _assert_sandbox_answer_receipt(result, candidates, answer):
+    delta_candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, ClaudeAgentEventCandidate)
+        and candidate.event_type == "message.delta"
+    ]
+    assert result.message == ""
+    assert "".join(candidate.payload["delta"] for candidate in delta_candidates) == answer
+    assert result.answer_receipt == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": delta_candidates[0].message_id,
+        "delta_count": len(delta_candidates),
+        "text_length": len(answer),
+        "last_delta_event_id": delta_candidates[-1].event_id,
+    }
+    assert delta_candidates
+    assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in delta_candidates)
+
+
+def test_executor_callback_registry_tracks_the_generated_public_subset():
+    assert EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES <= SUPPORTED_AGENT_EVENT_TYPES
+    assert "commentary.delta" in EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES
+    assert {
+        "agent.progress",
+        "thinking.started",
+        "thinking.delta",
+        "thinking.completed",
+    }.isdisjoint(EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES)
+
+
+def test_v4_callback_bridge_preserves_safe_text_and_rejects_private_fields():
     safe = AgentEvent(
         type="message.delta",
         payload={"delta": "safe answer"},
@@ -48,25 +84,35 @@ def test_v4_callback_bridge_rejects_private_strings_even_when_shape_is_valid():
         run_id="run-1187",
         message_id="message-1",
     )
-    private = AgentEvent(
+    path_text = AgentEvent(
         type="message.delta",
-        payload={"delta": r"C:\\agent-workspaces\\run-1187\\secret"},
+        payload={"delta": r"C:\\agent-workspaces\\run-1187\\output.txt"},
         event_id="event-2",
         run_id="run-1187",
         message_id="message-1",
     )
-
+    private_payload_field = AgentEvent(
+        type="message.delta",
+        payload={"delta": "safe answer", "path": "agent-workspaces/private"},
+        event_id="event-3",
+        run_id="run-1187",
+        message_id="message-1",
+    )
     private_envelope = AgentEvent(
         type="message.delta",
         payload={"delta": "safe answer"},
-        event_id="event-agent-workspaces-secret",
+        event_id="event-agent-workspaces-id",
         run_id="run-1187",
         message_id="message-1",
-        causation_event_id="cause-agent-workspaces-secret",
+        causation_event_id="cause-agent-workspaces-id",
     )
 
     assert agent_event_to_executor_event(safe)["event_type"] == "message.delta"
-    assert agent_event_to_executor_event(private)["event_type"] == "executor_private_event"
+    assert agent_event_to_executor_event(path_text)["event_type"] == "message.delta"
+    assert (
+        agent_event_to_executor_event(private_payload_field)["event_type"]
+        == "executor_private_event"
+    )
     assert agent_event_to_executor_event(private_envelope)["event_type"] == "executor_private_event"
 
 
@@ -109,16 +155,45 @@ def test_v4_callback_bridge_rejects_admin_only_event_even_when_schema_valid():
     assert agent_event_to_executor_event(admin_only)["event_type"] == "executor_private_event"
 
 
-def test_v4_candidate_rejects_private_nested_public_strings():
+def test_v4_candidate_allows_answer_paths_but_rejects_structured_paths_and_secrets():
+    answer = (
+        r"Use C:\Users\Alice\result.txt, /tmp/result.py, output/report.md, "
+        "storage_key, ResultParser.parse(), and ordinary_identifier."
+    )
+    path_candidate = ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="event-path",
+        event_type="message.delta",
+        message_id="message-1",
+        causation_event_id=None,
+        payload={"delta": answer},
+        payload_sanitizer=sanitize_public_event_candidate,
+    )
+
+    assert path_candidate.payload == {"delta": answer}
     with pytest.raises(ValueError, match="private text"):
         ClaudeAgentEventCandidate(
             run_id="run-1187",
-            event_id="event-4",
+            event_id="event-structured-path",
+            event_type="tool.started",
+            message_id="message-1",
+            causation_event_id=None,
+            payload={
+                "operation_id": "operation-1",
+                "category": "read",
+                "display_name": "/tmp/private-tool",
+            },
+            payload_sanitizer=sanitize_public_event_candidate,
+        )
+    with pytest.raises(ValueError, match="private text"):
+        ClaudeAgentEventCandidate(
+            run_id="run-1187",
+            event_id="event-secret",
             event_type="message.delta",
             message_id="message-1",
             causation_event_id=None,
-            payload={"delta": "agent-workspaces/private nested text"},
-            payload_sanitizer=sanitize_public_payload,
+            payload={"delta": 'client_secret="opaque12345"'},
+            payload_sanitizer=sanitize_public_event_candidate,
         )
 
 
@@ -135,6 +210,134 @@ def test_answer_candidates_are_gated_and_have_one_stable_message_identity():
     ]
     assert len({event.message_id for event in events}) == 1
     assert all("attempt-1" not in str(event.as_dict()["payload"]) for event in events)
+    assert events[-1].payload == {"delta_count": 1, "text_length": len("safe answer")}
+    assert events[-1].causation_event_id == events[1].event_id
+
+
+def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
+    adapter = _adapter()
+
+    events = adapter.accept_commentary_text(
+        "正在检查授权输入。",
+        commentary_identity="assistant_1",
+        already_gated=True,
+    )
+    continued = adapter.accept_commentary_text(
+        "正在继续处理。",
+        commentary_identity="assistant_1",
+        already_gated=True,
+    )
+
+    assert [event.event_type for event in (*events, *continued)] == [
+        "commentary.delta",
+        "commentary.delta",
+    ]
+    assert events[0].message_id == continued[0].message_id == adapter.message_id
+    assert events[0].payload["summary_id"] == continued[0].payload["summary_id"]
+    assert events[0].event_id != continued[0].event_id
+    assert adapter.answer_receipt is None
+    bridged = agent_event_to_executor_event(
+        AgentEvent(**events[0].as_agent_event_fields())
+    )
+    assert bridged["event_type"] == "commentary.delta"
+    assert bridged["payload"] == events[0].payload
+    unsafe_bridged = agent_event_to_executor_event(
+        AgentEvent(
+            type="commentary.delta",
+            event_id="evt_unsafe_commentary",
+            run_id="run-a",
+            message_id=adapter.message_id,
+            payload={
+                "summary_id": events[0].payload["summary_id"],
+                "delta": "storage_key=tenants/private/secret.txt",
+            },
+        )
+    )
+    assert unsafe_bridged["event_type"] == "executor_private_event"
+    assert "storage_key" not in str(unsafe_bridged)
+    assert (
+        adapter.accept_commentary_text(
+            'client_secret="opaque12345"',
+            commentary_identity="assistant_2",
+        )
+        == ()
+    )
+
+
+def test_answer_candidate_failure_does_not_advance_receipt_state():
+    failed_once = False
+
+    def fail_one_delta(value):
+        nonlocal failed_once
+        if (
+            not failed_once
+            and isinstance(value, dict)
+            and value.get("event_type") == "message.delta"
+        ):
+            failed_once = True
+            raise RuntimeError("synthetic projection failure")
+        return sanitize_public_event_candidate(value)
+
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        sanitizer=sanitize_public_answer_text,
+        payload_sanitizer=fail_one_delta,
+    )
+
+    assert adapter.accept_answer_text("omitted", already_gated=True) == ()
+    accepted = adapter.accept_answer_text("kept", already_gated=True)
+    completed = adapter.complete_answer("kept")
+
+    assert [event.event_type for event in (*accepted, *completed)] == [
+        "message.started",
+        "message.delta",
+        "message.completed",
+    ]
+    assert accepted[1].payload == {"delta": "kept"}
+    assert completed[0].payload == {"delta_count": 1, "text_length": 4}
+    assert adapter.answer_receipt == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": accepted[0].message_id,
+        "delta_count": 1,
+        "text_length": 4,
+        "last_delta_event_id": accepted[1].event_id,
+    }
+    assert adapter.public_projection_omissions == 1
+
+
+def test_result_completion_candidate_failure_does_not_create_answer_receipt():
+    def fail_completion(value):
+        if isinstance(value, dict) and value.get("event_type") == "message.completed":
+            raise RuntimeError("synthetic completion projection failure")
+        return sanitize_public_event_candidate(value)
+
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        sanitizer=sanitize_public_answer_text,
+        payload_sanitizer=fail_completion,
+    )
+    accepted = adapter.accept_answer_text("kept", already_gated=True)
+
+    terminal = adapter.accept_result(
+        SimpleNamespace(
+            duration_ms=1,
+            num_turns=1,
+            is_error=False,
+            subtype="success",
+            stop_reason="end_turn",
+        ),
+        final_content="kept",
+    )
+
+    assert [event.event_type for event in (*accepted, *terminal)] == [
+        "message.started",
+        "message.delta",
+        "model.completed",
+    ]
+    assert adapter.answer_receipt is None
+    assert adapter.public_projection_omissions == 1
 
 
 def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
@@ -174,28 +377,62 @@ def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
     assert all("denied-call" not in repr(event.as_dict()) for event in denied)
 
 
-
-def test_thinking_summary_and_tool_hooks_exclude_sdk_signature_and_tool_payload():
+def test_tool_hook_can_precede_tool_use_block_without_exposing_sdk_payload():
     adapter = _adapter()
+    hook = {
+        "tool_name": "Read",
+        "tool_use_id": "sdk-tool-before-block",
+        "tool_input": {"file_path": "C:\\private\\x"},
+    }
+
+    started = adapter.accept_hook(
+        "PreToolUse", hook, tool_use_id="sdk-tool-before-block"
+    )
+    completed = adapter.accept_hook(
+        "PostToolUse", hook, tool_use_id="sdk-tool-before-block"
+    )
+
+    assert [event.event_type for event in started + completed] == [
+        "tool.started",
+        "tool.completed",
+    ]
+    assert "file_path" not in repr(started + completed)
+    assert "C:\\private\\x" not in repr(started + completed)
+
+
+def test_hook_seed_rejects_conflicting_late_tool_block_without_private_payload():
+    adapter = _adapter()
+    hook = {
+        "tool_name": "Read",
+        "tool_use_id": "sdk-tool-conflict",
+        "tool_input": {"file_path": "C:\\private\\hook"},
+    }
+    started = adapter.accept_hook(
+        "PreToolUse", hook, tool_use_id="sdk-tool-conflict"
+    )
+    assert [event.event_type for event in started] == ["tool.started"]
 
     class ToolUseBlock:
         pass
 
-    thinking_events = adapter.accept_thinking_summary(
-        "Check the public evidence before choosing the next action.",
-        block_index=0,
-        message_identity="message-a",
-    )
-    assert len(thinking_events) == 1
-    thinking = thinking_events[0]
-    assert thinking.as_agent_event_fields()["type"] == (
-        CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
-    )
-    assert thinking.summary == (
-        "Check the public evidence before choosing the next action."
-    )
-    assert thinking.message_id
-    assert "signature" not in repr(thinking.as_agent_event_fields())
+    block = ToolUseBlock()
+    block.id = "sdk-tool-conflict"
+    block.name = "Read"
+    block.input = {"file_path": "C:\\private\\late"}
+    assert adapter.accept_content_block(block) == ()
+
+    assert adapter.accept_hook(
+        "PostToolUse", hook, tool_use_id="sdk-tool-conflict"
+    ) == ()
+    assert "C:\\private\\hook" not in repr(started)
+    assert "C:\\private\\late" not in repr(started)
+
+
+def test_tool_hooks_exclude_sdk_tool_payload():
+    adapter = _adapter()
+
+    class ToolUseBlock:
+        pass
 
     block = ToolUseBlock()
     block.id = "sdk-tool-1"
@@ -205,12 +442,12 @@ def test_thinking_summary_and_tool_hooks_exclude_sdk_signature_and_tool_payload(
     pre = {"tool_name": "Read", "tool_use_id": "sdk-tool-1", "tool_input": {}}
     started = adapter.accept_hook("PreToolUse", pre, tool_use_id="sdk-tool-1")
     assert [event.event_type for event in started] == ["tool.started"]
-    assert started[0].payload["input_summary"] == "Starting Read file"
+    assert "input_summary" not in started[0].payload
     assert adapter.accept_hook("PreToolUse", pre, tool_use_id="sdk-tool-1") == ()
 
     completed = adapter.accept_hook("PostToolUse", pre, tool_use_id="sdk-tool-1")
     assert [event.event_type for event in completed] == ["tool.completed"]
-    assert completed[0].payload["result_summary"] == "Read file completed"
+    assert "result_summary" not in completed[0].payload
 
     search = ToolUseBlock()
     search.id = "search-call-1"
@@ -221,7 +458,7 @@ def test_thinking_summary_and_tool_hooks_exclude_sdk_signature_and_tool_payload(
         "PreToolUse",
         {"tool_use_id": "search-call-1", "tool_name": "WebSearch"},
     )
-    assert search_started[0].payload["input_summary"] == "Starting Web search"
+    assert "input_summary" not in search_started[0].payload
     assert "query" not in search_started[0].payload
 
     assert adapter.accept_hook("PostToolUse", pre, tool_use_id="sdk-tool-1") == ()
@@ -415,9 +652,8 @@ def test_task_parent_causation_requires_an_accepted_parent_event():
     assert event.causation_event_id is None
 
 
-def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
-    delta = "d" * 8192
-    final = "f" * 262144
+def test_candidate_validation_enforces_delta_bounds_and_completion_receipt_shape():
+    delta = "d" * 8_192
     ClaudeAgentEventCandidate(
         run_id="run-1187",
         event_id="evt_delta",
@@ -432,8 +668,8 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         event_id="evt_final",
         event_type="message.completed",
         message_id="msg_1",
-        causation_event_id=None,
-        payload={"content": final},
+        causation_event_id="evt_delta",
+        payload={"delta_count": 1, "text_length": len(delta)},
         payload_sanitizer=sanitize_public_payload,
     )
     with pytest.raises(ValueError):
@@ -450,13 +686,13 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         ClaudeAgentEventCandidate(
             run_id="run-1187",
             event_id="evt_extra",
-            event_type="message.delta",
+            event_type="message.completed",
             message_id="msg_1",
-            causation_event_id=None,
-            payload={"delta": "ok", "extra": "private"},
+            causation_event_id="evt_delta",
+            payload={"delta_count": 1, "text_length": 1, "content": "private"},
             payload_sanitizer=sanitize_public_payload,
         )
-    multibyte_delta = "é" * 8_192
+    multibyte_delta = "界" * 8_192
     ClaudeAgentEventCandidate(
         run_id="run-1187",
         event_id="evt_multibyte_delta",
@@ -464,16 +700,6 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
         message_id="msg_1",
         causation_event_id=None,
         payload={"delta": multibyte_delta},
-        payload_sanitizer=sanitize_public_payload,
-    )
-    multibyte_content = "界" * 262_144
-    ClaudeAgentEventCandidate(
-        run_id="run-1187",
-        event_id="evt_multibyte_content",
-        event_type="message.completed",
-        message_id="msg_1",
-        causation_event_id=None,
-        payload={"content": multibyte_content},
         payload_sanitizer=sanitize_public_payload,
     )
     with pytest.raises(ValueError):
@@ -486,37 +712,6 @@ def test_candidate_validation_enforces_required_fields_and_exact_text_bounds():
             payload={"delta": "d" * 8_193},
             payload_sanitizer=sanitize_public_payload,
         )
-
-
-def test_thinking_identity_is_scoped_by_message_and_block():
-    adapter = _adapter()
-
-    first = adapter.accept_thinking_summary(
-        "Compare the available evidence.",
-        block_index=0,
-        message_identity="message-a",
-    )
-    second = adapter.accept_thinking_summary(
-        "Compare the available evidence.",
-        block_index=0,
-        message_identity="message-a",
-    )
-    third = adapter.accept_thinking_summary(
-        "Compare the available evidence.",
-        block_index=0,
-        message_identity="message-b",
-    )
-    assert len(first) == 1
-    assert second == ()
-    assert len(third) == 1
-    assert first[0].event_id != third[0].event_id
-    assert first[0].message_id == third[0].message_id
-    reconstructed = _adapter().accept_thinking_summary(
-        "Compare the available evidence.",
-        block_index=0,
-        message_identity="message-a",
-    )
-    assert reconstructed[0].event_id == first[0].event_id
 
 
 def test_content_block_does_not_trust_a_nominal_thinking_block_class():
@@ -555,31 +750,6 @@ def test_generic_agent_event_rejects_public_thinking_lifecycle(event_type, paylo
         )
 
 
-def test_thinking_is_sanitized_as_one_summary_before_callback_publication():
-    adapter = _adapter()
-
-    private = adapter.accept_thinking_summary(
-        "Review /tmp/private-runtime-output before answering.",
-        block_index=0,
-        message_identity="message-private",
-    )
-    assert len(private) == 1
-    assert private[0].summary == (
-        "Review [redacted-private] before answering."
-    )
-    assert "/tmp/" not in repr(private[0].as_agent_event_fields())
-
-    public_summary = "evidence " * 1_200
-    events = adapter.accept_thinking_summary(
-        public_summary,
-        block_index=1,
-        message_identity="message-public",
-    )
-    assert len(events) == 1
-    assert events[0].summary == public_summary
-    assert len(events[0].summary) > 8_192
-
-
 @pytest.mark.parametrize(
     ("private_path", "private_fragment"),
     [
@@ -591,7 +761,7 @@ def test_thinking_is_sanitized_as_one_summary_before_callback_publication():
         ),
     ],
 )
-def test_thinking_sanitizer_redacts_complete_windows_paths(
+def test_thinking_sanitizer_preserves_complete_windows_paths(
     private_path,
     private_fragment,
 ):
@@ -600,9 +770,9 @@ def test_thinking_sanitizer_redacts_complete_windows_paths(
     )
 
     assert sanitized == (
-        "Review [redacted-path]\nContinue with the public evidence."
+        f"Review {private_path}\nContinue with the public evidence."
     )
-    assert private_fragment not in sanitized
+    assert private_fragment in sanitized
 
 
 def test_callback_projects_whole_summaries_with_server_owned_identity_and_chunks():
@@ -632,9 +802,9 @@ def test_callback_projects_whole_summaries_with_server_owned_identity_and_chunks
         "thinking.completed",
     ]
     assert redacted[1].payload["delta"] == (
-        "Review [redacted-private] before answering."
+        "Review /tmp/private-runtime-output before answering."
     )
-    assert "/tmp/" not in repr(redacted)
+    assert "/tmp/" in repr(redacted)
 
     long_summary = "evidence " * 1_200
     chunked = callback_thinking_summary_to_v4(
@@ -680,8 +850,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             claude_agent_sdk_max_turns=4,
             claude_agent_sdk_timeout_seconds=10,
             claude_agent_sdk_skills="",
-            claude_agent_sdk_max_thinking_tokens=128,
-            claude_agent_sdk_effort="high",
             claude_agent_permission_mode="dontAsk",
             claude_agent_allowed_tools="Read",
             claude_agent_disallowed_tools="",
@@ -692,30 +860,25 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             openai_api_key="",
         ),
     )
-    subject = {
-        "identity": "Read",
-        "registered": True,
-        "declared": True,
-        "active": True,
-        "distributed": True,
-        "identity_authorized": True,
-        "object_authorized": True,
-        "parameters_authorized": True,
-        "allowed_parameter_keys": ["file_path"],
-        "required_parameter_keys": ["file_path"],
-        "risk_level": "low",
-        "write_capable": False,
-        "public_tool_label": "Read file",
-    }
+    subject = with_sandbox_local_tool_capability_subjects(
+        [],
+        sandbox_provider="docker",
+        authorized_sandbox_tool_identities={"Read"},
+    )[0]
     candidates = []
+    tool_lifecycle = []
+
+    async def acknowledge_tool_lifecycle(fact):
+        tool_lifecycle.append((fact["tool_name"], fact["lifecycle"]))
+        return True
 
     async def query_fn(*, prompt, options):
         del prompt
         assert options.thinking == {
-            "type": "enabled",
-            "budget_tokens": 128,
-            "display": "summarized",
+            "type": "adaptive",
+            "display": "omitted",
         }
+        assert options.effort == "high"
         yield sdk.StreamEvent(
             uuid="stream-1",
             session_id="sdk-session",
@@ -777,20 +940,22 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
+        thinking_effort="high",
         on_text=lambda value: asyncio.sleep(0),
+        on_tool_lifecycle=acknowledge_tool_lifecycle,
         on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
         attempt_id="attempt-1",
         tool_policy_subjects=[subject],
         execution_policy="sandbox_brokered",
-        require_selected_skill_invocation=False,
     )
 
     assert result.error is None
@@ -801,7 +966,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         for candidate in candidates
     ]
     assert candidate_types == [
-        CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
         "policy.checking",
         "policy.allowed",
         "tool.started",
@@ -820,12 +984,9 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         and candidate.event_type == "message.delta"
     ]
     assert deltas == ["safe answer"]
-    summaries = [
-        candidate.summary
-        for candidate in candidates
-        if not isinstance(candidate, ClaudeAgentEventCandidate)
-    ]
-    assert summaries == ["Verify the public evidence before answering."]
+    _assert_sandbox_answer_receipt(result, candidates, "safe answer")
+    assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
+    assert all(isinstance(candidate, ClaudeAgentEventCandidate) for candidate in candidates)
     serialized = [
         candidate.as_dict()
         if isinstance(candidate, ClaudeAgentEventCandidate)
@@ -837,7 +998,9 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
 
 @pytest.mark.asyncio
-async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(monkeypatch):
+async def test_runner_ignores_ordinary_stream_and_publishes_structured_terminal_answer(
+    monkeypatch,
+):
     import claude_agent_sdk as sdk
 
     monkeypatch.setattr(
@@ -847,8 +1010,6 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
             claude_agent_sdk_max_turns=4,
             claude_agent_sdk_timeout_seconds=10,
             claude_agent_sdk_skills="",
-            claude_agent_sdk_max_thinking_tokens=128,
-            claude_agent_sdk_effort="high",
             claude_agent_permission_mode="dontAsk",
             claude_agent_allowed_tools="Read",
             claude_agent_disallowed_tools="",
@@ -861,7 +1022,8 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
     )
     published: list[str] = []
     candidates = []
-    answer = "a" * 262_145
+    streamed_answer = "a " * 131_073
+    answer = "structured final answer"
 
     async def query_fn(*, prompt, options):
         del prompt, options
@@ -874,14 +1036,17 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
                 "content_block": {"type": "text"},
             },
         )
-        for index in range(65):
+        for index, offset in enumerate(range(0, len(streamed_answer), 4_096)):
             yield sdk.StreamEvent(
                 uuid=f"stream-delta-{index}",
                 session_id="sdk-session",
                 event={
                     "type": "content_block_delta",
                     "index": 0,
-                    "delta": {"type": "text_delta", "text": "a" * 4_096},
+                    "delta": {
+                        "type": "text_delta",
+                        "text": streamed_answer[offset : offset + 4_096],
+                    },
                 },
             )
         yield sdk.StreamEvent(
@@ -897,7 +1062,8 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
             num_turns=1,
             session_id="sdk-session",
             stop_reason="end_turn",
-            result=answer,
+            result=streamed_answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     async def on_text(value: str) -> None:
@@ -907,19 +1073,95 @@ async def test_runner_buffers_ordinary_stream_until_terminal_bound_is_validated(
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_text=on_text,
         on_agent_event=lambda batch: candidates.extend(batch) or True,
         run_id="run-1187",
         attempt_id="attempt-1",
         execution_policy="sandbox_brokered",
-        require_selected_skill_invocation=False,
     )
 
-    assert result.error == "claude_agent_sdk_tool_admission_failed"
-    assert result.message == ""
-    assert published == []
-    assert candidates == []
+    assert result.error is None
+    _assert_sandbox_answer_receipt(result, candidates, answer)
+    assert "projection_failure_reason" not in result.turn_diagnostics
+    assert "".join(published) == answer
+    delta_values = [
+        candidate.payload["delta"]
+        for candidate in candidates
+        if candidate.event_type == "message.delta"
+    ]
+    assert "".join(delta_values) == answer
+    assert delta_values and all(len(delta) <= 8_192 for delta in delta_values)
+    event_types = [candidate.event_type for candidate in candidates]
+    assert event_types[0] == "message.started"
+    assert event_types[-2:] == ["message.completed", "model.completed"]
+    assert event_types[1:-2] == ["message.delta"] * len(delta_values)
+
+
+@pytest.mark.asyncio
+async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    answer = "legacy inline answer"
+    published: list[str] = []
+    candidates = []
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        yield sdk.ResultMessage(
+            subtype="success",
+            duration_ms=12,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            stop_reason="end_turn",
+            result=answer,
+            structured_output={"answer": answer, "deliverables": []},
+        )
+
+    async def on_text(value: str):
+        published.append(value)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=Path("tests"),
+        skill_id=None,
+        client_fn=native_client_factory(query_fn),
+        on_text=on_text,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        execution_policy="worker_local_legacy",
+    )
+
+    assert result.error is None
+    assert result.message == answer
+    assert result.answer_receipt is None
+    assert published == [answer]
+    assert [candidate.event_type for candidate in candidates] == [
+        "message.started",
+        "message.delta",
+        "message.completed",
+        "model.completed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -934,8 +1176,6 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
             claude_agent_sdk_max_turns=4,
             claude_agent_sdk_timeout_seconds=10,
             claude_agent_sdk_skills="",
-            claude_agent_sdk_max_thinking_tokens=128,
-            claude_agent_sdk_effort="high",
             claude_agent_permission_mode="dontAsk",
             claude_agent_allowed_tools="Read",
             claude_agent_disallowed_tools="",
@@ -969,18 +1209,18 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_agent_event=reject_batch,
         run_id="run-1187",
         attempt_id="attempt-1",
         execution_policy="sandbox_brokered",
-        require_selected_skill_invocation=False,
     )
 
     assert result.error == "agent_event_callback_not_acknowledged"
@@ -989,8 +1229,6 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
     assert [candidate.event_type for candidate in callback_batches[0]] == [
         "message.started",
         "message.delta",
-        "message.completed",
-        "model.completed",
     ]
 
 
@@ -1005,8 +1243,6 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
             claude_agent_sdk_max_turns=4,
             claude_agent_sdk_timeout_seconds=10,
             claude_agent_sdk_skills="",
-            claude_agent_sdk_max_thinking_tokens=128,
-            claude_agent_sdk_effort="high",
             claude_agent_permission_mode="dontAsk",
             claude_agent_allowed_tools="Read",
             claude_agent_disallowed_tools="",
@@ -1037,6 +1273,7 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     task = asyncio.create_task(
@@ -1044,12 +1281,11 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
             prompt="answer",
             cwd=Path("tests"),
             skill_id=None,
-            query_fn=query_fn,
+            client_fn=native_client_factory(query_fn),
             on_agent_event=await_ack,
             run_id="run-1187",
             attempt_id="attempt-1",
             execution_policy="sandbox_brokered",
-            require_selected_skill_invocation=False,
         )
     )
     await asyncio.wait_for(callback_started.wait(), timeout=1)
@@ -1058,17 +1294,14 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
         await task
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("answer", "expected_error"),
-    [
-        ("a" * 262_144, None),
-        ("é" * 262_144, None),
-        ("a" * 262_145, "claude_agent_sdk_tool_admission_failed"),
-    ],
-    ids=["ascii", "multibyte", "max-plus-one"],
+    ("mode", "target_batch"),
+    [("reject", 2), ("reject", 3), ("cancel", 2), ("cancel", 3)],
+    ids=["later-delta-rejected", "completion-rejected", "later-delta-cancelled", "completion-cancelled"],
 )
-async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_boundaries(
-    monkeypatch, answer, expected_error
+async def test_terminal_answer_later_callback_failure_or_cancellation(
+    monkeypatch, mode, target_batch
 ):
     import claude_agent_sdk as sdk
 
@@ -1079,8 +1312,99 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
             claude_agent_sdk_max_turns=4,
             claude_agent_sdk_timeout_seconds=10,
             claude_agent_sdk_skills="",
-            claude_agent_sdk_max_thinking_tokens=128,
-            claude_agent_sdk_effort="high",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    answer = "a" * 8_193
+    callback_batches = []
+    callback_waiting = asyncio.Event()
+    never_release = asyncio.Event()
+
+    async def callback(batch):
+        callback_batches.append(batch)
+        if len(callback_batches) != target_batch:
+            return True
+        if mode == "reject":
+            return False
+        callback_waiting.set()
+        await never_release.wait()
+        return True
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        yield sdk.ResultMessage(
+            subtype="success",
+            duration_ms=12,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            stop_reason="end_turn",
+            result=answer,
+            structured_output={"answer": answer, "deliverables": []},
+        )
+
+    task = asyncio.create_task(
+        run_claude_agent_sdk(
+            prompt="answer",
+            cwd=Path("tests"),
+            skill_id=None,
+            client_fn=native_client_factory(query_fn),
+            on_agent_event=callback,
+            run_id="run-1187",
+            attempt_id="attempt-1",
+            execution_policy="sandbox_brokered",
+        )
+    )
+    if mode == "cancel":
+        await asyncio.wait_for(callback_waiting.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return
+
+    result = await task
+    assert result.error == "agent_event_callback_not_acknowledged"
+    assert result.answer_receipt is None
+    assert len(callback_batches) == target_batch
+    assert [candidate.event_type for candidate in callback_batches[-1]] == (
+        ["message.delta"]
+        if target_batch == 2
+        else ["message.completed", "model.completed"]
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "a" * 199_999,
+        "é" * 199_999,
+        "a" * 200_000,
+    ],
+    ids=["ascii", "multibyte", "max"],
+)
+async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_boundaries(
+    monkeypatch, answer
+):
+    import claude_agent_sdk as sdk
+    from tests.support.claude_mcp import install_mcp_sessions
+
+    install_mcp_sessions(monkeypatch)
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
             claude_agent_permission_mode="dontAsk",
             claude_agent_allowed_tools="Read",
             claude_agent_disallowed_tools="",
@@ -1132,38 +1456,42 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
+            structured_output={"answer": answer, "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
         prompt="answer",
         cwd=Path("tests"),
         skill_id=None,
-        query_fn=query_fn,
+        client_fn=native_client_factory(query_fn),
         on_text=on_text,
         on_agent_event=accept_batch,
         run_id="run-1187",
         attempt_id="attempt-1",
         tool_policy_subjects=[subject],
         execution_policy="sandbox_brokered",
-        require_selected_skill_invocation=False,
     )
 
-    deltas = [candidate.payload["delta"] for candidate in candidates if candidate.event_type == "message.delta"]
-    if expected_error is not None:
-        assert result.error == expected_error
-        assert result.message == ""
-        assert candidates == []
-        assert callback_batches == []
-        assert published == []
-        return
     assert result.error is None
-    assert result.message == answer
-    assert len(callback_batches) == 1
+    _assert_sandbox_answer_receipt(result, candidates, answer)
+    delta_count = (len(answer) + 8_191) // 8_192
+    assert len(callback_batches) == delta_count + 1
+    assert all(len(batch) <= 100 for batch in callback_batches)
     assert callback_batches[0][0].event_type == "message.started"
-    assert callback_batches[0][-2].event_type == "message.completed"
-    assert callback_batches[0][-1].event_type == "model.completed"
+    assert [candidate.event_type for candidate in callback_batches[-1]] == [
+        "message.completed",
+        "model.completed",
+    ]
     assert published == [answer]
-    assert "".join(deltas) == answer
-    assert deltas and all(len(delta) <= 8_192 for delta in deltas)
-    assert candidates[-2].event_type == "message.completed"
-    assert len(candidates[-2].payload["content"]) == 262_144
+    deltas = [
+        candidate.payload["delta"]
+        for candidate in candidates
+        if isinstance(candidate, ClaudeAgentEventCandidate)
+        and candidate.event_type == "message.delta"
+    ]
+    completion = candidates[-2]
+    assert completion.event_type == "message.completed"
+    assert completion.payload == {
+        "delta_count": len(deltas),
+        "text_length": len(answer),
+    }

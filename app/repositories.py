@@ -46,7 +46,6 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.error_taxonomy import summarize_error_categories
-from app.file_type_validation import profile_file_type_allowed
 from app.persistence import (
     RepositoryNotFoundError,
     artifacts,
@@ -55,19 +54,23 @@ from app.persistence import (
     object_deletions,
     retention,
 )
-import app.agent_apps.infrastructure.postgres as agent_profile_persistence
+import app.agent_apps.infrastructure.catalog_postgres as agent_catalog_persistence
 import app.context.infrastructure.postgres as memory_persistence
+import app.context.infrastructure.snapshot_postgres as context_snapshot_persistence
 import app.context.infrastructure.sources_postgres as context_sources_persistence
 import app.conversations.infrastructure.postgres as conversation_persistence
+import app.identity.infrastructure.postgres as identity_persistence
+import app.mcp.infrastructure.registry_postgres as mcp_registry_persistence
 import app.platform.postgres.errors as postgres_errors
 import app.runs.api as runs_api
 import app.runs.infrastructure.postgres as run_persistence
+import app.skills.infrastructure.legacy_workbench as legacy_workbench_persistence
 import app.skills.infrastructure.postgres as skill_persistence
 from app.platform.postgres.errors import RepositoryConflictError
 from app.persistence_limits import (
     ARTIFACT_MANIFEST_MAX_BYTES,
     AUDIT_PAYLOAD_MAX_BYTES,
-    CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES,
+    CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES,  # noqa: F401
     MESSAGE_CONTENT_MAX_BYTES,  # noqa: F401 - legacy compatibility export
     MESSAGE_METADATA_MAX_BYTES,  # noqa: F401 - legacy compatibility export
     RUN_INPUT_MAX_BYTES,
@@ -87,6 +90,7 @@ from app.skills.pinning import (
     SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V1,
     SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2,
     SkillVersionMaterializationError,
+    build_skill_manifest_ref,
     build_skill_manifest_refs,
     build_skill_snapshot_governance,  # noqa: F401 - migration bridge AST compatibility
     skill_manifest_materialization_sha256,
@@ -94,11 +98,11 @@ from app.skills.pinning import (
 )
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import evaluate_tool_policy, max_risk
-from app.validation import SAFE_ID_PATTERN
 from app.tool_permission_lifecycle import (
     TOOL_PERMISSION_EXPIRY_BATCH_LIMIT,
     TOOL_PERMISSION_REQUEST_TTL_SECONDS,
 )
+from app.validation import SAFE_ID_PATTERN  # noqa: F401
 
 claim_object_deletions = object_deletions.claim_object_deletions
 complete_object_deletion = object_deletions.complete_object_deletion
@@ -115,31 +119,11 @@ list_revealed_artifacts = artifacts.list_revealed_artifacts
 queue_expired_artifacts_for_deletion = artifacts.queue_expired_artifacts_for_deletion
 get_data_retention_backlog = retention.get_data_retention_backlog
 purge_deleted_memory_records = retention.purge_deleted_memory_records
-acquire_agent_profile_lifecycle_lock = (
-    agent_profile_persistence.acquire_agent_profile_lifecycle_lock
+get_agent = agent_catalog_persistence.get_agent
+get_tenant_profile_validation_agent = (
+    agent_catalog_persistence.get_tenant_profile_validation_agent
 )
-create_agent_profile_revision = agent_profile_persistence.create_agent_profile_revision
-ensure_agent_profile_identity = agent_profile_persistence.ensure_agent_profile_identity
-get_agent_profile_aggregate = agent_profile_persistence.get_agent_profile_aggregate
-get_agent_profile_revision = agent_profile_persistence.get_agent_profile_revision
-get_bound_published_agent_profile = (
-    agent_profile_persistence.get_bound_published_agent_profile
-)
-get_current_published_agent_profile = (
-    agent_profile_persistence.get_current_published_agent_profile
-)
-list_agent_profile_revision_history = (
-    agent_profile_persistence.list_agent_profile_revision_history
-)
-list_current_published_agent_profiles = (
-    agent_profile_persistence.list_current_published_agent_profiles
-)
-list_latest_agent_profile_revisions = (
-    agent_profile_persistence.list_latest_agent_profile_revisions
-)
-record_agent_profile_draft = agent_profile_persistence.record_agent_profile_draft
-record_agent_profile_publication = agent_profile_persistence.record_agent_profile_publication
-record_agent_profile_withdrawal = agent_profile_persistence.record_agent_profile_withdrawal
+list_lambchat_agents = agent_catalog_persistence.list_lambchat_agents
 append_message = conversation_persistence.append_message
 create_session = conversation_persistence.create_session
 ensure_workspace_belongs_to_tenant = (
@@ -174,6 +158,15 @@ list_memory_records = memory_persistence.list_memory_records
 list_scoped_context_memory_records = memory_persistence.list_scoped_context_memory_records
 memory_policy_id = memory_persistence.memory_policy_id
 set_memory_policy = memory_persistence.set_memory_policy
+CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT = context_snapshot_persistence.CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT
+_normalize_context_snapshot_member_ids = context_snapshot_persistence._normalize_context_snapshot_member_ids
+create_context_snapshot = context_snapshot_persistence.create_context_snapshot
+get_bound_executor_context_snapshot = context_snapshot_persistence.get_bound_executor_context_snapshot
+get_context_snapshot_for_worker = context_snapshot_persistence.get_context_snapshot_for_worker
+get_latest_authorized_executor_context_snapshot = context_snapshot_persistence.get_latest_authorized_executor_context_snapshot
+list_context_share_snapshots_for_target_session = context_snapshot_persistence.list_context_share_snapshots_for_target_session
+list_context_snapshots = context_snapshot_persistence.list_context_snapshots
+update_run_context_snapshot_ref = context_snapshot_persistence.update_run_context_snapshot_ref
 count_session_context_messages = context_sources_persistence.count_session_context_messages
 get_scoped_context_artifact = context_sources_persistence.get_scoped_context_artifact
 get_scoped_context_file = context_sources_persistence.get_scoped_context_file
@@ -191,6 +184,10 @@ list_session_context_messages = (
 session_has_legacy_run_history = (
     context_sources_persistence.session_has_legacy_run_history
 )
+ensure_submission_principal = identity_persistence.ensure_submission_principal
+ensure_user = identity_persistence.ensure_user
+get_user = identity_persistence.get_user
+tenant_exists = identity_persistence.tenant_exists
 _stage_run_tool_permission_terminalization = run_persistence._stage_run_tool_permission_terminalization
 acquire_user_active_run_admission_lock = (
     run_persistence.acquire_user_active_run_admission_lock
@@ -209,6 +206,18 @@ canonical_builtin_tool_identities = skill_persistence.canonical_builtin_tool_ide
 get_skill_version = skill_persistence.get_skill_version
 run_skill_snapshot_source_json = skill_persistence.run_skill_snapshot_source_json
 validate_replay_skill_manifests = skill_persistence.validate_replay_skill_manifests
+_mcp_server_projection = mcp_registry_persistence._mcp_server_projection
+_json_dict_projection = mcp_registry_persistence._json_dict_projection
+_json_string_list_projection = mcp_registry_persistence._json_string_list_projection
+list_mcp_server_registry = mcp_registry_persistence.list_mcp_server_registry
+list_tenant_mcp_server_registry = mcp_registry_persistence.list_tenant_mcp_server_registry
+list_mcp_server_registry_names = mcp_registry_persistence.list_mcp_server_registry_names
+upsert_mcp_server_registry = mcp_registry_persistence.upsert_mcp_server_registry
+toggle_mcp_server_registry = mcp_registry_persistence.toggle_mcp_server_registry
+delete_mcp_server_registry = mcp_registry_persistence.delete_mcp_server_registry
+record_mcp_server_credential = mcp_registry_persistence.record_mcp_server_credential
+list_workbench_capabilities = legacy_workbench_persistence.list_workbench_capabilities
+list_workbench_skills = legacy_workbench_persistence.list_workbench_skills
 # Preserve the established repository facade used by Chat callers while making
 # the cross-module ownership explicit to Ruff.
 chat_submission_fingerprint = chat_submissions.chat_submission_fingerprint
@@ -221,7 +230,6 @@ RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered
 RUN_CONTROL_OPERATION_ACTIONS = {"retry", "resume"}
 TOOL_PERMISSION_TERMINALIZATION_BATCH_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
 TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
-CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT = 128
 
 
 def new_id(prefix: str) -> str:
@@ -240,20 +248,6 @@ def _require_text_size(value: str, *, max_bytes: int, code: str) -> None:
         ensure_text_size(value, max_bytes=max_bytes, code=code)
     except PersistenceSizeLimitError as exc:
         raise RepositoryConflictError(exc.code) from exc
-
-
-async def tenant_exists(conn: AsyncConnection, *, tenant_id: str) -> bool:
-    """Return whether the tenant identity is already provisioned."""
-
-    cursor = await conn.execute(
-        """
-        select 1
-        from tenants
-        where id = %s
-        """,
-        (tenant_id,),
-    )
-    return await cursor.fetchone() is not None
 
 
 def dumps_json(value: dict[str, Any]) -> str:
@@ -524,27 +518,6 @@ async def ensure_mcp_tool_active(conn: AsyncConnection, *, tenant_id: str, tool_
 
 
 
-async def get_tenant_profile_validation_agent(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-) -> str | None:
-    """Find a same-tenant active agent for capability-only unsaved draft validation."""
-
-    cursor = await conn.execute(
-        """
-        select id
-        from agents
-        where tenant_id = %s and status = 'active'
-        order by case when id = 'general-agent' then 0 else 1 end, id asc
-        limit 1
-        """,
-        (tenant_id,),
-    )
-    row = await cursor.fetchone()
-    return str(row["id"]) if row is not None else None
-
-
 def _principal_skill_release_decision(
     row: dict[str, Any],
     *,
@@ -564,53 +537,6 @@ def _principal_skill_release_decision(
         skill_id=skill_id,
         rollout_key=rollout_key,
     )
-
-
-async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list[dict[str, Any]]:
-    cursor = await conn.execute(
-        """
-        select
-          agents.id,
-          agents.name,
-          agents.description,
-          agents.agent_type,
-          agents.default_skill_id,
-          agents.status,
-          coalesce(skill_release_policies.current_version, skills.version) as skill_version,
-          coalesce(skill_versions.status, 'active') as skill_version_status,
-          skill_release_policies.current_version as release_policy_version,
-          skill_release_policies.previous_version as release_policy_previous_version,
-          skill_release_policies.rollout_percent as release_policy_rollout_percent,
-          previous_skill_versions.status as release_policy_previous_version_status,
-          skills.input_modes,
-          skills.output_modes
-        from agents
-        left join skills on skills.id = agents.default_skill_id
-        left join skill_release_policies
-          on skill_release_policies.tenant_id = agents.tenant_id
-         and skill_release_policies.skill_id = skills.id
-         and skill_release_policies.channel = 'stable'
-         and skill_release_policies.status = 'active'
-        left join skill_versions
-          on skill_versions.skill_id = skills.id
-         and skill_versions.version = coalesce(skill_release_policies.current_version, skills.version)
-        left join skill_versions as previous_skill_versions
-          on previous_skill_versions.skill_id = skills.id
-         and previous_skill_versions.version = skill_release_policies.previous_version
-        where agents.tenant_id = %s
-          and agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')
-          and agents.status = 'active'
-          and (agents.default_skill_id is null or skills.status = 'active')
-        order by case agents.id
-          when 'general-agent' then 1
-          when 'baoyu-translate' then 2
-          when 'qa-word-review' then 3
-          else 99
-        end, agents.id asc
-        """,
-        (tenant_id,),
-    )
-    return list(await cursor.fetchall())
 
 
 async def list_principal_lambchat_agents(
@@ -718,43 +644,6 @@ async def list_principal_lambchat_agents(
             )
         authorized_rows.append(projected)
     return authorized_rows
-
-
-async def list_workbench_skills(conn: AsyncConnection, *, tenant_id: str, include_disabled: bool = False) -> list[dict[str, Any]]:
-    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
-    cursor = await conn.execute(
-        """
-        select
-          skills.id as skill_id,
-          skills.name,
-          skills.version,
-          skills.description,
-          skills.input_modes,
-          skills.output_modes,
-          skills.executor_type,
-          skills.status as lifecycle_status,
-          coalesce(tenant_capability_distributions.status, 'disabled') as status,
-          coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user
-        from skills
-        left join tenant_capability_distributions
-          on tenant_capability_distributions.tenant_id = %s
-         and tenant_capability_distributions.capability_kind = 'skill'
-         and tenant_capability_distributions.capability_id = skills.id
-        where skills.id in ('qa-file-reviewer', 'baoyu-translate', 'ragflow-knowledge-search')
-          and (%s or (
-            skills.status = 'active'
-            and tenant_capability_distributions.status = 'active'
-          ))
-        order by case skills.id
-          when 'qa-file-reviewer' then 1
-          when 'baoyu-translate' then 2
-          when 'ragflow-knowledge-search' then 3
-          else 99
-        end
-        """,
-        (tenant_id, include_disabled),
-    )
-    return list(await cursor.fetchall())
 
 
 async def get_skill(conn: AsyncConnection, *, skill_id: str) -> dict[str, Any] | None:
@@ -1261,39 +1150,10 @@ async def _authorize_chat_mcp_tool_entry(
     return tool
 
 
-def _json_dict_projection(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
-def _json_string_list_projection(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item) for item in value if str(item)]
-    return []
 
 
-def _mcp_server_projection(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "tenant_id": str(row.get("tenant_id") or ""),
-        "name": str(row.get("name") or ""),
-        "transport": str(row.get("transport") or "streamable_http"),
-        "endpoint_redacted": str(row.get("endpoint_redacted") or ""),
-        "status": str(row.get("status") or "disabled"),
-        "is_system": bool(row.get("is_system")),
-        "allowed_roles": _json_string_list_projection(row.get("allowed_roles")),
-        "role_quotas": _json_dict_projection(row.get("role_quotas_json") or row.get("role_quotas")),
-        "department_ids": _json_string_list_projection(row.get("department_ids")),
-        "credential_state": str(row.get("credential_state") or "not_configured"),
-        "credential_metadata": _json_dict_projection(row.get("credential_metadata_json") or row.get("credential_metadata")),
-        "catalog_generation": int(row.get("catalog_generation") or 0),
-        "catalog_revision": int(row.get("catalog_revision") or 0),
-        "catalog_status": str(row.get("catalog_status") or "legacy"),
-        "catalog_unavailable_reason": str(row.get("catalog_unavailable_reason") or ""),
-        "catalog_discovered_count": int(row.get("catalog_discovered_count") or 0),
-        "catalog_selectable_count": int(row.get("catalog_selectable_count") or 0),
-        "catalog_last_synced_at": row.get("catalog_last_synced_at"),
-        "created_at": row.get("created_at"),
-        "updated_at": row.get("updated_at"),
-    }
 
 
 def _capability_distribution_string_list(value: Any) -> list[str]:
@@ -2459,375 +2319,18 @@ def require_replay_source_identity(
         raise _capability_not_authorized()
 
 
-async def list_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    department_id: str,
-    include_disabled: bool = True,
-) -> list[dict[str, Any]]:
-    """Return tenant-scoped MCP server lifecycle registry without secret material."""
-
-    cursor = await conn.execute(
-        """
-        select
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        from mcp_servers
-        where tenant_id = %s
-          and (cardinality(department_ids) = 0 or %s = any(department_ids))
-          and status <> 'deleted'
-          and (%s or status = 'active')
-        order by is_system desc, name asc
-        """,
-        (tenant_id, department_id, include_disabled),
-    )
-    return [_mcp_server_projection(dict(row)) for row in await cursor.fetchall()]
 
 
-async def list_tenant_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    include_disabled: bool = True,
-) -> list[dict[str, Any]]:
-    """Return the unfiltered tenant MCP registry for distribution resolution."""
-
-    cursor = await conn.execute(
-        """
-        select
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        from mcp_servers
-        where tenant_id = %s
-          and status <> 'deleted'
-          and (%s or status = 'active')
-        order by is_system desc, name asc
-        """,
-        (tenant_id, include_disabled),
-    )
-    return [_mcp_server_projection(dict(row)) for row in await cursor.fetchall()]
 
 
-async def list_mcp_server_registry_names(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-) -> list[str]:
-    """Return non-deleted tenant MCP server names for legacy fallback suppression."""
-
-    cursor = await conn.execute(
-        """
-        select name
-        from mcp_servers
-        where tenant_id = %s
-          and status <> 'deleted'
-        order by name asc
-        """,
-        (tenant_id,),
-    )
-    return [str(row.get("name") or "") for row in await cursor.fetchall() if row.get("name")]
 
 
-async def upsert_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    name: str,
-    transport: str,
-    enabled: bool,
-    is_system: bool,
-    endpoint_redacted: str,
-    allowed_roles: list[str],
-    role_quotas: dict[str, Any],
-    department_ids: list[str],
-    credential_state: str,
-    credential_metadata: dict[str, Any],
-    credential_fingerprint: str,
-    updated_by: str,
-) -> dict[str, Any]:
-    """Upsert a tenant-scoped MCP server registry row with redacted connection metadata."""
-
-    cursor = await conn.execute(
-        """
-        with scope_guard as (
-          select not exists (
-            select 1
-            from mcp_servers existing
-            where existing.tenant_id = %s
-              and existing.name = %s
-              and existing.is_system <> %s
-          ) as allowed
-        ),
-        upserted as (
-          insert into mcp_servers(
-            id, tenant_id, name, transport, endpoint_redacted, status, is_system,
-            allowed_roles, role_quotas_json, department_ids, credential_state,
-            credential_metadata_json, credential_fingerprint, catalog_generation,
-            catalog_status, catalog_unavailable_reason, updated_by, updated_at
-          )
-          select %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, %s, 1, %s, %s, %s, now()
-          from scope_guard
-          where allowed
-          on conflict (tenant_id, name) do update
-          set transport = excluded.transport,
-              endpoint_redacted = excluded.endpoint_redacted,
-              status = excluded.status,
-              allowed_roles = excluded.allowed_roles,
-              role_quotas_json = excluded.role_quotas_json,
-              department_ids = excluded.department_ids,
-              credential_state = excluded.credential_state,
-              credential_metadata_json = excluded.credential_metadata_json,
-              credential_fingerprint = excluded.credential_fingerprint,
-              catalog_generation = mcp_servers.catalog_generation + 1,
-              catalog_status = case when excluded.status = 'active' then 'refresh_required' else 'disabled' end,
-              catalog_unavailable_reason = case when excluded.status = 'active' then 'refresh_required' else 'disabled' end,
-              catalog_discovered_count = 0,
-              catalog_selectable_count = 0,
-              catalog_sync_lease_expires_at = null,
-              updated_by = excluded.updated_by,
-              updated_at = now()
-          where mcp_servers.is_system = excluded.is_system
-          returning *
-        )
-        select
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        from upserted
-        """,
-        (
-            tenant_id,
-            name,
-            is_system,
-            new_id("mcpsrv"),
-            tenant_id,
-            name,
-            transport,
-            endpoint_redacted,
-            "active" if enabled else "disabled",
-            is_system,
-            json.dumps(allowed_roles, ensure_ascii=False),
-            dumps_json(role_quotas),
-            department_ids,
-            credential_state,
-            dumps_json(credential_metadata),
-            credential_fingerprint,
-            "refresh_required" if enabled else "disabled",
-            "refresh_required" if enabled else "disabled",
-            updated_by,
-        ),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise RepositoryConflictError("mcp_server_scope_conflict")
-    return _mcp_server_projection(dict(row))
 
 
-async def toggle_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    name: str,
-    enabled: bool | None,
-    updated_by: str,
-) -> dict[str, Any]:
-    """Toggle or set a tenant-scoped MCP server status."""
-
-    cursor = await conn.execute(
-        """
-        update mcp_servers
-        set status = case
-              when %s::boolean is null then case when status = 'active' then 'disabled' else 'active' end
-              when %s::boolean then 'active'
-              else 'disabled'
-            end,
-            updated_by = %s,
-            catalog_generation = catalog_generation + 1,
-            catalog_status = case
-              when %s::boolean is null then case when status = 'active' then 'disabled' else 'refresh_required' end
-              when %s::boolean then 'refresh_required'
-              else 'disabled'
-            end,
-            catalog_unavailable_reason = case
-              when %s::boolean is null then case when status = 'active' then 'disabled' else 'refresh_required' end
-              when %s::boolean then 'refresh_required'
-              else 'disabled'
-            end,
-            catalog_discovered_count = 0,
-            catalog_selectable_count = 0,
-            catalog_sync_lease_expires_at = null,
-            updated_at = now()
-        where tenant_id = %s
-          and name = %s
-          and status <> 'deleted'
-        returning
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        """,
-        (enabled, enabled, updated_by, enabled, enabled, enabled, enabled, tenant_id, name),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise RepositoryNotFoundError("mcp_server_not_found")
-    return _mcp_server_projection(dict(row))
 
 
-async def delete_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    name: str,
-    updated_by: str,
-) -> dict[str, Any]:
-    """Soft-delete a tenant-scoped MCP server registry row."""
-
-    cursor = await conn.execute(
-        """
-        update mcp_servers
-        set status = 'deleted',
-            updated_by = %s,
-            catalog_generation = catalog_generation + 1,
-            catalog_status = 'deleted',
-            catalog_unavailable_reason = 'deleted',
-            catalog_discovered_count = 0,
-            catalog_selectable_count = 0,
-            catalog_sync_lease_expires_at = null,
-            updated_at = now()
-        where tenant_id = %s
-          and name = %s
-        returning
-          tenant_id,
-          name,
-          transport,
-          endpoint_redacted,
-          status,
-          is_system,
-          allowed_roles,
-          role_quotas_json,
-          department_ids,
-          credential_state,
-          credential_metadata_json,
-          catalog_generation,
-          catalog_revision,
-          catalog_status,
-          catalog_unavailable_reason,
-          catalog_discovered_count,
-          catalog_selectable_count,
-          catalog_last_synced_at,
-          created_at,
-          updated_at
-        """,
-        (updated_by, tenant_id, name),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise RepositoryNotFoundError("mcp_server_not_found")
-    return _mcp_server_projection(dict(row))
 
 
-async def record_mcp_server_credential(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    server_name: str,
-    credential_fingerprint: str,
-    metadata: dict[str, Any],
-    updated_by: str,
-) -> None:
-    """Record credential fingerprint metadata without storing raw credential values."""
-
-    await conn.execute(
-        """
-        insert into mcp_server_credentials(
-          tenant_id, server_name, credential_fingerprint, metadata_json, updated_by, updated_at
-        )
-        values (%s, %s, %s, %s::jsonb, %s, now())
-        on conflict (tenant_id, server_name) do update
-        set credential_fingerprint = excluded.credential_fingerprint,
-            metadata_json = excluded.metadata_json,
-            updated_by = excluded.updated_by,
-            updated_at = now()
-        """,
-        (
-            tenant_id,
-            server_name,
-            credential_fingerprint,
-            dumps_json(metadata),
-            updated_by,
-        ),
-    )
 
 
 async def list_admin_tool_policies(
@@ -3019,98 +2522,6 @@ async def upsert_admin_tool_policy(
     return _tool_policy_projection(dict(row), tenant_id=tenant_id)
 
 
-async def list_workbench_capabilities(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    include_admin_fields: bool = False,
-) -> list[dict[str, Any]]:
-    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
-    cursor = await conn.execute(
-        """
-        select
-          case agents.id
-            when 'general-agent' then 'general_chat'
-            when 'qa-word-review' then 'document_review'
-            when 'baoyu-translate' then 'document_translation'
-            when 'sop-assistant' then 'knowledge_answer'
-            else agents.id
-          end as capability_id,
-          agents.name as label,
-          agents.description,
-          case
-            when agents.agent_type = 'chat' and agents.default_skill_id is null then 'active'
-            when skills.status <> 'active'
-              or coalesce(tenant_capability_distributions.status, 'disabled') <> 'active'
-              or coalesce(tenant_capability_distributions.visible_to_user, false) = false
-            then 'disabled'
-            when skills.id = 'ragflow-knowledge-search'
-             and (
-               coalesce(mcp_tools.status, 'disabled') <> 'active'
-               or coalesce(tool_policies.status, 'disabled') <> 'active'
-               or coalesce(mcp_tools.visible_to_user, false) = false
-               or coalesce(tool_policies.visible_to_user, false) = false
-             )
-            then 'disabled'
-            else 'active'
-          end as status,
-          case when agents.agent_type = 'chat' and agents.default_skill_id is null then '["chat"]'::jsonb else skills.input_modes end as input_modes,
-          case when agents.agent_type = 'chat' and agents.default_skill_id is null then '["answer"]'::jsonb else skills.output_modes end as output_modes,
-          agents.id as agent_id,
-          skills.id as skill_id,
-          skills.version as skill_version,
-          case when agents.agent_type = 'chat' and agents.default_skill_id is null then 'claude-agent-worker' else skills.executor_type end as executor_type,
-          case when skills.id = 'ragflow-knowledge-search' then mcp_tools.server_id else null end as mcp_server_id,
-          case when skills.id = 'ragflow-knowledge-search' then mcp_tools.id else null end as mcp_tool_id,
-          case
-            when skills.id <> 'ragflow-knowledge-search' then null
-            when mcp_tools.risk_level = 'high' or tool_policies.risk_level = 'high' then 'high'
-            when mcp_tools.risk_level = 'medium' or tool_policies.risk_level = 'medium' then 'medium'
-            else coalesce(mcp_tools.risk_level, 'low')
-          end as risk_level,
-          0 as recent_failures
-        from agents
-        left join skills on skills.id = agents.default_skill_id
-        left join tenant_capability_distributions
-          on tenant_capability_distributions.tenant_id = %s
-         and tenant_capability_distributions.capability_kind = 'skill'
-         and tenant_capability_distributions.capability_id = skills.id
-        left join mcp_tools
-          on mcp_tools.id = skills.id
-        left join tool_policies
-          on tool_policies.tenant_id = agents.tenant_id
-         and tool_policies.tool_id = mcp_tools.id
-        where agents.tenant_id = %s
-          and agents.id in ('general-agent', 'qa-word-review', 'baoyu-translate', 'sop-assistant')
-          and agents.status = 'active'
-        order by case agents.id
-          when 'general-agent' then 1
-          when 'qa-word-review' then 2
-          when 'baoyu-translate' then 3
-          when 'sop-assistant' then 4
-          else 99
-        end
-        """,
-        (tenant_id, tenant_id),
-    )
-    rows = list(await cursor.fetchall())
-    if include_admin_fields:
-        return rows
-    redacted = []
-    for row in rows:
-        item = dict(row)
-        item["agent_id"] = None
-        item["skill_id"] = None
-        item["skill_version"] = None
-        item["executor_type"] = None
-        item["mcp_server_id"] = None
-        item["mcp_tool_id"] = None
-        item["risk_level"] = None
-        item["recent_failures"] = None
-        redacted.append(item)
-    return redacted
-
-
 async def ensure_workspace(conn: AsyncConnection, *, tenant_id: str, workspace_id: str) -> None:
     cursor = await conn.execute(
         """
@@ -3122,76 +2533,6 @@ async def ensure_workspace(conn: AsyncConnection, *, tenant_id: str, workspace_i
     )
     if await cursor.fetchone() is None:
         raise RepositoryNotFoundError("workspace_not_found")
-
-
-async def ensure_user(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str | None,
-    display_name: str | None = None,
-) -> None:
-    if not user_id:
-        return
-    await conn.execute(
-        """
-        insert into users(id, tenant_id, display_name)
-        values (%s, %s, %s)
-        on conflict (id) do nothing
-        """,
-        (user_id, tenant_id, display_name or user_id),
-    )
-
-
-async def ensure_submission_principal(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    display_name: str | None = None,
-) -> dict[str, Any]:
-    """Provision and tenant-validate a principal before a submission ledger write."""
-
-    await ensure_user(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        display_name=display_name,
-    )
-    principal_user = await get_user(conn, tenant_id=tenant_id, user_id=user_id)
-    if principal_user is None:
-        raise RepositoryAuthorizationError("principal_user_scope_mismatch")
-    return principal_user
-
-
-async def get_user(conn: AsyncConnection, *, tenant_id: str, user_id: str) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        select id, tenant_id, display_name, email, external_id, status, created_at
-        from users
-        where tenant_id = %s
-          and id = %s
-          and status = 'active'
-        """,
-        (tenant_id, user_id),
-    )
-    row = await cursor.fetchone()
-    return dict(row) if row else None
-
-
-async def get_agent(conn: AsyncConnection, *, tenant_id: str, agent_id: str) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        select id, tenant_id, name, agent_type, default_skill_id, status, created_at
-        from agents
-        where tenant_id = %s
-          and id = %s
-          and status = 'active'
-        """,
-        (tenant_id, agent_id),
-    )
-    row = await cursor.fetchone()
-    return dict(row) if row else None
 
 
 async def allocate_session_run_generation(
@@ -3912,455 +3253,6 @@ async def list_run_events(
     )
 
 
-async def create_context_snapshot(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    workspace_id: str,
-    user_id: str,
-    session_id: str,
-    run_id: str,
-    trace_id: str,
-    context_kind: str,
-    included_message_ids: list[str],
-    included_file_ids: list[str],
-    included_artifact_ids: list[str],
-    included_memory_record_ids: list[str],
-    redaction_summary_json: dict[str, Any],
-    payload_json: dict[str, Any],
-) -> dict[str, Any]:
-    """Atomically authorize and persist one run-scoped context snapshot."""
-    snapshot_id = new_id("ctx")
-    included_message_ids = _normalize_context_snapshot_member_ids(included_message_ids)
-    included_file_ids = _normalize_context_snapshot_member_ids(included_file_ids)
-    included_artifact_ids = _normalize_context_snapshot_member_ids(included_artifact_ids)
-    included_memory_record_ids = _normalize_context_snapshot_member_ids(included_memory_record_ids)
-    if (
-        len(included_message_ids)
-        + len(included_file_ids)
-        + len(included_artifact_ids)
-        + len(included_memory_record_ids)
-        > CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT
-    ):
-        raise RepositoryConflictError("context_snapshot_material_invalid")
-    redaction_summary_json = sanitize_public_payload(redaction_summary_json)
-    if not isinstance(redaction_summary_json, dict):
-        redaction_summary_json = {}
-    payload_json = sanitize_public_payload(payload_json)
-    if not isinstance(payload_json, dict):
-        payload_json = {}
-    _require_json_size(
-        payload_json,
-        max_bytes=CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES,
-        code="context_snapshot_payload_too_large",
-    )
-    cursor = await conn.execute(
-        """
-        with scoped_run as (
-          select runs.tenant_id, runs.workspace_id, runs.user_id, runs.session_id,
-                 runs.id as run_id, runs.agent_id, runs.trace_id
-          from runs
-          join sessions on sessions.id = runs.session_id
-            and sessions.tenant_id = runs.tenant_id
-            and sessions.workspace_id = runs.workspace_id
-            and sessions.user_id = runs.user_id
-            and sessions.agent_id = runs.agent_id
-          where runs.tenant_id = %s
-            and runs.user_id = %s
-            and runs.id = %s
-        ), requested_members as (
-          select %s::jsonb as message_ids,
-                 %s::jsonb as file_ids,
-                 %s::jsonb as artifact_ids,
-                 %s::jsonb as memory_record_ids
-        ), locked_artifacts as materialized (
-          select artifacts.id
-          from scoped_run
-          cross join requested_members
-          cross join lateral jsonb_array_elements_text(requested_members.artifact_ids) requested(id)
-          join artifacts on artifacts.id = requested.id
-            and artifacts.tenant_id = scoped_run.tenant_id
-          join runs artifact_run on artifact_run.id = artifacts.run_id
-            and artifact_run.tenant_id = artifacts.tenant_id
-          where artifact_run.workspace_id = scoped_run.workspace_id
-            and artifact_run.user_id = scoped_run.user_id
-            and artifact_run.session_id = scoped_run.session_id
-            and artifact_run.agent_id = scoped_run.agent_id
-            and artifacts.lifecycle_state = 'active'
-            and (artifacts.expires_at is null or artifacts.expires_at > statement_timestamp())
-          for update of artifacts
-        ), locked_memory_records as materialized (
-          select memory_records.id
-          from scoped_run
-          cross join requested_members
-          cross join lateral jsonb_array_elements_text(requested_members.memory_record_ids) requested(id)
-          join memory_records on memory_records.id = requested.id
-            and memory_records.tenant_id = scoped_run.tenant_id
-          where memory_records.workspace_id = scoped_run.workspace_id
-            and memory_records.user_id = scoped_run.user_id
-            and memory_records.session_id = scoped_run.session_id
-            and memory_records.agent_id = scoped_run.agent_id
-            and memory_records.status = 'active'
-            and memory_records.deleted_at is null
-            and (memory_records.expires_at is null or memory_records.expires_at > statement_timestamp())
-          for update of memory_records
-        ), eligible_members as (
-          select scoped_run.*, requested_members.*,
-            (
-              select count(*)
-              from jsonb_array_elements_text(requested_members.message_ids) requested(id)
-              join messages on messages.id = requested.id
-              join sessions message_session on message_session.id = messages.session_id
-                and message_session.tenant_id = messages.tenant_id
-              join runs message_run on message_run.id = messages.run_id
-                and message_run.tenant_id = messages.tenant_id
-              where messages.tenant_id = scoped_run.tenant_id
-                and messages.session_id = scoped_run.session_id
-                and message_session.workspace_id = scoped_run.workspace_id
-                and message_session.user_id = scoped_run.user_id
-                and message_session.agent_id = scoped_run.agent_id
-                and message_run.workspace_id = scoped_run.workspace_id
-                and message_run.user_id = scoped_run.user_id
-                and message_run.session_id = scoped_run.session_id
-                and message_run.agent_id = scoped_run.agent_id
-            ) as eligible_message_count,
-            (
-              select count(*)
-              from jsonb_array_elements_text(requested_members.file_ids) requested(id)
-              join files on files.id = requested.id
-              join sessions file_session on file_session.id = files.session_id
-                and file_session.tenant_id = files.tenant_id
-              join runs file_run on file_run.id = files.run_id
-                and file_run.tenant_id = files.tenant_id
-              where files.tenant_id = scoped_run.tenant_id
-                and files.workspace_id = scoped_run.workspace_id
-                and files.user_id = scoped_run.user_id
-                and files.lifecycle_state = 'active'
-                and files.session_id = scoped_run.session_id
-                and file_session.user_id = scoped_run.user_id
-                and file_session.workspace_id = scoped_run.workspace_id
-                and file_session.agent_id = scoped_run.agent_id
-                and file_run.workspace_id = scoped_run.workspace_id
-                and file_run.user_id = scoped_run.user_id
-                and file_run.session_id = scoped_run.session_id
-                and file_run.agent_id = scoped_run.agent_id
-            ) as eligible_file_count,
-            (
-              select count(*)
-              from locked_artifacts
-            ) as eligible_artifact_count,
-            (
-              select count(*)
-              from locked_memory_records
-            ) as eligible_memory_record_count
-          from scoped_run
-          cross join requested_members
-        )
-        insert into run_context_snapshots(
-          id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
-          schema_version, context_kind, included_message_ids, included_file_ids,
-          included_artifact_ids, included_memory_record_ids, redaction_summary_json, payload_json
-        )
-        select %s, tenant_id, workspace_id, user_id, session_id, run_id, coalesce(trace_id, ''),
-               %s, %s, message_ids, file_ids, artifact_ids, memory_record_ids, %s::jsonb, %s::jsonb
-        from eligible_members
-        where eligible_message_count = jsonb_array_length(message_ids)
-          and eligible_file_count = jsonb_array_length(file_ids)
-          and eligible_artifact_count = jsonb_array_length(artifact_ids)
-          and eligible_memory_record_count = jsonb_array_length(memory_record_ids)
-        returning id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
-                  schema_version, context_kind, included_message_ids, included_file_ids,
-                  included_artifact_ids, included_memory_record_ids, redaction_summary_json,
-                  payload_json, created_at
-        """,
-        (
-            tenant_id,
-            user_id,
-            run_id,
-            json.dumps(included_message_ids, ensure_ascii=False),
-            json.dumps(included_file_ids, ensure_ascii=False),
-            json.dumps(included_artifact_ids, ensure_ascii=False),
-            json.dumps(included_memory_record_ids, ensure_ascii=False),
-            snapshot_id,
-            "ai-platform.context-snapshot.v1",
-            context_kind,
-            dumps_json(redaction_summary_json),
-            dumps_json(payload_json),
-        ),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise RepositoryConflictError("context_snapshot_material_invalid")
-    return {
-        "id": snapshot_id,
-        "tenant_id": str(row.get("tenant_id") or tenant_id),
-        "workspace_id": str(row.get("workspace_id") or workspace_id),
-        "user_id": str(row.get("user_id") or user_id),
-        "session_id": str(row.get("session_id") or session_id),
-        "run_id": str(row.get("run_id") or run_id),
-        "trace_id": str(row.get("trace_id") or trace_id),
-        "schema_version": "ai-platform.context-snapshot.v1",
-        "context_kind": context_kind,
-        "included_message_ids": included_message_ids,
-        "included_file_ids": included_file_ids,
-        "included_artifact_ids": included_artifact_ids,
-        "included_memory_record_ids": included_memory_record_ids,
-        "redaction_summary_json": redaction_summary_json,
-        "payload_json": payload_json,
-    }
-
-
-def _normalize_context_snapshot_member_ids(member_ids: list[str]) -> list[str]:
-    """Reject malformed or duplicate snapshot members before the atomic SQL seam."""
-    if not isinstance(member_ids, list) or len(member_ids) > CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT:
-        raise RepositoryConflictError("context_snapshot_material_invalid")
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for member_id in member_ids:
-        if not isinstance(member_id, str):
-            raise RepositoryConflictError("context_snapshot_material_invalid")
-        normalized_id = member_id.strip()
-        if not SAFE_ID_PATTERN.fullmatch(normalized_id) or normalized_id in seen:
-            raise RepositoryConflictError("context_snapshot_material_invalid")
-        seen.add(normalized_id)
-        normalized.append(normalized_id)
-    return normalized
-
-
-async def update_run_context_snapshot_ref(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
-    context_snapshot_id: str,
-    context_snapshot: dict[str, Any],
-) -> None:
-    if str(context_snapshot.get("context_snapshot_id") or "") != context_snapshot_id:
-        raise RepositoryConflictError("context_snapshot_binding_invalid")
-    cursor = await conn.execute(
-        """
-        update runs
-        set context_snapshot_id = %s,
-            input_json = case
-              when runs.context_snapshot_id is null then jsonb_set(
-                jsonb_set(coalesce(input_json, '{}'::jsonb), '{context_snapshot_id}', %s::jsonb, true),
-                '{context_snapshot}',
-                %s::jsonb,
-                true
-              )
-              else input_json
-            end
-        where tenant_id = %s
-          and id = %s
-          and exists (
-            select 1
-            from run_context_snapshots
-            where id = %s
-              and tenant_id = runs.tenant_id
-              and workspace_id = runs.workspace_id
-              and user_id = runs.user_id
-              and session_id = runs.session_id
-              and run_id = runs.id
-              and context_kind = 'executor'
-          )
-          and (
-            context_snapshot_id is null
-            and coalesce(input_json->>'context_snapshot_id', '') = ''
-            or (
-              context_snapshot_id = %s
-              and input_json->>'context_snapshot_id' = context_snapshot_id
-            )
-          )
-        returning context_snapshot_id
-        """,
-        (
-            context_snapshot_id,
-            json.dumps(context_snapshot_id, ensure_ascii=False),
-            dumps_json(context_snapshot),
-            tenant_id,
-            run_id,
-            context_snapshot_id,
-            context_snapshot_id,
-        ),
-    )
-    row = await cursor.fetchone()
-    if row is None or str(row.get("context_snapshot_id") or "") != context_snapshot_id:
-        raise RepositoryConflictError("context_snapshot_binding_invalid")
-
-
-async def list_context_snapshots(conn: AsyncConnection, *, tenant_id: str, user_id: str, run_id: str) -> list[dict[str, Any]]:
-    cursor = await conn.execute(
-        """
-        select run_context_snapshots.id, run_context_snapshots.tenant_id,
-               run_context_snapshots.workspace_id, run_context_snapshots.user_id,
-               run_context_snapshots.session_id, run_context_snapshots.run_id,
-               run_context_snapshots.trace_id, run_context_snapshots.schema_version,
-               run_context_snapshots.context_kind, run_context_snapshots.included_message_ids,
-               run_context_snapshots.included_file_ids, run_context_snapshots.included_artifact_ids,
-               run_context_snapshots.included_memory_record_ids,
-               run_context_snapshots.redaction_summary_json, run_context_snapshots.payload_json,
-               run_context_snapshots.created_at
-        from run_context_snapshots
-        where tenant_id = %s and user_id = %s and run_id = %s
-        order by created_at desc
-        """,
-        (tenant_id, user_id, run_id),
-    )
-    return list(await cursor.fetchall())
-
-
-async def get_latest_authorized_executor_context_snapshot(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    user_id: str,
-    run_id: str,
-) -> dict[str, Any] | None:
-    """Compatibility lookup that still returns only the physical run binding."""
-    cursor = await conn.execute(
-        """
-        select context_snapshot.id, context_snapshot.tenant_id, context_snapshot.workspace_id,
-               context_snapshot.user_id, context_snapshot.session_id, context_snapshot.run_id,
-               context_snapshot.trace_id, context_snapshot.schema_version, context_snapshot.context_kind,
-               context_snapshot.included_message_ids, context_snapshot.included_file_ids,
-               context_snapshot.included_artifact_ids, context_snapshot.included_memory_record_ids,
-               context_snapshot.redaction_summary_json, context_snapshot.payload_json,
-               context_snapshot.created_at
-        from runs
-        join run_context_snapshots context_snapshot
-          on context_snapshot.id = runs.context_snapshot_id
-          and context_snapshot.tenant_id = runs.tenant_id
-          and context_snapshot.workspace_id = runs.workspace_id
-          and context_snapshot.user_id = runs.user_id
-          and context_snapshot.session_id = runs.session_id
-          and context_snapshot.run_id = runs.id
-          and context_snapshot.context_kind = 'executor'
-        where runs.tenant_id = %s
-          and runs.user_id = %s
-          and runs.id = %s
-          and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
-          and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
-        """,
-        (tenant_id, user_id, run_id),
-    )
-    return await cursor.fetchone()
-
-
-async def get_bound_executor_context_snapshot(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    workspace_id: str,
-    user_id: str,
-    session_id: str,
-    run_id: str,
-) -> dict[str, Any] | None:
-    """Load exactly the run's immutable physical snapshot binding, never the latest row."""
-
-    cursor = await conn.execute(
-        """
-        select context_snapshot.id, context_snapshot.tenant_id, context_snapshot.workspace_id,
-               context_snapshot.user_id, context_snapshot.session_id, context_snapshot.run_id,
-               context_snapshot.trace_id, context_snapshot.schema_version, context_snapshot.context_kind,
-               context_snapshot.included_message_ids, context_snapshot.included_file_ids,
-               context_snapshot.included_artifact_ids, context_snapshot.included_memory_record_ids,
-               context_snapshot.redaction_summary_json, context_snapshot.payload_json,
-               context_snapshot.created_at
-        from runs
-        join run_context_snapshots context_snapshot
-          on context_snapshot.id = runs.context_snapshot_id
-          and context_snapshot.tenant_id = runs.tenant_id
-          and context_snapshot.workspace_id = runs.workspace_id
-          and context_snapshot.user_id = runs.user_id
-          and context_snapshot.session_id = runs.session_id
-          and context_snapshot.run_id = runs.id
-          and context_snapshot.context_kind = 'executor'
-        where runs.tenant_id = %s
-          and runs.workspace_id = %s
-          and runs.user_id = %s
-          and runs.session_id = %s
-          and runs.id = %s
-          and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
-          and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
-        """,
-        (tenant_id, workspace_id, user_id, session_id, run_id),
-    )
-    return await cursor.fetchone()
-
-
-async def list_context_share_snapshots_for_target_session(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    workspace_id: str,
-    user_id: str,
-    target_session_id: str,
-) -> list[dict[str, Any]]:
-    """List share/fork snapshots whose public binding names an authorized target session."""
-    cursor = await conn.execute(
-        """
-        select id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
-               schema_version, context_kind, included_message_ids, included_file_ids,
-               included_artifact_ids, included_memory_record_ids, redaction_summary_json,
-               payload_json, created_at
-        from run_context_snapshots
-        where tenant_id = %s
-          and workspace_id = %s
-          and user_id = %s
-          and context_kind = 'share_fork'
-          and payload_json->'share_fork_context'->>'target_session_id' = %s
-        order by created_at desc
-        """,
-        (tenant_id, workspace_id, user_id, target_session_id),
-    )
-    return list(await cursor.fetchall())
-
-
-async def get_context_snapshot_for_worker(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    workspace_id: str,
-    user_id: str,
-    session_id: str,
-    run_id: str,
-    context_snapshot_id: str,
-) -> dict[str, Any] | None:
-    """Load a context snapshot only when it matches the full worker run identity."""
-    cursor = await conn.execute(
-        """
-        select run_context_snapshots.id, run_context_snapshots.tenant_id,
-               run_context_snapshots.workspace_id, run_context_snapshots.user_id,
-               run_context_snapshots.session_id, run_context_snapshots.run_id,
-               run_context_snapshots.trace_id, run_context_snapshots.schema_version,
-               run_context_snapshots.context_kind, run_context_snapshots.included_message_ids,
-               run_context_snapshots.included_file_ids, run_context_snapshots.included_artifact_ids,
-               run_context_snapshots.included_memory_record_ids,
-               run_context_snapshots.redaction_summary_json, run_context_snapshots.payload_json,
-               run_context_snapshots.created_at
-        from run_context_snapshots
-        join runs on runs.context_snapshot_id = run_context_snapshots.id
-          and runs.tenant_id = run_context_snapshots.tenant_id
-          and runs.workspace_id = run_context_snapshots.workspace_id
-          and runs.user_id = run_context_snapshots.user_id
-          and runs.session_id = run_context_snapshots.session_id
-          and runs.id = run_context_snapshots.run_id
-        where run_context_snapshots.tenant_id = %s
-          and run_context_snapshots.workspace_id = %s
-          and run_context_snapshots.user_id = %s
-          and run_context_snapshots.session_id = %s
-          and run_context_snapshots.run_id = %s
-          and run_context_snapshots.id = %s
-          and run_context_snapshots.context_kind = 'executor'
-          and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
-          and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
-        """,
-        (tenant_id, workspace_id, user_id, session_id, run_id, context_snapshot_id),
-    )
-    row = await cursor.fetchone()
-    return dict(row) if row is not None else None
-
-
 async def create_tool_permission_request(
     conn: AsyncConnection,
     *,
@@ -5022,10 +3914,6 @@ async def progress_run_tool_permission_terminalization(
         user_id=staged.get("user_id") if retired_admission_rejection else None,
         action="run.admission.rejected" if retired_admission_rejection else f"run.{target_status}",
         target_type="run", target_id=run_id, trace_id=staged.get("trace_id"), payload_json=audit_payload,
-    )
-    from app.streaming.redis import ensure_run_terminal_intent
-    await ensure_run_terminal_intent(
-        conn, tenant_id=tenant_id, run_id=run_id, status=target_status
     )
     return runs_api.RunTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
 
@@ -5733,16 +4621,6 @@ def skill_manifest_refs(skill_manifests: list[dict[str, Any]]) -> list[dict[str,
         raise RepositoryConflictError("run_skill_materialization_identity_mismatch") from exc
 
 
-def _materialization_refs_match(
-    refs: list[dict[str, Any]],
-    manifests: list[dict[str, Any]],
-) -> bool:
-    try:
-        return build_skill_manifest_refs(manifests) == refs
-    except SkillVersionMaterializationError:
-        return False
-
-
 async def materialize_run_skill_manifests(
     conn: AsyncConnection,
     *,
@@ -5768,6 +4646,7 @@ async def materialize_run_skill_manifests(
         (tenant_id, run_id),
     )
     manifests_by_id: dict[str, dict[str, Any]] = {}
+    verified_refs_by_id: dict[str, dict[str, Any]] = {}
     for row in await cursor.fetchall():
         manifest = row.get("manifest_json")
         if isinstance(manifest, str):
@@ -5779,23 +4658,24 @@ async def materialize_run_skill_manifests(
                 ) from exc
         row_skill_id = str(row.get("skill_id") or "")
         try:
-            materialization_sha256 = (
-                skill_manifest_materialization_sha256(manifest)
+            verified_ref = (
+                build_skill_manifest_ref(manifest)
                 if isinstance(manifest, dict)
-                else ""
+                else None
             )
         except SkillVersionMaterializationError as exc:
             raise RepositoryConflictError(
                 "run_skill_materialization_identity_mismatch"
             ) from exc
         if (
-            not isinstance(manifest, dict)
-            or str(manifest.get("skill_id") or "") != row_skill_id
-            or materialization_sha256 != str(row.get("materialization_sha256") or "")
+            verified_ref is None
+            or verified_ref["skill_id"] != row_skill_id
+            or verified_ref["materialization_sha256"] != str(row.get("materialization_sha256") or "")
             or row_skill_id in manifests_by_id
         ):
             raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
         manifests_by_id[row_skill_id] = dict(manifest)
+        verified_refs_by_id[row_skill_id] = verified_ref
     manifests = [
         manifests_by_id.get(str(ref.get("skill_id") or ""))
         for ref in exact_refs
@@ -5803,7 +4683,7 @@ async def materialize_run_skill_manifests(
     if any(manifest is None for manifest in manifests):
         raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
     exact_manifests = [manifest for manifest in manifests if manifest is not None]
-    if not _materialization_refs_match(exact_refs, exact_manifests):
+    if [verified_refs_by_id[ref["skill_id"]] for ref in exact_refs] != exact_refs:
         raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
     return exact_manifests
 
@@ -8375,8 +7255,6 @@ async def authorize_files_for_run(
     file_ids: list[str],
     reusable_file_ids: list[str] | None = None,
     input_modes: list[object] | None = None,
-    agent_profile_supported_input_types: list[str] | None = None,
-    agent_profile_supported_file_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Lock and validate run input files before any run creation side effect."""
 
@@ -8440,28 +7318,11 @@ async def authorize_files_for_run(
             if row["run_id"] and row["run_id"] != run_id:
                 raise RepositoryConflictError("file_already_bound")
         rows.append(dict(row))
-    if agent_profile_supported_input_types is not None:
-        if rows and "file" not in agent_profile_supported_input_types:
-            raise RepositoryConflictError("agent_profile_file_input_not_supported")
-        allowed_file_types = agent_profile_supported_file_types or []
-        if rows and not all(
-            profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
-            for row in rows
-        ):
-            raise RepositoryConflictError("agent_profile_file_type_not_supported")
     if input_modes is not None and has_file_input_mode(input_modes):
         compatible_ids = compatible_reusable_file_ids(rows, input_modes=input_modes)
         if len(compatible_ids) != len(rows):
             raise RepositoryConflictError("file_required_for_skill")
     return rows
-
-
-def _agent_profile_file_type_allowed(
-    row: dict[str, Any],
-    *,
-    allowed_file_types: list[str],
-) -> bool:
-    return profile_file_type_allowed(row, allowed_file_types=allowed_file_types)
 
 
 async def bind_files_to_run(
@@ -8642,8 +7503,6 @@ async def complete_run(
         consumed_ids = {str(item.get("id") or "") for item in await consumed_cursor.fetchall()}
         if consumed_ids != set(valid_allow_for_run_ids):
             raise RepositoryConflictError("allow_for_run_consumption_mismatch")
-    from app.streaming.redis import ensure_run_terminal_intent
-    await ensure_run_terminal_intent(conn, tenant_id=tenant_id, run_id=run_id, status="succeeded")
     return True
 
 

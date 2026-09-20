@@ -1,3 +1,5 @@
+export type AgentThinkingEffort = "auto" | "low" | "medium" | "high";
+
 export interface AgentOption {
   type: "boolean" | "string" | "number";
   default: boolean | string | number;
@@ -12,7 +14,7 @@ export interface AgentOption {
 export const CHAT_AGENT_OPTION_DEFINITIONS = {
   enable_thinking: {
     type: "string",
-    default: "off",
+    default: "auto",
     label: "Thinking",
     label_key: "agentOptions.enableThinking.label",
   },

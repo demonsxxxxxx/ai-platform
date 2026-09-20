@@ -200,31 +200,15 @@ def _safe_run_id(value: str) -> str:
 
 
 def _configured_platform_runtime_model(settings: object) -> str:
-    from app.model_catalog import build_model_catalog, resolve_model_selection
-
-    configured_default = str(getattr(settings, "default_model_id", "") or "").strip()
-    if configured_default:
-        try:
-            selection = resolve_model_selection(configured_default, settings)
-        except Exception:
-            selection = None
-        if selection and selection.get("value"):
-            return str(selection["value"])
-        return configured_default
-    for attr in ("claude_agent_model", "anthropic_model", "openai_model"):
+    for attr in (
+        "claude_agent_model",
+        "anthropic_model",
+        "openai_model",
+        "default_model_id",
+    ):
         value = str(getattr(settings, attr, "") or "").strip()
         if value:
             return value
-    catalog = build_model_catalog(settings)
-    catalog_default = str(catalog.get("default_model_id") or "").strip()
-    if catalog_default:
-        try:
-            selection = resolve_model_selection(catalog_default, settings)
-        except Exception:
-            selection = None
-        if selection and selection.get("value"):
-            return str(selection["value"])
-        return catalog_default
     return "deepseek-v4-flash"
 
 
@@ -2590,9 +2574,10 @@ def _opensandbox_provider_lifecycle_evidence(
             ),
         },
         "startup_io": {
-            "file_write_read_verified": captured.get("opensandbox_startup_io_probe_enabled") is True,
-            "command_execution_verified": captured.get("opensandbox_startup_io_probe_enabled") is True,
-            "source": "OpenSandboxContainerProvider.startup_io_probe",
+            # Lifecycle callbacks do not attest a file round trip or command probe.
+            "file_write_read_verified": False,
+            "command_execution_verified": False,
+            "source": "not_observed",
         },
         "resource_policy": {
             "resource_limits_requested": all(
@@ -2660,9 +2645,6 @@ def run_platform_runtime_probe(
         original_executor_image = settings.sandbox_executor_image
         original_workspace_root = settings.sandbox_workspace_root
         settings.sandbox_container_provider = sandbox_provider
-        captured["opensandbox_startup_io_probe_enabled"] = bool(
-            getattr(settings, "opensandbox_startup_io_probe_enabled", True)
-        )
         if sandbox_executor_image:
             settings.sandbox_executor_image = sandbox_executor_image
         settings.sandbox_workspace_root = workspace_root

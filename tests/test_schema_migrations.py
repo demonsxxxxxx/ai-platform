@@ -15,6 +15,24 @@ REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
 REMOTE_CONCURRENT_DUE_INDEX_CHECKSUM = (
     "9bd4a01cc1db6cdbe445a4a1b4258bfd3513ca34ca6a6381d98ba97006ed2de2"
 )
+# Exact 2026.08.28.1 ledger checksum before reconciler takeover was added.
+REMOTE_MODEL_CONTROL_PLANE_CHECKSUM = (
+    "76ecf5642f302cbc6e132b077c75e9693c3fddb81203beca244baaafd7c686c5"
+)
+# Exact 2026.08.30.1 ledger checksum before heartbeat monotonicity was added.
+REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
+    "14941c07a273f8924fb289876ac887879f8a8d5cc2a5a8d95bb9252e1ea40d90"
+)
+# Exact 2026.08.30.2 ledger checksum before clock-safety preflight was added.
+REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM = (
+    "63f6fe428c51631d844a375149b1c76527338d4889c6f0cbe30893fe8c3a774b"
+)
+
+
+# Exact 2026.09.11.1 ledger checksum before the Stream-only cutover.
+REMOTE_STREAM_ONLY_PREDECESSOR_CHECKSUM = (
+    "41981e6b9a8286428ff511337cb03d8f869c1bf349c28c7500e64118236da087"
+)
 
 
 class FakeCursor:
@@ -34,6 +52,8 @@ class SharedMigrationState:
         self.indexes = set()
         self.schema_execute_count = 0
         self.index_execute_count = 0
+        self.run_attempt_heartbeat_contract_supported = False
+        self.future_open_attempt_heartbeat = False
 
 
 class FakeMigrationConnection:
@@ -58,6 +78,19 @@ class FakeMigrationConnection:
         if normalized.startswith("select checksum_sha256 from schema_migrations"):
             checksum = self.state.ledger.get(params[0])
             return FakeCursor(None if checksum is None else {"checksum_sha256": checksum})
+        if "to_regclass('run_attempts') is not null" in normalized:
+            return FakeCursor(
+                {
+                    "supported": self.state.run_attempt_heartbeat_contract_supported,
+                }
+            )
+        if "from run_attempts" in normalized and "as blocked" in normalized:
+            assert params == (
+                schema_migrations.RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS,
+            )
+            return FakeCursor(
+                {"blocked": self.state.future_open_attempt_heartbeat}
+            )
         if normalized.startswith("insert into schema_migrations"):
             self.state.ledger[params[0]] = params[1]
             return FakeCursor(None)
@@ -238,6 +271,28 @@ async def test_concurrent_migrations_serialize_and_apply_schema_once():
     assert state.schema_execute_count == 1
     assert state.index_execute_count == len(schema_migrations.CONCURRENT_INDEX_MIGRATIONS)
     assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == schema_migrations.schema_checksum()
+    assert {
+        row["target_version"] for row in state.index_ledger.values()
+    } == {schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION}
+
+
+@pytest.mark.asyncio
+async def test_schema_upgrade_blocks_future_open_attempt_heartbeat_before_schema_write():
+    state = SharedMigrationState()
+    state.run_attempt_heartbeat_contract_supported = True
+    state.future_open_attempt_heartbeat = True
+
+    with pytest.raises(
+        schema_migrations.SchemaMigrationError,
+        match="run_attempt_future_heartbeat_requires_remediation",
+    ):
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory(state),
+            index_connection_factory=index_connection_factory(state),
+        )
+
+    assert state.schema_execute_count == 0
+    assert schema_migrations.TARGET_SCHEMA_VERSION not in state.ledger
 
 
 @pytest.mark.asyncio
@@ -317,12 +372,28 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
             "135136be8faf2adef0bf917354561919d10795ff4b155bfa449aa0aefe8acd13",
         ),
         (
+            "2026.09.11.1",
+            REMOTE_STREAM_ONLY_PREDECESSOR_CHECKSUM,
+        ),
+        (
             schema_migrations.V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION,
             REMOTE_CONCURRENT_DUE_INDEX_CHECKSUM,
         ),
+        (
+            schema_migrations.MODEL_CONTROL_PLANE_SCHEMA_VERSION,
+            REMOTE_MODEL_CONTROL_PLANE_CHECKSUM,
+        ),
+        (
+            schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION,
+            REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM,
+        ),
+        (
+            schema_migrations.RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION,
+            REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM,
+        ),
     ),
 )
-async def test_prior_schema_ledgers_advance_to_model_control_plane_schema(
+async def test_prior_schema_ledgers_advance_to_current_schema(
     installed_version: str,
     installed_checksum: str,
 ) -> None:
@@ -337,6 +408,23 @@ async def test_prior_schema_ledgers_advance_to_model_control_plane_schema(
     assert result["status"] == "applied"
     assert state.schema_execute_count == 1
     assert state.ledger[installed_version] == installed_checksum
+    assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
+        schema_migrations.schema_checksum()
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_avatar_schema_ledger_is_upgraded_to_current_schema():
+    state = SharedMigrationState()
+    state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] = "legacy-checksum"
+
+    result = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert result["status"] == "applied"
+    assert state.ledger[schema_migrations.AGENT_AVATAR_STYLE_SCHEMA_VERSION] == "legacy-checksum"
     assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
         schema_migrations.schema_checksum()
     )
@@ -366,7 +454,7 @@ async def test_pending_admission_schema_advances_to_current_schema():
 
 
 @pytest.mark.asyncio
-async def test_successor_activation_schema_advances_to_concurrent_due_index_schema():
+async def test_successor_activation_ledger_advances_to_current_schema():
     state = SharedMigrationState()
     state.ledger[schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION] = (
         REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
@@ -387,32 +475,108 @@ async def test_successor_activation_schema_advances_to_concurrent_due_index_sche
     )
 
 
+def test_stream_only_schema_change_advances_schema_version():
+    assert schema_migrations.STREAM_ONLY_SCHEMA_VERSION == "2026.09.12.1"
+    assert schema_migrations.RUN_DIAGNOSTICS_SCHEMA_VERSION == "2026.09.13.1"
+
+
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.08.28.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.16.1"
+    assert (
+        schema_migrations.TARGET_SCHEMA_VERSION
+        == schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION
+    )
+    assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
+    assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
+    assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
+    assert (
+        schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
+        == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
+    )
+    assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
+        "users",
         "runs",
+        "run_diagnostics",
         "model_gateway_revisions",
         "model_catalog_entries",
         "run_attempts",
         "run_skill_materializations",
         "run_events",
+        "agent_profile_favorites",
         "sse_stream_authorities",
-        "sse_stream_rebuild_items",
         "messages",
         "files",
+        "file_upload_sessions",
         "artifacts",
         "object_deletion_outbox",
         "audit_logs",
         "sandbox_leases",
+        "mcp_servers",
+        "mcp_server_credentials",
+        "mcp_tools",
+        "provider_session_heads",
+        "provider_session_epochs",
+        "provider_session_entries",
+        "provider_session_append_receipts",
+        "provider_turn_receipts",
+        "conversation_context_checkpoints",
+        "run_context_snapshots",
     )
+    assert (
+        "users",
+        "metadata_json",
+        "jsonb",
+        True,
+    ) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "users",
+        "chk_users_metadata_json_object",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
         "sessions",
         "title_source",
         "text",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
+    for table, columns in {
+        "provider_session_heads": (("tenant_id", "text", True), ("current_epoch_id", "text", False),
+                                   ("active_run_id", "text", False)),
+        "provider_session_epochs": (("provider_session_id", "uuid", True), ("next_sequence", "int8", True),
+                                    ("coverage_source_sha256", "text", False)),
+        "provider_session_entries": (("epoch_id", "text", True), ("sequence", "int8", True)),
+        "provider_session_append_receipts": (("expected_sequence", "int8", True),
+                                             ("batch_sha256", "text", True)),
+        "provider_turn_receipts": (("committed_coverage_sha256", "text", False),),
+        "conversation_context_checkpoints": (("source_sha256", "text", True), ("state", "text", True)),
+        "run_context_snapshots": (("conversation_authority_json", "jsonb", False),),
+    }.items():
+        for column in columns:
+            assert (table, *column) in schema_migrations.CRITICAL_COLUMNS
+    for constraint in (
+        ("conversation_context_checkpoints", "chk_context_checkpoint_ready"),
+        ("conversation_context_checkpoints", "fk_context_checkpoint_source_scope"),
+        ("provider_session_heads", "fk_provider_head_current_epoch"),
+        ("provider_session_epochs", "fk_provider_epoch_head"),
+        ("provider_session_entries", "fk_provider_entry_epoch"),
+        ("provider_session_entries", "uq_provider_entry_global_sequence"),
+        ("provider_session_append_receipts", "provider_session_append_receipts_pkey"),
+        ("provider_turn_receipts", "fk_provider_turn_epoch"),
+    ):
+        assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
+    for index in (
+        ("idx_sessions_provider_scope", True),
+        ("uq_provider_entry_sdk_uuid", True),
+        ("idx_provider_entry_view", False),
+    ):
+        assert index in schema_migrations.CRITICAL_INDEXES
+    schema = schema_migrations.schema_sql().lower()
+    assert "create table if not exists provider_session_bindings" not in schema
+    assert "unique (epoch_id, sequence)" in schema
+    assert "provider_session_legacy_binding_requires_disposition" in schema
+
     assert (
         "agent_profile_revisions",
         "skill_set",
@@ -427,7 +591,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_COLUMNS
     assert (
         "agent_profile_revisions",
-        "supported_file_types",
+        "market_tags",
         "jsonb",
         True,
     ) in schema_migrations.CRITICAL_COLUMNS
@@ -449,6 +613,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "int8",
         False,
     ) in schema_migrations.CRITICAL_COLUMNS
+    for name in ("provider_renewed_at", "provider_expires_at"):
+        assert ("sandbox_leases", name, "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     for column in (
         ("revision", "int8"),
         ("base_url", "text"),
@@ -458,7 +624,11 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("created_by", "text"),
         ("created_at", "timestamptz"),
     ):
-        assert ("model_gateway_revisions", *column, True) in schema_migrations.CRITICAL_COLUMNS
+        assert (
+            "model_gateway_revisions",
+            *column,
+            True,
+        ) in schema_migrations.CRITICAL_COLUMNS
     for column in (
         ("model_id", "text"),
         ("upstream_model_id", "text"),
@@ -473,9 +643,18 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("first_seen_at", "timestamptz"),
         ("last_seen_at", "timestamptz"),
     ):
-        assert ("model_catalog_entries", *column, True) in schema_migrations.CRITICAL_COLUMNS
+        assert (
+            "model_catalog_entries",
+            *column,
+            True,
+        ) in schema_migrations.CRITICAL_COLUMNS
+    for column in ("max_input_tokens", "max_output_tokens"):
+        assert ("model_catalog_entries", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
+        assert ("runs", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
     for constraint in (
         ("runs", "fk_runs_model_gateway_revision"),
+        ("runs", "chk_runs_model_token_limits"),
+        ("model_catalog_entries", "chk_model_catalog_token_limits"),
         ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
         ("model_gateway_revisions", "chk_model_gateway_base_url"),
         ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),
@@ -550,16 +729,16 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "chk_object_deletion_outbox_state",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
-        "run_events",
-        "chk_run_events_stream_publication_state",
-    ) in schema_migrations.CRITICAL_CONSTRAINTS
-    assert (
-        "run_events",
-        "chk_run_events_stream_publication_claim",
-    ) in schema_migrations.CRITICAL_CONSTRAINTS
-    assert (
         "files",
         "chk_files_lifecycle_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "artifacts",
+        "chk_artifacts_lifecycle_state",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "artifacts",
+        "chk_artifacts_run_owner",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert (
         "object_deletion_outbox",
@@ -584,29 +763,87 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.CRITICAL_TRIGGERS == (
         (
             "run_attempts",
+            "trg_run_attempt_heartbeat_monotonicity_guard",
+            "ai_platform_guard_run_attempt_heartbeat_monotonicity",
+            19,
+        ),
+        (
+            "run_attempts",
             "trg_run_attempt_transition_guard",
             "ai_platform_guard_run_attempt_transition",
             23,
         ),
-        (
-            "agent_profile_revisions",
-            "trg_agent_profile_legacy_insert_compatibility",
-            "agent_profile_legacy_insert_compatibility",
-            7,
-        ),
-        (
-            "agent_profile_revisions",
-            "trg_agent_profile_legacy_insert_reconcile",
-            "agent_profile_legacy_insert_reconcile",
-            5,
-        ),
     )
     trigger_contract = schema_migrations._critical_trigger_contract()
-    assert [item[:4] for item in trigger_contract] == list(schema_migrations.CRITICAL_TRIGGERS)
-    assert all(item[4].startswith("\ndeclare") or item[4].startswith("\nbegin") for item in trigger_contract)
+    assert [item[:4] for item in trigger_contract] == list(
+        schema_migrations.CRITICAL_TRIGGERS
+    )
+    assert all(
+        item[4].startswith("\ndeclare") or item[4].startswith("\nbegin")
+        for item in trigger_contract
+    )
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "users",
+            "chk_users_metadata_json_object",
+            "c",
+            "CHECK ((jsonb_typeof(metadata_json) = 'object'::text))",
+        ),
+        (
+            "run_diagnostics",
+            "run_diagnostics_pkey",
+            "p",
+            "PRIMARY KEY (diagnostic_id)",
+        ),
+        (
+            "run_diagnostics",
+            "fk_run_diagnostics_run",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+        ),
+        (
+            "run_diagnostics",
+            "chk_run_diagnostics_identity",
+            "c",
+            "CHECK (diagnostic_id <> ''::text AND tenant_id <> ''::text "
+            "AND run_id <> ''::text)",
+        ),
+        (
+            "run_diagnostics",
+            "chk_run_diagnostics_revision",
+            "c",
+            "CHECK (revision > 0)",
+        ),
+        (
+            "run_diagnostics",
+            "chk_run_diagnostics_payload",
+            "c",
+            "CHECK (jsonb_typeof(payload_json) = 'object'::text "
+            "AND payload_json ? 'schema_version'::text "
+            "AND (payload_json ->> 'schema_version'::text) IS NOT NULL "
+            "AND (payload_json ->> 'schema_version'::text) = schema_version "
+            "AND octet_length(payload_json::text) <= 147456)",
+        ),
+        (
+            "run_diagnostics",
+            "run_diagnostics_tenant_id_run_id_key",
+            "u",
+            "UNIQUE (tenant_id, run_id)",
+        ),
+        (
+            "mcp_servers",
+            "mcp_servers_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint_redacted = ''::text)",
+        ),
+        (
+            "mcp_tools",
+            "mcp_tools_endpoint_not_persisted",
+            "c",
+            "CHECK (endpoint = ''::text)",
+        ),
         (
             "run_attempts",
             "fk_run_attempts_run",
@@ -696,22 +933,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "UNIQUE (tenant_id, run_id, queue_attempt_id)",
         ),
         (
-            "run_events",
-            "chk_run_events_stream_publication_state",
-            "c",
-            "CHECK (stream_publication_state IS NULL OR (stream_publication_state = ANY (ARRAY["
-            "'pending'::text, 'published'::text, 'suppressed'::text])))",
-        ),
-        (
-            "run_events",
-            "chk_run_events_stream_publication_claim",
-            "c",
-            "CHECK (stream_publication_claim_token IS NULL AND "
-            "stream_publication_claim_expires_at IS NULL OR "
-            "stream_publication_claim_token IS NOT NULL AND "
-            "stream_publication_claim_expires_at IS NOT NULL)",
-        ),
-        (
             "sse_stream_authorities",
             "chk_sse_stream_authority_open_format",
             "c",
@@ -726,115 +947,31 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "OR state <> 'admission_pending'::text AND admission_confirmed_at IS NOT NULL)",
         ),
         (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_identity",
-            "c",
-            "CHECK (id <> ''::text AND attempt_id <> ''::text "
-            "AND successor_open_event_id <> ''::text AND successor_open_bytes <> ''::text "
-            "AND source_authority_fingerprint ~ '^[0-9a-f]{64}$'::text "
-            "AND successor_open_digest ~ '^[0-9a-f]{64}$'::text "
-            "AND claim_token_digest ~ '^[0-9a-f]{64}$'::text)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_authority",
-            "c",
-            "CHECK (source_incarnation > 0 AND successor_incarnation > source_incarnation "
-            "AND source_authorization_epoch > 0 "
-            "AND successor_authorization_epoch > source_authorization_epoch)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_origin",
-            "c",
-            "CHECK (origin_incarnation > 0 AND origin_incarnation <= source_incarnation "
-            "AND origin_authorization_epoch > 0 "
-            "AND origin_authorization_epoch <= source_authorization_epoch)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_progress",
-            "c",
-            "CHECK (source_cursor_sequence >= source_through_sequence "
-            "AND source_through_sequence > 0 AND item_count > 0 "
-            "AND built_through_sequence >= 0 "
-            "AND built_through_sequence <= source_through_sequence)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_state",
-            "c",
-            "CHECK (state = ANY (ARRAY['building'::text, 'ready'::text, "
-            "'cutover'::text, 'aborted'::text, 'expired'::text]))",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "chk_sse_stream_rebuild_receipt",
-            "c",
-            "CHECK (receipt_entry_count IS NULL AND receipt_open_event_id IS NULL "
-            "AND receipt_terminal_event_id IS NULL AND receipt_end_event_id IS NULL "
-            "AND receipt_last_redis_id IS NULL AND receipt_last_envelope_bytes IS NULL "
-            "AND receipt_last_envelope_digest IS NULL AND receipt_digest IS NULL "
-            "OR receipt_entry_count IS NOT NULL "
-            "AND receipt_entry_count = (item_count + 2) "
-            "AND receipt_open_event_id IS NOT NULL AND receipt_open_event_id <> ''::text "
-            "AND receipt_terminal_event_id IS NOT NULL "
-            "AND receipt_terminal_event_id <> ''::text "
-            "AND receipt_end_event_id IS NOT NULL AND receipt_end_event_id <> ''::text "
-            "AND receipt_last_redis_id IS NOT NULL "
-            "AND receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text "
-            "AND receipt_last_envelope_bytes IS NOT NULL "
-            "AND receipt_last_envelope_bytes <> ''::text "
-            "AND receipt_last_envelope_digest IS NOT NULL "
-            "AND receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text "
-            "AND receipt_digest IS NOT NULL "
-            "AND receipt_digest ~ '^[0-9a-f]{64}$'::text)",
-        ),
-        (
-            "sse_stream_rebuilds",
-            "fk_sse_stream_rebuild_authority",
-            "f",
-            "FOREIGN KEY (tenant_id, run_id) "
-            "REFERENCES sse_stream_authorities(tenant_id, run_id)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "sse_stream_rebuild_items_pkey",
-            "p",
-            "PRIMARY KEY (rebuild_id, sequence)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "chk_sse_stream_rebuild_item",
-            "c",
-            "CHECK (sequence > 0 AND event_id <> ''::text AND event_type <> ''::text "
-            "AND canonical_envelope_bytes <> ''::text "
-            "AND envelope_digest ~ '^[0-9a-f]{64}$'::text)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "chk_sse_stream_rebuild_item_redis_id",
-            "c",
-            "CHECK (redis_id IS NULL OR redis_id ~ '^[0-9]+-[0-9]+$'::text)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "fk_sse_stream_rebuild_item_operation",
-            "f",
-            "FOREIGN KEY (rebuild_id) REFERENCES sse_stream_rebuilds(id)",
-        ),
-        (
-            "sse_stream_rebuild_items",
-            "uq_sse_stream_rebuild_item_event",
-            "u",
-            "UNIQUE (rebuild_id, event_id)",
-        ),
-        (
             "files",
             "chk_files_lifecycle_state",
             "c",
             "CHECK (lifecycle_state = ANY (ARRAY["
             "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+        ),
+        (
+            "artifacts",
+            "chk_artifacts_lifecycle_state",
+            "c",
+            "CHECK (lifecycle_state = ANY (ARRAY["
+            "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+        ),
+        (
+            "artifacts",
+            "chk_artifacts_run_owner",
+            "c",
+            "CHECK (run_id IS NOT NULL AND lifecycle_state = 'active'::text OR "
+            "run_id IS NULL AND lifecycle_state = 'delete_pending'::text "
+            "AND manifest_json @> '{\"provisional_reconciliation_cleanup\": true}'::jsonb "
+            "AND NULLIF(manifest_json ->> 'expected_run_id'::text, ''::text) IS NOT NULL OR "
+            "run_id IS NULL AND (lifecycle_state = ANY (ARRAY["
+            "'delete_pending'::text, 'deleted'::text])) "
+            "AND manifest_json @> '{\"retention_artifact_cleanup\": true}'::jsonb "
+            "AND NULLIF(manifest_json ->> 'deletion_owner_run_id'::text, ''::text) IS NOT NULL)",
         ),
         (
             "object_deletion_outbox",
@@ -930,16 +1067,16 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert static_indexes["idx_run_attempts_lease_reconcile"].predicate_expression == (
         "status = any array['claimed', 'running', 'cancel_requested', 'expired']"
     )
-    migrations = {item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS}
+    migrations = {
+        item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+    }
     assert migrations["idx_object_deletion_outbox_claim"].predicate_expression == (
         "state = 'pending' or state = 'processing' or state = 'failed' "
         "or state = 'file_pending' or state = 'file_processing' or state = 'file_failed'"
     )
     assert migrations[
         "idx_object_deletion_outbox_artifact_storage_live"
-    ].predicate_expression == (
-        "target_type = 'artifact' and state <> 'deleted'"
-    )
+    ].predicate_expression == ("target_type = 'artifact' and state <> 'deleted'")
     assert migrations["uq_object_deletion_outbox_file"].unique is True
     assert migrations["uq_object_deletion_outbox_file"].predicate_expression == (
         "target_type = 'file' and file_id is not null"
@@ -975,92 +1112,24 @@ def test_every_critical_run_attempt_constraint_has_an_exact_definition():
     assert defined == critical
 
 
-def test_profile_file_type_retirement_keeps_additive_rollback_storage_only():
-    schema = " ".join(schema_migrations.schema_sql().split()).lower()
-
-    assert schema_migrations.schema_checksum() == (
-        "76ecf5642f302cbc6e132b077c75e9693c3fddb81203beca244baaafd7c686c5"
-    )
-    assert (
-        "alter table agent_profile_revisions add column if not exists "
-        "supported_file_types jsonb not null default '[]'::jsonb"
-    ) in schema
-    assert "rename column supported_file_types" not in schema
-    assert "drop column supported_file_types" not in schema
-    assert "legacy_supported_file_types" not in schema
-
-
-def test_v4_publication_schema_is_additive_and_index_is_concurrent_only():
-    schema = " ".join(schema_migrations.schema_sql().split()).lower()
-    for column in (
-        "stream_publication_state text",
-        "stream_publication_attempts integer",
-        "stream_publication_next_attempt_at timestamptz",
-        "stream_publication_redis_id text",
-        "stream_publication_last_error text",
-        "stream_publication_claim_token text",
-        "stream_publication_claim_expires_at timestamptz",
-    ):
-        assert column in schema
-    assert "create index if not exists idx_run_events_stream_publication_retry" not in schema
-    assert "create index if not exists idx_run_events_stream_publication_claim" not in schema
-    assert "chk_run_events_stream_publication_claim" in schema
-    retry_migration = next(
-        item
-        for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
-        if item.name == "idx_run_events_stream_publication_retry"
-    )
-    assert retry_migration.predicate_expression == (
-        "visible_to_user = true and stream_publication_state = 'pending'"
-    )
-    assert retry_migration.sql.endswith(
-        "where visible_to_user = true and stream_publication_state = 'pending'"
-    )
-    claim_migration = next(
-        item
-        for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
-        if item.name == "idx_run_events_stream_publication_claim"
-    )
-    assert claim_migration.column_names == ("tenant_id", "run_id", "sequence", "id")
-    assert claim_migration.predicate_expression == (
-        "visible_to_user = true and stream_publication_state = 'pending' "
-        "and payload_json ? '__stream_v4'"
-    )
-
-
-def test_v4_successor_rebuild_schema_is_additive_and_claim_fenced():
-    schema = " ".join(schema_migrations.schema_sql().split()).lower()
-    assert "create table if not exists sse_stream_rebuilds" in schema
-    assert "create table if not exists sse_stream_rebuild_items" in schema
-    assert "successor_incarnation > source_incarnation" in schema
-    assert "successor_authorization_epoch > source_authorization_epoch" in schema
-    assert "claim_token_digest ~ '^[0-9a-f]{64}$'" in schema
-    assert "receipt_entry_count = item_count + 2" in schema
-    assert "receipt_digest is not null" in schema
-    assert "drop constraint if exists chk_sse_stream_rebuild_receipt" in schema
-    assert "where state in ('building', 'ready')" in schema
-    assert (
-        "sse_stream_rebuilds",
-        "chk_sse_stream_rebuild_state",
-    ) in schema_migrations.CRITICAL_CONSTRAINTS
-    static_indexes = {
-        definition.name: definition
-        for definition in schema_migrations.STATIC_INDEX_DEFINITIONS
+def test_every_critical_run_diagnostics_constraint_has_an_exact_definition():
+    critical = {
+        constraint_name
+        for relation_name, constraint_name in schema_migrations.CRITICAL_CONSTRAINTS
+        if relation_name == "run_diagnostics"
     }
-    assert static_indexes["uq_sse_stream_rebuild_active"].unique is True
-    assert static_indexes["uq_sse_stream_rebuild_active"].predicate_expression == (
-        "state = any array['building', 'ready']"
-    )
-    assert static_indexes["uq_sse_stream_rebuild_item_event"].unique is True
+    defined = {
+        constraint_name
+        for relation_name, constraint_name, _, _ in schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
+        if relation_name == "run_diagnostics"
+    }
+
+    assert defined == critical
+    assert "payload_json ? 'schema_version'" in schema_migrations.schema_sql()
 
 
-def test_schema_upgrade_delegates_v4_index_and_repairs_confirmation_history():
+def test_schema_upgrade_repairs_confirmation_history_before_constraint_validation():
     schema = schema_migrations.schema_sql()
-    due_index = next(
-        migration
-        for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
-        if migration.name == "idx_run_events_v4_due_scope"
-    )
     repair_confirmation = schema.index(
         "update sse_stream_authorities\nset admission_confirmed_at = coalesce("
     )
@@ -1068,113 +1137,7 @@ def test_schema_upgrade_delegates_v4_index_and_repairs_confirmation_history():
         "add constraint chk_sse_stream_authority_pending_confirmation"
     )
 
-    assert "create index if not exists idx_run_events_v4_due_scope" not in schema
-    assert due_index.sql.startswith(
-        "create index concurrently if not exists idx_run_events_v4_due_scope"
-    )
-    assert due_index.column_names == ("tenant_id", "run_id", "sequence")
     assert repair_confirmation < add_confirmation_constraint
-
-
-@pytest.mark.asyncio
-async def test_v4_successor_rollback_removes_dormant_snapshots_and_due_index_state():
-    class FakeResult:
-        async def fetchone(self):
-            return None
-
-    class FakeRollbackConnection:
-        def __init__(self) -> None:
-            self.statements: list[tuple[str, object]] = []
-
-        async def execute(self, statement: str, params: object = None):
-            self.statements.append((" ".join(statement.lower().split()), params))
-            return FakeResult()
-
-    conn = FakeRollbackConnection()
-    await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
-    assert [statement for statement, _ in conn.statements[1:3]] == [
-        "drop table if exists sse_stream_rebuild_items",
-        "drop table if exists sse_stream_rebuilds",
-    ]
-    assert conn.statements[3] == (
-        "drop index if exists idx_run_events_v4_due_scope",
-        None,
-    )
-    assert conn.statements[4] == (
-        "delete from schema_index_migrations where index_name = %s",
-        ("idx_run_events_v4_due_scope",),
-    )
-    assert conn.statements[5][1] == (
-        schema_migrations.V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
-        schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
-        schema_migrations.V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION,
-    )
-    assert all("delete from run_events" not in statement for statement, _ in conn.statements)
-    assert all("alter table run_events" not in statement for statement, _ in conn.statements)
-    assert all("drop table if exists run_events" not in statement for statement, _ in conn.statements)
-    assert all("sse_stream_authorities" not in statement for statement, _ in conn.statements)
-
-
-@pytest.mark.asyncio
-async def test_v4_successor_rollback_rejects_activated_lineage():
-    class ActivatedResult:
-        async def fetchone(self):
-            return {"exists": 1}
-
-    class ActivatedConnection:
-        def __init__(self) -> None:
-            self.statements: list[str] = []
-
-        async def execute(self, statement: str, params: object = None):
-            self.statements.append(" ".join(statement.lower().split()))
-            return ActivatedResult()
-
-    conn = ActivatedConnection()
-    with pytest.raises(
-        schema_migrations.SchemaMigrationError,
-        match="v4_successor_rebuild_rollback_cutover_exists",
-    ):
-        await schema_migrations.rollback_v4_successor_rebuild_migration(conn)
-    assert conn.statements == [
-        "select 1 from sse_stream_rebuilds where state = 'cutover' limit 1"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_v4_rollback_removes_only_publication_bookkeeping():
-    class FakeRollbackConnection:
-        def __init__(self) -> None:
-            self.statements: list[str] = []
-            self.params: list[object] = []
-            self.event_facts = [{"id": "evt4_fact", "sequence": 9}]
-
-        async def execute(self, statement: str, params: object = None) -> None:
-            self.statements.append(" ".join(statement.lower().split()))
-            self.params.append(params)
-
-    conn = FakeRollbackConnection()
-    await schema_migrations.rollback_v4_publication_migration(conn)
-    assert conn.event_facts == [{"id": "evt4_fact", "sequence": 9}]
-    assert any("drop index if exists idx_run_events_stream_publication_claim" in item for item in conn.statements)
-    assert any("drop index if exists idx_run_events_stream_publication_retry" in item for item in conn.statements)
-    assert any("drop index if exists idx_run_events_v4_due_scope" in item for item in conn.statements)
-    assert any("delete from schema_index_migrations" in item for item in conn.statements)
-    assert any("delete from schema_migrations" in item for item in conn.statements)
-    assert (
-        schema_migrations.V4_PUBLICATION_SCHEMA_VERSION,
-        schema_migrations.V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION,
-    ) in conn.params
-    assert all(
-        schema_migrations.MODEL_CONTROL_PLANE_SCHEMA_VERSION not in params
-        for params in conn.params
-        if isinstance(params, tuple)
-    )
-    assert any("drop constraint if exists chk_run_events_stream_publication_claim" in item for item in conn.statements)
-    assert any("drop constraint if exists chk_run_events_stream_publication_state" in item for item in conn.statements)
-    assert any("drop column if exists stream_publication_claim_token" in item for item in conn.statements)
-    assert any("drop column if exists stream_publication_claim_expires_at" in item for item in conn.statements)
-    assert any("drop column if exists stream_publication_state" in item for item in conn.statements)
-    assert all("delete from run_events" not in item for item in conn.statements)
 
 
 def test_sandbox_executor_async_terminal_columns_are_additive():
@@ -1183,6 +1146,8 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
     for column in (
         "executor_status text",
         "executor_heartbeat_at timestamptz",
+        "provider_renewed_at timestamptz",
+        "provider_expires_at timestamptz",
         "executor_terminal_json jsonb",
         "executor_terminal_received_at timestamptz",
         "executor_reconciliation_context_json jsonb",

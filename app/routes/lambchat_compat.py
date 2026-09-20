@@ -5,29 +5,26 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from app import repositories, session_actions
-from app.auth import (
-    AuthPrincipal,
-    is_ai_admin,
-    require_principal,
-    sign_principal_session,
-    verify_principal_session,
-)
+from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import (
     EVENT_ENVELOPE_SCHEMA_VERSION,
     standard_trace_id,
 )
 from app.db import transaction
 from app.execution.api import list_public_models
-from app.models import LoginRequest, SessionRenameRequest
+from app.models import SessionRenameRequest
 from app.projection_redaction import (
+    PUBLIC_RETIRED_AGENT_ID,
+    PUBLIC_RETIRED_SESSION_TITLE,
     capability_id_from_skill,
+    is_retired_agent_for_projection,
     public_agent_id_for_projection,
     public_skill_display_label,
 )
@@ -37,8 +34,7 @@ from app.public_execution import (
     public_execution_event_from_row,
     validate_public_agent_progress_payload,
 )
-from app.routes.auth import _login_principal
-from app.routes.files import MAX_UPLOAD_BYTES, upload_file as upload_platform_file
+from app.routes.files import MAX_UPLOAD_BYTES
 from app.routes.runs import (
     artifact_card,
     event_visible_to_principal,
@@ -46,6 +42,7 @@ from app.routes.runs import (
 )
 from app.runs import api as runs_api
 from app.run_projection import (
+    CHAT_ASSISTANT_DELTA_SOURCE,
     CHAT_PUBLIC_PROJECTION_VERSION,
     PublicChatAnswerStreamProjector,
     public_chat_answer_text,
@@ -54,13 +51,11 @@ from app.run_projection import (
 )
 from app.settings import get_settings
 from app.streaming.api import (
-    LiveSubscriptionClosed,
     V4ProjectionError,
     V4StreamEntry,
     live_redis_id_is_after,
+    project_persisted_message_delta_v4,
     project_public_envelope_v4,
-    recover_v4_missing_terminal_stream,
-    stream_live_channel,
     validate_public_application_payload_v4,
 )
 from app.streaming.authority import RunCursor, event_page
@@ -76,7 +71,7 @@ from app.streaming.redis import (
 from app.tool_permission_projection import tool_permission_public_event_payload
 
 
-class _V4ReplayBridge(Protocol):
+class _V4StreamBridge(Protocol):
     async def replay_page(
         self,
         *,
@@ -86,6 +81,18 @@ class _V4ReplayBridge(Protocol):
         stream_incarnation: int,
         after_redis_id: str,
         through_redis_id: str,
+    ) -> tuple[V4StreamEntry, ...]: ...
+
+    async def read_stream(
+        self,
+        *,
+        tenant_scope_value: str,
+        run_id: str,
+        attempt_id: str,
+        stream_incarnation: int,
+        after_redis_id: str,
+        count: int,
+        block_ms: int,
     ) -> tuple[V4StreamEntry, ...]: ...
 
 
@@ -99,11 +106,9 @@ _SSE_EXIT_REASONS = frozenset(
     {
         "terminal_completed",
         "client_disconnected",
-        "live_source_closed",
         "transport_failure",
         "stream_contract_failure",
         "stream_setup_failure",
-        "stream_cleanup_failure",
     }
 )
 
@@ -135,11 +140,21 @@ def _sse(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
 
 
 def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
-    agent_id = public_agent_id_for_projection(row.get("agent_id"))
+    raw_agent_id = row.get("agent_id")
+    retired_agent = is_retired_agent_for_projection(
+        raw_agent_id,
+        row.get("agent_default_skill_id"),
+        row.get("agent_profile_has_retired_skill"),
+    )
+    agent_id = (
+        PUBLIC_RETIRED_AGENT_ID
+        if retired_agent
+        else public_agent_id_for_projection(raw_agent_id, row.get("agent_default_skill_id"))
+    )
     return {
         "id": row["id"],
         "agent_id": agent_id,
-        "name": row.get("title") or "新会话",
+        "name": PUBLIC_RETIRED_SESSION_TITLE if retired_agent else row.get("title") or "新会话",
         "metadata": {"agent_id": agent_id, "workspace_id": row["workspace_id"]},
         "is_active": row.get("status", "active") == "active",
         "created_at": row.get("created_at"),
@@ -150,10 +165,17 @@ def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
 
 def _terminal_final_payload(
     run: dict[str, Any],
+    *,
+    include_successful_answer: bool = True,
 ) -> tuple[str, dict[str, str], str] | None:
     """Adapt the authoritative terminal projection to the compatibility wire."""
     projection = public_chat_terminal_projection(run)
     if projection is None:
+        return None
+    if (
+        projection["event_type"] == "message:chunk"
+        and not include_successful_answer
+    ):
         return None
     payload = projection["payload"]
     if not isinstance(payload, dict):
@@ -178,10 +200,9 @@ class _CompatibilityFoldState:
 
     has_strict_public_execution: bool
     seen_public_lifecycle_singletons: frozenset[str]
+    answer_source: str
     answer_projection_state: tuple[str, str, bool] = ("", "", False)
 
-
-CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
 
 @dataclass(frozen=True)
 class _ChatPublicRunEventProjection:
@@ -207,6 +228,9 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "Agent progress update",
         "active",
     ),
+    "commentary.delta": _ChatPublicRunEventProjection(
+        "summary", "commentary", "", "active"
+    ),
     "thinking.started": _ChatPublicRunEventProjection(
         "public_activity", "thinking_started", "", "active"
     ),
@@ -226,7 +250,7 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "public_tool_activity", "tool", "Tool execution failed", "failed"
     ),
     "tool.denied": _ChatPublicRunEventProjection(
-        "public_tool_activity", "tool", "Tool execution denied", "failed"
+        "public_tool_activity", "tool", "Tool execution denied", "blocked", "permission"
     ),
     "run_queued": _ChatPublicRunEventProjection(
         "queued", "queue", "任务正在排队", "waiting", "queue_capacity"
@@ -271,19 +295,35 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "capability_failed", "capability", "所需能力未完成", "failed"
     ),
     "agent_step_started": _ChatPublicRunEventProjection(
-        "agent_step_started", "activity", "正在执行当前计划步骤，完成后将汇总结果", "active"
+        "agent_step_started",
+        "activity",
+        "正在执行当前计划步骤，完成后将汇总结果",
+        "active",
     ),
     "agent_step_reused": _ChatPublicRunEventProjection(
-        "agent_step_reused", "activity", "已复用可信阶段结果，正在继续后续步骤", "active"
+        "agent_step_reused",
+        "activity",
+        "已复用可信阶段结果，正在继续后续步骤",
+        "active",
     ),
     "agent_step_completed": _ChatPublicRunEventProjection(
-        "agent_step_completed", "activity", "当前计划步骤已完成，正在继续后续处理", "completed"
+        "agent_step_completed",
+        "activity",
+        "当前计划步骤已完成，正在继续后续处理",
+        "completed",
     ),
     "agent_step_blocked": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "当前计划步骤正在等待前置条件", "waiting", "dependencies"
+        "agent_step_blocked",
+        "wait",
+        "当前计划步骤正在等待前置条件",
+        "waiting",
+        "dependencies",
     ),
     "agent_step_failed": _ChatPublicRunEventProjection(
-        "agent_step_failed", "activity", "当前计划步骤未完成，正在整理可操作错误", "failed"
+        "agent_step_failed",
+        "activity",
+        "当前计划步骤未完成，正在整理可操作错误",
+        "failed",
     ),
     "subagent_started": _ChatPublicRunEventProjection(
         "subagent_started", "agent", "正在协同处理", "active"
@@ -298,31 +338,52 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "run_child_created", "agent", "已安排协同任务", "active"
     ),
     "skill_selected": _ChatPublicRunEventProjection(
-        "capability_selected", "planning", "已加载授权处理能力，下一步将按所选流程分析请求", "completed"
+        "capability_selected",
+        "planning",
+        "已加载授权处理能力，下一步将按所选流程分析请求",
+        "completed",
     ),
     "capability_selected": _ChatPublicRunEventProjection(
-        "capability_selected", "planning", "已加载授权处理能力，下一步将按所选流程分析请求", "completed"
+        "capability_selected",
+        "planning",
+        "已加载授权处理能力，下一步将按所选流程分析请求",
+        "completed",
     ),
     "capability_staged": _ChatPublicRunEventProjection(
         "capability_staged", "capability", "所需能力已加载到受控环境", "completed"
     ),
     "capability_sdk_registered": _ChatPublicRunEventProjection(
-        "capability_sdk_registered", "capability", "所需能力已注册到执行引擎", "completed"
+        "capability_sdk_registered",
+        "capability",
+        "所需能力已注册到执行引擎",
+        "completed",
     ),
     "capability_actually_invoked": _ChatPublicRunEventProjection(
-        "capability_actually_invoked", "capability", "所需能力已由执行引擎实际调用", "completed"
+        "capability_actually_invoked",
+        "capability",
+        "所需能力已由执行引擎实际调用",
+        "completed",
     ),
     "capability_optional_not_invoked": _ChatPublicRunEventProjection(
-        "capability_optional_not_invoked", "capability", "可选能力本次未调用", "completed"
+        "capability_optional_not_invoked",
+        "capability",
+        "可选能力本次未调用",
+        "completed",
     ),
     "intent_detected": _ChatPublicRunEventProjection(
         "intent_detected", "preparation", "正在准备受控运行请求。", "active"
     ),
     "intent_confirmed": _ChatPublicRunEventProjection(
-        "intent_confirmed", "planning", "已确认处理方式，下一步将准备授权上下文", "completed"
+        "intent_confirmed",
+        "planning",
+        "已确认处理方式，下一步将准备授权上下文",
+        "completed",
     ),
     "context_snapshot_created": _ChatPublicRunEventProjection(
-        "context_snapshot_created", "context", "已准备运行上下文，下一步将处理授权输入", "completed"
+        "context_snapshot_created",
+        "context",
+        "已准备运行上下文，下一步将处理授权输入",
+        "completed",
     ),
     "checkpoint_created": _ChatPublicRunEventProjection(
         "context_snapshot_created", "context", "已保存阶段性进度", "completed"
@@ -337,16 +398,28 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "artifact_ready", "artifact", "结果文件已可安全下载", "completed"
     ),
     "mcp_tool_denied": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
+        "agent_step_blocked",
+        "wait",
+        "当前处理步骤未获授权，正在等待权限调整",
+        "blocked",
+        "permission",
     ),
     "tool_denied": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
+        "agent_step_blocked",
+        "wait",
+        "当前处理步骤未获授权，正在等待权限调整",
+        "blocked",
+        "permission",
     ),
     "tool_permission_authorized": _ChatPublicRunEventProjection(
         "agent_step_started", "activity", "处理步骤已获授权，正在继续执行", "active"
     ),
     "tool_permission_denied": _ChatPublicRunEventProjection(
-        "agent_step_blocked", "wait", "当前处理步骤未获授权，正在等待权限调整", "blocked", "permission"
+        "agent_step_blocked",
+        "wait",
+        "当前处理步骤未获授权，正在等待权限调整",
+        "blocked",
+        "permission",
     ),
     "tool_permission_requested": _ChatPublicRunEventProjection(
         "tool_permission_card", "policy", "正在等待权限决策", "waiting", "permission"
@@ -363,9 +436,7 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
     "cancel_requested_but_completed": _ChatPublicRunEventProjection(
         "cancel_requested_but_completed", "status", "任务已在取消前完成", "completed"
     ),
-    "error": _ChatPublicRunEventProjection(
-        "error", "status", "run_failed", "failed"
-    ),
+    "error": _ChatPublicRunEventProjection("error", "status", "run_failed", "failed"),
 }
 
 
@@ -415,7 +486,9 @@ def _strict_typed_chat_event_product(
         "tool_permission_terminalized",
     }:
         return None
-    if not _chat_event_marked_visible(event) or not event_visible_to_principal(event, principal):
+    if not _chat_event_marked_visible(event) or not event_visible_to_principal(
+        event, principal
+    ):
         return None
     run_id = str(run["id"])
     raw_payload = event.get("payload_json")
@@ -425,7 +498,9 @@ def _strict_typed_chat_event_product(
         sequence = event.get("sequence")
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
             return None
-        page = event_page(cursor=RunCursor(run_id=run_id, sequence=sequence - 1), rows=(event,))
+        page = event_page(
+            cursor=RunCursor(run_id=run_id, sequence=sequence - 1), rows=(event,)
+        )
         if len(page.events) != 1:
             return None
         delta = page.events[0]
@@ -438,7 +513,10 @@ def _strict_typed_chat_event_product(
             return None
         return _StrictChatEventProduct(
             kind="assistant_delta",
-            generic_envelope={"event_id": delta.event_id, "sequence": delta.cursor.sequence},
+            generic_envelope={
+                "event_id": delta.event_id,
+                "sequence": delta.cursor.sequence,
+            },
             payload={
                 "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
                 "projection_kind": "assistant_delta",
@@ -483,7 +561,9 @@ def _strict_capability_chat_product(
         "capability_failed",
     }:
         return None
-    if not _chat_event_marked_visible(event) or not event_visible_to_principal(event, principal):
+    if not _chat_event_marked_visible(event) or not event_visible_to_principal(
+        event, principal
+    ):
         return None
     payload = event.get("payload_json")
     if not isinstance(payload, dict):
@@ -500,7 +580,10 @@ def _strict_capability_chat_product(
         kind = "skill"
         name = public_skill_display_label(payload.get("public_capability_label")) or ""
         status = "selected" if raw_event_type == "skill_selected" else "completed"
-    elif raw_event_type == "tool_call_completed" and payload.get("tool_category") == "mcp":
+    elif (
+        raw_event_type == "tool_call_completed"
+        and payload.get("tool_category") == "mcp"
+    ):
         kind = "mcp"
         name = public_skill_display_label(payload.get("tool_label")) or ""
         status = "completed"
@@ -539,7 +622,9 @@ def _chat_projection_payload(envelope: dict[str, Any]) -> dict[str, object]:
         {"category", "status", "meaningful"},
     ):
         return {}
-    if not isinstance(activity.get("category"), str) or not isinstance(activity.get("status"), str):
+    if not isinstance(activity.get("category"), str) or not isinstance(
+        activity.get("status"), str
+    ):
         return {}
     if activity_fields == {"category", "status", "meaningful"} and activity != {
         "category": "liveness",
@@ -569,6 +654,7 @@ def _strict_v4_execution_history_payload(
 ) -> dict[str, object] | None:
     if event_type not in {
         "agent.progress",
+        "commentary.delta",
         "thinking.started",
         "thinking.delta",
         "thinking.completed",
@@ -608,16 +694,21 @@ def _public_run_event_envelope(
     strict_v4_payload = _strict_v4_execution_history_payload(
         raw_event_type, event.get("payload_json")
     )
-    if raw_event_type in {
-        "agent.progress",
-        "thinking.started",
-        "thinking.delta",
-        "thinking.completed",
-        "tool.started",
-        "tool.completed",
-        "tool.failed",
-        "tool.denied",
-    } and strict_v4_payload is None:
+    if (
+        raw_event_type
+        in {
+            "agent.progress",
+            "commentary.delta",
+            "thinking.started",
+            "thinking.delta",
+            "thinking.completed",
+            "tool.started",
+            "tool.completed",
+            "tool.failed",
+            "tool.denied",
+        }
+        and strict_v4_payload is None
+    ):
         return None
     if raw_event_type == "agent.progress":
         public_progress = strict_v4_payload
@@ -627,15 +718,21 @@ def _public_run_event_envelope(
         )
     else:
         public_progress = None
-    if raw_event_type in {
-        "agent.progress",
-        PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
-    } and public_progress is None:
+    if (
+        raw_event_type
+        in {
+            "agent.progress",
+            PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+        }
+        and public_progress is None
+    ):
         return None
     typed_product = _strict_typed_chat_event_product(run, event, principal)
     if typed_product is not None and typed_product.kind == "capability":
         capability_status = str(typed_product.payload["capability"]["status"])
-        presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS[f"capability_{capability_status}"]
+        presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS[
+            f"capability_{capability_status}"
+        ]
     projected = (
         typed_product.generic_envelope
         if typed_product is not None
@@ -672,10 +769,15 @@ def _public_run_event_envelope(
             PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
             stage,
             message,
-            "failed" if public_progress["lifecycle"] == "failed" else "completed"
+            "failed"
+            if public_progress["lifecycle"] == "failed"
+            else "completed"
             if public_progress["lifecycle"] == "completed"
             else "active",
         )
+    if raw_event_type == "commentary.delta" and strict_v4_payload is not None:
+        message = str(strict_v4_payload["delta"])
+        stage = "commentary"
     if raw_event_type.startswith("thinking.") and strict_v4_payload is not None:
         thinking_message = strict_v4_payload.get("delta")
         if not isinstance(thinking_message, str):
@@ -689,7 +791,9 @@ def _public_run_event_envelope(
         if terminal is not None:
             message = str(terminal["message"])
             terminal_payload = terminal["event_payload"]
-            payload = dict(terminal_payload) if isinstance(terminal_payload, dict) else {}
+            payload = (
+                dict(terminal_payload) if isinstance(terminal_payload, dict) else {}
+            )
     return {
         "id": str(projected["id"]),
         "schema_version": str(projected["schema_version"]),
@@ -707,6 +811,47 @@ def _public_run_event_envelope(
         "wait_reason": presentation.wait_reason,
         "payload": payload,
         "created_at": projected.get("created_at"),
+    }
+
+
+def _persisted_v4_assistant_delta(
+    run: dict[str, Any], event: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Return the legacy-shaped body input only after strict persisted-v4 admission."""
+
+    projected = project_persisted_message_delta_v4(
+        event,
+        tenant_id=str(run.get("tenant_id") or ""),
+        run_id=str(run["id"]),
+    )
+    if projected is None:
+        return None
+    payload = projected.get("payload")
+    delta = payload.get("delta") if isinstance(payload, dict) else None
+    if not isinstance(delta, str) or not delta:
+        return None
+    return {
+        "id": projected["event_id"],
+        "tenant_id": run.get("tenant_id"),
+        "run_id": run["id"],
+        "sequence": projected["seq"],
+        "event_type": "assistant_delta",
+        "stage": "answer",
+        "message": "",
+        "severity": "info",
+        "visible_to_user": True,
+        "payload_json": {
+            "delta": delta,
+            "source": CHAT_ASSISTANT_DELTA_SOURCE,
+            "visible_to_user": True,
+            "severity": "info",
+        },
+        "trace_id": event.get("trace_id"),
+        "created_at": event.get("created_at"),
+        "_history_message_identity": (
+            projected["message_id"],
+            projected["stream_incarnation"],
+        ),
     }
 
 
@@ -739,6 +884,23 @@ def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int,
         return (2**63 - 1, position)
 
 
+def _answer_source_for_run(
+    run: dict[str, Any],
+    run_events: list[dict[str, Any]],
+    principal: AuthPrincipal,
+) -> str:
+    return (
+        "v4"
+        if any(
+            _chat_event_marked_visible(event)
+            and event_visible_to_principal(event, principal)
+            and _persisted_v4_assistant_delta(run, event) is not None
+            for event in run_events
+        )
+        else "legacy"
+    )
+
+
 def _compatibility_events_for_run(
     run: dict[str, Any],
     run_events: list[dict[str, Any]],
@@ -747,6 +909,7 @@ def _compatibility_events_for_run(
     *,
     user_messages: list[dict[str, Any]] | None = None,
     include_terminal: bool = True,
+    compact_answer_deltas: bool = False,
 ) -> list[_CompatibilityWireEvent]:
     """Build the sole public terminal wire, ordered for live and history replay."""
     compatibility_events, _ = _compatibility_events_for_run_page(
@@ -754,9 +917,14 @@ def _compatibility_events_for_run(
         run_events,
         artifacts,
         principal,
-        fold_state=_CompatibilityFoldState(False, frozenset()),
+        fold_state=_CompatibilityFoldState(
+            False,
+            frozenset(),
+            _answer_source_for_run(run, run_events, principal),
+        ),
         user_messages=user_messages,
         include_terminal=include_terminal,
+        compact_answer_deltas=compact_answer_deltas,
     )
     return compatibility_events
 
@@ -770,6 +938,7 @@ def _compatibility_events_for_run_page(
     fold_state: _CompatibilityFoldState,
     user_messages: list[dict[str, Any]] | None = None,
     include_terminal: bool = True,
+    compact_answer_deltas: bool = False,
 ) -> tuple[list[_CompatibilityWireEvent], _CompatibilityFoldState]:
     """Fold one durable page while carrying only public compatibility facts forward."""
     run_id = str(run["id"])
@@ -817,25 +986,92 @@ def _compatibility_events_for_run_page(
         run,
         fold_state.answer_projection_state,
     )
-    final_answer_event = next(
+    v4_answer_events = {
+        position: projected
+        for position, event in ordered_events
+        if _chat_event_marked_visible(event)
+        and event_visible_to_principal(event, principal)
+        and (projected := _persisted_v4_assistant_delta(run, event)) is not None
+    }
+    prefer_v4_answer = fold_state.answer_source == "v4"
+    compact_terminal_answer = (
+        compact_answer_deltas
+        and prefer_v4_answer
+        and status in {"succeeded", "failed", "cancelled"}
+    )
+    final_answer_position = next(
         (
-            event
-            for _, event in reversed(ordered_events)
+            position
+            for position, event in reversed(ordered_events)
             if include_terminal
             and status in {"succeeded", "failed", "cancelled"}
-            and str(event.get("event_type") or "") == "assistant_delta"
-            and _chat_event_marked_visible(event)
-            and event_visible_to_principal(event, principal)
+            and (
+                position in v4_answer_events
+                if prefer_v4_answer
+                else str(event.get("event_type") or "") == "assistant_delta"
+                and _chat_event_marked_visible(event)
+                and event_visible_to_principal(event, principal)
+            )
         ),
         None,
     )
+    pending_answer_events: list[tuple[int, dict[str, Any]]] = []
+
+    def emit_answer_event(
+        answer_event: dict[str, Any], *, final_answer_delta: bool
+    ) -> None:
+        delta = _assistant_delta_projection(
+            run,
+            answer_event,
+            principal,
+            answer_projector=answer_projector,
+            final_answer_delta=final_answer_delta,
+        )
+        if delta is None:
+            return
+        compatibility_events.append(
+            _CompatibilityWireEvent(
+                id=str(answer_event["id"]),
+                stream_event_type="message:chunk",
+                stream_data=delta,
+                history_event={
+                    "id": answer_event["id"],
+                    "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
+                    "trace_id": str(answer_event.get("trace_id") or trace_id),
+                    "type": "message:chunk",
+                    "event_type": "message:chunk",
+                    "stage": "answer",
+                    "severity": "info",
+                    "visible_to_user": True,
+                    "payload": delta,
+                    "sequence": delta["sequence"],
+                    "data": delta,
+                    "timestamp": answer_event.get("created_at"),
+                    "run_id": run_id,
+                },
+            )
+        )
+
+    def flush_pending_answer_events() -> None:
+        if not pending_answer_events:
+            return
+        # ponytail: public barriers reproject the prefix; materialize terminal
+        # messages if heavily interleaved histories make that cost measurable.
+        last_position, last_event = pending_answer_events[-1]
+        payload = dict(last_event["payload_json"])
+        payload["delta"] = "".join(
+            str(event["payload_json"]["delta"])
+            for _, event in pending_answer_events
+        )
+        emit_answer_event(
+            {**last_event, "payload_json": payload},
+            final_answer_delta=last_position == final_answer_position,
+        )
+        pending_answer_events.clear()
 
     for message in user_messages or []:
         message_id = str(message.get("id") or "")
-        if (
-            not message_id
-            or str(message.get("run_id") or "") != run_id
-        ):
+        if not message_id or str(message.get("run_id") or "") != run_id:
             continue
         message_data = {
             "message_id": message_id,
@@ -843,7 +1079,9 @@ def _compatibility_events_for_run_page(
             "content": str(message.get("content") or ""),
         }
         metadata = message.get("metadata_json")
-        locked_skill = metadata.get("locked_skill") if isinstance(metadata, dict) else None
+        locked_skill = (
+            metadata.get("locked_skill") if isinstance(metadata, dict) else None
+        )
         locked_skill_label = public_skill_display_label(
             locked_skill.get("label") if isinstance(locked_skill, dict) else None
         )
@@ -869,11 +1107,13 @@ def _compatibility_events_for_run_page(
         raw_event_type = str(event.get("event_type") or "")
         if raw_event_type in CHAT_STREAM_TERMINAL_EVENT_TYPES:
             continue
-        if has_strict_public_execution and raw_event_type in legacy_capability_event_types:
-            continue
         if (
-            not _chat_event_marked_visible(event)
-            or not event_visible_to_principal(event, principal)
+            has_strict_public_execution
+            and raw_event_type in legacy_capability_event_types
+        ):
+            continue
+        if not _chat_event_marked_visible(event) or not event_visible_to_principal(
+            event, principal
         ):
             continue
         if (
@@ -888,6 +1128,7 @@ def _compatibility_events_for_run_page(
             execution_event = public_execution_event_from_row(run_id, event)
             if execution_event is None:
                 continue
+            flush_pending_answer_events()
             event_type = str(event["event_type"])
             compatibility_events.append(
                 _CompatibilityWireEvent(
@@ -898,10 +1139,12 @@ def _compatibility_events_for_run_page(
                         "id": execution_event["event_id"],
                         "schema_version": execution_event["schema_version"],
                         "trace_id": str(event.get("trace_id") or trace_id),
-                    "type": event_type,
-                    "event_type": event_type,
+                        "type": event_type,
+                        "event_type": event_type,
                         "stage": execution_event["stage"],
-                        "severity": "error" if execution_event["status"] == "failed" else "info",
+                        "severity": "error"
+                        if execution_event["status"] == "failed"
+                        else "info",
                         "visible_to_user": True,
                         "payload": execution_event,
                         "sequence": execution_event["sequence"],
@@ -913,50 +1156,45 @@ def _compatibility_events_for_run_page(
             )
             continue
         raw_payload = event.get("payload_json")
-        if raw_event_type.startswith("tool_call") and isinstance(raw_payload, dict) and {
-            "command",
-            "args",
-            "arguments",
-            "result",
-            "output",
-            "tool_input",
-            "tool_output",
-            "private_payload",
-            "executor_private_payload",
-        } & set(raw_payload):
+        if (
+            raw_event_type.startswith("tool_call")
+            and isinstance(raw_payload, dict)
+            and {
+                "command",
+                "args",
+                "arguments",
+                "result",
+                "output",
+                "tool_input",
+                "tool_output",
+                "private_payload",
+                "executor_private_payload",
+            }
+            & set(raw_payload)
+        ):
             continue
-        if raw_event_type == "assistant_delta":
-            delta = _assistant_delta_projection(
-                run,
-                event,
-                principal,
-                answer_projector=answer_projector,
-                final_answer_delta=event is final_answer_event,
-            )
-            if delta is None:
-                continue
-            compatibility_events.append(
-                _CompatibilityWireEvent(
-                    id=str(event["id"]),
-                    stream_event_type="message:chunk",
-                    stream_data=delta,
-                    history_event={
-                        "id": event["id"],
-                        "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
-                        "trace_id": str(event.get("trace_id") or trace_id),
-                        "type": "message:chunk",
-                        "event_type": "message:chunk",
-                        "stage": "answer",
-                        "severity": "info",
-                        "visible_to_user": True,
-                        "payload": delta,
-                        "sequence": delta["sequence"],
-                        "data": delta,
-                        "timestamp": event.get("created_at"),
-                        "run_id": run_id,
-                    },
+        if raw_event_type in {"assistant_delta", "message.delta"}:
+            if prefer_v4_answer:
+                answer_event = v4_answer_events.get(position)
+                if answer_event is None:
+                    continue
+            else:
+                if raw_event_type != "assistant_delta":
+                    continue
+                answer_event = event
+            if compact_terminal_answer:
+                if (
+                    pending_answer_events
+                    and pending_answer_events[-1][1].get("_history_message_identity")
+                    != answer_event.get("_history_message_identity")
+                ):
+                    flush_pending_answer_events()
+                pending_answer_events.append((position, answer_event))
+            else:
+                emit_answer_event(
+                    answer_event,
+                    final_answer_delta=position == final_answer_position,
                 )
-            )
             continue
         envelope = _public_run_event_envelope(run, event, principal)
         if envelope is None:
@@ -966,7 +1204,10 @@ def _compatibility_events_for_run_page(
             if public_event_type in seen_public_lifecycle_singletons:
                 continue
             seen_public_lifecycle_singletons.add(public_event_type)
-        payload = envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}
+        flush_pending_answer_events()
+        payload = (
+            envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}
+        )
         history_data = {
             **payload,
             "projection_version": envelope["projection_version"],
@@ -1013,6 +1254,7 @@ def _compatibility_events_for_run_page(
             )
         )
 
+    flush_pending_answer_events()
     for artifact in sorted(
         artifacts,
         key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")),
@@ -1041,7 +1283,15 @@ def _compatibility_events_for_run_page(
             )
         )
 
-    final_payload = _terminal_final_payload(run) if include_terminal else None
+    has_streamed_answer = prefer_v4_answer or bool(answer_projector.state[1])
+    final_payload = (
+        _terminal_final_payload(
+            run,
+            include_successful_answer=not has_streamed_answer,
+        )
+        if include_terminal
+        else None
+    )
     if final_payload is not None:
         event_type, payload, severity = final_payload
         final_data = {"run_id": run_id, **payload}
@@ -1094,6 +1344,7 @@ def _compatibility_events_for_run_page(
     return compatibility_events, _CompatibilityFoldState(
         has_strict_public_execution=has_strict_public_execution,
         seen_public_lifecycle_singletons=frozenset(seen_public_lifecycle_singletons),
+        answer_source=fold_state.answer_source,
         answer_projection_state=answer_projector.state,
     )
 
@@ -1117,47 +1368,6 @@ def _lambchat_status(status: str) -> str:
         "queued": "pending",
         "running": "running",
     }.get(status, status)
-
-
-@router.post("/auth/login")
-async def login(request: LoginRequest) -> dict[str, object]:
-    principal = await _login_principal(request)
-    token = sign_principal_session(principal)
-    settings = get_settings()
-    return {
-        "access_token": token,
-        "refresh_token": token,
-        "token_type": "bearer",
-        "expires_in": settings.ai_session_max_age_seconds,
-    }
-
-
-@router.get("/auth/me")
-async def me(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
-    return {
-        "id": principal.user_id,
-        "username": principal.user_id,
-        "email": "",
-        "avatar_url": None,
-        "roles": principal.roles,
-        "permissions": principal.permissions,
-        "is_active": True,
-        "metadata": {"display_name": principal.display_name, "source": principal.source},
-        "created_at": "",
-        "updated_at": "",
-    }
-
-
-@router.post("/auth/refresh")
-async def refresh(payload: dict[str, str]) -> dict[str, object]:
-    principal = verify_principal_session(payload.get("refresh_token") or "")
-    token = sign_principal_session(principal)
-    return {
-        "access_token": token,
-        "refresh_token": token,
-        "token_type": "bearer",
-        "expires_in": get_settings().ai_session_max_age_seconds,
-    }
 
 
 @router.get("/auth/oauth/providers")
@@ -1196,88 +1406,37 @@ UI_PERMISSIONS = [
     "marketplace:admin",
     "user:read",
     "user:admin",
-    "settings:read",
-    "settings:admin",
     "feedback:read",
     "feedback:admin",
     "notification:read",
     "notification:admin",
 ]
 
-CHAT_STREAM_TERMINAL_EVENT_TYPES = {"run_succeeded", "run_failed", "run_cancelled", "run_canceled"}
-
-
-def _profile_payload(principal: AuthPrincipal, metadata: dict[str, Any] | None = None) -> dict[str, object]:
-    merged_metadata = {"display_name": principal.display_name, "source": principal.source}
-    if metadata:
-        merged_metadata.update(metadata)
-    return {
-        "id": principal.user_id,
-        "username": principal.user_id,
-        "email": "",
-        "avatar_url": None,
-        "roles": principal.roles,
-        "permissions": principal.permissions,
-        "is_active": True,
-        "metadata": merged_metadata,
-        "created_at": "",
-        "updated_at": "",
-    }
-
+CHAT_STREAM_TERMINAL_EVENT_TYPES = {
+    "run_succeeded",
+    "run_failed",
+    "run_cancelled",
+    "run_canceled",
+}
 
 @router.get("/auth/permissions")
 async def permissions() -> dict[str, object]:
     permission_infos = [
-        {"value": item, "label": item, "description": item}
-        for item in UI_PERMISSIONS
+        {"value": item, "label": item, "description": item} for item in UI_PERMISSIONS
     ]
     return {
         "groups": [{"name": "AI Platform POC", "permissions": permission_infos}],
         "all_permissions": permission_infos,
     }
 
-
-@router.get("/auth/profile")
-async def profile(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
-    return _profile_payload(principal)
-
-
-@router.put("/auth/profile/metadata")
-async def update_profile_metadata(
-    payload: dict[str, Any], principal: AuthPrincipal = Depends(require_principal)
-) -> dict[str, object]:
-    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-    return _profile_payload(principal, metadata=metadata)
-
-
 @router.get("/agent/models/available")
 async def available_models(
+    response: Response,
     _principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
     async with transaction() as conn:
         return await list_public_models(conn)
-
-
-@router.get("/agent/models/")
-async def model_configs() -> dict[str, object]:
-    async with transaction() as conn:
-        catalog = await list_public_models(conn)
-    models = [
-        {**model, "enabled": True, "order": index}
-        for index, model in enumerate(catalog["models"], start=1)
-    ]
-    return {**catalog, "models": models}
-
-
-@router.get("/version")
-async def version() -> dict[str, object]:
-    return {"version": "ai-platform-poc"}
-
-
-@router.get("/projects")
-@router.get("/projects/")
-async def projects() -> list[object]:
-    return []
 
 
 @router.get("/upload/config")
@@ -1288,12 +1447,14 @@ async def upload_config() -> dict[str, object]:
         "audio": MAX_UPLOAD_BYTES,
         "document": MAX_UPLOAD_BYTES,
     }
-    max_files = 10
+    settings = get_settings()
+    max_files = 32
     return {
         "enabled": True,
         "provider": "ai-platform",
         "uploadLimitsBytes": upload_limits_bytes,
         "maxFiles": max_files,
+        "maxActiveUploadSessions": settings.file_upload_max_active_sessions,
         # Preserve the pre-existing byte-valued wire aliases. Older frontends
         # remain bounded by the canonical server-side 413 during rollout.
         "uploadLimits": {
@@ -1307,49 +1468,20 @@ async def upload_config() -> dict[str, object]:
     }
 
 
-@router.post("/upload/file")
-async def upload_file(
-    file: UploadFile = File(...),
-    folder: str = "uploads",
-    workspace_id: str = Form("default"),
-    session_id: str | None = Form(None),
-    principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, object]:
-    uploaded = await upload_platform_file(
-        file=file,
-        workspace_id=workspace_id,
-        session_id=session_id,
-        principal=principal,
-    )
-    mime_type = file.content_type or "application/octet-stream"
-    return {
-        "key": uploaded.file_id,
-        "file_id": uploaded.file_id,
-        "url": f"/api/ai/files/{uploaded.file_id}",
-        "name": uploaded.name,
-        "type": folder,
-        "mime_type": mime_type,
-        "mimeType": mime_type,
-        "size": uploaded.size_bytes,
-        "sha256": uploaded.sha256,
-    }
-
-
-@router.get("/tools")
-async def tools() -> dict[str, object]:
-    return {"tools": []}
-
-
 @router.get("/roles")
 @router.get("/roles/")
-async def roles(skip: int = 0, limit: int = 100, q: str | None = None) -> dict[str, object]:
+async def roles(
+    skip: int = 0, limit: int = 100, q: str | None = None
+) -> dict[str, object]:
     limit = max(1, min(limit, 200))
     skip = max(0, skip)
     return {"roles": [], "total": 0, "skip": skip, "limit": limit, "q": q or ""}
 
 
 @router.get("/sessions")
-async def sessions(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
+async def sessions(
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
     async with transaction() as conn:
         rows = await repositories.list_authorized_sessions(
             conn,
@@ -1357,11 +1489,19 @@ async def sessions(principal: AuthPrincipal = Depends(require_principal)) -> dic
             user_id=principal.user_id,
         )
     items = [_session_payload(row) for row in rows]
-    return {"sessions": items, "total": len(items), "skip": 0, "limit": 100, "has_more": False}
+    return {
+        "sessions": items,
+        "total": len(items),
+        "skip": 0,
+        "limit": 100,
+        "has_more": False,
+    }
 
 
 @router.get("/sessions/{session_id}")
-async def get_session(session_id: str, principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
+async def get_session(
+    session_id: str, principal: AuthPrincipal = Depends(require_principal)
+) -> dict[str, object]:
     async with transaction() as conn:
         row = await repositories.get_authorized_lambchat_session(
             conn,
@@ -1402,7 +1542,9 @@ async def delete_session(
 ) -> dict[str, object]:
     try:
         async with transaction() as conn:
-            result = await session_actions.delete_session(conn, principal=principal, session_id=session_id)
+            result = await session_actions.delete_session(
+                conn, principal=principal, session_id=session_id
+            )
     except session_actions.SessionActionNotFoundError as exc:
         raise HTTPException(status_code=404, detail="session_not_found") from exc
     return {
@@ -1475,13 +1617,17 @@ async def session_runs(
             "trace_id": row.get("trace_id") or standard_trace_id(str(row["id"])),
             "agent_id": row["agent_id"]
             if is_ai_admin(principal)
-            else public_agent_id_for_projection(row.get("agent_id"), row.get("skill_id")),
+            else public_agent_id_for_projection(
+                row.get("agent_id"), row.get("skill_id")
+            ),
             "capability_id": capability_id_from_skill(row["skill_id"], row["agent_id"]),
             "status": status,
             "error": _public_error_text(row, principal),
             "error_code": (terminal_detail or {}).get("detail_code"),
             "created_at": row.get("created_at"),
-            "started_at": row.get("started_at") or row.get("queued_at") or row.get("created_at"),
+            "started_at": row.get("started_at")
+            or row.get("queued_at")
+            or row.get("created_at"),
             "completed_at": row.get("finished_at"),
             "finished_at": row.get("finished_at"),
         }
@@ -1499,6 +1645,7 @@ async def session_runs(
 async def session_events(
     session_id: str,
     run_id: str | None = None,
+    compact_message_chunks: bool = False,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
@@ -1532,17 +1679,23 @@ async def session_events(
                 limit=50,
             )
             current = next(
-                (row for row in target_runs if row.get("session_generation") is not None),
+                (
+                    row
+                    for row in target_runs
+                    if row.get("session_generation") is not None
+                ),
                 None,
             )
             current_run_id = str(current["id"]) if current is not None else None
         target_run_ids = [str(run["id"]) for run in target_runs]
-        authorized_user_messages = await repositories.list_authorized_user_messages_for_runs(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-            run_ids=target_run_ids,
+        authorized_user_messages = (
+            await repositories.list_authorized_user_messages_for_runs(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                run_ids=target_run_ids,
+            )
         )
         user_messages_by_run: dict[str, list[dict[str, Any]]] = {
             target_run_id: [] for target_run_id in target_run_ids
@@ -1553,7 +1706,9 @@ async def session_events(
                 user_messages_by_run[message_run_id].append(message)
         events = []
         for run in reversed(target_runs):
-            run_events = await repositories.list_run_events(conn, tenant_id=principal.tenant_id, run_id=run["id"])
+            run_events = await repositories.list_run_events(
+                conn, tenant_id=principal.tenant_id, run_id=run["id"]
+            )
             artifacts = await repositories.list_run_artifacts(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -1567,6 +1722,7 @@ async def session_events(
                     artifacts,
                     principal,
                     user_messages=user_messages_by_run.get(str(run["id"]), []),
+                    compact_answer_deltas=compact_message_chunks,
                 )
             )
     return {
@@ -1613,11 +1769,6 @@ async def mark_read(session_id: str) -> dict[str, bool]:
     return {"success": True}
 
 
-@router.post("/chat/sessions/{session_id}/cancel")
-async def cancel_session(session_id: str) -> dict[str, object]:
-    raise HTTPException(status_code=410, detail="session_cancel_unsupported_use_run_cancel")
-
-
 @router.get("/chat/sessions/{session_id}/status")
 async def chat_status(
     session_id: str,
@@ -1655,13 +1806,20 @@ async def chat_status(
                 session_id=session_id,
                 limit=10,
             )
-            target = next((row for row in rows if row.get("session_generation") is not None), None)
+            target = next(
+                (row for row in rows if row.get("session_generation") is not None), None
+            )
     raw_status = _platform_status(str(target["status"])) if target else "idle"
-    return {"session_id": session_id, "run_id": run_id, "status": _lambchat_status(raw_status), "raw_status": raw_status}
+    return {
+        "session_id": session_id,
+        "run_id": run_id,
+        "status": _lambchat_status(raw_status),
+        "raw_status": raw_status,
+    }
 
 
 async def _restore_chat_stream_projection(
-    bridge: _V4ReplayBridge,
+    bridge: _V4StreamBridge,
     *,
     run: dict[str, Any],
     tenant_scope_value: str,
@@ -1788,15 +1946,8 @@ async def chat_session_stream(
         await record_sse_exit("stream_setup_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable")
     bridge = runtime.bridge
-    channel = stream_live_channel(
-        tenant_scope_value=authority.tenant_scope,
-        run_id=run_id,
-        stream_incarnation=authority.stream_incarnation,
-    )
-    subscription = None
     setup_gap_requested_event_id: str | None = None
     try:
-        subscription = await runtime.hub.subscribe(channel)
         resume = await bridge.resolve_resume(
             tenant_scope_value=authority.tenant_scope,
             run_id=run_id,
@@ -1804,52 +1955,6 @@ async def chat_session_stream(
             current_stream_incarnation=authority.stream_incarnation,
             last_event_id=last_event_id,
         )
-        if (
-            resume.gap is not None
-            and resume.gap.reason == "stream_missing"
-            and str(initial_run.get("status") or "") in runs_api.TERMINAL_RUN_STATUSES
-        ):
-            await subscription.aclose()
-            subscription = None
-            activation = await recover_v4_missing_terminal_stream(
-                runtime.successor_rebuilds,
-                runtime.successor_activations,
-                runtime.rebuild_transport,
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                attempt_id=authority.attempt_id,
-                source_incarnation=authority.stream_incarnation,
-                claim_ttl=timedelta(seconds=30),
-            )
-            if activation is None:
-                raise StreamContractError("stream_successor_activation_unavailable")
-            async with transaction() as conn:
-                authority = await get_stream_authority(
-                    conn, tenant_id=principal.tenant_id, run_id=run_id
-                )
-                if authority is None:
-                    raise StreamContractError("stream_successor_authority_missing")
-                lease = await acquire_sse_authority_lease(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id,
-                    api_instance_id=_SSE_API_INSTANCE_ID,
-                    connection_id=connection_id,
-                    lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
-                )
-            channel = stream_live_channel(
-                tenant_scope_value=authority.tenant_scope,
-                run_id=run_id,
-                stream_incarnation=authority.stream_incarnation,
-            )
-            subscription = await runtime.hub.subscribe(channel)
-            resume = await bridge.resolve_resume(
-                tenant_scope_value=authority.tenant_scope,
-                run_id=run_id,
-                attempt_id=authority.attempt_id,
-                current_stream_incarnation=authority.stream_incarnation,
-                last_event_id=None,
-            )
         answer_projector = PublicChatAnswerStreamProjector(initial_run)
         restored_terminal_event_id: str | None = None
         resume_already_ended = False
@@ -1883,42 +1988,19 @@ async def chat_session_stream(
                     raise
                 setup_gap_requested_event_id = resume.after_redis_id or "0-0"
     except StreamContractError as exc:
-        cleanup_failed = False
-        if subscription is not None:
-            try:
-                await subscription.aclose()
-            except Exception:  # noqa: BLE001
-                cleanup_failed = True
-        await record_sse_exit(
-            "stream_cleanup_failure" if cleanup_failed else "stream_contract_failure"
-        )
+        await record_sse_exit("stream_contract_failure")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (LiveSubscriptionClosed, StreamTransportUnavailable) as exc:
-        cleanup_failed = False
-        if subscription is not None:
-            try:
-                await subscription.aclose()
-            except Exception:  # noqa: BLE001
-                cleanup_failed = True
-        await record_sse_exit(
-            "stream_cleanup_failure" if cleanup_failed else "transport_failure"
-        )
+    except StreamTransportUnavailable as exc:
+        await record_sse_exit("transport_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
     except Exception as exc:  # noqa: BLE001
-        cleanup_failed = False
-        if subscription is not None:
-            try:
-                await subscription.aclose()
-            except Exception:  # noqa: BLE001
-                cleanup_failed = True
-        await record_sse_exit(
-            "stream_cleanup_failure" if cleanup_failed else "stream_setup_failure"
-        )
+        await record_sse_exit("stream_setup_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
         nonlocal lease
         after = resume.after_redis_id or "0-0"
+        observed_run_status = str(initial_run.get("status") or "")
         exit_reason = "transport_failure"
         exit_recorded = False
 
@@ -1930,7 +2012,7 @@ async def chat_session_stream(
             await record_sse_exit(exit_reason)
 
         async def refresh_lease() -> bool:
-            nonlocal lease
+            nonlocal lease, observed_run_status
             now = datetime.now(timezone.utc)
             # A committed epoch change fences renewal. This issued lease remains
             # authoritative only until its authority-clock deadline (<=15s).
@@ -1946,6 +2028,7 @@ async def chat_session_stream(
                     )
                     if run is None or run.get("session_id") != session_id:
                         return False
+                    observed_run_status = str(run.get("status") or "")
                     lease = await acquire_sse_authority_lease(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -1956,7 +2039,14 @@ async def chat_session_stream(
                     )
             except (SseAuthorityConflictError, ValueError):
                 return False
-            return True
+            return lease.allows_frame(now=datetime.now(timezone.utc))
+
+        async def authorize_frame() -> bool:
+            nonlocal exit_reason
+            if await refresh_lease():
+                return True
+            exit_reason = "transport_failure"
+            return False
 
         def project_entry(entry: V4StreamEntry) -> tuple[str | None, bool]:
             nonlocal restored_terminal_event_id
@@ -1967,9 +2057,11 @@ async def chat_session_stream(
             if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
                 restored_terminal_event_id = str(envelope["event_id"])
             ended = event_type == "stream.end"
-            if ended and envelope["payload"].get(
-                "terminal_event_id"
-            ) != restored_terminal_event_id:
+            if (
+                ended
+                and envelope["payload"].get("terminal_event_id")
+                != restored_terminal_event_id
+            ):
                 raise StreamContractError("stream_end_without_observed_terminal")
             return _sse(event_type, envelope, entry.cursor.event_id), ended
 
@@ -2005,17 +2097,19 @@ async def chat_session_stream(
                     reason = "stream_continuity_unproven"
                     requested_event_id = setup_gap_requested_event_id
                     requested_incarnation = authority.stream_incarnation
-                yield await gap_frame(
+                frame = await gap_frame(
                     reason=reason,
                     requested_event_id=requested_event_id,
                     requested_stream_incarnation=requested_incarnation,
                 )
+                if not await authorize_frame():
+                    return
+                yield frame
                 return
             if resume_already_ended:
                 exit_reason = "terminal_completed"
                 return
-            if not await refresh_lease():
-                exit_reason = "transport_failure"
+            if not await authorize_frame():
                 return
             while after != replay_tail:
                 previous_after = after
@@ -2032,21 +2126,23 @@ async def chat_session_stream(
                     if str(exc) != "stream_replay_continuity_unproven":
                         raise
                     exit_reason = "stream_contract_failure"
-                    yield await gap_frame(
+                    frame = await gap_frame(
                         reason="stream_continuity_unproven",
                         requested_event_id=after,
                         requested_stream_incarnation=authority.stream_incarnation,
                     )
+                    if not await authorize_frame():
+                        return
+                    yield frame
                     return
                 if not entries:
                     raise StreamContractError("stream_replay_history_unavailable")
                 for entry in entries:
-                    if not await refresh_lease():
-                        exit_reason = "transport_failure"
-                        return
                     after = entry.cursor.redis_id
                     frame, ended = project_entry(entry)
                     if frame is not None:
+                        if not await authorize_frame():
+                            return
                         yield frame
                     if ended:
                         exit_reason = "terminal_completed"
@@ -2054,36 +2150,37 @@ async def chat_session_stream(
                 if after == previous_after:
                     raise StreamContractError("stream_replay_history_unavailable")
             while True:
-                if not await refresh_lease():
-                    exit_reason = "transport_failure"
+                if not await authorize_frame():
                     return
-                try:
-                    publication = await subscription.next(timeout_seconds=5.0)
-                except TimeoutError:
-                    yield ": heartbeat\n\n"
-                    continue
-                except LiveSubscriptionClosed:
-                    exit_reason = "live_source_closed"
-                    return
-                if publication.channel != channel:
-                    raise StreamContractError("stream_live_channel_mismatch")
-                if not live_redis_id_is_after(publication.redis_id, after):
-                    continue
-                entry = bridge.decode_live_publication(
-                    redis_id=publication.redis_id,
-                    envelope_json=publication.envelope_json,
+                entries = await bridge.read_stream(
                     tenant_scope_value=authority.tenant_scope,
                     run_id=run_id,
                     attempt_id=authority.attempt_id,
                     stream_incarnation=authority.stream_incarnation,
+                    after_redis_id=after,
+                    count=128,
+                    block_ms=5000,
                 )
-                after = entry.cursor.redis_id
-                frame, ended = project_entry(entry)
-                if frame is not None:
-                    yield frame
-                if ended:
-                    exit_reason = "terminal_completed"
-                    return
+                if not entries:
+                    if not await authorize_frame():
+                        return
+                    if observed_run_status in runs_api.TERMINAL_RUN_STATUSES:
+                        exit_reason = "terminal_completed"
+                        return
+                    yield ": heartbeat\n\n"
+                    continue
+                for entry in entries:
+                    if not live_redis_id_is_after(entry.cursor.redis_id, after):
+                        continue
+                    after = entry.cursor.redis_id
+                    frame, ended = project_entry(entry)
+                    if frame is not None:
+                        if not await authorize_frame():
+                            return
+                        yield frame
+                    if ended:
+                        exit_reason = "terminal_completed"
+                        return
         except asyncio.CancelledError:
             exit_reason = "client_disconnected"
             raise
@@ -2094,13 +2191,6 @@ async def chat_session_stream(
             exit_reason = "stream_contract_failure"
             return
         finally:
-            cleanup_failed = False
-            try:
-                await subscription.aclose()
-            except Exception:  # noqa: BLE001
-                cleanup_failed = True
-            if cleanup_failed:
-                exit_reason = "stream_cleanup_failure"
             await record_exit()
 
     return StreamingResponse(

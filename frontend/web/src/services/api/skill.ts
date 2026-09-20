@@ -5,7 +5,6 @@
  * - /api/skills/ - list, get, delete user skills
  * - /api/skills/{name}/files/{path} - read/write individual files
  * - /api/skills/{name}/toggle - enable/disable
- * - /api/marketplace/ - browse and install from marketplace
  */
 
 import { API_BASE } from "./config";
@@ -27,6 +26,8 @@ export type AdminSkillVersionStatus =
   | "disabled"
   | "deprecated"
   | "active";
+
+export type AdminSkillLifecycleStatus = "active";
 
 /** Safe lifecycle projection. Package, storage, and source metadata stay private. */
 export interface AdminSkillVersionSummary {
@@ -53,12 +54,15 @@ export interface AdminSkillCatalogItem {
   skillId: string;
   name: string;
   description: string;
-  lifecycleStatus: "active" | "disabled";
+  lifecycleStatus: AdminSkillLifecycleStatus;
   distributionStatus: "active" | "disabled";
   visibleToUser: boolean;
   latestVersion: string | null;
   latestVersionStatus: AdminSkillVersionStatus | null;
   currentVersion: string | null;
+  latestDisplayVersion: string | null;
+  currentDisplayVersion: string | null;
+  latestUploadedAt: string | null;
   rolloutPercent: number | null;
 }
 
@@ -218,6 +222,12 @@ export function normalizeAdminSkillReleasePolicy(
   };
 }
 
+function isAdminSkillLifecycleStatus(
+  value: unknown,
+): value is AdminSkillLifecycleStatus {
+  return value === "active";
+}
+
 function isNullableNonBlankString(value: unknown): value is string | null {
   return value === null || (typeof value === "string" && value.trim().length > 0);
 }
@@ -229,6 +239,12 @@ export function normalizeAdminSkillCatalogResponse(
     invalidAdminSkillLifecycle();
   }
   return response.items.map((item) => {
+    const latestDisplayVersion = isRecord(item)
+      ? item.latest_display_version
+      : undefined;
+    const currentDisplayVersion = isRecord(item)
+      ? item.current_display_version
+      : undefined;
     if (
       !isRecord(item) ||
       typeof item.skill_id !== "string" ||
@@ -236,13 +252,18 @@ export function normalizeAdminSkillCatalogResponse(
       typeof item.name !== "string" ||
       item.name.trim().length === 0 ||
       typeof item.description !== "string" ||
-      (item.lifecycle_status !== "active" && item.lifecycle_status !== "disabled") ||
+      !isAdminSkillLifecycleStatus(item.lifecycle_status) ||
       (item.distribution_status !== "active" && item.distribution_status !== "disabled") ||
       typeof item.visible_to_user !== "boolean" ||
       !isNullableNonBlankString(item.latest_version) ||
       (item.latest_version_status !== null &&
         !isAdminSkillVersionStatus(item.latest_version_status)) ||
       !isNullableNonBlankString(item.current_version) ||
+      !isNullableNonBlankString(latestDisplayVersion) ||
+      !isNullableNonBlankString(currentDisplayVersion) ||
+      (item.latest_uploaded_at !== null &&
+        (typeof item.latest_uploaded_at !== "string" ||
+          !Number.isFinite(Date.parse(item.latest_uploaded_at)))) ||
       (item.rollout_percent !== null &&
         (!isNonNegativeInteger(item.rollout_percent) || item.rollout_percent > 100)) ||
       (item.latest_version === null) !== (item.latest_version_status === null)
@@ -259,6 +280,9 @@ export function normalizeAdminSkillCatalogResponse(
       latestVersion: item.latest_version,
       latestVersionStatus: item.latest_version_status,
       currentVersion: item.current_version,
+      latestDisplayVersion,
+      currentDisplayVersion,
+      latestUploadedAt: item.latest_uploaded_at,
       rolloutPercent: item.rollout_percent,
     };
   });
@@ -486,25 +510,6 @@ export const skillApi = {
   },
 
   /**
-   * Update skill file content
-   */
-  async updateFile(
-    skillName: string,
-    filePath: string,
-    content: string,
-  ): Promise<{ message: string }> {
-    return authFetch(
-      `${SKILLS_API}/${encodeURIComponent(
-        skillName,
-      )}/files/${encodeURIComponent(filePath)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify({ content }),
-      },
-    );
-  },
-
-  /**
    * Update skill metadata and content
    * Files are written/deleted sequentially to avoid partial failure leaving inconsistent state.
    */
@@ -684,45 +689,6 @@ export const skillApi = {
       },
     );
     return normalizeAdminSkillReleasePolicy(response);
-  },
-
-  /**
-   * Preview skills from GitHub repository
-   */
-  async previewGitHub(
-    repoUrl: string,
-    branch: string = "main",
-  ): Promise<{
-    repo_url: string;
-    branch: string;
-    skills: Array<{ name: string; path: string; description: string }>;
-  }> {
-    return authFetch(`${API_BASE}/api/github/preview`, {
-      method: "POST",
-      body: JSON.stringify({ repo_url: repoUrl, branch }),
-    });
-  },
-
-  /**
-   * Install skills from GitHub repository
-   */
-  async installGitHub(
-    repoUrl: string,
-    skillNames: string[],
-    branch: string = "main",
-  ): Promise<{
-    message: string;
-    installed: string[];
-    errors: string[];
-  }> {
-    return authFetch(`${API_BASE}/api/github/install`, {
-      method: "POST",
-      body: JSON.stringify({
-        repo_url: repoUrl,
-        branch,
-        skill_names: skillNames,
-      }),
-    });
   },
 
   /**

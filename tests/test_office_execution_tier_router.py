@@ -18,9 +18,9 @@ def test_routes_lightweight_writing_to_sdk_only_without_sandbox():
 
 def test_routes_document_generation_to_document_worker_without_sandbox():
     decision = route_office_execution_tier(
-        agent_id="baoyu-translate",
-        skill_id="baoyu-translate",
-        input_payload={"message": "Translate this DOCX and return a reviewed Word document."},
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        input_payload={"message": "Review this DOCX and return a commented Word document."},
         file_ids=["file-a"],
     )
 

@@ -11,16 +11,18 @@ import {
 } from "../../services/api/tokenManager";
 import { getRefreshToken } from "../../services/api/token";
 import {
-  handlePublicRunStreamFrameV4,
+  handlePublicRunStreamFrameV4Result,
+  setMessageSnapshot,
   type EventHandlerContext,
 } from "./eventHandlers";
 import {
+  adaptPublicRunStreamEventV4,
   comparePublicRunStreamCursors,
   type V4AdapterBinding,
+  type V4PublicEvent,
   type V4SseFrame,
 } from "../../components/chat/assistant-ui/publicEventAdapter";
 import { clearAllLoadingStates } from "./messageParts";
-import { collapsePublicExecutionSteps } from "./publicStreamPresentation";
 import {
   authoritativeRunStatus,
   isActiveRunStatus,
@@ -29,6 +31,7 @@ import {
   type TerminalRunStatus,
 } from "./runLifecycle";
 import type { ChatRunStatusResponse } from "../../services/api/session";
+import { ApiRequestError } from "../../services/api/fetch";
 import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 
 /**
@@ -59,6 +62,13 @@ export interface SSEConnectionContext extends EventHandlerContext {
     status: TerminalRunStatus,
     messageId: string,
   ) => Promise<void>;
+  hydrateActiveRun?: (
+    sessionId: string,
+    runId: string,
+    streamVersion: number,
+    streamIncarnation: number,
+    expectedCursorEventId: string,
+  ) => Promise<string | null>;
 }
 
 /**
@@ -142,7 +152,25 @@ export function isNonRetryableSSEAuthenticationError(
   );
 }
 
-export const MAX_SSE_STARTUP_RETRIES = 3;
+export const NON_RETRYABLE_SSE_CONNECTION_ERROR_CODE = "sse_connection_contract_invalid";
+
+/** A non-retryable startup conflict must converge without recovery. */
+export class NonRetryableSSEConnectionError extends Error {
+  readonly code = NON_RETRYABLE_SSE_CONNECTION_ERROR_CODE;
+
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "NonRetryableSSEConnectionError";
+  }
+}
+
+export function isNonRetryableSSEConnectionError(
+  error: unknown,
+): error is NonRetryableSSEConnectionError {
+  return error instanceof NonRetryableSSEConnectionError &&
+    error.code === NON_RETRYABLE_SSE_CONNECTION_ERROR_CODE;
+}
+
 export const SSE_STARTUP_RETRY_BUDGET_MS = 10_000;
 const SSE_STARTUP_RETRY_BASE_DELAY_MS = 250;
 const SSE_RETRYABLE_STARTUP_CODES = new Set([
@@ -196,7 +224,7 @@ function isRefreshRetryRequested(error: unknown): error is RefreshRetryRequested
 }
 
 class SSEReplayGapError extends Error {
-  constructor() {
+  constructor(readonly gap: V4PublicEvent) {
     super("sse_replay_gap");
     this.name = "SSEReplayGapError";
   }
@@ -219,7 +247,7 @@ export const MAX_STATUS_QUERY_RETRIES = 2;
 export const REPLAY_GAP_STATUS_POLL_DELAY_MS = 1_000;
 /** Per-attempt ceiling for an authoritative run status read. */
 export const AUTHORITATIVE_STATUS_ATTEMPT_TIMEOUT_MS = 8_000;
-/** Maximum reconnects after continuous transport loss for one session/run. */
+/** Fast attempts before active runs switch to low-frequency transport recovery. */
 export const MAX_CONSECUTIVE_SSE_RECONNECTS = 3;
 type ReconnectDependencies = {
   getStatus?: typeof sessionApi.getStatus;
@@ -236,6 +264,7 @@ export type AuthoritativeStatusQueryResult =
       status: string;
     }
   | { kind: "stale" }
+  | { kind: "unauthorized" }
   | { kind: "unavailable" };
 
 /**
@@ -300,6 +329,12 @@ export async function queryAuthoritativeRunStatus({
           error,
         ),
       );
+      if (
+        error instanceof ApiRequestError &&
+        (error.status === 401 || error.status === 403)
+      ) {
+        return { kind: "unauthorized" };
+      }
     } finally {
       if (attemptTimeout !== null) {
         clearTimeout(attemptTimeout);
@@ -323,11 +358,13 @@ export async function recoverReplayGap(
     runId,
     messageId,
     streamVersion,
+    gap,
   }: {
     sessionId: string;
     runId: string;
     messageId: string;
     streamVersion: number;
+    gap: V4PublicEvent;
   },
   dependencies: ReconnectDependencies = {},
 ): Promise<void> {
@@ -347,47 +384,85 @@ export async function recoverReplayGap(
     return;
   }
 
-  const acceptedStreamCursorRef = ctx.acceptedStreamCursorRef;
-  const cursor = acceptedStreamCursorRef?.current;
-  if (
-    acceptedStreamCursorRef &&
-    cursor?.sessionId === sessionId &&
-    cursor.runId === runId
-  ) {
-    acceptedStreamCursorRef.current = {
-      sessionId: null,
-      runId: null,
-      eventId: null,
-      streamIncarnation: null,
-    };
-  }
-  const acceptedRunEventSequenceRef = ctx.acceptedRunEventSequenceRef;
-  const sequence = acceptedRunEventSequenceRef?.current;
-  if (
-    acceptedRunEventSequenceRef &&
-    sequence?.sessionId === sessionId &&
-    sequence.runId === runId
-  ) {
-    acceptedRunEventSequenceRef.current = {
-      sessionId: null,
-      runId: null,
-      sequence: null,
-    };
-  }
+  const payload = gap.event.payload as Record<string, unknown>;
+  const reason = payload.reason;
+  const currentIncarnation = payload.current_stream_incarnation;
+  const latestAvailableEventId = payload.latest_available_event_id;
+  const acceptedCursorAtGap = ctx.acceptedStreamCursorRef?.current;
+  const expectedCursorEventId =
+    acceptedCursorAtGap?.sessionId === sessionId &&
+    acceptedCursorAtGap.runId === runId &&
+    acceptedCursorAtGap.streamIncarnation === gap.streamIncarnation
+      ? acceptedCursorAtGap.eventId
+      : null;
+  const ownsExpectedCursor = () => {
+    const cursor = ctx.acceptedStreamCursorRef?.current;
+    return Boolean(
+      cursor &&
+        cursor.sessionId === sessionId &&
+        cursor.runId === runId &&
+        cursor.streamIncarnation === gap.streamIncarnation &&
+        cursor.eventId === expectedCursorEventId,
+    );
+  };
+  const canResumeActive =
+    (reason === "retained_history_unavailable" ||
+      reason === "stream_continuity_unproven") &&
+    currentIncarnation === gap.streamIncarnation &&
+    typeof expectedCursorEventId === "string" &&
+    typeof latestAvailableEventId === "string" &&
+    latestAvailableEventId.length > 0;
+  const resumeCursor = canResumeActive
+    ? `${runId}:${currentIncarnation}:${latestAvailableEventId}`
+    : null;
+
   ctx.publicStreamPresentation?.flush({
     sessionId,
     runId,
     assistantMessageId: messageId,
     streamVersion,
   });
-  ctx.publicStreamPresentation?.invalidate();
-  ctx.setMessages((messages) =>
-    messages.map((message) =>
-      message.id === messageId ? { ...message, isStreaming: false } : message,
-    ),
-  );
   ctx.setConnectionStatus("recovering_gap");
   ctx.setIsInitializingSandbox(false);
+
+  let stoppedForTerminalRecovery = false;
+  const stopForTerminalRecovery = () => {
+    if (stoppedForTerminalRecovery) return;
+    stoppedForTerminalRecovery = true;
+    const acceptedStreamCursorRef = ctx.acceptedStreamCursorRef;
+    const cursor = acceptedStreamCursorRef?.current;
+    if (
+      acceptedStreamCursorRef &&
+      cursor?.sessionId === sessionId &&
+      cursor.runId === runId
+    ) {
+      acceptedStreamCursorRef.current = {
+        sessionId: null,
+        runId: null,
+        eventId: null,
+        streamIncarnation: null,
+      };
+    }
+    const acceptedRunEventSequenceRef = ctx.acceptedRunEventSequenceRef;
+    const sequence = acceptedRunEventSequenceRef?.current;
+    if (
+      acceptedRunEventSequenceRef &&
+      sequence?.sessionId === sessionId &&
+      sequence.runId === runId
+    ) {
+      acceptedRunEventSequenceRef.current = {
+        sessionId: null,
+        runId: null,
+        sequence: null,
+      };
+    }
+    ctx.publicStreamPresentation?.invalidate();
+    setMessageSnapshot(ctx, (messages) =>
+      messages.map((message) =>
+        message.id === messageId ? { ...message, isStreaming: false } : message,
+      ),
+    );
+  };
 
   const owner: ReplayGapRecoveryOwner = {
     sessionId,
@@ -395,15 +470,15 @@ export async function recoverReplayGap(
     streamVersion,
     promise: Promise.resolve(),
   };
-  const settleUnavailable = () => {
-    if (!isCurrent()) {
-      return;
-    }
-    if (ctx.onRunStatusUnavailable?.(runId, messageId)) {
-      return;
-    }
+  const settleStatusUnavailable = () => {
+    if (!isCurrent()) return;
     ctx.setConnectionStatus("disconnected");
     ctx.setIsInitializingSandbox(false);
+  };
+  const convergeUnrecoverable = () => {
+    if (!isCurrent()) return;
+    if (ctx.onRunStatusUnavailable?.(runId, messageId)) return;
+    settleStatusUnavailable();
   };
   const delayMs = Math.max(
     0,
@@ -423,19 +498,79 @@ export async function recoverReplayGap(
         if (statusResult.kind === "stale") {
           return;
         }
-        if (statusResult.kind === "unavailable") {
-          settleUnavailable();
+        if (statusResult.kind === "unauthorized") {
+          convergeUnrecoverable();
           return;
         }
-        const status = terminalRunStatus(statusResult.status);
-        if (status) {
+        if (statusResult.kind === "unavailable") {
+          // A failed status read does not prove that the run or its replay
+          // authority ended. Preserve both owners for a later recovery read.
+          settleStatusUnavailable();
+          return;
+        }
+        const terminalStatus = terminalRunStatus(statusResult.status);
+        if (!terminalStatus && isActiveRunStatus(statusResult.status)) {
+          if (
+            resumeCursor &&
+            typeof expectedCursorEventId === "string" &&
+            ctx.hydrateActiveRun &&
+            ctx.acceptedStreamCursorRef &&
+            dependencies.connect
+          ) {
+            const hydratedMessageId = await ctx.hydrateActiveRun(
+              sessionId,
+              runId,
+              streamVersion,
+              gap.streamIncarnation,
+              expectedCursorEventId,
+            );
+            if (!isCurrent() || !ownsExpectedCursor()) return;
+            if (!hydratedMessageId) {
+              convergeUnrecoverable();
+              return;
+            }
+            ctx.acceptedStreamCursorRef.current = {
+              sessionId,
+              runId,
+              eventId: resumeCursor,
+              streamIncarnation: gap.streamIncarnation,
+            };
+            ctx.streamingMessageIdRef.current = hydratedMessageId;
+            ctx.publicStreamPresentation?.activate({
+              sessionId,
+              runId,
+              assistantMessageId: hydratedMessageId,
+              streamVersion,
+            });
+            ctx.setConnectionStatus("reconnecting");
+            if (ctx.replayGapRecoveryRef?.current === owner) {
+              ctx.replayGapRecoveryRef.current = null;
+            }
+            await dependencies.connect(
+              sessionId,
+              runId,
+              hydratedMessageId,
+              ctx,
+              true,
+            );
+            return;
+          }
+          stopForTerminalRecovery();
+        }
+        if (terminalStatus) {
+          stopForTerminalRecovery();
           if (!isCurrent()) {
             return;
           }
           if (ctx.hydrateTerminalRun) {
-            await ctx.hydrateTerminalRun(sessionId, runId, status, messageId);
+            await ctx.hydrateTerminalRun(
+              sessionId,
+              runId,
+              terminalStatus,
+              messageId,
+            );
           } else {
-            ctx.onRunTerminal?.(runId, status, messageId);
+            ctx.onRunTerminal?.(runId, terminalStatus, messageId);
           }
           return;
         }
@@ -552,9 +687,22 @@ export async function connectToSSE(
   const isCurrentStream = () =>
     abortControllerRef.current === streamAbortController &&
     isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion);
+  const releasePendingConnection = () => {
+    if (abortControllerRef.current !== streamAbortController) return;
+    abortControllerRef.current = null;
+    isConnectingRef.current = false;
+    ctx.publicStreamPresentation?.invalidate();
+  };
 
-  const token = await getCurrentAccessToken();
+  let token: string | null;
+  try {
+    token = await getCurrentAccessToken();
+  } catch (error) {
+    releasePendingConnection();
+    throw error;
+  }
   if (!isCurrentStream()) {
+    releasePendingConnection();
     return;
   }
   const headers: Record<string, string> = {};
@@ -593,8 +741,8 @@ export async function connectToSSE(
         elapsedMs: now() - startupRetryStartedAt,
         outcome: "exhausted",
       });
-      streamAbortController.abort();
       reject(new SSEStartupRetryExhaustedError());
+      streamAbortController.abort();
     }, SSE_STARTUP_RETRY_BUDGET_MS);
   });
 
@@ -612,15 +760,14 @@ export async function connectToSSE(
       streamVersion,
     });
     ctx.publicStreamPresentation?.invalidate();
-    ctx.setMessages((prev) =>
+    setMessageSnapshot(ctx, (prev) =>
       prev.map((m) =>
         m.id === messageId
           ? {
               ...m,
               isStreaming: false,
-              parts: collapsePublicExecutionSteps(
-                clearAllLoadingStates(m.parts || []),
-              ),
+              parts: clearAllLoadingStates(m.parts || []),
+
             }
           : m,
       ),
@@ -673,6 +820,11 @@ export async function connectToSSE(
           if (startupCode) {
             throw new RetryableSSEStartupError(startupCode);
           }
+          if (response.status === 409) {
+            throw new NonRetryableSSEConnectionError(
+              response.headers.get("X-SSE-Error-Code") || "sse_startup_conflict",
+            );
+          }
           if (!response.ok) {
             throw new Error(
               response.headers.get("X-SSE-Error-Code") ||
@@ -696,28 +848,12 @@ export async function connectToSSE(
           try {
             parsed = JSON.parse(event.data);
           } catch {
-            receivedNonTerminalApplicationError = true;
-            throw new Error("sse_event_json_invalid");
+            throw new NonRetryableSSEConnectionError("sse_event_json_invalid");
           }
           const eventId = event.id;
           if (!eventId) {
-            receivedNonTerminalApplicationError = true;
-            throw new Error("sse_event_id_missing");
+            throw new NonRetryableSSEConnectionError("sse_event_id_missing");
           }
-          const candidateIncarnation =
-            typeof parsed === "object" &&
-            parsed !== null &&
-            !Array.isArray(parsed) &&
-            Number.isSafeInteger(
-              (parsed as { stream_incarnation?: unknown }).stream_incarnation,
-            )
-              ? (parsed as { stream_incarnation: number }).stream_incarnation
-              : null;
-          if (candidateIncarnation === null || candidateIncarnation < 1) {
-            receivedNonTerminalApplicationError = true;
-            throw new Error("sse_event_contract_invalid");
-          }
-          acceptedStreamIncarnation ??= candidateIncarnation;
           const frame: V4SseFrame = {
             eventHeader: event.event || "",
             transportCursor: eventId,
@@ -726,35 +862,43 @@ export async function connectToSSE(
             generation: streamVersion,
             value: parsed,
           };
+          // Validate the complete public envelope before deriving terminal
+          // metadata or binding the first stream incarnation. A malformed
+          // frame must not poison the incarnation used by reconnects.
+          const adaptedEvent = adaptPublicRunStreamEventV4(frame, {
+            runId: targetRunId,
+            streamIncarnation: acceptedStreamIncarnation,
+            generation: streamVersion,
+          });
+          if (!adaptedEvent) {
+            throw new NonRetryableSSEConnectionError("sse_event_contract_invalid");
+          }
+          const frameIncarnation = adaptedEvent.streamIncarnation;
+          const eventType = adaptedEvent.eventType;
+          // A replay gap belongs to the accepted/requested cursor incarnation,
+          // while its control frame advertises the current replacement stream.
+          const bindingIncarnation =
+            eventType === "stream.gap" && acceptedStreamIncarnation !== null
+              ? acceptedStreamIncarnation
+              : frameIncarnation;
           const binding = {
             sessionId: targetSessionId,
             runId: targetRunId,
             streamVersion,
-            streamIncarnation: acceptedStreamIncarnation,
+            streamIncarnation: bindingIncarnation,
             generation: streamVersion,
           };
           const adapterBinding: V4AdapterBinding = {
             runId: targetRunId,
-            streamIncarnation: acceptedStreamIncarnation,
+            streamIncarnation: bindingIncarnation,
             generation: streamVersion,
           };
-          const eventType =
-            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-              ? (parsed as { event_type?: unknown }).event_type
-              : null;
-          const semanticEventId =
-            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-              ? (parsed as { event_id?: unknown }).event_id
-              : null;
-          const payload =
-            typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
-            typeof (parsed as { payload?: unknown }).payload === "object" &&
-            (parsed as { payload?: unknown }).payload !== null &&
-            !Array.isArray((parsed as { payload?: unknown }).payload)
-              ? ((parsed as { payload: Record<string, unknown> }).payload)
-              : null;
+          const semanticEventId = adaptedEvent.eventId;
+          const payload = (
+            adaptedEvent.event as unknown as { payload: Record<string, unknown> }
+          ).payload;
           const terminalEventId =
-            typeof payload?.terminal_event_id === "string"
+            typeof payload.terminal_event_id === "string"
               ? payload.terminal_event_id
               : null;
           const isRunTerminalEvent =
@@ -818,7 +962,7 @@ export async function connectToSSE(
                 sessionId: targetSessionId,
                 runId: targetRunId,
                 eventId,
-                streamIncarnation: acceptedStreamIncarnation!,
+                streamIncarnation: frameIncarnation,
               };
             }
             if (semanticApplied && provesRunProgress) {
@@ -831,24 +975,38 @@ export async function connectToSSE(
             const pending = pendingTerminalHydration;
             for (const commit of pending.duplicateTerminalCommits) commit();
             for (const commit of pending.pendingEndCommits) commit();
-            if (ctx.v4TerminalFenceRef) ctx.v4TerminalFenceRef.current = null;
-            ctx.v4TerminalEventIdsRef?.current.clear();
+            // Keep the terminal receipt/fence until the run/session owner is
+            // replaced. Late duplicate terminal/end frames remain transport-only.
             pendingTerminalHydration = null;
             pending.resolve();
           };
-          const accepted = handlePublicRunStreamFrameV4({
+          const handlingResult = handlePublicRunStreamFrameV4Result({
             frame,
             adapterBinding,
             messageId,
             ctx,
             binding,
             currentGeneration: streamVersion,
-            onGap: () => {
+            onGap: (gapEvent) => {
               receivedNonTerminalApplicationError = true;
-              throw new SSEReplayGapError();
+              throw new SSEReplayGapError(gapEvent);
             },
             onCommitted: commitAcceptedStreamEvent,
+            onTerminalSettled: (accepted) => {
+              if (accepted || !pendingTerminalHydration) return;
+              const pending = pendingTerminalHydration;
+              pendingTerminalHydration = null;
+              pending.resolve();
+            },
           });
+          const accepted =
+            handlingResult.kind === "applied" ||
+            handlingResult.kind === "deferred";
+          if (accepted || transportCommitted) {
+            // Only an adapter-valid, owner-validated frame can establish the
+            // first incarnation. Raw JSON never changes this reconnect fence.
+            acceptedStreamIncarnation ??= frameIncarnation;
+          }
           if (!accepted) {
             const matchesPendingTerminal = Boolean(
               pendingBeforeFrame &&
@@ -856,6 +1014,7 @@ export async function connectToSSE(
                 semanticEventId === pendingBeforeFrame.semanticEventId,
             );
             if (isRunTerminalEvent && matchesPendingTerminal) {
+              acceptedStreamIncarnation ??= frameIncarnation;
               pendingBeforeFrame!.duplicateTerminalCommits.push(() =>
                 commitTransportCursor(false),
               );
@@ -866,6 +1025,7 @@ export async function connectToSSE(
               pendingBeforeFrame &&
               terminalEventId === pendingBeforeFrame.terminalEventId
             ) {
+              acceptedStreamIncarnation ??= frameIncarnation;
               pendingBeforeFrame.pendingEndCommits.push(() =>
                 commitTransportCursor(false),
               );
@@ -873,8 +1033,7 @@ export async function connectToSSE(
             }
             if (createdPendingTerminal) pendingTerminalHydration = null;
             if (transportCommitted) return;
-            receivedNonTerminalApplicationError = true;
-            throw new Error("sse_event_contract_invalid");
+            throw new NonRetryableSSEConnectionError("sse_event_contract_invalid");
           }
         },
         onerror: (err) => {
@@ -883,10 +1042,7 @@ export async function connectToSSE(
           }
           if (err instanceof RetryableSSEStartupError) {
             const elapsedMs = now() - startupRetryStartedAt;
-            if (
-              startupRetryCount >= MAX_SSE_STARTUP_RETRIES ||
-              elapsedMs >= SSE_STARTUP_RETRY_BUDGET_MS
-            ) {
+            if (elapsedMs >= SSE_STARTUP_RETRY_BUDGET_MS) {
               console.warn("[SSE] Startup retry exhausted", {
                 code: err.code,
                 attempts: startupRetryCount,
@@ -950,8 +1106,23 @@ export async function connectToSSE(
           runId: targetRunId,
           messageId,
           streamVersion,
+          gap: err.gap,
         },
-        tokenDependencies.replayGapDependencies,
+        {
+          ...tokenDependencies.replayGapDependencies,
+          connect:
+            tokenDependencies.replayGapDependencies?.connect ||
+            ((nextSessionId, nextRunId, nextMessageId, nextCtx, retried) =>
+              connectToSSE(
+                nextSessionId,
+                nextRunId,
+                nextMessageId,
+                nextCtx,
+                retried,
+                fetchStream,
+                tokenDependencies,
+              )),
+        },
       );
       return;
     }
@@ -1053,12 +1224,23 @@ export async function reconnectSSE(
       currentRId || "",
       reconnectStreamVersion,
     );
+  const hasCurrentAssistant = () => Boolean(
+    currentMsgId && messagesRef.current.some((message) =>
+      message.id === currentMsgId &&
+      message.role === "assistant" && message.runId === currentRId,
+    ),
+  );
   const convergeUnavailable = () => {
     if (
       ctx.onRunStatusUnavailable?.(currentRId || "", currentMsgId || currentRId || "")
     ) {
       return;
     }
+    setConnectionStatus("disconnected");
+    ctx.setIsInitializingSandbox(false);
+  };
+  const preserveStatusUnavailable = () => {
+    statusRetryCountRef.current = 0;
     setConnectionStatus("disconnected");
     ctx.setIsInitializingSandbox(false);
   };
@@ -1097,8 +1279,15 @@ export async function reconnectSSE(
   if (statusResult.kind === "stale") {
     return;
   }
-  if (statusResult.kind === "unavailable") {
+  if (statusResult.kind === "unauthorized") {
     convergeUnavailable();
+    return;
+  }
+  if (statusResult.kind === "unavailable") {
+    // Transport recovery is paused only while its assistant owner remains
+    // available; a status read failure cannot recreate a missing owner.
+    if (hasCurrentAssistant()) preserveStatusUnavailable();
+    else convergeUnavailable();
     return;
   }
 
@@ -1121,17 +1310,16 @@ export async function reconnectSSE(
     return;
   }
 
-  if (retryCountRef.current >= MAX_CONSECUTIVE_SSE_RECONNECTS) {
-    // The backend is still active, but this client has exhausted its bounded
-    // transport recovery budget. Converge locally without inventing failure.
+  if (!hasCurrentAssistant()) {
     convergeUnavailable();
     return;
   }
 
   setConnectionStatus("reconnecting");
 
-  const delay = (dependencies.reconnectDelay || getReconnectDelay)(
-    retryCountRef.current,
+  const delay = Math.max(
+    (dependencies.reconnectDelay || getReconnectDelay)(retryCountRef.current),
+    retryCountRef.current >= MAX_CONSECUTIVE_SSE_RECONNECTS ? 30_000 : 0,
   );
   retryCountRef.current += 1;
   console.log(
@@ -1142,26 +1330,29 @@ export async function reconnectSSE(
     if (!isCurrentReconnect()) {
       return;
     }
+    if (!hasCurrentAssistant()) {
+      convergeUnavailable();
+      return;
+    }
     if (currentMsgId) {
-      const msgs = messagesRef.current;
-      const lastMsg = msgs.find((m) => m.id === currentMsgId);
-      if (lastMsg) {
-        isReconnectFromHistoryRef.current = true;
-        try {
-          await connect(currentSessId, currentRId, currentMsgId, ctx);
-        } catch (error) {
-          if (!isCurrentReconnect()) {
-            return;
-          }
-          if (isNonRetryableSSEAuthenticationError(error)) {
-            // Authentication cannot be recovered by a status read or another
-            // stream attempt. The lifecycle converger clears the generation's
-            // active stream without fabricating a backend failed result.
-            convergeUnavailable();
-            return;
-          }
-          await reconnectSSE(ctx, dependencies);
+      isReconnectFromHistoryRef.current = true;
+      try {
+        await connect(currentSessId, currentRId, currentMsgId, ctx);
+      } catch (error) {
+        if (!isCurrentReconnect()) {
+          return;
         }
+        if (
+          isNonRetryableSSEAuthenticationError(error) ||
+          isNonRetryableSSEConnectionError(error)
+        ) {
+          // Authentication cannot be recovered by a status read or another
+          // stream attempt. The lifecycle converger clears the generation's
+          // active stream without fabricating a backend failed result.
+          convergeUnavailable();
+          return;
+        }
+        await reconnectSSE(ctx, dependencies);
       }
     }
   }, delay);

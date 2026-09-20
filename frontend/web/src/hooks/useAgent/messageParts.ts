@@ -91,6 +91,60 @@ export function createSubagentPart(
 // Depth management
 // ============================================
 
+function textLogicalSource(logicalId: string): string {
+  const match = /^(.*:text:)\d+(:\d+:[^:]+)$/.exec(logicalId);
+  return match ? `${match[1]}${match[2]}` : logicalId;
+}
+
+function assignTextSegmentOrdinal(
+  part: Extract<MessagePart, { type: "text" }>,
+  parts: MessagePart[],
+): Extract<MessagePart, { type: "text" }> {
+  if (!part.logical_id) return part;
+  const match = /^(.*:text:)\d+(:\d+:[^:]+)$/.exec(part.logical_id);
+  if (!match) return part;
+  const source = textLogicalSource(part.logical_id);
+  const ordinal = parts.reduce(
+    (count, candidate) =>
+      count +
+      (candidate.type === "text" &&
+      candidate.logical_id &&
+      textLogicalSource(candidate.logical_id) === source
+        ? 1
+        : 0),
+    0,
+  );
+  const logicalId = `${match[1]}${ordinal}${match[2]}`;
+  return logicalId === part.logical_id ? part : { ...part, logical_id: logicalId };
+}
+
+/** Merge a text delta only with the adjacent text in one destination. */
+function appendTextPart(
+  parts: MessagePart[],
+  part: Extract<MessagePart, { type: "text" }>,
+): MessagePart[] {
+  const lastPart = parts[parts.length - 1];
+  const sameSource =
+    lastPart?.type === "text" &&
+    ((!lastPart.logical_id && !part.logical_id) ||
+      (typeof lastPart.logical_id === "string" &&
+        typeof part.logical_id === "string" &&
+        textLogicalSource(lastPart.logical_id) ===
+          textLogicalSource(part.logical_id)));
+  if (sameSource && lastPart?.type === "text") {
+    const newParts = [...parts];
+    newParts[newParts.length - 1] = {
+      ...lastPart,
+      content: lastPart.content + part.content,
+      ...(lastPart.logical_id || !part.logical_id
+        ? {}
+        : { logical_id: part.logical_id }),
+    };
+    return newParts;
+  }
+  return [...parts, assignTextSegmentOrdinal(part, parts)];
+}
+
 /**
  * Add a part to the correct depth position in the parts array.
  * For subagent events (depth > 0), the event's depth equals the subagent's depth.
@@ -106,17 +160,8 @@ export function addPartToDepth(
   messageId?: string,
 ): MessagePart[] {
   if (targetDepth <= 0) {
-    // Merge adjacent text blocks
     if (part.type === "text") {
-      const lastPart = parts[parts.length - 1];
-      if (lastPart?.type === "text" && !lastPart.depth) {
-        const newParts = [...parts];
-        newParts[newParts.length - 1] = {
-          ...lastPart,
-          content: lastPart.content + part.content,
-        };
-        return newParts;
-      }
+      return appendTextPart(parts, part);
     }
     return [...parts, part];
   }
@@ -145,18 +190,8 @@ export function addPartToDepth(
       const existingParts = p.parts || [];
       let newSubagentParts: MessagePart[];
 
-      // Merge adjacent text or thinking blocks
       if (part.type === "text") {
-        const lastPart = existingParts[existingParts.length - 1];
-        if (lastPart?.type === "text") {
-          newSubagentParts = [...existingParts];
-          newSubagentParts[newSubagentParts.length - 1] = {
-            ...lastPart,
-            content: lastPart.content + part.content,
-          };
-        } else {
-          newSubagentParts = [...existingParts, part];
-        }
+        newSubagentParts = appendTextPart(existingParts, part);
       } else if (part.type === "thinking") {
         const thinkingId = part.thinking_id;
         let existingIndex = -1;
@@ -243,6 +278,9 @@ export function addPartToDepth(
       "adding to top level",
     );
   }
+  if (part.type === "text") {
+    return appendTextPart(parts, part);
+  }
   return [...parts, part];
 }
 
@@ -264,16 +302,7 @@ export function findAndAddToSubagent(
       let newParts: MessagePart[];
 
       if (part.type === "text") {
-        const lastPart = existingParts[existingParts.length - 1];
-        if (lastPart?.type === "text") {
-          newParts = [...existingParts];
-          newParts[newParts.length - 1] = {
-            ...lastPart,
-            content: lastPart.content + part.content,
-          };
-        } else {
-          newParts = [...existingParts, part];
-        }
+        newParts = appendTextPart(existingParts, part);
       } else if (part.type === "thinking") {
         const thinkingId = part.thinking_id;
         let existingIndex = -1;

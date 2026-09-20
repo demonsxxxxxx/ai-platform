@@ -18,18 +18,18 @@ from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
 
 from app import repositories
-from app.agent_profiles import (
-    reauthorize_pinned_run_for_replay,
-    resolve_bound_profile_for_submission,
-    resolve_profile_for_admission,
-)
-from app.agent_apps.api import pin_agent_skill_set
+from app.mcp.api import authorize_selected_chat_mcp_tools
+from app.agent_apps.api import AgentProfileAuthority, pin_agent_skill_set
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessDecision,
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
+from app.conversations.api import (
+    resolve_chat_submission,
+    submission_resolution_projection,
+)
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.control_plane_contracts import (
@@ -38,6 +38,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_HARNESS_CHAT,
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
+    attach_run_thinking_effort,
     sanitize_public_text,
     standard_trace_id,
 )
@@ -48,7 +49,7 @@ from app.intent_router import (
     fallback_to_general_chat,
     route_intent,
 )
-from app.execution.api import RunModelSelection, parse_requested_model_selection, resolve_chat_model_selection
+from app.execution.api import RunModelSelection, bind_selected_run_model, parse_requested_model_selection, resolve_chat_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -64,9 +65,9 @@ from app.models import (
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
-from app.runs.api import bind_run_model
 from app.product_events import initial_run_event_specs, intent_event_specs
 from app.projection_redaction import (
+    RETIRED_INTERNAL_AGENT_IDS,
     capability_id_from_skill,
     default_skill_id_for_public_agent,
     internal_agent_id_for_request,
@@ -112,7 +113,7 @@ from app.skills.release_policy import (
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
-
+_agent_profile_authority = AgentProfileAuthority()
 
 logger = logging.getLogger(__name__)
 _MISSING = object()
@@ -348,18 +349,7 @@ def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
             status_code=409,
             detail=str(row.get("rejection_code") or PLATFORM_MULTI_AGENT_NOT_SUPPORTED),
         )
-    outcome = row.get("outcome_json")
-    return ChatSubmissionResponse(
-        submission_id=str(row["submission_id"]),
-        state=str(row.get("state") or "accepted_pending_enqueue"),
-        submission_disposition=(
-            "rejected_before_persist"
-            if row.get("submission_disposition") == "rejected_before_persist"
-            else None
-        ),
-        rejection_code=str(row["rejection_code"]) if row.get("rejection_code") else None,
-        outcome=ChatStreamResponse.model_validate(outcome) if isinstance(outcome, dict) and outcome else None,
-    )
+    return ChatSubmissionResponse(**submission_resolution_projection(row))
 
 
 def _require_chat_submission_admitted(resolution: ChatSubmissionResponse) -> ChatSubmissionResponse:
@@ -379,15 +369,22 @@ async def _resolve_chat_submission(
     """Read one principal-scoped durable ledger row without changing it."""
 
     async with transaction() as conn:
-        submission = await repositories.get_chat_submission(
+        projection = await resolve_chat_submission(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             submission_id=submission_id,
+            get_submission=repositories.get_chat_submission,
+            get_authorized_run=repositories.get_authorized_run,
         )
-    if submission is None:
+    if projection is None:
         return None
-    return _chat_submission_resolution(submission)
+    if projection["state"] == "admission_rejected":
+        raise HTTPException(
+            status_code=409,
+            detail=projection["rejection_code"] or PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+        )
+    return ChatSubmissionResponse(**projection)
 
 
 def _preledger_recovery_fingerprint(principal: AuthPrincipal) -> str:
@@ -645,10 +642,8 @@ async def _admit_chat_submission(
         )
         profile_bound = profile_revision is not None
         if profile_bound:
-            # Run creation committed before this fresh authority transaction.
-            # Keep its run/profile locks through Redis admission so workers can
-            # see the run but lifecycle writers cannot overtake admission.
-            await reauthorize_pinned_run_for_replay(
+            # Hold the run/profile locks through Redis admission.
+            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
                 conn,
                 principal=principal,
                 run_id=run_id,
@@ -666,6 +661,7 @@ async def _admit_chat_submission(
                         user_id=principal.user_id,
                         run_id=run_id,
                         trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
+                        diagnostic_error=profile_enqueue_error,
                     )
                     await repositories.finalize_chat_submission(
                         conn,
@@ -699,7 +695,6 @@ async def _admit_chat_submission(
                     submission["state"] = "queued"
                     submission["outcome_json"] = queued_outcome.model_dump(mode="json")
                 profile_resolution = _chat_submission_resolution(submission)
-
     if profile_bound:
         if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
             profile_enqueue_error
@@ -753,6 +748,7 @@ async def _admit_chat_submission(
                 user_id=principal.user_id,
                 run_id=run_id,
                 trace_id=str(current_run.get("trace_id") or standard_trace_id(run_id)),
+                diagnostic_error=exc,
             )
             await repositories.finalize_chat_submission(
                 conn,
@@ -1007,10 +1003,6 @@ async def _persist_chat_queue_success(
             queue_message_id=queue_admission.message_id,
         )
 
-def _strip_server_owned_control_metadata(input_payload: object, *, redact_public: bool = False) -> dict[str, Any]:
-    return repositories.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
-
-
 def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
     if request.file_ids:
         return request.file_ids
@@ -1185,18 +1177,6 @@ def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, o
             "confirmed_by_user": True,
             "suggestions": [],
         }
-    if skill_id == "baoyu-translate" or agent_id == "baoyu-translate":
-        return {
-            "status": "selected",
-            "intent": "document_translation",
-            "confidence": 1.0,
-            "reason": "请求指定了文档翻译能力",
-            "selected_capability": "document_translation",
-            "agent_id": agent_id,
-            "skill_id": skill_id or "baoyu-translate",
-            "confirmed_by_user": True,
-            "suggestions": [],
-        }
     if skill_id == "ragflow-knowledge-search" or agent_id == "sop-assistant":
         return {
             "status": "selected",
@@ -1273,10 +1253,19 @@ async def create_chat_session(
     request: ChatSessionRequest,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSessionResponse:
+    resolved_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
+    if resolved_agent_id in RETIRED_INTERNAL_AGENT_IDS:
+        raise HTTPException(status_code=409, detail="agent_inactive")
     async with transaction() as conn:
+        agent = await repositories.get_agent(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=resolved_agent_id,
+        )
+        if agent is None:
+            raise HTTPException(status_code=409, detail="agent_inactive")
         await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
         await repositories.ensure_user(conn, tenant_id=principal.tenant_id, user_id=principal.user_id, display_name=principal.display_name)
-        resolved_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
         session_id = await repositories.create_session(
             conn,
             tenant_id=principal.tenant_id,
@@ -1473,9 +1462,12 @@ async def chat_stream(
             raise _chat_submission_http_error(status_code=400, code=code)
         raise HTTPException(status_code=400, detail=code)
     try:
-        run_input = _strip_server_owned_control_metadata(
-            {**request.input, "message": request.message},
-            redact_public=not is_ai_admin(principal),
+        run_input = attach_run_thinking_effort(
+            repositories.normalize_run_input_for_enqueue(
+                {**request.input, "message": request.message},
+                redact_public=not is_ai_admin(principal),
+            ),
+            request.agent_options,
         )
         run_input = attach_required_tool_declaration(run_input)
     except repositories.RepositoryAuthorizationError as exc:
@@ -1529,7 +1521,7 @@ async def chat_stream(
         run_input["mcp_tool_ids"] = list(selected_mcp_tool_ids_for_execution)
         try:
             async with transaction() as conn:
-                await repositories.authorize_selected_chat_mcp_tools(
+                await authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=principal.tenant_id,
                     tool_ids=list(selected_mcp_tool_ids_for_execution),
@@ -1684,7 +1676,7 @@ async def chat_stream(
 
             if selected_agent_profile is not None:
                 if request.session_id and isinstance(session_profile_revision, int):
-                    admitted_agent_profile = await resolve_bound_profile_for_submission(
+                    admitted_agent_profile = await _agent_profile_authority.resolve_bound_for_submission(
                         conn,
                         principal=principal,
                         agent_id=selected_agent_profile.agent_id,
@@ -1694,7 +1686,7 @@ async def chat_stream(
                         query_agent_id=query_agent_id,
                     )
                 else:
-                    admitted_agent_profile = await resolve_profile_for_admission(
+                    admitted_agent_profile = await _agent_profile_authority.resolve_for_admission(
                         conn,
                         principal=principal,
                         selection=selected_agent_profile,
@@ -1736,7 +1728,7 @@ async def chat_stream(
                     inherited_mcp_selection = True
 
             if inherited_mcp_selection:
-                await repositories.authorize_selected_chat_mcp_tools(
+                await authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=principal.tenant_id,
                     tool_ids=list(run_input.get("mcp_tool_ids") or []),
@@ -2232,13 +2224,8 @@ async def chat_stream(
                 )
             run_id = await repositories.create_run(conn, **run_create_kwargs)
             if selected_model is not None:
-                await bind_run_model(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id,
-                    model_id=selected_model.model_id,
-                    model_value=selected_model.model_value,
-                    connection_revision=selected_model.connection_revision,
+                await bind_selected_run_model(
+                    conn, tenant_id=principal.tenant_id, run_id=run_id, selected_model=selected_model,
                 )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await repositories.insert_run_skill_snapshots_at_creation(
@@ -2536,6 +2523,7 @@ async def chat_stream(
                 user_id=principal.user_id,
                 run_id=run_id,
                 trace_id=standard_trace_id(run_id),
+                diagnostic_error=exc,
             )
         raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     queue_position = int(queue_admission.queue_position)

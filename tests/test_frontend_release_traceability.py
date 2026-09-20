@@ -581,32 +581,39 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     )
     nginx_base = (
         "nginx:1.30.4-alpine@"
-        "sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46"
+        "sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c"
     )
     runtime_dockerfile = dockerfile.split(f"FROM {nginx_base} AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
     nginx_template = Path("frontend/web/nginx.conf.template").read_text(encoding="utf-8")
+    health_proxy = nginx_template.split("location = /api/ai/health {", 1)[1].split(
+        "    }", 1
+    )[0]
+    auth_proxy = nginx_template.split("location ~ ^/api/(?:ai/)?auth/ {", 1)[1].split(
+        "    }", 1
+    )[0]
     compose_overlay = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     runtime_compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     provenance_script = Path("frontend/web/scripts/write-build-provenance.mjs").read_text(encoding="utf-8")
 
     assert f"FROM {node_base} AS build" in dockerfile
     assert "apk add" not in dockerfile
-    openssl_upgrade = "RUN apk upgrade --no-cache libcrypto3 libssl3"
+    security_upgrade = "RUN apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid"
     assert [
         line
         for line in runtime_dockerfile.splitlines()
         if line.startswith("RUN apk upgrade ")
-    ] == [openssl_upgrade]
+    ] == [security_upgrade]
     assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in dockerfile
     assert "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}" in dockerfile
     assert "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
     assert "ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
-    assert "corepack pnpm run ci:verify" in dockerfile
-    assert "COPY tools ./tools" in dockerfile
+    assert "corepack pnpm run build" in dockerfile
+    assert "corepack pnpm run ci:verify" not in dockerfile
+    assert "COPY tools ./tools" not in dockerfile
     copy_dist = "COPY --from=build /workspace/frontend/web/dist /usr/share/nginx/html"
     assert copy_dist in dockerfile
-    assert runtime_dockerfile.index(openssl_upgrade) < runtime_dockerfile.index(copy_dist)
+    assert runtime_dockerfile.index(security_upgrade) < runtime_dockerfile.index(copy_dist)
     copy_dist_line = next(line for line in runtime_dockerfile.splitlines() if copy_dist in line)
     assert "--chown" not in copy_dist_line
     healthcheck = next(
@@ -646,22 +653,20 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
         for current_probe, next_probe in zip(healthcheck_probes, healthcheck_probes[1:])
     )
     assert "nginx.conf.template" in dockerfile
-    mkdir_templates = "RUN mkdir -p /etc/nginx/templates /etc/nginx/templates-opensandbox"
-    copy_full_template = (
+    mkdir_templates = "RUN mkdir -p /etc/nginx/templates"
+    copy_base_template = (
         "COPY frontend/web/nginx.conf.template "
-        "/etc/nginx/templates-opensandbox/default.conf.template"
+        "/etc/nginx/templates/default.conf.template"
     )
-    extract_base_template = "RUN sed '/^# AI_PLATFORM_S72_BRIDGE_BEGIN$/,$d'"
     assert mkdir_templates in runtime_dockerfile
-    assert copy_full_template in runtime_dockerfile
-    assert extract_base_template in runtime_dockerfile
+    assert "templates-opensandbox" not in runtime_dockerfile
+    assert copy_base_template in runtime_dockerfile
     assert runtime_dockerfile.index(mkdir_templates) < runtime_dockerfile.index(
-        copy_full_template
+        copy_base_template
     )
-    assert runtime_dockerfile.index(copy_full_template) < runtime_dockerfile.index(
-        extract_base_template
-    )
-    assert "package-import-method=copy" in npmrc
+    assert "AI_PLATFORM_S72_BRIDGE" not in runtime_dockerfile
+    assert "package-import-method=copy" not in npmrc
+    assert "pnpm install --frozen-lockfile --package-import-method=copy" in dockerfile
     assert "AI_PLATFORM_BUILD_COMMIT" in provenance_script
     assert "AI_PLATFORM_BUILD_DIRTY" in provenance_script
     assert "AI_PLATFORM_API_UPSTREAM" in nginx_template
@@ -669,6 +674,12 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "proxy_pass ${AI_PLATFORM_API_UPSTREAM}" in nginx_template
     assert "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT}" in nginx_template
     assert "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT}" in nginx_template
+    assert "proxy_connect_timeout 1s;" in health_proxy
+    assert "proxy_read_timeout 3s;" in health_proxy
+    assert "proxy_send_timeout 3s;" in health_proxy
+    assert "proxy_connect_timeout 3s;" in auth_proxy
+    assert "proxy_read_timeout 15s;" in auth_proxy
+    assert "proxy_send_timeout 15s;" in auth_proxy
     assert "proxy_request_buffering off" in nginx_template
     assert 'location = /sw.js' in nginx_template
     assert 'location = /index.html' in nginx_template
@@ -697,7 +708,7 @@ def test_frontend_release_traceability_flags_packaged_delivery_missing_required_
     deploy_root.mkdir(parents=True)
     write_frontend_package(frontend_root)
     (frontend_root / "Dockerfile").write_text(
-        "FROM node:22-alpine AS build\nRUN corepack pnpm run ci:verify\nFROM nginx:1.27-alpine\n",
+        "FROM node:22-alpine AS build\nRUN corepack pnpm run build\nFROM nginx:1.27-alpine\n",
         encoding="utf-8",
     )
     (frontend_root / "nginx.conf.template").write_text(
@@ -746,7 +757,7 @@ def test_frontend_release_traceability_rejects_commented_debian_build_stage(tmp_
                 "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}",
                 "ENV AI_PLATFORM_BUILD_DIRTY=${AI_PLATFORM_BUILD_DIRTY}",
                 "COPY tools ./tools",
-                "RUN corepack pnpm run ci:verify",
+                "RUN corepack pnpm run build",
                 "FROM nginx:1.27-alpine",
                 "LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
                 "LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",

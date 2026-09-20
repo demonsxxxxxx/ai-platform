@@ -30,7 +30,18 @@ def principal(**overrides):
 def chat_submission_client(monkeypatch):
     monkeypatch.setattr(
         "app.auth.get_settings",
-        lambda: Settings(frontend_poc_auth_enabled=True),
+        lambda: Settings(
+            frontend_poc_auth_enabled=True,
+            ai_session_secret="test-v4-authority-secret",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.bootstrap.streaming.get_settings",
+        lambda: Settings(ai_session_secret="test-v4-authority-secret"),
+    )
+    monkeypatch.setattr(
+        "app.bootstrap.run_lifecycle.get_settings",
+        lambda: Settings(ai_session_secret="test-v4-authority-secret"),
     )
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         yield client
@@ -71,7 +82,7 @@ async def test_list_sessions_returns_authorized_rows(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ordinary_session_repository_excludes_pinned_agent_conversations():
+async def test_ordinary_session_repository_lists_pinned_agent_conversations():
     captured = {}
 
     class Cursor:
@@ -88,7 +99,26 @@ async def test_ordinary_session_repository_excludes_pinned_agent_conversations()
         Connection(), tenant_id="tenant-a", user_id="user-a"
     ) == []
     normalized = " ".join(captured["query"].split()).lower()
-    assert "sessions.admitted_agent_profile_revision is null" in normalized
+    assert "coalesce(legacy_first_user.title, sessions.title) as title" in normalized
+    assert "left join lateral" in normalized
+    assert "sessions.title_source = 'initial'" in normalized
+    assert "sessions.title = profile.name" in normalized
+    assert "messages.tenant_id = sessions.tenant_id" in normalized
+    assert "messages.session_id = sessions.id" in normalized
+    assert "messages.role = 'user'" in normalized
+    normalizer = (
+        "translate( messages.content, "
+        "chr(13) || chr(10) || chr(9) || chr(11) || chr(12), ' ' )"
+    )
+    assert normalized.count(normalizer) == 2
+    assert f"btrim( {normalizer} ) <> ''" in normalized
+    assert f"left( btrim( {normalizer} ), 32 )" in normalized
+    assert "e'\\r\\n\\t\\v\\f'" not in normalized
+    assert "order by messages.created_at asc, messages.id asc limit 1" in normalized
+    assert (
+        "profile.skill_set @> '[{\"skill_id\": \"baoyu-translate\"}]'::jsonb)"
+        " as agent_profile_has_retired_skill"
+    ) in normalized
     assert captured["params"] == ("tenant-a", "user-a")
 
 
@@ -126,15 +156,9 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
     normalized = " ".join(captured[0][0].split()).lower()
     detail_normalized = " ".join(captured[1][0].split()).lower()
     for field in (
-        "welcome_message",
         "starter_prompts",
-        "capability_summary",
-        "recommended_tasks",
-        "supported_input_types",
-        "expected_outputs",
-        "permissions_and_data_access_notice",
         "avatar_ref",
-        "category",
+        "avatar_seed",
         "published_at",
     ):
         assert f"profile.{field} as agent_profile_{field}" in normalized
@@ -143,6 +167,14 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
     assert "profile.agent_id = sessions.agent_id" in normalized
     assert "profile.revision = sessions.admitted_agent_profile_revision" in normalized
     assert "profile.content_hash = sessions.admitted_agent_profile_hash" in normalized
+    assert (
+        "profile.skill_set @> '[{\"skill_id\": \"baoyu-translate\"}]'::jsonb)"
+        " as agent_profile_has_retired_skill"
+    ) in normalized
+    assert (
+        "profile.skill_set @> '[{\"skill_id\": \"baoyu-translate\"}]'::jsonb)"
+        " as agent_profile_has_retired_skill"
+    ) in detail_normalized
     assert "sessions.purpose" in normalized
     assert "sessions.purpose = 'conversation'" in normalized
     assert captured[0][1] == ("tenant-a", "user-a", "agt_support", 7, 21)
@@ -187,6 +219,37 @@ async def test_agent_conversation_repository_excludes_builder_test_sessions():
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_projects_retired_pinned_profile_as_tombstone(monkeypatch):
+    async def fake_list_authorized_sessions(conn, *, tenant_id, user_id):
+        return [
+            {
+                "id": "ses_retired",
+                "workspace_id": "default",
+                "agent_id": "custom-legacy-agent",
+                "title": "Retired",
+                "purpose": "conversation",
+                "admitted_agent_profile_revision": 4,
+                "agent_profile_has_retired_skill": True,
+                "agent_profile_name": "Private retired profile",
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.chat_sessions.repositories.list_authorized_sessions",
+        fake_list_authorized_sessions,
+    )
+
+    response = await list_sessions(principal=principal())
+
+    assert response.sessions[0].agent_id == "retired-agent"
+    assert response.sessions[0].agent_conversation is None
+    assert "baoyu-translate" not in response.model_dump_json()
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
     monkeypatch,
 ):
@@ -202,16 +265,9 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
             "admitted_agent_profile_hash": "a" * 64,
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
-            "agent_profile_welcome_message": "Upload a policy for review.",
             "agent_profile_starter_prompts": ["Review this policy"],
-            "agent_profile_capability_summary": "Reviews support policy files.",
-            "agent_profile_recommended_tasks": ["Policy review"],
-            "agent_profile_supported_input_types": ["text", "file"],
-            "agent_profile_expected_outputs": ["Review memo"],
-            "agent_profile_permissions_and_data_access_notice": "Uses authorized files only.",
             "agent_profile_avatar_ref": "builtin:assistant",
             "agent_profile_avatar_seed": "support-avatar-7",
-            "agent_profile_category": "support",
             "agent_profile_published_at": datetime(2026, 7, 31, tzinfo=timezone.utc),
             "created_at": datetime(2026, 8, index, tzinfo=timezone.utc),
             "updated_at": datetime(2026, 8, index, 1, tzinfo=timezone.utc),
@@ -259,30 +315,24 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
         "revision": 7,
         "name": "Support assistant",
         "description": "Approved support help.",
+        "starter_prompts": ["Review this policy"],
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "support-avatar-7",
-        "category": "support",
-        "welcome_message": "Upload a policy for review.",
-        "starter_prompts": ["Review this policy"],
-        "capability_summary": "Reviews support policy files.",
-        "recommended_tasks": ["Policy review"],
-        "supported_input_types": ["text", "file"],
-        "expected_outputs": ["Review memo"],
-        "permissions_and_data_access_notice": "Uses authorized files only.",
         "published_at": "2026-07-31T00:00:00Z",
     }
 
 
-def test_agent_conversation_projection_exposes_universal_attachment_access_and_no_private_fields():
+def test_agent_conversation_projection_preserves_extended_builtin_avatar_style():
     projection = session_response(
         {
-            "id": "ses_legacy",
+            "id": "ses_profile",
             "workspace_id": "default",
             "agent_id": "agt_support",
-            "title": "Legacy support",
+            "title": "Support",
             "admitted_agent_profile_revision": 2,
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
+            "agent_profile_avatar_ref": "builtin:planet",
             "agent_profile_avatar_seed": 12345,
             "created_at": None,
             "updated_at": None,
@@ -296,7 +346,7 @@ def test_agent_conversation_projection_exposes_universal_attachment_access_and_n
     identity = projection.agent_conversation
     assert identity is not None
     assert identity.avatar_seed == "agt_support"
-    assert identity.supported_input_types == ["text", "file"]
+    assert identity.avatar_ref == "builtin:planet"
     assert not {
         "instructions",
         "model_id",
@@ -305,24 +355,53 @@ def test_agent_conversation_projection_exposes_universal_attachment_access_and_n
     }.intersection(identity.model_dump())
 
 
-@pytest.mark.parametrize("avatar_seed", ["\tseed", "safe\x1fseed", "", "x" * 129])
-def test_agent_conversation_projection_uses_shared_avatar_seed_fallback(avatar_seed):
+def test_retired_session_projection_uses_a_public_tombstone():
+    for agent_id, default_skill_id in (
+        ("baoyu-translate", None),
+        ("retired-profile", "baoyu-translate"),
+    ):
+        projection = session_response(
+            {
+                "id": "ses_retired",
+                "workspace_id": "default",
+                "agent_id": agent_id,
+                "agent_default_skill_id": default_skill_id,
+                "title": "Private retired title",
+                "admitted_agent_profile_revision": 2,
+                "agent_profile_name": "Private retired profile",
+                "agent_profile_description": "Private retired description",
+                "created_at": None,
+                "updated_at": None,
+            }
+        )
+
+        assert projection.agent_id == "retired-agent"
+        assert projection.title == "已停用 Agent 会话"
+        assert projection.agent_conversation is None
+        assert "Private retired" not in projection.model_dump_json()
+        assert "baoyu-translate" not in projection.model_dump_json()
+
+
+def test_retired_session_projection_detects_non_primary_profile_skill():
     projection = session_response(
         {
-            "id": "ses_avatar_fallback",
+            "id": "ses_multi_skill_retired",
             "workspace_id": "default",
-            "agent_id": "agt_support",
-            "title": "Support",
+            "agent_id": "custom-agent",
+            "agent_default_skill_id": "profile-primary",
+            "agent_profile_has_retired_skill": True,
+            "title": "Private retired title",
             "admitted_agent_profile_revision": 2,
-            "agent_profile_name": "Support assistant",
-            "agent_profile_avatar_seed": avatar_seed,
+            "agent_profile_name": "Private retired profile",
             "created_at": None,
             "updated_at": None,
         }
     )
 
-    assert projection.agent_conversation is not None
-    assert projection.agent_conversation.avatar_seed == "agt_support"
+    assert projection.agent_id == "retired-agent"
+    assert projection.title == "已停用 Agent 会话"
+    assert projection.agent_conversation is None
+    assert "Private retired" not in projection.model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -384,7 +463,7 @@ def test_agent_conversation_history_contract_is_mounted_on_chat_aliases(
                 "agent_profile_name": "Support assistant",
                 "agent_profile_description": "Approved support help.",
                 "agent_profile_avatar_ref": "builtin:assistant",
-                "agent_profile_category": "support",
+                "agent_profile_avatar_seed": "agt-support",
                 "created_at": datetime(2026, 8, index, tzinfo=timezone.utc),
                 "updated_at": datetime(2026, 8, index, 1, tzinfo=timezone.utc),
             }

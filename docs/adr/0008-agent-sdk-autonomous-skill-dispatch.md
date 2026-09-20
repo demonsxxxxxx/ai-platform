@@ -9,8 +9,9 @@ Design ID: `ai-platform.agent-sdk-autonomous-skill-dispatch.v1`
 ## Context
 
 An enterprise administrator builds an Agent by placing governed Skills into
-its capability set. The platform must pin and authorize those exact Skill
-versions, but it must not predict which Skill the user's next request needs.
+its capability set. The platform must authorize those stable Skill references
+and pin the currently authorized versions for each accepted Run, but it must
+not predict which Skill the user's next request needs.
 
 The previous Agent Profile contract bound one selected Skill as a required
 capability. Admission also interpreted a Skill's accepted file input modes as
@@ -20,10 +21,13 @@ and what data the current conversation has made available.
 
 ## Decision
 
-1. An Agent Profile Revision owns an immutable Agent Skill Set containing one
-   or more exact, governed Skill versions and their authorized dependency
-   closure. Adding a Skill grants availability; it never means that every run
-   must invoke that Skill.
+1. An Agent Profile Revision owns one or more stable, tenant-authorized Skill
+   references and their governed capability intent; it does not need to be
+   edited when an authorized Skill publishes a new version. Draft/publication
+   validation and Run admission resolve each reference against the current
+   authorized catalog. The accepted Run owns the exact resolved Skill versions
+   and their authorized dependency closure. Adding a Skill grants availability;
+   it never means that every run must invoke that Skill.
 2. Admission reauthorizes and pins the Agent revision, Skill versions, model,
    MCP tools, tool and network policy, tenant scope, and resource limits. The
    execution adapter stages and registers the authorized Skill Set with the
@@ -61,9 +65,9 @@ and what data the current conversation has made available.
 - Agent Builder's essential workflow becomes identity, Skill Set, access scope,
   and publication; presentation copy and execution overrides remain optional.
 - The runtime contract changes from a singular `required_skill` to an
-  authorized, version-pinned Skill Set. Legacy singular profiles are read as a
-  one-member set without preserving mandatory invocation semantics for new
-  runs.
+  authorized Skill Set whose versions are resolved and frozen per accepted Run.
+  Legacy singular profiles are read as a one-member set without preserving
+  mandatory invocation semantics for new runs.
 - File-capable Skills can answer text-only follow-ups. When an action genuinely
   needs a file and none is available, the product asks for one instead of
   returning a generic send failure.

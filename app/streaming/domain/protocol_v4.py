@@ -13,6 +13,7 @@ PUBLIC_STREAM_EVENT_TYPES: Final = frozenset(
         "message.started",
         "message.delta",
         "message.completed",
+        "commentary.delta",
         "thinking.started",
         "thinking.delta",
         "thinking.completed",
@@ -44,6 +45,251 @@ PUBLIC_STREAM_EVENT_TYPES: Final = frozenset(
     )
 )
 
+PUBLIC_APPLICATION_ENVELOPE_FIELDS: Final = frozenset((
+    "schema",
+    "event_id",
+    "run_id",
+    "message_id",
+    "seq",
+    "event_type",
+    "stream_incarnation",
+    "replayable",
+    "trace_ref",
+    "causation_event_id",
+    "emitted_at",
+    "payload",
+))
+PUBLIC_CONTROL_ENVELOPE_FIELDS: Final = frozenset((
+    "schema",
+    "event_id",
+    "run_id",
+    "message_id",
+    "seq",
+    "event_type",
+    "stream_incarnation",
+    "replayable",
+    "trace_ref",
+    "causation_event_id",
+    "emitted_at",
+    "payload",
+))
+PUBLIC_TOOL_CATEGORIES: Final = frozenset((
+    'skill',
+    'mcp',
+    'read',
+    'write',
+    'edit',
+    'search',
+    'execute',
+))
+PUBLIC_APPLICATION_EVENT_TYPES: Final = frozenset((
+    "message.started",
+    "message.delta",
+    "message.completed",
+    "commentary.delta",
+    "thinking.started",
+    "thinking.delta",
+    "thinking.completed",
+    "agent.progress",
+    "model.completed",
+    "tool.started",
+    "tool.completed",
+    "tool.failed",
+    "tool.denied",
+    "subagent.started",
+    "subagent.progress",
+    "subagent.completed",
+    "subagent.failed",
+    "subagent.cancelled",
+    "artifact.created",
+    "artifact.ready",
+    "artifact.failed",
+    "policy.checking",
+    "policy.allowed",
+    "policy.denied",
+    "run.cancel_requested",
+    "run.succeeded",
+    "run.cancelled",
+    "run.failed",
+))
+PUBLIC_CONTROL_EVENT_TYPES: Final = frozenset((
+    "stream.open",
+    "stream.heartbeat",
+    "stream.gap",
+    "stream.end",
+))
+PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES: Final = frozenset((
+    "message.started",
+    "message.delta",
+    "message.completed",
+    "commentary.delta",
+    "thinking.started",
+    "thinking.delta",
+    "thinking.completed",
+    "model.completed",
+    "tool.started",
+    "tool.completed",
+    "tool.failed",
+    "tool.denied",
+    "subagent.started",
+    "subagent.progress",
+    "subagent.completed",
+    "subagent.failed",
+    "subagent.cancelled",
+))
+PUBLIC_PAYLOAD_FIELDS: Final = {
+    "stream.open": frozenset(("design_id",)),
+    "stream.heartbeat": frozenset(("status",)),
+    "stream.gap": frozenset(("reason", "recovery", "requested_event_id", "requested_stream_incarnation", "current_stream_incarnation", "earliest_available_event_id", "latest_available_event_id",)),
+    "stream.end": frozenset(("terminal_event_id",)),
+    "message.started": frozenset(),
+    "message.delta": frozenset(("delta",)),
+    "message.completed": frozenset(("delta_count", "text_length",)),
+    "commentary.delta": frozenset(("summary_id", "delta",)),
+    "thinking.started": frozenset(("thinking_id", "public_summary",)),
+    "thinking.delta": frozenset(("thinking_id", "delta",)),
+    "thinking.completed": frozenset(("thinking_id", "public_summary",)),
+    "agent.progress": frozenset(("schema_version", "step_id", "phase", "lifecycle", "message",)),
+    "model.completed": frozenset(("duration_ms", "turn_count", "stop_category",)),
+    "tool.started": frozenset(("operation_id", "category", "display_name", "input_summary", "evidence_refs",)),
+    "tool.completed": frozenset(("operation_id", "category", "display_name", "duration_ms", "result_summary", "evidence_refs", "artifact_refs",)),
+    "tool.failed": frozenset(("operation_id", "category", "display_name", "duration_ms", "failure_category", "evidence_refs",)),
+    "tool.denied": frozenset(("operation_id", "category", "display_name", "denial_code",)),
+    "subagent.started": frozenset(("subagent_id", "display_name",)),
+    "subagent.progress": frozenset(("subagent_id", "display_name", "duration_ms", "current_category", "progress_percent",)),
+    "subagent.completed": frozenset(("subagent_id", "display_name", "duration_ms",)),
+    "subagent.failed": frozenset(("subagent_id", "display_name", "duration_ms", "failure_category",)),
+    "subagent.cancelled": frozenset(("subagent_id", "display_name", "duration_ms", "reason_code",)),
+    "artifact.created": frozenset(("artifact_id", "filename", "media_type", "size_bytes", "status", "evidence_ref",)),
+    "artifact.ready": frozenset(("artifact_id", "filename", "media_type", "size_bytes", "status", "evidence_ref",)),
+    "artifact.failed": frozenset(("artifact_id", "status", "failure_category", "filename", "media_type",)),
+    "policy.checking": frozenset(("decision_id", "category", "display_name",)),
+    "policy.allowed": frozenset(("decision_id", "category", "display_name", "decision_code",)),
+    "policy.denied": frozenset(("decision_id", "category", "display_name", "decision_code",)),
+    "run.cancel_requested": frozenset(("source",)),
+    "run.succeeded": frozenset(("terminal_event_id", "hydrate_required",)),
+    "run.cancelled": frozenset(("terminal_event_id", "hydrate_required", "reason_code",)),
+    "run.failed": frozenset(("terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail",)),
+}
+PUBLIC_REQUIRED_PAYLOAD_FIELDS: Final = {
+    "stream.open": frozenset(("design_id",)),
+    "stream.heartbeat": frozenset(("status",)),
+    "stream.gap": frozenset(("reason", "recovery", "requested_event_id", "requested_stream_incarnation", "current_stream_incarnation", "earliest_available_event_id", "latest_available_event_id",)),
+    "stream.end": frozenset(("terminal_event_id",)),
+    "message.started": frozenset(),
+    "message.delta": frozenset(("delta",)),
+    "message.completed": frozenset(("delta_count", "text_length",)),
+    "commentary.delta": frozenset(("summary_id", "delta",)),
+    "thinking.started": frozenset(),
+    "thinking.delta": frozenset(("thinking_id", "delta",)),
+    "thinking.completed": frozenset(),
+    "agent.progress": frozenset(("schema_version", "step_id", "phase", "lifecycle", "message",)),
+    "model.completed": frozenset(("duration_ms", "turn_count", "stop_category",)),
+    "tool.started": frozenset(("operation_id", "category", "display_name",)),
+    "tool.completed": frozenset(("operation_id", "category", "display_name", "duration_ms",)),
+    "tool.failed": frozenset(("operation_id", "category", "display_name", "duration_ms", "failure_category",)),
+    "tool.denied": frozenset(("operation_id", "category", "display_name", "denial_code",)),
+    "subagent.started": frozenset(("subagent_id", "display_name",)),
+    "subagent.progress": frozenset(("subagent_id", "display_name", "duration_ms", "current_category",)),
+    "subagent.completed": frozenset(("subagent_id", "display_name", "duration_ms",)),
+    "subagent.failed": frozenset(("subagent_id", "display_name", "duration_ms", "failure_category",)),
+    "subagent.cancelled": frozenset(("subagent_id", "display_name", "duration_ms", "reason_code",)),
+    "artifact.created": frozenset(("artifact_id", "filename", "media_type", "size_bytes", "status",)),
+    "artifact.ready": frozenset(("artifact_id", "filename", "media_type", "size_bytes", "status",)),
+    "artifact.failed": frozenset(("artifact_id", "status", "failure_category",)),
+    "policy.checking": frozenset(("decision_id", "category", "display_name",)),
+    "policy.allowed": frozenset(("decision_id", "category", "display_name", "decision_code",)),
+    "policy.denied": frozenset(("decision_id", "category", "display_name", "decision_code",)),
+    "run.cancel_requested": frozenset(("source",)),
+    "run.succeeded": frozenset(("terminal_event_id", "hydrate_required",)),
+    "run.cancelled": frozenset(("terminal_event_id", "hydrate_required", "reason_code",)),
+    "run.failed": frozenset(("terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail",)),
+}
+PUBLIC_PAYLOAD_ENUMS: Final = {
+    ('stream.open', 'design_id'): frozenset(('ai-platform.redis-streams-sse-event-channel.v4',)),
+    ('stream.heartbeat', 'status'): frozenset(('queued', 'running',)),
+    ('stream.gap', 'reason'): frozenset(('retained_history_unavailable', 'stream_missing', 'stream_continuity_unproven', 'stream_incarnation_mismatch',)),
+    ('stream.gap', 'recovery'): frozenset(('reload_durable_state',)),
+    ('thinking.started', 'public_summary'): frozenset(('Analyzing the request',)),
+    ('thinking.completed', 'public_summary'): frozenset(('Analysis step completed',)),
+    ('agent.progress', 'schema_version'): frozenset(('ai-platform.public-agent-progress.v1',)),
+    ('agent.progress', 'phase'): frozenset(('attachment_materialization', 'skill_staging', 'sandbox_preparation', 'sandbox_submission', 'model_wait', 'artifact_validation', 'artifact_recovery',)),
+    ('agent.progress', 'lifecycle'): frozenset(('started', 'progress', 'completed', 'failed',)),
+    ('model.completed', 'stop_category'): frozenset(('completed', 'max_turns', 'cancelled', 'failed', 'unknown',)),
+    ('tool.started', 'category'): frozenset(('skill', 'mcp', 'read', 'write', 'edit', 'search', 'execute',)),
+    ('tool.completed', 'category'): frozenset(('skill', 'mcp', 'read', 'write', 'edit', 'search', 'execute',)),
+    ('tool.failed', 'category'): frozenset(('skill', 'mcp', 'read', 'write', 'edit', 'search', 'execute',)),
+    ('tool.failed', 'failure_category'): frozenset(('invalid_input', 'not_found', 'permission_denied', 'timeout', 'unavailable', 'execution_failed',)),
+    ('tool.denied', 'category'): frozenset(('skill', 'mcp', 'read', 'write', 'edit', 'search', 'execute',)),
+    ('tool.denied', 'denial_code'): frozenset(('capability_not_authorized', 'policy_denied',)),
+    ('subagent.progress', 'current_category'): frozenset(('skill', 'mcp', 'read', 'write', 'edit', 'search', 'execute',)),
+    ('subagent.failed', 'failure_category'): frozenset(('subagent_failed',)),
+    ('subagent.cancelled', 'reason_code'): frozenset(('user_cancelled', 'run_cancelled', 'timeout',)),
+    ('artifact.created', 'status'): frozenset(('created',)),
+    ('artifact.ready', 'status'): frozenset(('ready',)),
+    ('artifact.failed', 'status'): frozenset(('failed',)),
+    ('artifact.failed', 'failure_category'): frozenset(('artifact_failed', 'unavailable',)),
+    ('policy.checking', 'category'): frozenset(('skill', 'mcp', 'read', 'write', 'edit', 'search', 'execute',)),
+    ('policy.allowed', 'category'): frozenset(('skill', 'mcp', 'read', 'write', 'edit', 'search', 'execute',)),
+    ('policy.allowed', 'decision_code'): frozenset(('allowed',)),
+    ('policy.denied', 'category'): frozenset(('skill', 'mcp', 'read', 'write', 'edit', 'search', 'execute',)),
+    ('policy.denied', 'decision_code'): frozenset(('capability_not_authorized', 'policy_denied',)),
+    ('run.cancel_requested', 'source'): frozenset(('user', 'system',)),
+    ('run.succeeded', 'hydrate_required'): frozenset((True,)),
+    ('run.cancelled', 'hydrate_required'): frozenset((True,)),
+    ('run.cancelled', 'reason_code'): frozenset(('user_cancelled', 'policy_cancelled', 'timeout',)),
+    ('run.failed', 'hydrate_required'): frozenset((True,)),
+    ('run.failed', 'projection_version'): frozenset(('ai-platform.chat-public-projection.v1',)),
+}
+PUBLIC_PAYLOAD_STRING_BOUNDS: Final = {
+    ('message.delta', 'delta'): (1, 8192),
+    ('commentary.delta', 'delta'): (1, 8192),
+    ('thinking.delta', 'delta'): (1, 8192),
+    ('agent.progress', 'message'): (1, 128),
+    ('tool.started', 'display_name'): (1, 128),
+    ('tool.started', 'input_summary'): (0, 512),
+    ('tool.completed', 'display_name'): (1, 128),
+    ('tool.completed', 'result_summary'): (0, 2048),
+    ('tool.failed', 'display_name'): (1, 128),
+    ('tool.denied', 'display_name'): (1, 128),
+    ('subagent.started', 'display_name'): (1, 128),
+    ('subagent.progress', 'display_name'): (1, 128),
+    ('subagent.completed', 'display_name'): (1, 128),
+    ('subagent.failed', 'display_name'): (1, 128),
+    ('subagent.cancelled', 'display_name'): (1, 128),
+    ('artifact.created', 'filename'): (1, 255),
+    ('artifact.created', 'media_type'): (1, 128),
+    ('artifact.ready', 'filename'): (1, 255),
+    ('artifact.ready', 'media_type'): (1, 128),
+    ('artifact.failed', 'filename'): (1, 255),
+    ('artifact.failed', 'media_type'): (1, 128),
+    ('policy.checking', 'display_name'): (1, 128),
+    ('policy.allowed', 'display_name'): (1, 128),
+    ('policy.denied', 'display_name'): (1, 128),
+    ('run.failed', 'code'): (1, 128),
+    ('run.failed', 'default_message'): (1, 1024),
+    ('run.failed', 'detail'): (0, 2048),
+}
+PUBLIC_PAYLOAD_INTEGER_BOUNDS: Final = {
+    ('stream.gap', 'requested_stream_incarnation'): (1, None),
+    ('stream.gap', 'current_stream_incarnation'): (1, None),
+    ('message.completed', 'delta_count'): (1, None),
+    ('message.completed', 'text_length'): (1, None),
+    ('model.completed', 'duration_ms'): (0, 86400000),
+    ('model.completed', 'turn_count'): (0, 10000),
+    ('tool.completed', 'duration_ms'): (0, 86400000),
+    ('tool.failed', 'duration_ms'): (0, 86400000),
+    ('subagent.progress', 'duration_ms'): (0, 86400000),
+    ('subagent.progress', 'progress_percent'): (0, 100),
+    ('subagent.completed', 'duration_ms'): (0, 86400000),
+    ('subagent.failed', 'duration_ms'): (0, 86400000),
+    ('subagent.cancelled', 'duration_ms'): (0, 86400000),
+    ('artifact.created', 'size_bytes'): (0, 1099511627776),
+    ('artifact.ready', 'size_bytes'): (0, 1099511627776),
+}
+PUBLIC_PAYLOAD_REF_FIELDS: Final = frozenset(('artifact_id', 'decision_id', 'operation_id', 'step_id', 'subagent_id', 'summary_id', 'terminal_event_id', 'thinking_id',))
+PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS: Final = frozenset(('earliest_available_event_id', 'evidence_ref', 'latest_available_event_id', 'requested_event_id',))
+PUBLIC_PAYLOAD_REF_ARRAY_FIELDS: Final = frozenset(('artifact_refs', 'evidence_refs',))
 
 class StreamOpenControlV4Payload(TypedDict):
     design_id: Literal["ai-platform.redis-streams-sse-event-channel.v4"]
@@ -72,7 +318,13 @@ class MessageDeltaEventV4Payload(TypedDict):
 
 
 class MessageCompletedEventV4Payload(TypedDict):
-    content: str
+    delta_count: int
+    text_length: int
+
+
+class CommentaryDeltaEventV4Payload(TypedDict):
+    summary_id: SafeRefV4
+    delta: str
 
 
 class ThinkingStartedEventV4Payload(TypedDict):
@@ -247,7 +499,7 @@ class PublicApplicationEnvelopeV4(TypedDict):
     run_id: RunIdV4
     message_id: NullableSafeRefV4
     seq: int
-    event_type: Literal["message.started", "message.delta", "message.completed", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "agent.progress", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled", "artifact.created", "artifact.ready", "artifact.failed", "policy.checking", "policy.allowed", "policy.denied", "run.cancel_requested", "run.succeeded", "run.cancelled", "run.failed"]
+    event_type: Literal["message.started", "message.delta", "message.completed", "commentary.delta", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "agent.progress", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled", "artifact.created", "artifact.ready", "artifact.failed", "policy.checking", "policy.allowed", "policy.denied", "run.cancel_requested", "run.succeeded", "run.cancelled", "run.failed"]
     stream_incarnation: int
     replayable: Literal[True]
     trace_ref: NullableTraceRefV4
@@ -262,7 +514,7 @@ class PublicMessageApplicationEnvelopeV4(TypedDict):
     run_id: RunIdV4
     message_id: SafeRefV4
     seq: int
-    event_type: Literal["message.started", "message.delta", "message.completed", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "agent.progress", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled", "artifact.created", "artifact.ready", "artifact.failed", "policy.checking", "policy.allowed", "policy.denied", "run.cancel_requested", "run.succeeded", "run.cancelled", "run.failed"]
+    event_type: Literal["message.started", "message.delta", "message.completed", "commentary.delta", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "agent.progress", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled", "artifact.created", "artifact.ready", "artifact.failed", "policy.checking", "policy.allowed", "policy.denied", "run.cancel_requested", "run.succeeded", "run.cancelled", "run.failed"]
     stream_incarnation: int
     replayable: Literal[True]
     trace_ref: NullableTraceRefV4
@@ -389,6 +641,21 @@ class MessageCompletedEventV4(TypedDict):
     causation_event_id: NullableSafeRefV4
     emitted_at: str
     payload: MessageCompletedEventV4Payload
+
+
+class CommentaryDeltaEventV4(TypedDict):
+    schema: Literal["ai-platform.public-run-stream-event.v4"]
+    event_id: EventIdV4
+    run_id: RunIdV4
+    message_id: SafeRefV4
+    seq: int
+    event_type: Literal["commentary.delta"]
+    stream_incarnation: int
+    replayable: Literal[True]
+    trace_ref: NullableTraceRefV4
+    causation_event_id: NullableSafeRefV4
+    emitted_at: str
+    payload: CommentaryDeltaEventV4Payload
 
 
 class ThinkingStartedEventV4(TypedDict):
@@ -755,16 +1022,12 @@ class RunEventSourceV4(TypedDict):
     kind: Literal["run_event"]
     run_event_id: SafeRefV4
     sequence: int
+    callback_sequence: NotRequired[int]
 
 
 class StreamAuthoritySourceV4(TypedDict):
     kind: Literal["stream_authority"]
     authority_id: SafeRefV4
-
-
-class TerminalIntentSourceV4(TypedDict):
-    kind: Literal["terminal_intent"]
-    terminal_event_id: SafeRefV4
 
 
 SafeRefV4: TypeAlias = str
@@ -803,7 +1066,7 @@ ToolCategoryV4: TypeAlias = Literal["skill", "mcp", "read", "write", "edit", "se
 EmptyPayloadV4: TypeAlias = dict[str, object]
 
 
-PublicApplicationEventV4: TypeAlias = MessageStartedEventV4 | MessageDeltaEventV4 | MessageCompletedEventV4 | ThinkingStartedEventV4 | ThinkingDeltaEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | AgentProgressEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4
+PublicApplicationEventV4: TypeAlias = MessageStartedEventV4 | MessageDeltaEventV4 | MessageCompletedEventV4 | CommentaryDeltaEventV4 | ThinkingStartedEventV4 | ThinkingDeltaEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | AgentProgressEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4
 
 
 PublicTransportControlEventV4: TypeAlias = StreamOpenControlV4 | StreamHeartbeatControlV4 | StreamGapControlV4 | StreamEndControlV4
@@ -820,7 +1083,7 @@ class InternalStreamEnvelopeV4(TypedDict):
     attempt_id: AttemptIdV4
     message_id: NullableSafeRefV4
     seq: int | None
-    event_type: Literal["message.started", "message.delta", "message.completed", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "agent.progress", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled", "artifact.created", "artifact.ready", "artifact.failed", "policy.checking", "policy.allowed", "policy.denied", "run.cancel_requested", "run.succeeded", "run.cancelled", "run.failed", "stream.open", "stream.heartbeat", "stream.gap", "stream.end"]
+    event_type: Literal["message.started", "message.delta", "message.completed", "commentary.delta", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "agent.progress", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled", "artifact.created", "artifact.ready", "artifact.failed", "policy.checking", "policy.allowed", "policy.denied", "run.cancel_requested", "run.succeeded", "run.cancelled", "run.failed", "stream.open", "stream.heartbeat", "stream.gap", "stream.end"]
     stream_incarnation: int
     replayable: bool
     trace_ref: NullableTraceRefV4
@@ -828,4 +1091,4 @@ class InternalStreamEnvelopeV4(TypedDict):
     emitted_at: str
     projection_version: Literal["public-stream-v4"]
     payload: dict[str, object]
-    source: RunEventSourceV4 | StreamAuthoritySourceV4 | TerminalIntentSourceV4
+    source: RunEventSourceV4 | StreamAuthoritySourceV4

@@ -1,8 +1,10 @@
 import asyncio
 from contextlib import asynccontextmanager
-import hashlib
+import importlib.util
 import os
 from pathlib import Path
+import subprocess
+import sys
 import uuid
 
 import psycopg
@@ -11,118 +13,41 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import schema_migrations
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
-# Exact 2026.08.27.1 ledger checksum at the remote PR predecessor 829acfcd.
-REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM = (
-    "d474b751d6fb6bff75cbbb8f3c482cb42f38ac462c116313baeccfc2c247fef7"
+REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
+    "14941c07a273f8924fb289876ac887879f8a8d5cc2a5a8d95bb9252e1ea40d90"
 )
-REMOTE_DUE_INDEX_SQL = """create index if not exists idx_run_events_v4_due_scope
-  on run_events(tenant_id, run_id, sequence)
-  where visible_to_user = true
-    and payload_json ? '__stream_v4'
-    and stream_publication_state = 'pending';
-
-
-"""
-MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS = (
-    """create table if not exists model_gateway_revisions (
-  revision bigint primary key,
-  base_url text not null,
-  api_key_ciphertext bytea not null,
-  key_fingerprint text not null,
-  active boolean not null default false,
-  created_by text not null,
-  created_at timestamptz not null default now(),
-  constraint chk_model_gateway_revision_positive check (revision > 0),
-  constraint chk_model_gateway_base_url check (length(base_url) between 1 and 2048),
-  constraint chk_model_gateway_key_fingerprint check (key_fingerprint ~ '^[0-9a-f]{16}$')
-);
-create unique index if not exists uq_model_gateway_active
-  on model_gateway_revisions(active) where active = true;
-
-create table if not exists model_catalog_entries (
-  model_id text primary key,
-  upstream_model_id text not null unique,
-  display_name text not null,
-  provider text not null default 'custom',
-  enabled boolean not null default false,
-  upstream_available boolean not null default true,
-  is_default boolean not null default false,
-  display_order integer not null default 0,
-  first_seen_revision bigint not null references model_gateway_revisions(revision),
-  last_seen_revision bigint not null references model_gateway_revisions(revision),
-  first_seen_at timestamptz not null default now(),
-  last_seen_at timestamptz not null default now(),
-  constraint chk_model_catalog_id check (model_id ~ '^[A-Za-z0-9_.:-]{1,128}$'),
-  constraint chk_model_catalog_upstream_id check (
-    length(upstream_model_id) between 1 and 512
-    and upstream_model_id = btrim(upstream_model_id)
-  ),
-  constraint chk_model_catalog_display_name check (length(display_name) between 1 and 160),
-  constraint chk_model_catalog_default_enabled check (not is_default or enabled)
-);
-create unique index if not exists uq_model_catalog_default
-  on model_catalog_entries(is_default) where is_default = true;
-
-""",
-    """  model_id text,
-  model_value text,
-  model_gateway_revision bigint,
-""",
-    """alter table runs add column if not exists model_id text;
-alter table runs add column if not exists model_value text;
-alter table runs add column if not exists model_gateway_revision bigint;
-""",
-    """  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'fk_runs_model_gateway_revision') then
-    alter table runs add constraint fk_runs_model_gateway_revision
-      foreign key (model_gateway_revision) references model_gateway_revisions(revision);
-  end if;
-""",
+REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT = (
+    "33f3ab0163cd05c412e2a3d25d5859a935a359a6"
 )
-CONFIRMATION_HISTORY_REPAIR_SQL = """update sse_stream_authorities
-set admission_confirmed_at = coalesce(
-  admission_confirmed_at,
-  admission_created_at,
-  updated_at,
-  clock_timestamp()
-)
-where state <> 'admission_pending'
-  and admission_confirmed_at is null;
-
-update sse_stream_authorities
-set admission_confirmed_at = null
-where state = 'admission_pending'
-  and admission_confirmed_at is not null;
-
-"""
 
 
-def _remote_successor_activation_schema_sql() -> str:
-    current_sql = Path("app/schema.sql").read_text(encoding="utf-8")
-    for fragment in MODEL_CONTROL_PLANE_SCHEMA_FRAGMENTS:
-        assert current_sql.count(fragment) == 1
-        current_sql = current_sql.replace(fragment, "")
-    trace_column_sql = (
-        "alter table run_events add column if not exists trace_id text not null default '';"
-    )
-    assert current_sql.count(trace_column_sql) == 1
-    assert current_sql.count(CONFIRMATION_HISTORY_REPAIR_SQL) == 1
-    remote_sql = current_sql.replace(
-        trace_column_sql,
-        REMOTE_DUE_INDEX_SQL + trace_column_sql,
-    ).replace(CONFIRMATION_HISTORY_REPAIR_SQL, "")
-    remote_index_contract = "\n".join(
-        f"{migration.name}:{migration.checksum_sha256}"
-        for migration in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
-        if migration.name != "idx_run_events_v4_due_scope"
-    )
-    remote_checksum = hashlib.sha256(
-        f"{remote_sql}\n-- concurrent-index-contract\n{remote_index_contract}".encode()
-    ).hexdigest()
-    assert remote_checksum == REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM
-    return remote_sql
+def _schema_source_at_commit(commit: str) -> str:
+    root = Path(__file__).resolve().parents[1]
+    return subprocess.run(
+        ["git", "show", f"{commit}:app/schema.sql"],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout
+
+
+def _remote_run_attempt_reconciler_takeover_schema_sql(tmp_path: Path) -> str:
+    exact_base = _load_exact_base_schema_migrations(tmp_path)
+    try:
+        remote_sql = exact_base.schema_sql()
+        assert exact_base.schema_checksum(remote_sql) == REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM
+        return remote_sql
+    finally:
+        sys.modules.pop(exact_base.__name__, None)
+
+
+def test_remote_run_attempt_reconciler_takeover_checksum_remains_pinned(tmp_path: Path) -> None:
+    assert _remote_run_attempt_reconciler_takeover_schema_sql(tmp_path)
 
 
 def _postgres_dsn() -> str:
@@ -159,6 +84,40 @@ def _index_connection_factory(dsn: str, schema_name: str):
         )
 
     return factory
+
+
+def _load_exact_base_schema_migrations(tmp_path: Path):
+    root = Path(__file__).resolve().parents[1]
+    module_source = subprocess.run(
+        [
+            "git",
+            "show",
+            f"{REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT}:app/schema_migrations.py",
+        ],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout
+    schema_source = _schema_source_at_commit(
+        REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT
+    )
+    module_path = tmp_path / "exact_base_schema_migrations.py"
+    schema_path = tmp_path / "exact_base_schema.sql"
+    module_path.write_text(module_source, encoding="utf-8")
+    schema_path.write_text(schema_source, encoding="utf-8")
+    module_name = f"exact_base_schema_migrations_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    module.SCHEMA_PATH = schema_path
+    return module
 
 
 @pytest.mark.asyncio
@@ -212,7 +171,8 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
             definition_mismatches = []
             if not status["constraint_definitions_current"]:
                 for relation_name, constraint_name, constraint_type, definition in (
-                    schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
+                    schema_migrations.MODEL_CRITICAL_CONSTRAINT_DEFINITIONS
+                    + schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS
                 ):
                     cursor = await conn.execute(
                         """
@@ -247,9 +207,9 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
 
 
 @pytest.mark.asyncio
-async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirmation_history():
+async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity_guard(tmp_path: Path):
     dsn = _postgres_dsn()
-    schema_name = f"schema_v4_upgrade_{uuid.uuid4().hex}"
+    schema_name = f"schema_attempt_heartbeat_upgrade_{uuid.uuid4().hex}"
     admin = await psycopg.AsyncConnection.connect(
         dsn,
         autocommit=True,
@@ -260,59 +220,16 @@ async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirma
         await admin.execute(
             sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
         )
-        await admin.execute(_remote_successor_activation_schema_sql())
+        await admin.execute(_remote_run_attempt_reconciler_takeover_schema_sql(tmp_path))
         await admin.execute(
             """
             insert into schema_migrations(version, checksum_sha256)
             values (%s, %s)
             """,
             (
-                schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
-                REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM,
+                schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION,
+                REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM,
             ),
-        )
-        await admin.execute(
-            "insert into users(id, tenant_id, display_name) values ('v4-user', 'default', 'V4')"
-        )
-        await admin.execute(
-            "insert into agents(id, tenant_id, name, agent_type) values ('v4-agent', 'default', 'V4', 'chat')"
-        )
-        await admin.execute(
-            "insert into skills(id, name, version, executor_type) values ('v4-skill', 'V4', '1', 'fake')"
-        )
-        await admin.execute(
-            """
-            insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title, status)
-            values ('v4-session', 'default', 'default', 'v4-user', 'v4-agent', 'V4', 'archived')
-            """
-        )
-        await admin.execute(
-            """
-            insert into runs(
-              id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id, status
-            ) values (
-              'v4-run', 'default', 'default', 'v4-session', 'v4-user',
-              'v4-agent', 'v4-skill', 'running'
-            )
-            """
-        )
-        await admin.execute(
-            """
-            insert into sse_stream_authorities(
-              tenant_id, run_id, attempt_id, design_id, projection_version,
-              tenant_scope, stream_incarnation, state, open_event_id,
-              open_payload_bytes, open_payload_digest, admission_confirmed_at
-            ) values (
-              'default', 'v4-run', 'v4-attempt', 'v4', 'public-stream-v4',
-              'scope-v4', 1, 'confirmed', 'open-v4', '{}', repeat('a', 64), now()
-            )
-            """
-        )
-        await admin.execute(
-            "alter table sse_stream_authorities drop constraint chk_sse_stream_authority_pending_confirmation"
-        )
-        await admin.execute(
-            "update sse_stream_authorities set admission_confirmed_at = null where run_id = 'v4-run'"
         )
 
         factory = _transaction_factory(dsn, schema_name)
@@ -322,58 +239,95 @@ async def test_real_postgres_upgrade_restores_v4_publication_schema_and_confirma
         )
 
         assert result["status"] == "applied"
-        ledger_rows = await admin.execute(
-            "select version, checksum_sha256 from schema_migrations order by version"
-        )
-        assert await ledger_rows.fetchall() == [
+        ledger_rows = await (
+            await admin.execute(
+                "select version, checksum_sha256 from schema_migrations order by version"
+            )
+        ).fetchall()
+        assert ledger_rows == [
             {
-                "version": schema_migrations.V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
-                "checksum_sha256": REMOTE_SUCCESSOR_ACTIVATION_CHECKSUM,
+                "version": schema_migrations.RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION,
+                "checksum_sha256": REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM,
             },
             {
                 "version": schema_migrations.TARGET_SCHEMA_VERSION,
                 "checksum_sha256": schema_migrations.schema_checksum(),
             },
         ]
-        columns = await admin.execute(
-            """
-            select column_name
-            from information_schema.columns
-            where table_schema = current_schema()
-              and table_name = 'run_events'
-              and column_name like 'stream_publication_%'
-            order by column_name
-            """
-        )
-        assert {row["column_name"] for row in await columns.fetchall()} == {
-            "stream_publication_attempts",
-            "stream_publication_claim_expires_at",
-            "stream_publication_claim_token",
-            "stream_publication_last_error",
-            "stream_publication_next_attempt_at",
-            "stream_publication_redis_id",
-            "stream_publication_state",
-        }
-        index_row = await (
+        trigger_definition = await (
             await admin.execute(
-                "select to_regclass('idx_run_events_v4_due_scope') is not null as present"
+                """
+                select pg_get_functiondef(
+                  to_regprocedure(%s)
+                ) as definition
+                """,
+                (
+                    f"{schema_name}.ai_platform_guard_run_attempt_heartbeat_monotonicity()",
+                ),
             )
         ).fetchone()
-        assert index_row == {"present": True}
-        authority_row = await (
-            await admin.execute(
-                "select admission_confirmed_at is not null as repaired from sse_stream_authorities where run_id = 'v4-run'"
-            )
-        ).fetchone()
-        assert authority_row == {"repaired": True}
+        assert trigger_definition is not None
+        assert "run_attempt_heartbeat_regression" in trigger_definition["definition"]
+        assert "run_attempt_lease_expiry_regression" in trigger_definition["definition"]
         async with factory() as conn:
-            status = await schema_migrations.schema_status(conn)
-            assert status["ready"] is True, {
-                key: value
-                for key, value in status.items()
-                if key.endswith("_current") and value is not True
-            }
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
     finally:
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(schema_name)
+            )
+        )
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_cutover_rejects_an_older_binary_after_migration(
+    tmp_path: Path,
+):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_exact_base_compatibility_{uuid.uuid4().hex}"
+    exact_base = _load_exact_base_schema_migrations(tmp_path)
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        base_result = await exact_base.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert base_result["version"] == exact_base.TARGET_SCHEMA_VERSION
+        async with factory() as conn:
+            assert (await exact_base.schema_status(conn))["ready"] is True
+
+        candidate_result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert candidate_result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+            exact_base_status = await exact_base.schema_status(conn)
+        assert exact_base_status["ready"] is False
+        assert exact_base_status["index_ledger_current"] is False
+        ledger_versions = await (
+            await admin.execute(
+                sql.SQL(
+                    "select distinct target_version from {}.schema_index_migrations"
+                ).format(sql.Identifier(schema_name))
+            )
+        ).fetchall()
+        assert ledger_versions == [
+            {
+                "target_version": schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
+            }
+        ]
+    finally:
+        sys.modules.pop(exact_base.__name__, None)
         await admin.execute(
             sql.SQL("drop schema if exists {} cascade").format(
                 sql.Identifier(schema_name)
@@ -427,6 +381,10 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
             )
             """
         )
+        await admin.execute(
+            "alter table artifacts drop constraint chk_artifacts_run_owner"
+        )
+        await admin.execute("alter table artifacts alter column run_id set not null")
         await admin.execute(
             """
             insert into artifacts(
@@ -492,10 +450,18 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
         cursor = await admin.execute(
             """
             select outbox.target_type, outbox.artifact_id, outbox.file_id,
-                   outbox.lease_generation, files.lifecycle_state
+                   outbox.lease_generation, files.lifecycle_state,
+                   artifacts.run_id as artifact_run_id,
+                   artifacts.lifecycle_state as artifact_lifecycle_state,
+                   artifacts.manifest_json ->> 'retention_artifact_cleanup'
+                     as retention_artifact_cleanup,
+                   artifacts.manifest_json ->> 'deletion_owner_run_id'
+                     as deletion_owner_run_id
             from object_deletion_outbox outbox
             cross join files
+            cross join artifacts
             where outbox.id = 'legacy-outbox' and files.id = 'legacy-file'
+              and artifacts.id = 'legacy-artifact'
             """
         )
         assert await cursor.fetchone() == {
@@ -504,6 +470,10 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
             "file_id": None,
             "lease_generation": 0,
             "lifecycle_state": "active",
+            "artifact_run_id": None,
+            "artifact_lifecycle_state": "delete_pending",
+            "retention_artifact_cleanup": "true",
+            "deletion_owner_run_id": "legacy-run",
         }
         async with factory() as conn:
             assert (await schema_migrations.schema_status(conn))["ready"] is True
@@ -596,9 +566,9 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
     "damage_sql",
     [
         "alter table runs drop column authz_policy_version",
-        "alter table run_events drop constraint chk_run_events_stream_publication_claim",
         "alter table files drop constraint chk_files_lifecycle_state",
         "alter table artifacts drop constraint chk_artifacts_lifecycle_state",
+        "alter table artifacts drop constraint chk_artifacts_run_owner",
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target",
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target_state",
         "alter table object_deletion_outbox drop column lease_generation",
@@ -609,29 +579,14 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
         "drop index idx_runs_input_json_gin",
         "drop index idx_object_deletion_outbox_artifact_storage_live",
         "drop index uq_object_deletion_outbox_file",
-        "drop trigger trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions",
-        "drop trigger trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions",
         "drop trigger trg_run_attempt_transition_guard on run_attempts",
+        "drop trigger trg_run_attempt_heartbeat_monotonicity_guard on run_attempts",
         """
         drop trigger trg_run_attempt_transition_guard on run_attempts;
         create trigger trg_run_attempt_transition_guard
           before update on run_attempts
           for each row execute function ai_platform_guard_run_attempt_transition()
         """,
-        "alter table agent_profile_revisions enable always trigger trg_agent_profile_legacy_insert_compatibility",
-        """
-        create or replace function agent_profile_legacy_insert_reconcile()
-        returns trigger language plpgsql as $$ begin return null; end $$
-        """,
-        """
-        drop trigger trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
-        create trigger trg_agent_profile_legacy_insert_reconcile
-          after insert on agent_profile_revisions
-          for each row when (false)
-          execute function agent_profile_legacy_insert_reconcile()
-        """,
-        "alter function agent_profile_legacy_insert_reconcile() set search_path to pg_catalog",
-        "alter function agent_profile_legacy_insert_reconcile() security definer",
     ],
 )
 async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_sql):
@@ -663,11 +618,6 @@ async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_
 @pytest.mark.parametrize(
     "damage_sql",
     [
-        """
-        alter table run_events drop constraint chk_run_events_stream_publication_claim;
-        alter table run_events add constraint chk_run_events_stream_publication_claim
-          check (stream_publication_claim_token is null)
-        """,
         """
         alter table files drop constraint chk_files_lifecycle_state;
         alter table files add constraint chk_files_lifecycle_state

@@ -1,8 +1,8 @@
 import type {
   AgentProfileAdminProjection,
   AgentProfileDraftRequest,
+  AgentProfileSkillReference,
   PublicSkillResponse,
-  SelectedSkillRequest,
   ToolState,
 } from "../../types";
 
@@ -20,6 +20,18 @@ export interface AgentBuilderCurrentCatalog {
   effectivePermissionsKnown: boolean;
 }
 
+function parseMarketTags(value: string): string[] {
+  return [...new Set(value.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean))];
+}
+
+function serializeMarketTags(tags: readonly string[]): string {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].join("\n");
+}
+
+function profileMarketTags(profile: AgentProfileAdminProjection): string[] {
+  return [...new Set(profile.market_tags.map((tag) => tag.trim()).filter(Boolean))];
+}
+
 export interface AgentBuilderEditor {
   agentId: string | null;
   revision: number | null;
@@ -27,25 +39,32 @@ export interface AgentBuilderEditor {
   status: AgentProfileAdminProjection["status"] | null;
   name: string;
   description: string;
-  welcomeMessage: string;
   starterPrompts: string[];
-  capabilitySummary: string;
-  recommendedTasks: string[];
-  supportedInputTypes: Array<"text" | "file">;
-  expectedOutputs: string[];
-  permissionsAndDataAccessNotice: string;
   instructions: string;
-  selectedSkills: SelectedSkillRequest[];
+  selectedSkills: AgentProfileSkillReference[];
   selectedMcpToolIds: string[];
   avatarRef: AgentProfileDraftRequest["avatar_ref"];
   avatarSeed: string;
-  avatarAssetId: string | null;
-  category: AgentProfileDraftRequest["category"];
+  marketTag: string;
   visibility: AgentProfileDraftRequest["visibility"];
   allowedDepartmentIds: string[];
   allowedRoles: string[];
   allowedUserIds: string[];
   materializedProfile: AgentProfileAdminProjection | null;
+}
+
+/** Number only snapshots that were actually published; draft saves are not releases. */
+export function listPublishedAgentProfileVersions(
+  profiles: readonly AgentProfileAdminProjection[],
+) {
+  return [...profiles]
+    .filter((profile) => Boolean(profile.published_at) || profile.status === "published")
+    .sort((left, right) => {
+      const leftPublishedAt = Date.parse(String(left.published_at ?? left.created_at ?? "")) || 0;
+      const rightPublishedAt = Date.parse(String(right.published_at ?? right.created_at ?? "")) || 0;
+      return leftPublishedAt - rightPublishedAt || left.revision - right.revision;
+    })
+    .map((profile, index) => ({ profile, version: index + 1 }));
 }
 
 export type AgentBuilderBlockCode =
@@ -57,7 +76,6 @@ export type AgentBuilderBlockCode =
   | "profile_revision_missing"
   | "catalog_unavailable"
   | "selected_skill_stale"
-  | "selected_mcp_tool_unavailable"
   | "no_changes"
   | "save_required"
   | "unsaved_changes"
@@ -65,7 +83,6 @@ export type AgentBuilderBlockCode =
 
 export interface AgentBuilderValidationIssue {
   code: AgentBuilderBlockCode;
-  unavailableMcpToolIds?: readonly string[];
 }
 
 /**
@@ -117,20 +134,13 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
     status: null,
     name: "",
     description: "",
-    welcomeMessage: "",
     starterPrompts: [],
-    capabilitySummary: "",
-    recommendedTasks: [],
-    supportedInputTypes: ["text", "file"],
-    expectedOutputs: [],
-    permissionsAndDataAccessNotice: "",
     instructions: "",
     selectedSkills: [],
     selectedMcpToolIds: [],
     avatarRef: "builtin:agent",
     avatarSeed: "",
-    avatarAssetId: null,
-    category: "general",
+    marketTag: "",
     visibility: "tenant",
     allowedDepartmentIds: [],
     allowedRoles: [],
@@ -152,39 +162,23 @@ export function hydrateAgentProfileEditor(
     status: profile.status,
     name: profile.name,
     description: profile.description,
-    welcomeMessage: profile.welcome_message,
     starterPrompts: [...profile.starter_prompts],
-    capabilitySummary: profile.capability_summary,
-    recommendedTasks: [...profile.recommended_tasks],
-    supportedInputTypes: [...profile.supported_input_types],
-    expectedOutputs: [...profile.expected_outputs],
-    permissionsAndDataAccessNotice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
-    selectedSkills: (profile.skill_set?.length
-      ? profile.skill_set
-      : [profile.selected_skill]
-    ).map((skill) => ({ ...skill })),
+    selectedSkills: profile.skill_set.map((skill) => ({ skill_id: skill.skill_id })),
     selectedMcpToolIds: [...profile.mcp_tool_ids],
     avatarRef: profile.avatar_ref,
-    avatarSeed: profile.avatar_seed?.trim() || profile.agent_id,
-    avatarAssetId: profile.avatar_asset_id,
-    category: profile.category,
+    avatarSeed: profile.avatar_seed.trim() || profile.agent_id,
+    marketTag: serializeMarketTags(profileMarketTags(profile)),
     visibility: profile.visibility,
     allowedDepartmentIds: [...profile.allowed_department_ids],
     allowedRoles: [...profile.allowed_roles],
     allowedUserIds: [...profile.allowed_user_ids],
     materializedProfile: {
       ...profile,
-      selected_skill: { ...profile.selected_skill },
-      skill_set: (profile.skill_set?.length
-        ? profile.skill_set
-        : [profile.selected_skill]
-      ).map((skill) => ({ ...skill })),
+      skill_set: profile.skill_set.map((skill) => ({ skill_id: skill.skill_id })),
       mcp_tool_ids: [...profile.mcp_tool_ids],
       starter_prompts: [...profile.starter_prompts],
-      recommended_tasks: [...profile.recommended_tasks],
-      supported_input_types: [...profile.supported_input_types],
-      expected_outputs: [...profile.expected_outputs],
+      market_tags: [...profile.market_tags],
       allowed_department_ids: [...profile.allowed_department_ids],
       allowed_roles: [...profile.allowed_roles],
       allowed_user_ids: [...profile.allowed_user_ids],
@@ -196,21 +190,13 @@ function editorDefinition(editor: AgentBuilderEditor) {
   return {
     name: editor.name.trim(),
     description: editor.description.trim(),
-    welcome_message: editor.welcomeMessage.trim(),
     starter_prompts: editor.starterPrompts.map((item) => item.trim()).filter(Boolean),
-    capability_summary: editor.capabilitySummary.trim(),
-    recommended_tasks: editor.recommendedTasks.map((item) => item.trim()).filter(Boolean),
-    supported_input_types: editor.supportedInputTypes,
-    expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
-    permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
-    selected_skill: editor.selectedSkills[0] ?? null,
-    skill_set: editor.selectedSkills,
+    skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: editor.selectedMcpToolIds,
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim(),
-    avatar_asset_id: editor.avatarAssetId,
-    category: editor.category,
+    market_tags: parseMarketTags(editor.marketTag),
     visibility: editor.visibility,
     allowed_department_ids: editor.allowedDepartmentIds,
     allowed_roles: editor.allowedRoles,
@@ -222,21 +208,13 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
   return {
     name: profile.name,
     description: profile.description,
-    welcome_message: profile.welcome_message,
     starter_prompts: profile.starter_prompts,
-    capability_summary: profile.capability_summary,
-    recommended_tasks: profile.recommended_tasks,
-    supported_input_types: profile.supported_input_types,
-    expected_outputs: profile.expected_outputs,
-    permissions_and_data_access_notice: profile.permissions_and_data_access_notice,
     instructions: profile.instructions,
-    selected_skill: profile.selected_skill,
-    skill_set: profile.skill_set?.length ? profile.skill_set : [profile.selected_skill],
+    skill_set: profile.skill_set.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: profile.mcp_tool_ids,
     avatar_ref: profile.avatar_ref,
-    avatar_seed: profile.avatar_seed?.trim() || profile.agent_id,
-    avatar_asset_id: profile.avatar_asset_id,
-    category: profile.category,
+    avatar_seed: profile.avatar_seed.trim() || profile.agent_id,
+    market_tags: profileMarketTags(profile),
     visibility: profile.visibility,
     allowed_department_ids: profile.allowed_department_ids,
     allowed_roles: profile.allowed_roles,
@@ -259,22 +237,13 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
   return Boolean(
     editor.name.trim() ||
     editor.description.trim() ||
-    editor.welcomeMessage.trim() ||
     editor.starterPrompts.length > 0 ||
-    editor.capabilitySummary.trim() ||
-    editor.recommendedTasks.length > 0 ||
-    editor.supportedInputTypes.length !== 2 ||
-    editor.supportedInputTypes[0] !== "text" ||
-    editor.supportedInputTypes[1] !== "file" ||
-    editor.expectedOutputs.length > 0 ||
-    editor.permissionsAndDataAccessNotice.trim() ||
     editor.instructions.trim() ||
     editor.selectedSkills.length > 0 ||
     editor.selectedMcpToolIds.length > 0 ||
     editor.avatarRef !== "builtin:agent" ||
     editor.avatarSeed !== "" ||
-    editor.avatarAssetId !== null ||
-    editor.category !== "general" ||
+    editor.marketTag.trim() ||
     editor.visibility !== "tenant" ||
     editor.allowedDepartmentIds.length > 0 ||
     editor.allowedRoles.length > 0 ||
@@ -282,7 +251,7 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
   );
 }
 
-/** Find exact current catalog identities without replacing stale server pins. */
+/** Find current catalog Skill names without replacing their package hashes. */
 export function validateAgentProfileEditor(
   editor: AgentBuilderEditor,
   catalog: AgentBuilderCurrentCatalog,
@@ -305,25 +274,10 @@ export function validateAgentProfileEditor(
     return catalog.skills.some(
       (skill) =>
         skill.enabled &&
-        skill.name === selection.skill_id &&
-        skill.expected_version === selection.expected_version,
+        skill.name === selection.skill_id,
     );
   });
   if (!selectedSkillsAreCurrent) return { code: "selected_skill_stale" };
-
-  if (editor.selectedMcpToolIds.length > 0) {
-    if (!catalog.mcpToolsResolved) return { code: "catalog_unavailable" };
-    const currentIds = new Set(catalog.mcpTools.map((tool) => tool.id));
-    const unavailableMcpToolIds = editor.selectedMcpToolIds.filter(
-      (toolId, index, selectedIds) =>
-        !toolId.trim() ||
-        !currentIds.has(toolId) ||
-        selectedIds.indexOf(toolId) !== index,
-    );
-    if (unavailableMcpToolIds.length > 0) {
-      return { code: "selected_mcp_tool_unavailable", unavailableMcpToolIds };
-    }
-  }
 
   return null;
 }
@@ -350,7 +304,7 @@ export function getAgentProfilePublishBlock(
   return validateAgentProfileEditor(editor, catalog);
 }
 
-/** Materialize the exact optimistic-lock request accepted by agentProfileApi. */
+/** Materialize the optimistic-lock request using Skill names, not package hashes. */
 export function buildAgentProfileDraftRequest(
   editor: AgentBuilderEditor,
 ): AgentProfileDraftRequest {
@@ -360,21 +314,13 @@ export function buildAgentProfileDraftRequest(
   return {
     name: editor.name.trim(),
     description: editor.description.trim(),
-    welcome_message: editor.welcomeMessage.trim(),
     starter_prompts: editor.starterPrompts.map((item) => item.trim()).filter(Boolean),
-    capability_summary: editor.capabilitySummary.trim(),
-    recommended_tasks: editor.recommendedTasks.map((item) => item.trim()).filter(Boolean),
-    supported_input_types: [...editor.supportedInputTypes],
-    expected_outputs: editor.expectedOutputs.map((item) => item.trim()).filter(Boolean),
-    permissions_and_data_access_notice: editor.permissionsAndDataAccessNotice.trim(),
     instructions: editor.instructions,
-    selected_skill: { ...editor.selectedSkills[0] },
-    skill_set: editor.selectedSkills.map((skill) => ({ ...skill })),
+    skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: [...editor.selectedMcpToolIds],
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim() || editor.name.trim(),
-    avatar_asset_id: editor.avatarAssetId,
-    category: editor.category,
+    market_tags: parseMarketTags(editor.marketTag),
     visibility: editor.visibility,
     allowed_department_ids: [...editor.allowedDepartmentIds],
     allowed_roles: [...editor.allowedRoles],
@@ -393,7 +339,7 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
     case "instructions_required":
       return "缺少 Agent.md 初始指令，请填写后再保存。";
     case "skill_required":
-      return "缺少 Skill，请至少选择一个已授权版本。";
+      return "缺少 Skill，请至少选择一个已授权 Skill。";
     case "skill_limit_exceeded":
       return "一位专家最多可选择 32 个 Skill，请移除多余项。";
     case "profile_revision_missing":
@@ -402,8 +348,6 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
       return "授权目录尚未完整加载，暂不能保存或发布。";
     case "selected_skill_stale":
       return "所选 Skill 或其固定版本已不可用，请重新选择。";
-    case "selected_mcp_tool_unavailable":
-      return `已选 MCP 工具中有 ${issue.unavailableMcpToolIds?.length ?? 1} 项不可用，请明确移除或重新选择。`;
     case "no_changes":
       return "当前内容与服务端版本一致，无需再次保存。";
     case "save_required":

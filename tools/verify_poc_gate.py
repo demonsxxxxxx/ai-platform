@@ -399,12 +399,8 @@ def check_api_compat(api_url: str, *, expected_default_model_id: str = "") -> Ga
         "/api/auth/oauth/providers",
         "/api/auth/permissions",
         "/api/agent/models/available",
-        "/api/settings/",
-        "/api/projects",
         "/api/notifications/active",
         "/api/upload/config",
-        "/api/tools",
-        "/api/version",
     ]
     statuses: dict[str, int] = {}
     payloads: dict[str, Any] = {}
@@ -496,7 +492,7 @@ def check_runtime_config(env_path: str, values: dict[str, str] | None = None) ->
         and bool(configured_model_id)
         and default_model_id == configured_model_id
         and catalog_valid
-        and {"general-chat", "qa-file-reviewer", "baoyu-translate"}.issubset(skills)
+        and {"general-chat", "qa-file-reviewer"}.issubset(skills)
     )
     return Gate(
         "runtime_config",
@@ -512,7 +508,7 @@ def check_runtime_config(env_path: str, values: dict[str, str] | None = None) ->
             "model_catalog_status": catalog_status,
             "available_model_ids": catalog_model_ids,
             "model_catalog_contains_configured_model": catalog_contains_configured_model,
-            "skills_present": sorted(skills.intersection({"general-chat", "qa-file-reviewer", "baoyu-translate"})),
+            "skills_present": sorted(skills.intersection({"general-chat", "qa-file-reviewer"})),
         },
     )
 
@@ -578,7 +574,6 @@ def check_db_evidence(container: str, db_user: str, db_name: str) -> list[Gate]:
     specs = [
         ("general_chat_run", "general-agent", "general-chat", False),
         ("review_artifact", "qa-word-review", "qa-file-reviewer", True),
-        ("translate_artifact", "baoyu-translate", "baoyu-translate", True),
     ]
     gates: list[Gate] = []
     for name, agent_id, skill_id, require_artifact in specs:
@@ -1185,14 +1180,14 @@ def check_upload_attachment_chat(
 ) -> Gate:
     headers = principal_headers("upload-gate-user-a", "Upload Gate User")
     upload_status, upload_payload = http_multipart_file_post(
-        f"{api_url.rstrip('/')}/api/upload/file?folder=uploads",
+        f"{api_url.rstrip('/')}/api/ai/files",
         field_name="file",
         filename="upload-gate.txt",
         content=b"hello upload smoke",
         content_type="text/plain",
         headers=headers,
     )
-    file_id = upload_payload.get("key") if isinstance(upload_payload, dict) else None
+    file_id = upload_payload.get("file_id") if isinstance(upload_payload, dict) else None
     chat_payload: dict[str, Any] | None = None
     chat_status = 0
     if file_id:
@@ -1288,7 +1283,7 @@ group by r.id;
     ok = (
         upload_status == 200
         and isinstance(upload_payload, dict)
-        and str(upload_payload.get("key") or "").startswith("file_")
+        and str(upload_payload.get("file_id") or "").startswith("file_")
         and chat_status == 200
         and run_accepted_by_worker
         and file_id in (run_evidence.get("file_ids") or [])
@@ -1337,14 +1332,14 @@ def check_word_review_attachment_chat(
     filename, content = sample
     headers = principal_headers("upload-review-gate-user", "Upload Review Gate User")
     upload_status, upload_payload = http_multipart_file_post(
-        f"{api_url.rstrip('/')}/api/upload/file?folder=uploads",
+        f"{api_url.rstrip('/')}/api/ai/files",
         field_name="file",
         filename=filename,
         content=content,
         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers=headers,
     )
-    file_id = upload_payload.get("key") if isinstance(upload_payload, dict) else None
+    file_id = upload_payload.get("file_id") if isinstance(upload_payload, dict) else None
     chat_payload: dict[str, Any] | None = None
     chat_status = 0
     if file_id:
@@ -1477,7 +1472,7 @@ group by r.id;
     ok = (
         upload_status == 200
         and isinstance(upload_payload, dict)
-        and str(upload_payload.get("key") or "").startswith("file_")
+        and str(upload_payload.get("file_id") or "").startswith("file_")
         and chat_status == 200
         and run_evidence.get("status") == "succeeded"
         and run_evidence.get("agent_id") == "qa-word-review"
@@ -1566,7 +1561,7 @@ def main() -> int:
     db_gates = check_db_evidence(args.postgres_container, args.postgres_user, args.postgres_db)
     env_values = runtime_env_values(args.env_path, args.worker_container)
     runtime_config_gate = check_runtime_config(args.env_path, env_values)
-    artifact_rows = [gate.evidence for gate in db_gates if gate.name in {"review_artifact", "translate_artifact"} and gate.ok]
+    artifact_rows = [gate.evidence for gate in db_gates if gate.name == "review_artifact" and gate.ok]
     word_review_gate = check_word_review_attachment_chat(
         args.api_url,
         args.postgres_container,

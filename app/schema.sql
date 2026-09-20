@@ -41,8 +41,30 @@ create table if not exists users (
   email text,
   external_id text,
   status text not null default 'active',
-  created_at timestamptz not null default now()
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint chk_users_metadata_json_object check (jsonb_typeof(metadata_json) = 'object')
 );
+
+alter table users
+  add column if not exists metadata_json jsonb not null default '{}'::jsonb;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'chk_users_metadata_json_object'
+      and conrelid = 'users'::regclass
+  ) then
+    alter table users
+      add constraint chk_users_metadata_json_object
+      check (jsonb_typeof(metadata_json) = 'object') not valid;
+  end if;
+end
+$$;
+
+alter table users validate constraint chk_users_metadata_json_object;
 
 create table if not exists skills (
   id text primary key,
@@ -136,60 +158,31 @@ create table if not exists mcp_servers (
   credential_state text not null default 'not_configured',
   credential_metadata_json jsonb not null default '{}'::jsonb,
   credential_fingerprint text not null default '',
-  catalog_generation bigint not null default 0,
-  catalog_sync_attempt bigint not null default 0,
-  catalog_sync_lease_expires_at timestamptz,
-  catalog_revision bigint not null default 0,
-  catalog_status text not null default 'legacy',
-  catalog_unavailable_reason text not null default '',
-  catalog_discovered_count integer not null default 0,
-  catalog_selectable_count integer not null default 0,
-  catalog_last_synced_at timestamptz,
   updated_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(tenant_id, name),
   check (transport in ('sse', 'streamable_http', 'sandbox')),
   check (status in ('active', 'disabled', 'deleted')),
-  check (credential_state in ('not_configured', 'configured', 'platform_managed')),
-  check (catalog_generation >= 0),
-  check (catalog_sync_attempt >= 0),
-  check (catalog_revision >= 0),
-  check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')),
-  check (catalog_discovered_count >= 0),
-  check (catalog_selectable_count >= 0)
+  check (credential_state in ('not_configured', 'configured', 'platform_managed'))
 );
 
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);
 
-alter table mcp_servers
-  add column if not exists catalog_generation bigint not null default 0,
-  add column if not exists catalog_sync_attempt bigint not null default 0,
-  add column if not exists catalog_sync_lease_expires_at timestamptz,
-  add column if not exists catalog_revision bigint not null default 0,
-  add column if not exists catalog_status text not null default 'legacy',
-  add column if not exists catalog_unavailable_reason text not null default '',
-  add column if not exists catalog_discovered_count integer not null default 0,
-  add column if not exists catalog_selectable_count integer not null default 0,
-  add column if not exists catalog_last_synced_at timestamptz;
-
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint
-    where conname = 'mcp_servers_catalog_status_valid'
-      and conrelid = 'mcp_servers'::regclass
+    select 1 from pg_constraint where conname = 'mcp_servers_endpoint_not_persisted'
   ) then
     alter table mcp_servers
-      add constraint mcp_servers_catalog_status_valid
-      check (catalog_status in ('legacy', 'refresh_required', 'syncing', 'available', 'no_tools', 'unavailable', 'disabled', 'deleted')) not valid;
+      add constraint mcp_servers_endpoint_not_persisted
+      check (endpoint_redacted = '') not valid;
   end if;
-end
-$$;
+end $$;
 
 alter table mcp_servers
-  validate constraint mcp_servers_catalog_status_valid;
+  validate constraint mcp_servers_endpoint_not_persisted;
 
 create or replace function ai_platform_text_array_all_nonblank(input_values text[])
 returns boolean
@@ -316,12 +309,16 @@ create table if not exists mcp_server_credentials (
   server_name text not null,
   credential_fingerprint text not null default '',
   metadata_json jsonb not null default '{}'::jsonb,
+  credential_envelope text not null default '',
   updated_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   primary key (tenant_id, server_name),
   foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name)
 );
+
+alter table mcp_server_credentials
+  add column if not exists credential_envelope text not null default '';
 
 create table if not exists mcp_tools (
   id text primary key,
@@ -339,6 +336,20 @@ create table if not exists mcp_tools (
   created_at timestamptz not null default now()
 );
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'mcp_tools_endpoint_not_persisted'
+  ) then
+    alter table mcp_tools
+      add constraint mcp_tools_endpoint_not_persisted
+      check (endpoint = '') not valid;
+  end if;
+end $$;
+
+alter table mcp_tools
+  validate constraint mcp_tools_endpoint_not_persisted;
+
 create table if not exists tool_policies (
   tenant_id text not null references tenants(id),
   tool_id text not null references mcp_tools(id),
@@ -354,25 +365,6 @@ create table if not exists tool_policies (
 );
 
 create index if not exists idx_tool_policies_tool on tool_policies(tool_id, tenant_id);
-
-create table if not exists mcp_tool_catalog_entries (
-  tool_id text primary key references mcp_tools(id),
-  tenant_id text not null references tenants(id),
-  server_name text not null,
-  remote_tool_name text not null,
-  catalog_generation bigint not null,
-  schema_hash text not null,
-  status text not null default 'disabled',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (tenant_id, server_name, remote_tool_name),
-  foreign key (tenant_id, server_name) references mcp_servers(tenant_id, name),
-  check (catalog_generation >= 0),
-  check (status in ('active', 'disabled', 'stale', 'deleted'))
-);
-
-create index if not exists idx_mcp_tool_catalog_entries_server
-  on mcp_tool_catalog_entries(tenant_id, server_name, status, remote_tool_name);
 
 create table if not exists agents (
   id text primary key,
@@ -404,39 +396,25 @@ create table if not exists agent_profile_revisions (
   tenant_id text not null references tenants(id),
   agent_id text not null,
   revision bigint not null check (revision > 0),
-  -- ``status`` is the pre-#701 rollback visibility mirror and deliberately
-  -- retains that binary's draft|published enum. Current code uses immutable
-  -- ``revision_status`` and never derives lifecycle from this field.
-  status text not null check (status in ('draft', 'published')),
   revision_status text not null check (revision_status in ('draft', 'published', 'withdrawn')),
   name text not null,
   description text not null default '',
-  welcome_message text not null default '',
   starter_prompts jsonb not null default '[]'::jsonb,
-  capability_summary text not null default '',
-  recommended_tasks jsonb not null default '[]'::jsonb,
-  supported_input_types jsonb not null default '["text"]'::jsonb,
-  supported_file_types jsonb not null default '[]'::jsonb,
-  expected_outputs jsonb not null default '[]'::jsonb,
-  permissions_and_data_access_notice text not null default '',
   instructions text not null,
-  model_id text not null,
-  skill_id text not null references skills(id),
-  skill_version text not null,
-  skill_set jsonb not null default '[]'::jsonb,
+  skill_set jsonb not null,
   mcp_tool_ids jsonb not null default '[]'::jsonb,
   content_hash text not null,
-  avatar_ref text not null
-    check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research')),
-  avatar_asset_id text,
-  avatar_seed text not null default '',
-  category text not null
-    check (category in ('general', 'support', 'writing', 'research', 'operations')),
+  avatar_ref text not null check (avatar_ref in (
+    'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+    'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+    'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+  )),
+  avatar_seed text not null,
+  market_tags jsonb not null default '[]'::jsonb,
   visibility text not null,
   allowed_department_ids jsonb not null,
   allowed_roles jsonb not null,
   allowed_user_ids jsonb not null,
-  legacy_compatibility_write boolean not null default false,
   created_by text references users(id),
   created_at timestamptz not null default now(),
   published_by text references users(id),
@@ -462,7 +440,6 @@ create table if not exists agent_profiles (
   latest_revision bigint not null check (latest_revision > 0),
   published_revision bigint,
   published_hash text,
-  published_status text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint fk_agent_profiles_tenant_agent
@@ -474,13 +451,11 @@ create table if not exists agent_profiles (
         lifecycle_status = 'published'
         and published_revision is not null
         and published_hash is not null
-        and published_status = 'published'
       )
       or (
         lifecycle_status <> 'published'
         and published_revision is null
         and published_hash is null
-        and published_status is null
       )
     )
 );
@@ -488,6 +463,18 @@ create table if not exists agent_profiles (
 create index if not exists idx_agent_profiles_published
   on agent_profiles(tenant_id, published_revision desc)
   where lifecycle_status = 'published';
+
+create table if not exists agent_profile_favorites (
+  tenant_id text not null references tenants(id),
+  user_id text not null references users(id),
+  agent_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, user_id, agent_id),
+  foreign key (tenant_id, agent_id) references agents(tenant_id, id)
+);
+
+create index if not exists idx_agent_profile_favorites_user
+  on agent_profile_favorites(tenant_id, user_id, created_at desc);
 
 create table if not exists sessions (
   id text primary key,
@@ -518,6 +505,10 @@ alter table sessions drop constraint if exists chk_sessions_title_source;
 alter table sessions add constraint chk_sessions_title_source
   check (title_source in ('initial', 'generated', 'user'));
 
+-- Provider continuity is executor-private and inherits Session deletion.
+create unique index if not exists idx_sessions_provider_scope
+  on sessions(tenant_id, workspace_id, user_id, id, agent_id);
+
 create table if not exists model_gateway_revisions (
   revision bigint primary key,
   base_url text not null,
@@ -542,6 +533,8 @@ create table if not exists model_catalog_entries (
   upstream_available boolean not null default true,
   is_default boolean not null default false,
   display_order integer not null default 0,
+  max_input_tokens bigint,
+  max_output_tokens bigint,
   first_seen_revision bigint not null references model_gateway_revisions(revision),
   last_seen_revision bigint not null references model_gateway_revisions(revision),
   first_seen_at timestamptz not null default now(),
@@ -552,7 +545,12 @@ create table if not exists model_catalog_entries (
     and upstream_model_id = btrim(upstream_model_id)
   ),
   constraint chk_model_catalog_display_name check (length(display_name) between 1 and 160),
-  constraint chk_model_catalog_default_enabled check (not is_default or enabled)
+  constraint chk_model_catalog_default_enabled check (not is_default or enabled),
+  constraint chk_model_catalog_token_limits check (
+    (max_input_tokens is null and max_output_tokens is null)
+    or (max_input_tokens is not null and max_output_tokens is not null
+        and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
+  )
 );
 create unique index if not exists uq_model_catalog_default
   on model_catalog_entries(is_default) where is_default = true;
@@ -580,6 +578,8 @@ create table if not exists runs (
   model_id text,
   model_value text,
   model_gateway_revision bigint,
+  max_input_tokens bigint,
+  max_output_tokens bigint,
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
   context_snapshot_id text,
@@ -612,6 +612,11 @@ create table if not exists runs (
   constraint chk_runs_execution_skill_identity check (
     (execution_kind = 'harness_chat' and skill_id is null)
     or (execution_kind = 'skill' and skill_id is not null)
+  ),
+  constraint chk_runs_model_token_limits check (
+    (max_input_tokens is null and max_output_tokens is null)
+    or (max_input_tokens is not null and max_output_tokens is not null
+        and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
   )
 );
 
@@ -619,6 +624,31 @@ create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at
 create index if not exists idx_runs_session_created on runs(session_id, created_at desc);
 create index if not exists idx_runs_status on runs(status);
 create unique index if not exists uq_runs_tenant_id on runs(tenant_id, id);
+
+create table if not exists run_diagnostics (
+  diagnostic_id text primary key,
+  tenant_id text not null,
+  run_id text not null,
+  schema_version text not null,
+  revision bigint not null default 1,
+  payload_json jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_run_diagnostics_run foreign key (tenant_id, run_id)
+    references runs(tenant_id, id),
+  constraint chk_run_diagnostics_identity check (
+    diagnostic_id <> '' and tenant_id <> '' and run_id <> ''
+  ),
+  constraint chk_run_diagnostics_revision check (revision > 0),
+  constraint chk_run_diagnostics_payload check (
+    jsonb_typeof(payload_json) = 'object'
+    and payload_json ? 'schema_version'
+    and payload_json->>'schema_version' is not null
+    and payload_json->>'schema_version' = schema_version
+    and octet_length(payload_json::text) <= 147456
+  ),
+  unique (tenant_id, run_id)
+);
 
 create table if not exists run_attempts (
   id text primary key,
@@ -769,12 +799,21 @@ begin
     raise exception 'run_attempt_queue_identity_immutable' using errcode = '23514';
   end if;
   if new.status is not distinct from old.status then
-    if new.owner_generation is distinct from old.owner_generation
-       or new.owner_kind is distinct from old.owner_kind
-       or new.owner_id is distinct from old.owner_id then
-      raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
+    if new.owner_generation is not distinct from old.owner_generation
+       and new.owner_kind is not distinct from old.owner_kind
+       and new.owner_id is not distinct from old.owner_id then
+      return new;
     end if;
-    return new;
+    if old.status = 'cancel_requested'
+       and new.owner_kind = 'reconciler'
+       and new.owner_generation = old.owner_generation + 1
+       and (
+         new.owner_kind is distinct from old.owner_kind
+         or new.owner_id is distinct from old.owner_id
+       ) then
+      return new;
+    end if;
+    raise exception 'run_attempt_owner_transition_invalid' using errcode = '23514';
   end if;
   if new.owner_generation is distinct from old.owner_generation + 1 then
     raise exception 'run_attempt_owner_generation_invalid' using errcode = '23514';
@@ -835,6 +874,33 @@ create trigger trg_run_attempt_transition_guard
 before insert or update on run_attempts
 for each row execute function ai_platform_guard_run_attempt_transition();
 
+create or replace function ai_platform_guard_run_attempt_heartbeat_monotonicity()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.last_heartbeat_at is not null
+     and (
+       new.last_heartbeat_at is null
+       or new.last_heartbeat_at < old.last_heartbeat_at
+     ) then
+    raise exception 'run_attempt_heartbeat_regression' using errcode = '23514';
+  end if;
+  if old.lease_expires_at is not null
+     and (
+       new.lease_expires_at is null
+       or new.lease_expires_at < old.lease_expires_at
+     ) then
+    raise exception 'run_attempt_lease_expiry_regression' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_run_attempt_heartbeat_monotonicity_guard on run_attempts;
+create trigger trg_run_attempt_heartbeat_monotonicity_guard
+before update on run_attempts
+for each row execute function ai_platform_guard_run_attempt_heartbeat_monotonicity();
+
 alter table runs add column if not exists trace_id text not null default '';
 alter table runs add column if not exists execution_kind text not null default 'skill';
 do $$
@@ -892,28 +958,38 @@ alter table runs add column if not exists admitted_agent_profile_hash text;
 alter table runs add column if not exists model_id text;
 alter table runs add column if not exists model_value text;
 alter table runs add column if not exists model_gateway_revision bigint;
+alter table runs add column if not exists max_input_tokens bigint;
+alter table runs add column if not exists max_output_tokens bigint;
+alter table model_catalog_entries add column if not exists max_input_tokens bigint;
+alter table model_catalog_entries add column if not exists max_output_tokens bigint;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'chk_runs_model_token_limits') then
+    alter table runs add constraint chk_runs_model_token_limits check (
+      (max_input_tokens is null and max_output_tokens is null)
+      or (max_input_tokens is not null and max_output_tokens is not null
+          and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
+    );
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'model_catalog_entries'::regclass and conname = 'chk_model_catalog_token_limits') then
+    alter table model_catalog_entries add constraint chk_model_catalog_token_limits check (
+      (max_input_tokens is null and max_output_tokens is null)
+      or (max_input_tokens is not null and max_output_tokens is not null
+          and max_input_tokens between 1 and 10000000 and max_output_tokens between 1 and 10000000)
+    );
+  end if;
+end $$;
 alter table agent_profile_revisions add column if not exists published_from_revision bigint;
 alter table agent_profile_revisions add column if not exists withdrawn_from_revision bigint;
-alter table agent_profile_revisions add column if not exists revision_status text;
-alter table agent_profile_revisions add column if not exists avatar_ref text;
-alter table agent_profile_revisions add column if not exists avatar_asset_id text;
-alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
-alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists category text;
-alter table agent_profile_revisions add column if not exists visibility text;
-alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb;
-alter table agent_profile_revisions add column if not exists allowed_roles jsonb;
-alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb;
-alter table agent_profile_revisions add column if not exists welcome_message text not null default '';
+alter table agent_profile_revisions add column if not exists revision_status text not null default 'withdrawn';
 alter table agent_profile_revisions add column if not exists starter_prompts jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists capability_summary text not null default '';
-alter table agent_profile_revisions add column if not exists recommended_tasks jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists supported_input_types jsonb not null default '["text"]'::jsonb;
-alter table agent_profile_revisions add column if not exists supported_file_types jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists expected_outputs jsonb not null default '[]'::jsonb;
-alter table agent_profile_revisions add column if not exists permissions_and_data_access_notice text not null default '';
-alter table agent_profile_revisions add column if not exists legacy_compatibility_write boolean not null default false;
-alter table agent_profiles add column if not exists published_status text;
+alter table agent_profile_revisions add column if not exists skill_set jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists avatar_ref text not null default 'builtin:agent';
+alter table agent_profile_revisions add column if not exists avatar_seed text not null default '';
+alter table agent_profile_revisions add column if not exists market_tags jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists visibility text not null default 'restricted';
+alter table agent_profile_revisions add column if not exists allowed_department_ids jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists allowed_roles jsonb not null default '[]'::jsonb;
+alter table agent_profile_revisions add column if not exists allowed_user_ids jsonb not null default '[]'::jsonb;
 
 alter table agent_profiles drop constraint if exists fk_agent_profiles_published_revision;
 alter table agent_profiles drop constraint if exists fk_agent_profiles_current_publication;
@@ -924,651 +1000,36 @@ alter table agent_profiles drop constraint if exists chk_agent_profiles_lifecycl
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_revision_status_check;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_ref_check;
-alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_category_check;
 alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_visibility;
 alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_visibility_check;
 alter table agent_profile_revisions drop constraint if exists uq_agent_profile_revision_publication;
 
--- A NULL canonical status identifies a row created before #701. Preserve its
--- old tenant-visible behavior before repairing any explicit malformed value.
-update agent_profile_revisions
-set legacy_compatibility_write = true
-where revision_status is null and visibility is null;
-
-update agent_profile_revisions
-set revision_status = case
-  when status in ('draft', 'published', 'withdrawn') then status
-  else 'withdrawn'
-end
-where revision_status is null
-   or revision_status not in ('draft', 'published', 'withdrawn');
-
-update agent_profile_revisions
-set status = 'draft'
-where status is null or status not in ('draft', 'published');
-
-update agent_profile_revisions
-set visibility = 'tenant'
-where visibility is null;
-
-update agent_profile_revisions
-set visibility = 'restricted'
-where visibility is not null and visibility not in ('tenant', 'restricted');
-
-update agent_profile_revisions
-set avatar_ref = 'builtin:agent'
-where avatar_ref is null
-   or avatar_ref not in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research');
-update agent_profile_revisions
-set category = 'general'
-where category is null
-   or category not in ('general', 'support', 'writing', 'research', 'operations');
-update agent_profile_revisions
-set allowed_department_ids = '[]'::jsonb
-where allowed_department_ids is null or jsonb_typeof(allowed_department_ids) <> 'array';
-update agent_profile_revisions
-set allowed_roles = '[]'::jsonb
-where allowed_roles is null or jsonb_typeof(allowed_roles) <> 'array';
-update agent_profile_revisions
-set allowed_user_ids = '[]'::jsonb
-where allowed_user_ids is null or jsonb_typeof(allowed_user_ids) <> 'array';
-
--- Legacy single-Skill revisions become one-member Agent Skill Sets. The first
--- item remains shadowed in skill_id/skill_version for rollback compatibility.
-update agent_profile_revisions
-set skill_set = jsonb_build_array(
-  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
-)
-where legacy_compatibility_write
-  and (
-    jsonb_typeof(skill_set) <> 'array'
-    or jsonb_array_length(skill_set) = 0
-  );
-
-update agent_profile_revisions
-set skill_set = jsonb_build_array(
-  jsonb_build_object('skill_id', skill_id, 'expected_version', skill_version)
-)
-where legacy_compatibility_write
-  and (
-  exists (
-    select 1
-    from jsonb_array_elements(skill_set) item
-    where jsonb_typeof(item) <> 'object'
-       or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-       or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-  )
-   or exists (
-    select 1
-    from jsonb_array_elements(skill_set) item
-    group by item->>'skill_id'
-    having count(*) > 1
-  )
-   or skill_set->0->>'skill_id' is distinct from skill_id
-   or skill_set->0->>'expected_version' is distinct from skill_version
-  );
-
--- No metadata defaults: omission is how the compatibility trigger recognizes
--- an old writer and inherits the existing ACL without broadening it.
+alter table agent_profile_revisions alter column revision_status drop default;
+alter table agent_profile_revisions alter column skill_set drop default;
 alter table agent_profile_revisions alter column avatar_ref drop default;
-alter table agent_profile_revisions alter column category drop default;
+alter table agent_profile_revisions alter column avatar_seed drop default;
 alter table agent_profile_revisions alter column visibility drop default;
 alter table agent_profile_revisions alter column allowed_department_ids drop default;
 alter table agent_profile_revisions alter column allowed_roles drop default;
 alter table agent_profile_revisions alter column allowed_user_ids drop default;
-alter table agent_profile_revisions alter column revision_status set not null;
-alter table agent_profile_revisions alter column avatar_ref set not null;
-alter table agent_profile_revisions alter column category set not null;
-alter table agent_profile_revisions alter column visibility set not null;
-alter table agent_profile_revisions alter column allowed_department_ids set not null;
-alter table agent_profile_revisions alter column allowed_roles set not null;
-alter table agent_profile_revisions alter column allowed_user_ids set not null;
 
-alter table agent_profile_revisions add constraint agent_profile_revisions_status_check
-  check (status in ('draft', 'published'));
 alter table agent_profile_revisions add constraint agent_profile_revisions_revision_status_check
   check (revision_status in ('draft', 'published', 'withdrawn'));
 alter table agent_profile_revisions add constraint agent_profile_revisions_avatar_ref_check
-  check (avatar_ref in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research'));
-alter table agent_profile_revisions add constraint agent_profile_revisions_category_check
-  check (category in ('general', 'support', 'writing', 'research', 'operations'));
+  check (avatar_ref in (
+    'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+    'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+    'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+  ));
 alter table agent_profile_revisions add constraint chk_agent_profile_revisions_visibility
   check (visibility in ('tenant', 'restricted'));
 alter table agent_profile_revisions add constraint uq_agent_profile_revision_publication
   unique (tenant_id, agent_id, revision, content_hash, revision_status);
 
--- Repair corrupt aggregate state before deterministic reconciliation. Invalid
--- pointers withdraw fail closed; a later compatibility write cannot revive one.
-update agent_profiles profiles
-set published_status = 'published'
-where profiles.lifecycle_status = 'published'
-  and profiles.published_status is distinct from 'published'
-  and exists (
-    select 1
-    from agent_profile_revisions revisions
-    where revisions.tenant_id = profiles.tenant_id
-      and revisions.agent_id = profiles.agent_id
-      and revisions.revision = profiles.published_revision
-      and revisions.content_hash = profiles.published_hash
-      and revisions.revision_status = 'published'
-  );
-
-update agent_profiles profiles
-set lifecycle_status = 'withdrawn',
-    published_revision = null,
-    published_hash = null,
-    published_status = null,
-    updated_at = now()
-where profiles.lifecycle_status is null
-   or profiles.lifecycle_status not in ('draft', 'published', 'withdrawn')
-   or (
-     profiles.lifecycle_status = 'published'
-     and not exists (
-       select 1
-       from agent_profile_revisions revisions
-       where revisions.tenant_id = profiles.tenant_id
-         and revisions.agent_id = profiles.agent_id
-         and revisions.revision = profiles.published_revision
-         and revisions.content_hash = profiles.published_hash
-         and revisions.revision_status = 'published'
-     )
-   );
-
-update agent_profiles
-set published_revision = null,
-    published_hash = null,
-    published_status = null,
-    updated_at = now()
-where lifecycle_status <> 'published'
-  and (published_revision is not null or published_hash is not null or published_status is not null);
-
--- Reconcile missing aggregates and later old-backend appends on every deploy.
--- Withdrawn aggregates stay withdrawn. Existing current pointers move only to
--- a later compatibility publication that inherited tenant visibility.
-with revision_facts as (
-  select
-    tenant_id,
-    agent_id,
-    max(revision) as latest_revision,
-    max(revision) filter (where revision_status = 'published') as latest_published_revision,
-    max(revision) filter (where revision_status = 'withdrawn') as latest_withdrawn_revision
-  from agent_profile_revisions
-  group by tenant_id, agent_id
-), reconciliation as (
-  select
-    facts.tenant_id,
-    facts.agent_id,
-    facts.latest_revision,
-    facts.latest_published_revision,
-    facts.latest_withdrawn_revision,
-    candidate.revision as published_revision,
-    candidate.content_hash as published_hash
-  from revision_facts facts
-  left join agent_profiles existing
-    on existing.tenant_id = facts.tenant_id and existing.agent_id = facts.agent_id
-  left join lateral (
-    select revision, content_hash
-    from agent_profile_revisions candidate_row
-    where candidate_row.tenant_id = facts.tenant_id
-      and candidate_row.agent_id = facts.agent_id
-      and candidate_row.revision_status = 'published'
-      and not exists (
-        select 1
-        from agent_profile_revisions withdrawal
-        where withdrawal.tenant_id = candidate_row.tenant_id
-          and withdrawal.agent_id = candidate_row.agent_id
-          and withdrawal.revision_status = 'withdrawn'
-          and withdrawal.revision > candidate_row.revision
-      )
-      and (
-        existing.agent_id is null
-        or (
-          existing.lifecycle_status <> 'withdrawn'
-          and candidate_row.legacy_compatibility_write
-          and candidate_row.revision > existing.latest_revision
-          and candidate_row.visibility = 'tenant'
-        )
-      )
-    order by candidate_row.revision desc
-    limit 1
-  ) candidate on true
-)
-insert into agent_profiles(
-  tenant_id, agent_id, lifecycle_status, latest_revision, published_revision,
-  published_hash, published_status
-)
-select
-  tenant_id,
-  agent_id,
-  case
-    when latest_withdrawn_revision is not null
-      and (
-        latest_published_revision is null
-        or latest_withdrawn_revision > latest_published_revision
-      ) then 'withdrawn'
-    when published_revision is not null then 'published'
-    else 'draft'
-  end,
-  latest_revision,
-  case
-    when latest_withdrawn_revision is not null
-      and (
-        latest_published_revision is null
-        or latest_withdrawn_revision > latest_published_revision
-      ) then null
-    else published_revision
-  end,
-  case
-    when latest_withdrawn_revision is not null
-      and (
-        latest_published_revision is null
-        or latest_withdrawn_revision > latest_published_revision
-      ) then null
-    else published_hash
-  end,
-  case
-    when published_revision is not null
-      and not (
-        latest_withdrawn_revision is not null
-        and (
-          latest_published_revision is null
-          or latest_withdrawn_revision > latest_published_revision
-        )
-      ) then 'published'
-    else null
-  end
-from reconciliation
-on conflict (tenant_id, agent_id) do update
-set latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_revision),
-    lifecycle_status = case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
-      when excluded.published_revision is not null then 'published'
-      else agent_profiles.lifecycle_status
-    end,
-    published_revision = case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then excluded.published_revision
-      else agent_profiles.published_revision
-    end,
-    published_hash = case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then excluded.published_hash
-      else agent_profiles.published_hash
-    end,
-    published_status = case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then 'published'
-      else agent_profiles.published_status
-    end,
-    updated_at = now()
-where row(
-    agent_profiles.latest_revision,
-    agent_profiles.lifecycle_status,
-    agent_profiles.published_revision,
-    agent_profiles.published_hash,
-    agent_profiles.published_status
-  ) is distinct from row(
-    greatest(agent_profiles.latest_revision, excluded.latest_revision),
-    case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
-      when excluded.published_revision is not null then 'published'
-      else agent_profiles.lifecycle_status
-    end,
-    case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then excluded.published_revision
-      else agent_profiles.published_revision
-    end,
-    case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then excluded.published_hash
-      else agent_profiles.published_hash
-    end,
-    case
-      when agent_profiles.lifecycle_status = 'withdrawn'
-        or excluded.lifecycle_status = 'withdrawn' then null
-      when excluded.published_revision is not null then 'published'
-      else agent_profiles.published_status
-    end
-  );
-
--- Synchronize the old-reader mirror after every reconciliation. Exactly the
--- current tenant-visible publication remains status='published'.
-with desired as (
-  select
-    revisions.tenant_id,
-    revisions.agent_id,
-    revisions.revision,
-    case
-      when revisions.revision_status = 'published'
-        and revisions.visibility = 'tenant'
-        and exists (
-          select 1
-          from agent_profiles profiles
-          where profiles.tenant_id = revisions.tenant_id
-            and profiles.agent_id = revisions.agent_id
-            and profiles.lifecycle_status = 'published'
-            and profiles.published_revision = revisions.revision
-            and profiles.published_hash = revisions.content_hash
-            and profiles.published_status = 'published'
-        ) then 'published'
-      else 'draft'
-    end as desired_status
-  from agent_profile_revisions revisions
-)
-update agent_profile_revisions revisions
-set status = desired.desired_status
-from desired
-where revisions.tenant_id = desired.tenant_id
-  and revisions.agent_id = desired.agent_id
-  and revisions.revision = desired.revision
-  and revisions.status is distinct from desired.desired_status;
-
-alter table agent_profiles add constraint chk_agent_profiles_lifecycle_status
-  check (lifecycle_status in ('draft', 'published', 'withdrawn'));
-alter table agent_profiles add constraint chk_agent_profiles_publication
-  check (
-    (
-      lifecycle_status = 'published'
-      and published_revision is not null
-      and published_hash is not null
-      and published_status = 'published'
-    )
-    or (
-      lifecycle_status <> 'published'
-      and published_revision is null
-      and published_hash is null
-      and published_status is null
-    )
-  );
-
-alter table agent_profiles add constraint fk_agent_profiles_current_publication
-  foreign key (tenant_id, agent_id, published_revision, published_hash, published_status)
-  references agent_profile_revisions(tenant_id, agent_id, revision, content_hash, revision_status);
-
 drop index if exists idx_agent_profile_revisions_published;
 create index idx_agent_profile_revisions_published
   on agent_profile_revisions(tenant_id, agent_id, revision desc)
   where revision_status = 'published';
-
--- Supported rollback keeps this migrated schema in place while a pre-#701
--- application binary runs. Removing these columns/triggers requires database
--- restore authority; it is not an in-place application rollback. The BEFORE
--- trigger recognizes the old INSERT signature, serializes with current
--- lifecycle writers, inherits the existing ACL, and mints max(revision)+1
--- instead of overwriting a colliding history row.
-create or replace function agent_profile_legacy_insert_compatibility()
-returns trigger
-language plpgsql
-as $$
-declare
-  source_row agent_profile_revisions%rowtype;
-  aggregate_lifecycle text;
-  next_revision bigint;
-  legacy_publication_allowed boolean := false;
-begin
-  if new.revision_status is null
-     and (jsonb_typeof(new.skill_set) <> 'array' or jsonb_array_length(new.skill_set) = 0) then
-    new.skill_set := jsonb_build_array(
-      jsonb_build_object('skill_id', new.skill_id, 'expected_version', new.skill_version)
-    );
-  end if;
-  if exists (
-      select 1
-      from jsonb_array_elements(new.skill_set) item
-      where jsonb_typeof(item) <> 'object'
-         or coalesce(item->>'skill_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-         or coalesce(item->>'expected_version', '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-    )
-     or exists (
-      select 1
-      from jsonb_array_elements(new.skill_set) item
-      group by item->>'skill_id'
-      having count(*) > 1
-    )
-     or new.skill_set->0->>'skill_id' is distinct from new.skill_id
-     or new.skill_set->0->>'expected_version' is distinct from new.skill_version then
-    raise exception 'agent_profile_skill_set_invalid' using errcode = '23514';
-  end if;
-  if new.revision_status is not null then
-    return new;
-  end if;
-
-  perform pg_advisory_xact_lock(
-    hashtextextended('agent-profile:' || new.tenant_id || ':' || new.agent_id, 0)
-  );
-  new.revision_status := case
-    when new.status in ('draft', 'published', 'withdrawn') then new.status
-    else 'withdrawn'
-  end;
-  new.legacy_compatibility_write := true;
-
-  if exists (
-    select 1
-    from agent_profile_revisions existing
-    where existing.tenant_id = new.tenant_id
-      and existing.agent_id = new.agent_id
-      and existing.revision = new.revision
-  ) then
-    select coalesce(max(existing.revision), 0) + 1
-    into next_revision
-    from agent_profile_revisions existing
-    where existing.tenant_id = new.tenant_id and existing.agent_id = new.agent_id;
-    new.revision := next_revision;
-  end if;
-
-  select existing.*
-  into source_row
-  from agent_profile_revisions existing
-  where existing.tenant_id = new.tenant_id and existing.agent_id = new.agent_id
-  order by existing.revision desc
-  limit 1;
-
-  new.avatar_ref := coalesce(new.avatar_ref, source_row.avatar_ref, 'builtin:agent');
-  if new.avatar_ref not in ('builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research') then
-    new.avatar_ref := 'builtin:agent';
-  end if;
-  new.category := coalesce(new.category, source_row.category, 'general');
-  if new.category not in ('general', 'support', 'writing', 'research', 'operations') then
-    new.category := 'general';
-  end if;
-  new.visibility := coalesce(new.visibility, source_row.visibility, 'tenant');
-  if new.visibility not in ('tenant', 'restricted') then
-    new.visibility := 'restricted';
-  end if;
-  new.allowed_department_ids := coalesce(
-    new.allowed_department_ids,
-    source_row.allowed_department_ids,
-    '[]'::jsonb
-  );
-  if jsonb_typeof(new.allowed_department_ids) <> 'array' then
-    new.allowed_department_ids := '[]'::jsonb;
-  end if;
-  new.allowed_roles := coalesce(new.allowed_roles, source_row.allowed_roles, '[]'::jsonb);
-  if jsonb_typeof(new.allowed_roles) <> 'array' then
-    new.allowed_roles := '[]'::jsonb;
-  end if;
-  new.allowed_user_ids := coalesce(new.allowed_user_ids, source_row.allowed_user_ids, '[]'::jsonb);
-  if jsonb_typeof(new.allowed_user_ids) <> 'array' then
-    new.allowed_user_ids := '[]'::jsonb;
-  end if;
-
-  select profiles.lifecycle_status
-  into aggregate_lifecycle
-  from agent_profiles profiles
-  where profiles.tenant_id = new.tenant_id and profiles.agent_id = new.agent_id;
-  if aggregate_lifecycle is null then
-    select case
-      when max(history.revision) filter (where history.revision_status = 'withdrawn') is not null
-        and (
-          max(history.revision) filter (where history.revision_status = 'published') is null
-          or max(history.revision) filter (where history.revision_status = 'withdrawn')
-            > max(history.revision) filter (where history.revision_status = 'published')
-        ) then 'withdrawn'
-      when max(history.revision) filter (where history.revision_status = 'published') is not null
-        then 'published'
-      else 'draft'
-    end
-    into aggregate_lifecycle
-    from agent_profile_revisions history
-    where history.tenant_id = new.tenant_id and history.agent_id = new.agent_id;
-  end if;
-  legacy_publication_allowed := (
-    new.revision_status = 'published'
-    and new.visibility = 'tenant'
-    and aggregate_lifecycle <> 'withdrawn'
-  );
-  if new.revision_status = 'published' and not legacy_publication_allowed then
-    new.revision_status := 'draft';
-  end if;
-  new.status := case
-    when legacy_publication_allowed then 'published'
-    else 'draft'
-  end;
-
-  if new.revision_status = 'published'
-     and new.published_from_revision is not null
-     and exists (
-       select 1
-       from agent_profile_revisions existing
-       where existing.tenant_id = new.tenant_id
-         and existing.agent_id = new.agent_id
-         and existing.revision_status = 'published'
-         and existing.published_from_revision = new.published_from_revision
-     ) then
-    new.published_from_revision := null;
-  end if;
-  return new;
-end $$;
-
-create or replace function agent_profile_legacy_insert_reconcile()
-returns trigger
-language plpgsql
-as $$
-declare
-  fallback_lifecycle text;
-  fallback_published_revision bigint;
-  fallback_published_hash text;
-begin
-  if not new.legacy_compatibility_write then
-    return null;
-  end if;
-
-  if new.revision_status = 'published' and new.status = 'published' then
-    insert into agent_profiles(
-      tenant_id, agent_id, lifecycle_status, latest_revision,
-      published_revision, published_hash, published_status
-    )
-    values (
-      new.tenant_id, new.agent_id, 'published', new.revision,
-      new.revision, new.content_hash, 'published'
-    )
-    on conflict (tenant_id, agent_id) do update
-    set lifecycle_status = 'published',
-        latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_revision),
-        published_revision = excluded.published_revision,
-        published_hash = excluded.published_hash,
-        published_status = 'published',
-        updated_at = now()
-    where agent_profiles.lifecycle_status <> 'withdrawn';
-
-    if exists (
-      select 1
-      from agent_profiles profiles
-      where profiles.tenant_id = new.tenant_id
-        and profiles.agent_id = new.agent_id
-        and profiles.lifecycle_status = 'published'
-        and profiles.published_revision = new.revision
-        and profiles.published_hash = new.content_hash
-    ) then
-      update agent_profile_revisions revisions
-      set status = case when revisions.revision = new.revision then 'published' else 'draft' end
-      where revisions.tenant_id = new.tenant_id
-        and revisions.agent_id = new.agent_id
-        and revisions.revision_status = 'published';
-    else
-      update agent_profile_revisions
-      set status = 'draft'
-      where tenant_id = new.tenant_id and agent_id = new.agent_id and revision = new.revision;
-    end if;
-  else
-    select history.revision, history.content_hash
-    into fallback_published_revision, fallback_published_hash
-    from agent_profile_revisions history
-    where history.tenant_id = new.tenant_id
-      and history.agent_id = new.agent_id
-      and history.revision_status = 'published'
-      and not exists (
-        select 1
-        from agent_profile_revisions withdrawal
-        where withdrawal.tenant_id = history.tenant_id
-          and withdrawal.agent_id = history.agent_id
-          and withdrawal.revision_status = 'withdrawn'
-          and withdrawal.revision > history.revision
-      )
-    order by history.revision desc
-    limit 1;
-    if fallback_published_revision is not null then
-      fallback_lifecycle := 'published';
-    elsif exists (
-      select 1
-      from agent_profile_revisions history
-      where history.tenant_id = new.tenant_id
-        and history.agent_id = new.agent_id
-        and history.revision_status = 'withdrawn'
-    ) then
-      fallback_lifecycle := 'withdrawn';
-    else
-      fallback_lifecycle := 'draft';
-    end if;
-    insert into agent_profiles(
-      tenant_id, agent_id, lifecycle_status, latest_revision,
-      published_revision, published_hash, published_status
-    )
-    values (
-      new.tenant_id, new.agent_id, fallback_lifecycle, new.revision,
-      fallback_published_revision, fallback_published_hash,
-      case when fallback_published_revision is not null then 'published' else null end
-    )
-    on conflict (tenant_id, agent_id) do update
-    set lifecycle_status = case
-          when excluded.lifecycle_status = 'withdrawn' then 'withdrawn'
-          else agent_profiles.lifecycle_status
-        end,
-        latest_revision = greatest(agent_profiles.latest_revision, excluded.latest_revision),
-        published_revision = case
-          when excluded.lifecycle_status = 'withdrawn' then null
-          else agent_profiles.published_revision
-        end,
-        published_hash = case
-          when excluded.lifecycle_status = 'withdrawn' then null
-          else agent_profiles.published_hash
-        end,
-        published_status = case
-          when excluded.lifecycle_status = 'withdrawn' then null
-          else agent_profiles.published_status
-        end,
-        updated_at = now();
-  end if;
-  return null;
-end $$;
-
-drop trigger if exists trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions;
-create trigger trg_agent_profile_legacy_insert_compatibility
-before insert on agent_profile_revisions
-for each row execute function agent_profile_legacy_insert_compatibility();
-
-drop trigger if exists trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
-create trigger trg_agent_profile_legacy_insert_reconcile
-after insert on agent_profile_revisions
-for each row execute function agent_profile_legacy_insert_reconcile();
 
 -- Add composite tenant+agent authority and profile-pin constraints for existing
 -- installations after all referenced tables and columns are present.
@@ -2046,6 +1507,7 @@ create table if not exists run_context_snapshots (
   included_memory_record_ids jsonb not null default '[]'::jsonb,
   redaction_summary_json jsonb not null default '{}'::jsonb,
   payload_json jsonb not null default '{}'::jsonb,
+  conversation_authority_json jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -2053,6 +1515,181 @@ create index if not exists idx_run_context_snapshots_run
   on run_context_snapshots(tenant_id, run_id, created_at desc);
 create unique index if not exists idx_run_context_snapshots_scope_binding
   on run_context_snapshots(tenant_id, workspace_id, user_id, session_id, run_id, id);
+
+alter table run_context_snapshots add column if not exists conversation_authority_json jsonb;
+
+-- The interim #1397 binding layout was never shipped in main. An existing
+-- experimental database requires an explicit data disposition, not silent reuse.
+do $$
+begin
+  if to_regclass('provider_session_bindings') is not null then
+    raise exception 'provider_session_legacy_binding_requires_disposition';
+  end if;
+end $$;
+
+create table if not exists conversation_context_checkpoints (
+  id text primary key,
+  tenant_id text not null, workspace_id text not null, user_id text not null,
+  session_id text not null, agent_id text not null,
+  predecessor_checkpoint_id text,
+  source_snapshot_id text not null,
+  range_start_created_at timestamptz, range_start_id text,
+  range_end_created_at timestamptz, range_end_id text,
+  through_session_generation bigint not null check (through_session_generation > 0),
+  covered_message_count bigint not null default 0 check (covered_message_count >= 0),
+  covered_turn_count bigint not null default 0 check (covered_turn_count >= 0),
+  source_sha256 text not null check (source_sha256 ~ '^[0-9a-f]{64}$'),
+  summary_text text,
+  summary_sha256 text,
+  summary_schema_version text not null,
+  summary_prompt_version text not null,
+  model_id text not null, model_value text not null,
+  model_gateway_revision bigint not null check (model_gateway_revision > 0),
+  max_input_tokens bigint not null check (max_input_tokens > 0),
+  max_output_tokens bigint not null check (max_output_tokens > 0),
+  build_key_sha256 text not null check (build_key_sha256 ~ '^[0-9a-f]{64}$'),
+  state text not null check (state in ('building', 'ready', 'failed')),
+  owner_run_id text not null,
+  builder_lease_id text,
+  lease_not_after timestamptz,
+  input_tokens bigint not null default 0 check (input_tokens >= 0),
+  output_tokens bigint not null default 0 check (output_tokens >= 0),
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  constraint fk_context_checkpoint_session foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id
+  ) references sessions(tenant_id, workspace_id, user_id, id, agent_id) on delete cascade,
+  constraint fk_context_checkpoint_owner_scope foreign key (
+    tenant_id, workspace_id, user_id, session_id, owner_run_id
+  ) references runs(tenant_id, workspace_id, user_id, session_id, id) on delete cascade,
+  constraint fk_context_checkpoint_source_scope foreign key (
+    tenant_id, workspace_id, user_id, session_id, owner_run_id, source_snapshot_id
+  ) references run_context_snapshots(tenant_id, workspace_id, user_id, session_id, run_id, id)
+    on delete cascade,
+  constraint fk_context_checkpoint_predecessor foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id, predecessor_checkpoint_id
+  ) references conversation_context_checkpoints(
+    tenant_id, workspace_id, user_id, session_id, agent_id, id
+  ) on delete cascade,
+  constraint chk_context_checkpoint_ready check (
+    state <> 'ready' or (covered_message_count > 0 and covered_turn_count > 0
+      and summary_text is not null and summary_text <> ''
+      and summary_sha256 ~ '^[0-9a-f]{64}$'
+      and range_start_created_at is not null and range_start_id is not null
+      and range_end_created_at is not null and range_end_id is not null)
+  ),
+  unique (tenant_id, workspace_id, user_id, session_id, agent_id, id),
+  unique (tenant_id, workspace_id, user_id, session_id, agent_id, build_key_sha256)
+);
+
+create table if not exists provider_session_heads (
+  tenant_id text not null, workspace_id text not null,
+  user_id text not null, session_id text not null,
+  agent_id text not null, engine text not null,
+  current_epoch_id text,
+  next_epoch_number bigint not null default 1 check (next_epoch_number >= 1),
+  active_run_id text, active_attempt_id text, updated_at timestamptz not null default now(),
+  constraint chk_provider_head_engine check (engine = 'claude'),
+  constraint chk_provider_head_writer check (
+    (active_run_id is null and active_attempt_id is null)
+    or active_run_id is not null
+  ),
+  constraint pk_provider_session_heads primary key (tenant_id, session_id, engine),
+  constraint uq_provider_head_scope unique (tenant_id, workspace_id, user_id, session_id, agent_id, engine),
+  constraint fk_provider_head_session foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id
+  ) references sessions(tenant_id, workspace_id, user_id, id, agent_id) on delete cascade
+);
+
+create table if not exists provider_session_epochs (
+  id text primary key, tenant_id text not null, workspace_id text not null,
+  user_id text not null, session_id text not null, agent_id text not null,
+  engine text not null,
+  epoch_number bigint not null check (epoch_number >= 1),
+  provider_session_id uuid not null,
+  state text not null check (state in ('bootstrapping', 'ready', 'active', 'dirty', 'closed')),
+  next_sequence bigint not null default 1 check (next_sequence >= 1),
+  entry_count bigint not null default 0 check (entry_count >= 0),
+  transcript_bytes bigint not null default 0 check (transcript_bytes >= 0),
+  coverage_source_sha256 text check (coverage_source_sha256 ~ '^[0-9a-f]{64}$'),
+  coverage_through_generation bigint,
+  coverage_message_count bigint not null default 0 check (coverage_message_count >= 0),
+  writer_run_id text, writer_attempt_id text, writer_owner_generation bigint,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), closed_at timestamptz,
+  constraint chk_provider_epoch_writer check (
+    (writer_run_id is null and writer_attempt_id is null and writer_owner_generation is null)
+    or (writer_run_id is not null and writer_attempt_id is not null and writer_owner_generation > 0)
+  ),
+  constraint chk_provider_epoch_coverage check (
+    (coverage_source_sha256 is null and coverage_through_generation is null and coverage_message_count = 0)
+    or (coverage_source_sha256 is not null and coverage_through_generation > 0)
+  ),
+  constraint fk_provider_epoch_head foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine
+  ) references provider_session_heads(tenant_id, workspace_id, user_id, session_id, agent_id, engine)
+    on delete cascade,
+  constraint uq_provider_epoch_scope unique (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, id
+  ),
+  constraint uq_provider_epoch_number unique (tenant_id, session_id, engine, epoch_number),
+  constraint uq_provider_epoch_provider_id unique (provider_session_id)
+);
+
+alter table provider_session_heads drop constraint if exists fk_provider_head_current_epoch;
+alter table provider_session_heads add constraint fk_provider_head_current_epoch foreign key (
+  tenant_id, workspace_id, user_id, session_id, agent_id, engine, current_epoch_id
+) references provider_session_epochs(tenant_id, workspace_id, user_id, session_id, agent_id, engine, id)
+  deferrable initially deferred;
+
+create table if not exists provider_session_entries (
+  id text primary key,
+  tenant_id text not null, workspace_id text not null, user_id text not null,
+  session_id text not null, agent_id text not null, engine text not null check (engine = 'claude'),
+  epoch_id text not null, subpath text not null default '',
+  sequence bigint not null check (sequence >= 1),
+  sdk_entry_uuid text, entry_json jsonb not null,
+  created_at timestamptz not null default now(),
+  constraint fk_provider_entry_epoch foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, epoch_id
+  ) references provider_session_epochs(
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, id
+  ) on delete cascade,
+  constraint uq_provider_entry_global_sequence unique (epoch_id, sequence)
+);
+create unique index if not exists uq_provider_entry_sdk_uuid
+  on provider_session_entries(epoch_id, subpath, sdk_entry_uuid)
+  where sdk_entry_uuid is not null and sdk_entry_uuid <> '';
+create index if not exists idx_provider_entry_view
+  on provider_session_entries(epoch_id, subpath, sequence);
+
+create table if not exists provider_session_append_receipts (
+  epoch_id text not null references provider_session_epochs(id) on delete cascade,
+  expected_sequence bigint not null check (expected_sequence >= 1),
+  batch_sha256 text not null check (batch_sha256 ~ '^[0-9a-f]{64}$'),
+  entry_count integer not null check (entry_count > 0),
+  last_sequence bigint not null check (last_sequence = expected_sequence + entry_count - 1),
+  run_id text not null, attempt_id text not null, owner_generation bigint not null check (owner_generation >= 1),
+  created_at timestamptz not null default now(), primary key (epoch_id, expected_sequence)
+);
+
+create table if not exists provider_turn_receipts (
+  id text primary key, tenant_id text not null, workspace_id text not null, user_id text not null,
+  session_id text not null, agent_id text not null, engine text not null check (engine = 'claude'),
+  epoch_id text not null, run_id text not null, attempt_id text not null,
+  execution_spec_sha256 text not null check (execution_spec_sha256 ~ '^[0-9a-f]{64}$'),
+  bootstrap_source_sha256 text check (bootstrap_source_sha256 ~ '^[0-9a-f]{64}$'),
+  start_sequence bigint not null check (start_sequence >= 1),
+  final_sequence bigint check (final_sequence is null or final_sequence >= start_sequence), user_message_id text,
+  assistant_message_id text, prior_coverage_sha256 text check (prior_coverage_sha256 ~ '^[0-9a-f]{64}$'),
+  committed_coverage_sha256 text check (committed_coverage_sha256 ~ '^[0-9a-f]{64}$'),
+  state text not null check (state in ('writing', 'commit_pending', 'committed', 'failed')),
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  constraint fk_provider_turn_epoch foreign key (
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, epoch_id
+  ) references provider_session_epochs(
+    tenant_id, workspace_id, user_id, session_id, agent_id, engine, id
+  ) on delete cascade,
+  unique (tenant_id, run_id, attempt_id)
+);
 
 -- A populated pre-#511 database can adopt a physical binding only when both
 -- legacy JSON mirrors already agree and name the exact scoped executor row.
@@ -2186,19 +1823,7 @@ create table if not exists run_events (
   total_token_count integer not null default 0,
   estimated_cost_minor integer not null default 0,
   payload_json jsonb not null default '{}'::jsonb,
-  stream_publication_state text,
-  stream_publication_attempts integer,
-  stream_publication_next_attempt_at timestamptz,
-  stream_publication_redis_id text,
-  stream_publication_last_error text,
-  stream_publication_claim_token text,
-  stream_publication_claim_expires_at timestamptz,
-  created_at timestamptz not null default now(),
-  constraint chk_run_events_stream_publication_state
-    check (stream_publication_state is null or (stream_publication_state in ('pending', 'published', 'suppressed'))),
-  constraint chk_run_events_stream_publication_claim
-    check ((stream_publication_claim_token is null and stream_publication_claim_expires_at is null)
-      or (stream_publication_claim_token is not null and stream_publication_claim_expires_at is not null))
+  created_at timestamptz not null default now()
 );
 
 alter table run_events add column if not exists trace_id text not null default '';
@@ -2212,45 +1837,6 @@ alter table run_events add column if not exists input_token_count integer not nu
 alter table run_events add column if not exists output_token_count integer not null default 0;
 alter table run_events add column if not exists total_token_count integer not null default 0;
 alter table run_events add column if not exists estimated_cost_minor integer not null default 0;
-alter table run_events add column if not exists stream_publication_state text;
-alter table run_events add column if not exists stream_publication_attempts integer;
-alter table run_events add column if not exists stream_publication_next_attempt_at timestamptz;
-alter table run_events add column if not exists stream_publication_redis_id text;
-alter table run_events add column if not exists stream_publication_last_error text;
-alter table run_events add column if not exists stream_publication_claim_token text;
-alter table run_events add column if not exists stream_publication_claim_expires_at timestamptz;
-
-do $$
-begin
-  if not exists (
-    select 1 from pg_constraint
-    where conname = 'chk_run_events_stream_publication_state'
-      and conrelid = 'run_events'::regclass
-  ) then
-    alter table run_events
-      add constraint chk_run_events_stream_publication_state
-      check (stream_publication_state is null or (stream_publication_state in ('pending', 'published', 'suppressed'))) not valid;
-  end if;
-end $$;
-
-alter table run_events validate constraint chk_run_events_stream_publication_state;
-
-do $$
-begin
-  if not exists (
-    select 1 from pg_constraint
-    where conname = 'chk_run_events_stream_publication_claim'
-      and conrelid = 'run_events'::regclass
-  ) then
-    alter table run_events
-      add constraint chk_run_events_stream_publication_claim
-      check ((stream_publication_claim_token is null and stream_publication_claim_expires_at is null)
-        or (stream_publication_claim_token is not null and stream_publication_claim_expires_at is not null)) not valid;
-  end if;
-end $$;
-
-alter table run_events validate constraint chk_run_events_stream_publication_claim;
-
 create index if not exists idx_run_events_run_sequence on run_events(tenant_id, run_id, sequence);
 
 do $$
@@ -2323,9 +1909,6 @@ create table if not exists sse_stream_authorities (
 
 create unique index if not exists uq_sse_stream_authority_attempt_incarnation
   on sse_stream_authorities(tenant_id, run_id, attempt_id, stream_incarnation);
-create index if not exists idx_sse_stream_authority_pending
-  on sse_stream_authorities(state, updated_at, tenant_id, run_id)
-  where state = 'admission_pending';
 
 update sse_stream_authorities
 set admission_confirmed_at = coalesce(
@@ -2368,199 +1951,6 @@ end $$;
 alter table sse_stream_authorities validate constraint chk_sse_stream_authority_open_format;
 alter table sse_stream_authorities validate constraint chk_sse_stream_authority_pending_confirmation;
 
-create table if not exists sse_stream_rebuilds (
-  id text primary key, tenant_id text not null, run_id text not null, attempt_id text not null,
-  source_incarnation bigint not null, source_authorization_epoch bigint not null,
-  origin_incarnation bigint not null, origin_authorization_epoch bigint not null,
-  successor_incarnation bigint not null, successor_authorization_epoch bigint not null,
-  source_authority_fingerprint text not null, source_cursor_sequence bigint not null,
-  source_through_sequence bigint not null,
-  successor_open_event_id text not null, successor_open_bytes text not null,
-  successor_open_digest text not null,
-  state text not null default 'building', claim_token_digest text not null,
-  claim_expires_at timestamptz not null, item_count integer not null,
-  built_through_sequence bigint not null default 0,
-  receipt_entry_count integer,
-  receipt_open_event_id text,
-  receipt_terminal_event_id text,
-  receipt_end_event_id text,
-  receipt_last_redis_id text,
-  receipt_last_envelope_bytes text,
-  receipt_last_envelope_digest text,
-  receipt_digest text,
-  failure_code text,
-  created_at timestamptz not null default clock_timestamp(),
-  updated_at timestamptz not null default clock_timestamp(),
-  constraint chk_sse_stream_rebuild_identity check (
-    id <> '' and attempt_id <> '' and successor_open_event_id <> ''
-    and successor_open_bytes <> ''
-    and source_authority_fingerprint ~ '^[0-9a-f]{64}$'
-    and successor_open_digest ~ '^[0-9a-f]{64}$'
-    and claim_token_digest ~ '^[0-9a-f]{64}$'
-  ),
-  constraint chk_sse_stream_rebuild_authority check (
-    source_incarnation > 0 and successor_incarnation > source_incarnation
-    and source_authorization_epoch > 0
-    and successor_authorization_epoch > source_authorization_epoch
-  ),
-  constraint chk_sse_stream_rebuild_origin check (
-    origin_incarnation > 0 and origin_incarnation <= source_incarnation
-    and origin_authorization_epoch > 0
-    and origin_authorization_epoch <= source_authorization_epoch
-  ),
-  constraint chk_sse_stream_rebuild_progress check (
-    source_cursor_sequence >= source_through_sequence
-    and source_through_sequence > 0 and item_count > 0
-    and built_through_sequence >= 0
-    and built_through_sequence <= source_through_sequence
-  ),
-  constraint chk_sse_stream_rebuild_state check (
-    state in ('building', 'ready', 'cutover', 'aborted', 'expired')
-  ),
-  constraint chk_sse_stream_rebuild_receipt check (
-    (
-      receipt_entry_count is null
-      and receipt_open_event_id is null
-      and receipt_terminal_event_id is null
-      and receipt_end_event_id is null
-      and receipt_last_redis_id is null
-      and receipt_last_envelope_bytes is null
-      and receipt_last_envelope_digest is null
-      and receipt_digest is null
-    )
-    or (
-      receipt_entry_count is not null
-      and receipt_entry_count = item_count + 2
-      and receipt_open_event_id is not null and receipt_open_event_id <> ''
-      and receipt_terminal_event_id is not null and receipt_terminal_event_id <> ''
-      and receipt_end_event_id is not null and receipt_end_event_id <> ''
-      and receipt_last_redis_id is not null
-      and receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'
-      and receipt_last_envelope_bytes is not null
-      and receipt_last_envelope_bytes <> ''
-      and receipt_last_envelope_digest is not null
-      and receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'
-      and receipt_digest is not null
-      and receipt_digest ~ '^[0-9a-f]{64}$'
-    )
-  ),
-  constraint fk_sse_stream_rebuild_authority
-    foreign key (tenant_id, run_id)
-    references sse_stream_authorities(tenant_id, run_id)
-);
-
-alter table sse_stream_rebuilds add column if not exists origin_incarnation bigint;
-alter table sse_stream_rebuilds add column if not exists origin_authorization_epoch bigint;
-update sse_stream_rebuilds
-set origin_incarnation = coalesce(origin_incarnation, source_incarnation),
-    origin_authorization_epoch = coalesce(origin_authorization_epoch, source_authorization_epoch)
-where origin_incarnation is null or origin_authorization_epoch is null;
-alter table sse_stream_rebuilds alter column origin_incarnation set not null;
-alter table sse_stream_rebuilds alter column origin_authorization_epoch set not null;
-alter table sse_stream_rebuilds add column if not exists receipt_entry_count integer;
-alter table sse_stream_rebuilds add column if not exists receipt_open_event_id text;
-alter table sse_stream_rebuilds add column if not exists receipt_terminal_event_id text;
-alter table sse_stream_rebuilds add column if not exists receipt_end_event_id text;
-alter table sse_stream_rebuilds add column if not exists receipt_last_redis_id text;
-alter table sse_stream_rebuilds add column if not exists receipt_last_envelope_bytes text;
-alter table sse_stream_rebuilds add column if not exists receipt_last_envelope_digest text;
-alter table sse_stream_rebuilds add column if not exists receipt_digest text;
-
-alter table sse_stream_rebuilds
-  drop constraint if exists chk_sse_stream_rebuild_receipt;
-alter table sse_stream_rebuilds
-  add constraint chk_sse_stream_rebuild_receipt
-  check (
-    (
-      receipt_entry_count is null
-      and receipt_open_event_id is null
-      and receipt_terminal_event_id is null
-      and receipt_end_event_id is null
-      and receipt_last_redis_id is null
-      and receipt_last_envelope_bytes is null
-      and receipt_last_envelope_digest is null
-      and receipt_digest is null
-    )
-    or (
-      receipt_entry_count is not null
-      and receipt_entry_count = item_count + 2
-      and receipt_open_event_id is not null and receipt_open_event_id <> ''
-      and receipt_terminal_event_id is not null and receipt_terminal_event_id <> ''
-      and receipt_end_event_id is not null and receipt_end_event_id <> ''
-      and receipt_last_redis_id is not null
-      and receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'
-      and receipt_last_envelope_bytes is not null
-      and receipt_last_envelope_bytes <> ''
-      and receipt_last_envelope_digest is not null
-      and receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'
-      and receipt_digest is not null
-      and receipt_digest ~ '^[0-9a-f]{64}$'
-    )
-  ) not valid;
-alter table sse_stream_rebuilds
-  validate constraint chk_sse_stream_rebuild_receipt;
-
-create unique index if not exists uq_sse_stream_rebuild_successor
-  on sse_stream_rebuilds(tenant_id, run_id, successor_incarnation);
-create unique index if not exists uq_sse_stream_rebuild_active
-  on sse_stream_rebuilds(tenant_id, run_id)
-  where state in ('building', 'ready');
-create index if not exists idx_sse_stream_rebuild_claim_expiry
-  on sse_stream_rebuilds(state, claim_expires_at, tenant_id, run_id)
-  where state in ('building', 'ready');
-
-create table if not exists sse_stream_rebuild_items (
-  rebuild_id text not null, sequence bigint not null, event_id text not null,
-  event_type text not null, canonical_envelope_bytes text not null,
-  envelope_digest text not null, redis_id text,
-  created_at timestamptz not null default clock_timestamp(),
-  primary key (rebuild_id, sequence),
-  constraint uq_sse_stream_rebuild_item_event unique (rebuild_id, event_id),
-  constraint chk_sse_stream_rebuild_item check (
-    sequence > 0 and event_id <> '' and event_type <> ''
-    and canonical_envelope_bytes <> ''
-    and envelope_digest ~ '^[0-9a-f]{64}$'
-  ),
-  constraint chk_sse_stream_rebuild_item_redis_id check (
-    redis_id is null or redis_id ~ '^[0-9]+-[0-9]+$'
-  ),
-  constraint fk_sse_stream_rebuild_item_operation
-    foreign key (rebuild_id) references sse_stream_rebuilds(id)
-);
-
-alter table sse_stream_rebuild_items add column if not exists redis_id text;
-
-do $$
-begin
-  if not exists (
-    select 1 from pg_constraint
-    where conname = 'chk_sse_stream_rebuild_origin'
-      and conrelid = 'sse_stream_rebuilds'::regclass
-  ) then
-    alter table sse_stream_rebuilds
-      add constraint chk_sse_stream_rebuild_origin
-      check (
-        origin_incarnation > 0 and origin_incarnation <= source_incarnation
-        and origin_authorization_epoch > 0
-        and origin_authorization_epoch <= source_authorization_epoch
-      ) not valid;
-  end if;
-  if not exists (
-    select 1 from pg_constraint
-    where conname = 'chk_sse_stream_rebuild_item_redis_id'
-      and conrelid = 'sse_stream_rebuild_items'::regclass
-  ) then
-    alter table sse_stream_rebuild_items
-      add constraint chk_sse_stream_rebuild_item_redis_id
-      check (redis_id is null or redis_id ~ '^[0-9]+-[0-9]+$') not valid;
-  end if;
-end $$;
-
-alter table sse_stream_rebuilds
-  validate constraint chk_sse_stream_rebuild_origin;
-alter table sse_stream_rebuild_items
-  validate constraint chk_sse_stream_rebuild_item_redis_id;
-
 create table if not exists sse_authority_leases (
   id text primary key, tenant_id text not null, run_id text not null,
   api_instance_id text not null, connection_id text not null, authorization_epoch bigint not null check (authorization_epoch > 0),
@@ -2574,28 +1964,74 @@ create index if not exists idx_sse_authority_leases_expiry
   on sse_authority_leases(tenant_id, run_id, authorization_epoch, lease_not_after)
   where closed_at is null;
 
-create table if not exists sse_terminal_publication_intents (
-  id text primary key, tenant_id text not null, run_id text not null, attempt_id text not null,
-  stream_incarnation bigint not null check (stream_incarnation > 0), schema_version text not null, projection_version text not null,
-  terminal_event_id text not null, end_event_id text not null,
-  terminal_payload_bytes text not null, terminal_payload_digest text not null, terminal_payload_size integer not null check (terminal_payload_size >= 0),
-  end_payload_bytes text not null, end_payload_digest text not null, end_payload_size integer not null check (end_payload_size >= 0),
-  emitted_at text not null,
-  state text not null default 'pending' check (state in ('pending', 'published', 'superseded')),
-  created_at timestamptz not null default clock_timestamp(), published_at timestamptz, updated_at timestamptz not null default clock_timestamp(),
-  unique (tenant_id, run_id, attempt_id),
-  foreign key (tenant_id, run_id) references runs(tenant_id, id)
-);
+-- Old producers must be stopped and the explicit retirement command committed.
+do $$
+declare
+  migration_schema text := current_schema();
+  legacy_column_count integer;
+begin
+  select count(*) from pg_attribute
+  where attrelid = 'run_events'::regclass and not attisdropped
+    and attname = any(array[
+      'stream_publication_state', 'stream_publication_attempts',
+      'stream_publication_redis_id', 'stream_publication_last_error',
+      'stream_publication_claim_token', 'stream_publication_claim_expires_at',
+      'stream_publication_next_attempt_at'
+    ])
+  into legacy_column_count;
+  if legacy_column_count not in (0, 7) then
+    raise exception 'legacy_sse_retirement_required';
+  end if;
+  if legacy_column_count > 0
+     or to_regclass(format('%I.sse_terminal_publication_intents', migration_schema)) is not null
+     or to_regclass(format('%I.sse_stream_rebuilds', migration_schema)) is not null
+     or to_regclass(format('%I.sse_stream_rebuild_items', migration_schema)) is not null then
+    if exists (select 1 from sse_stream_authorities where revocation_state <> 'effective')
+       or exists (select 1 from sse_authority_leases where closed_at is null) then
+      raise exception 'legacy_sse_retirement_required';
+    end if;
+  end if;
+  if exists (
+    select 1 from run_events
+    where (payload_json -> '__stream_v4') ?| array['publication_state','publication_attempts','suppression_reason']
+  ) then
+    raise exception 'legacy_sse_retirement_required';
+  end if;
+  if legacy_column_count > 0 then
+    if exists (
+      select 1 from run_events where stream_publication_state is not null
+        or stream_publication_attempts is not null
+        or stream_publication_redis_id is not null
+        or stream_publication_last_error is not null
+        or stream_publication_claim_token is not null
+        or stream_publication_claim_expires_at is not null
+        or stream_publication_next_attempt_at is not null
+    ) then
+      raise exception 'legacy_sse_retirement_required';
+    end if;
+  end if;
+  if to_regclass(format('%I.sse_terminal_publication_intents', migration_schema)) is not null then
+    if exists (select 1 from sse_terminal_publication_intents where state = 'pending') then
+      raise exception 'legacy_sse_retirement_required';
+    end if;
+  end if;
+  if to_regclass(format('%I.sse_stream_rebuilds', migration_schema)) is not null then
+    if exists (select 1 from sse_stream_rebuilds where state in ('building','ready')) then
+      raise exception 'legacy_sse_retirement_required';
+    end if;
+  end if;
+  execute format('drop table if exists %1$I.sse_stream_rebuild_items, %1$I.sse_stream_rebuilds, %1$I.sse_terminal_publication_intents', migration_schema);
+  execute format('drop index if exists %I.idx_sse_stream_authority_pending', migration_schema);
+end $$;
 
-alter table sse_terminal_publication_intents add column if not exists emitted_at text;
-update sse_terminal_publication_intents
-set emitted_at = to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
-where emitted_at is null;
-alter table sse_terminal_publication_intents alter column emitted_at set not null;
-
-create index if not exists idx_sse_terminal_intents_pending
-  on sse_terminal_publication_intents(state, created_at)
-  where state = 'pending';
+alter table run_events
+  drop column if exists stream_publication_state,
+  drop column if exists stream_publication_attempts,
+  drop column if exists stream_publication_next_attempt_at,
+  drop column if exists stream_publication_redis_id,
+  drop column if exists stream_publication_last_error,
+  drop column if exists stream_publication_claim_token,
+  drop column if exists stream_publication_claim_expires_at;
 
 do $$
 declare
@@ -2709,6 +2145,8 @@ create table if not exists sandbox_leases (
   runtime_executor_url text,
   runtime_workspace_container_path text,
   runtime_handle_verified_at timestamptz,
+  provider_renewed_at timestamptz,
+  provider_expires_at timestamptz,
   executor_status text not null default 'pending',
   executor_heartbeat_at timestamptz,
   executor_terminal_json jsonb,
@@ -2740,6 +2178,8 @@ alter table sandbox_leases add column if not exists runtime_container_name text;
 alter table sandbox_leases add column if not exists runtime_executor_url text;
 alter table sandbox_leases add column if not exists runtime_workspace_container_path text;
 alter table sandbox_leases add column if not exists runtime_handle_verified_at timestamptz;
+alter table sandbox_leases add column if not exists provider_renewed_at timestamptz;
+alter table sandbox_leases add column if not exists provider_expires_at timestamptz;
 alter table sandbox_leases add column if not exists executor_status text not null default 'pending';
 alter table sandbox_leases add column if not exists executor_heartbeat_at timestamptz;
 alter table sandbox_leases add column if not exists executor_terminal_json jsonb;
@@ -2761,6 +2201,10 @@ alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconcilia
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
 
+-- Rollback for the additive OpenSandbox renewal observations (after callers retire):
+-- alter table sandbox_leases drop column if exists provider_renewed_at;
+-- alter table sandbox_leases drop column if exists provider_expires_at;
+
 -- Rollback for the additive async execution columns:
 -- alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_status;
 -- alter table sandbox_leases drop column if exists executor_terminal_received_at;
@@ -2774,6 +2218,30 @@ create index if not exists idx_sandbox_leases_attempt
 -- alter table sandbox_leases drop column if exists runtime_executor_url;
 -- alter table sandbox_leases drop column if exists runtime_container_name;
 -- alter table sandbox_leases drop column if exists runtime_container_id;
+
+create table if not exists file_upload_sessions (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  workspace_id text not null references workspaces(id),
+  user_id text not null references users(id),
+  session_id text,
+  file_id text not null unique,
+  original_name text not null,
+  content_type text not null,
+  expected_size_bytes bigint not null check (expected_size_bytes > 0),
+  part_size_bytes bigint not null check (part_size_bytes > 0),
+  part_count integer not null check (part_count > 0),
+  storage_key text not null unique,
+  upload_id text not null unique,
+  state text not null default 'pending',
+  expires_at timestamptz not null,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  check (state in ('pending', 'completing', 'completed', 'aborted', 'expired'))
+);
+
+create index if not exists idx_file_upload_sessions_scope
+  on file_upload_sessions(tenant_id, workspace_id, user_id, state, expires_at);
 
 create table if not exists files (
   id text primary key,
@@ -2827,9 +2295,34 @@ alter table artifacts add column if not exists expires_at timestamptz;
 alter table artifacts add column if not exists lifecycle_state text not null default 'active';
 alter table artifacts add column if not exists delete_requested_at timestamptz;
 alter table artifacts add column if not exists deleted_at timestamptz;
+alter table artifacts alter column run_id drop not null;
+alter table artifacts drop constraint if exists chk_artifacts_run_owner;
+update artifacts
+set manifest_json = manifest_json || jsonb_build_object(
+      'retention_artifact_cleanup', true,
+      'deletion_owner_run_id', run_id
+    ),
+    run_id = null
+where run_id is not null and lifecycle_state in ('delete_pending', 'deleted');
 alter table artifacts drop constraint if exists chk_artifacts_lifecycle_state;
 alter table artifacts add constraint chk_artifacts_lifecycle_state
   check (lifecycle_state in ('active', 'delete_pending', 'deleted'));
+alter table artifacts add constraint chk_artifacts_run_owner
+  check (
+    (run_id is not null and lifecycle_state = 'active')
+    or (
+      run_id is null
+      and lifecycle_state = 'delete_pending'
+      and manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
+      and nullif(manifest_json ->> 'expected_run_id', '') is not null
+    )
+    or (
+      run_id is null
+      and lifecycle_state in ('delete_pending', 'deleted')
+      and manifest_json @> '{"retention_artifact_cleanup":true}'::jsonb
+      and nullif(manifest_json ->> 'deletion_owner_run_id', '') is not null
+    )
+  );
 
 create table if not exists object_deletion_outbox (
   id text primary key,
@@ -2928,9 +2421,8 @@ on conflict (id) do nothing;
 
 insert into skills(id, name, version, description, input_modes, output_modes, executor_type)
 values
-  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["reviewed_docx", "findings_json"]'::jsonb, 'claude-agent-worker'),
+  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["result_docx", "result_json"]'::jsonb, 'claude-agent-worker'),
   ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
-  ('baoyu-translate', 'Baoyu Translate', '0.1.0', 'Translate Word documents and return translated Word artifacts.', '["docx"]'::jsonb, '["translated_docx"]'::jsonb, 'claude-agent-worker'),
   ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
 on conflict (id) do update set
   name = excluded.name,
@@ -2945,14 +2437,12 @@ insert into skill_versions(id, skill_id, version, content_hash, description, sou
 values
   ('skv_seed_qa_file_reviewer_0_1_0', 'qa-file-reviewer', '0.1.0', '0.1.0', 'Schema-seeded baseline for QA Word Review.', '{"kind":"schema-seed"}'::jsonb, '["minimax-docx"]'::jsonb, 'active', 'schema'),
   ('skv_seed_minimax_docx_0_1_0', 'minimax-docx', '0.1.0', '0.1.0', 'Schema-seeded baseline for internal DOCX composition dependency.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
-  ('skv_seed_baoyu_translate_0_1_0', 'baoyu-translate', '0.1.0', '0.1.0', 'Schema-seeded baseline for Baoyu Translate.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
   ('skv_seed_ragflow_knowledge_search_0_1_0', 'ragflow-knowledge-search', '0.1.0', '0.1.0', 'Schema-seeded baseline for RAGFlow Knowledge Search.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema')
 on conflict (skill_id, version) do nothing;
 
 insert into tenant_workbench_skills(tenant_id, skill_id, status, visible_to_user)
 values
   ('default', 'qa-file-reviewer', 'active', true),
-  ('default', 'baoyu-translate', 'active', true),
   ('default', 'ragflow-knowledge-search', 'active', true)
 on conflict (tenant_id, skill_id) do nothing;
 
@@ -2977,13 +2467,13 @@ on conflict (id) do update set
   name = excluded.name,
   description = excluded.description,
   transport_type = excluded.transport_type,
-  endpoint = excluded.endpoint,
   auth_mode = excluded.auth_mode,
   allowed_tools = excluded.allowed_tools,
   status = excluded.status,
   write_capable = excluded.write_capable,
   risk_level = excluded.risk_level,
-  visible_to_user = excluded.visible_to_user;
+  visible_to_user = excluded.visible_to_user
+where mcp_tools.endpoint = '';
 
 insert into tool_policies(tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason)
 values
@@ -2992,11 +2482,9 @@ on conflict (tenant_id, tool_id) do nothing;
 
 insert into agents(id, tenant_id, name, agent_type, description, default_skill_id, status)
 values
-  ('translate', 'default', '文档翻译', 'file', 'Legacy alias for baoyu-translate. Hidden from LambChat mode selection.', 'baoyu-translate', 'inactive'),
   ('document-review', 'default', '文档审核', 'file', 'Legacy alias for qa-word-review. Hidden from LambChat mode selection.', 'qa-file-reviewer', 'inactive'),
   ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat backed by the governed Harness without a Skill identity.', null, 'active'),
   ('qa-word-review', 'default', '文档审核', 'file', 'Upload Word documents and generate reviewed Word artifacts.', 'qa-file-reviewer', 'active'),
-  ('baoyu-translate', 'default', '文档翻译', 'file', 'Upload Word documents and generate translated Word artifacts.', 'baoyu-translate', 'active'),
   ('sop-assistant', 'default', 'SOP 助手', 'chat', 'Answer SOP questions with RAGFlow citations.', 'ragflow-knowledge-search', 'active')
 on conflict (id) do update set
   tenant_id = excluded.tenant_id,
@@ -3005,3 +2493,125 @@ on conflict (id) do update set
   description = excluded.description,
   default_skill_id = excluded.default_skill_id,
   status = excluded.status;
+
+update agents
+set status = 'inactive'
+where id in ('translate', 'baoyu-translate')
+   or default_skill_id = 'baoyu-translate'
+   or exists (
+     select 1
+     from agent_profiles current_profile
+     join agent_profile_revisions current_revision
+       on current_revision.tenant_id = current_profile.tenant_id
+      and current_revision.agent_id = current_profile.agent_id
+      and current_revision.revision = current_profile.published_revision
+      and current_revision.content_hash = current_profile.published_hash
+      and current_revision.revision_status = 'published'
+     where current_profile.tenant_id = agents.tenant_id
+       and current_profile.agent_id = agents.id
+       and current_profile.lifecycle_status = 'published'
+       and current_revision.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb
+   );
+
+update tenant_workbench_skills
+set status = 'disabled', visible_to_user = false
+where skill_id = 'baoyu-translate';
+
+update tenant_capability_distributions
+set status = 'disabled', visible_to_user = false
+where capability_kind = 'skill' and capability_id = 'baoyu-translate';
+
+update skills
+set status = 'inactive'
+where id = 'baoyu-translate';
+
+-- Agent Profile hard cut: consolidate the authoring/public contract and retire
+-- every physical compatibility field and trigger in one release transaction.
+drop trigger if exists trg_agent_profile_legacy_insert_compatibility on agent_profile_revisions;
+drop trigger if exists trg_agent_profile_aa_name_only_skill_set_prepare on agent_profile_revisions;
+drop trigger if exists trg_agent_profile_zz_name_only_skill_set_finalize on agent_profile_revisions;
+drop trigger if exists trg_agent_profile_legacy_insert_reconcile on agent_profile_revisions;
+drop function if exists agent_profile_legacy_insert_compatibility();
+drop function if exists agent_profile_name_only_skill_set_prepare();
+drop function if exists agent_profile_name_only_skill_set_finalize();
+drop function if exists agent_profile_legacy_insert_reconcile();
+
+alter table agent_profiles drop constraint if exists fk_agent_profiles_current_publication;
+alter table agent_profiles drop constraint if exists chk_agent_profiles_publication;
+alter table agent_profiles drop column if exists published_status;
+alter table agent_profiles add constraint chk_agent_profiles_publication
+check (
+  (lifecycle_status = 'published' and published_revision is not null and published_hash is not null)
+  or
+  (lifecycle_status <> 'published' and published_revision is null and published_hash is null)
+);
+
+alter table agent_profile_revisions drop constraint if exists uq_agent_profile_revision_publication;
+alter table agent_profile_revisions drop constraint if exists uq_agent_profile_revision_content;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_status_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_ref_check;
+alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_skill_set;
+alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_lists;
+alter table agent_profile_revisions drop constraint if exists chk_agent_profile_revisions_avatar_seed;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_avatar_style_ref_check;
+alter table agent_profile_revisions drop constraint if exists agent_profile_revisions_category_check;
+alter table agent_profile_revisions
+  drop column if exists status,
+  drop column if exists welcome_message,
+  drop column if exists capability_summary,
+  drop column if exists recommended_tasks,
+  drop column if exists supported_input_types,
+  drop column if exists supported_file_types,
+  drop column if exists expected_outputs,
+  drop column if exists permissions_and_data_access_notice,
+  drop column if exists model_id,
+  drop column if exists skill_id,
+  drop column if exists skill_version,
+  drop column if exists avatar_style_ref,
+  drop column if exists avatar_asset_id,
+  drop column if exists category,
+  drop column if exists market_tag,
+  drop column if exists legacy_compatibility_write;
+
+alter table agent_profile_revisions
+  alter column skill_set drop default,
+  alter column avatar_seed drop default;
+alter table agent_profile_revisions
+  add constraint agent_profile_revisions_avatar_ref_check
+  check (avatar_ref in (
+    'builtin:agent', 'builtin:assistant', 'builtin:document', 'builtin:research',
+    'builtin:cartoon', 'builtin:emoji', 'builtin:pixel', 'builtin:portrait',
+    'builtin:abstract', 'builtin:planet', 'builtin:clay', 'builtin:icon'
+  )),
+  add constraint chk_agent_profile_revisions_skill_set
+  check (jsonb_typeof(skill_set) = 'array' and jsonb_array_length(skill_set) > 0),
+  add constraint chk_agent_profile_revisions_lists
+  check (
+    jsonb_typeof(starter_prompts) = 'array'
+    and jsonb_typeof(mcp_tool_ids) = 'array'
+    and jsonb_typeof(market_tags) = 'array'
+    and jsonb_typeof(allowed_department_ids) = 'array'
+    and jsonb_typeof(allowed_roles) = 'array'
+    and jsonb_typeof(allowed_user_ids) = 'array'
+  ),
+  add constraint chk_agent_profile_revisions_avatar_seed
+  check (btrim(avatar_seed) <> '');
+alter table agent_profile_revisions
+  add constraint uq_agent_profile_revision_content
+  unique (tenant_id, agent_id, revision, content_hash);
+alter table agent_profiles
+  add constraint fk_agent_profiles_current_publication
+  foreign key (tenant_id, agent_id, published_revision, published_hash)
+  references agent_profile_revisions(tenant_id, agent_id, revision, content_hash);
+
+update tenant_workbench_skills
+set status = 'disabled', visible_to_user = false
+where skill_id = 'general-chat';
+
+update tenant_capability_distributions
+set status = 'disabled', visible_to_user = false
+where capability_kind = 'skill' and capability_id = 'general-chat';
+
+update skills
+set status = 'inactive'
+where id = 'general-chat';

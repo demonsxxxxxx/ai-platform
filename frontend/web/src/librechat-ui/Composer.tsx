@@ -17,7 +17,7 @@ export function LibreChatComposerFrame({
     <div
       {...props}
       className={clsx(
-        "chat-input-shell librechat-composer-shell pb-3 sm:px-4",
+        "chat-input-shell librechat-composer-shell sm:px-2",
         className,
       )}
       data-librechat-composer="phase1"
@@ -44,7 +44,7 @@ export const LibreChatComposerBox = forwardRef<
       {...props}
       ref={ref}
       className={clsx(
-        "chat-input-container relative flex w-full flex-col rounded-[1.5rem] border px-1",
+        "chat-input-container relative grid w-full grid-cols-[minmax(0,1fr)_auto] items-end rounded-[1.25rem] border px-1",
         "transition-[border-color,box-shadow] duration-200",
         dragging && "border-2 border-dashed shadow-lg",
         className,
@@ -77,7 +77,7 @@ export function LibreChatComposerRegion({
   return (
     <div
       data-librechat-composer-region={region}
-      className={clsx(region === "textarea" && "px-3 pt-1.5", className)}
+      className={clsx(region === "textarea" && "px-4 pt-2", className)}
     >
       {children}
     </div>
@@ -94,10 +94,10 @@ export const LibreChatComposerTextarea = forwardRef<
       {...props}
       ref={ref}
       className={clsx(
-        "w-full resize-none overflow-y-auto bg-transparent pt-[10px]",
+        "w-full resize-none overflow-y-auto bg-transparent pt-2.5",
         "text-[15px] leading-6 outline-none disabled:opacity-50",
         "[&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]",
-        "min-h-[38px] sm:min-h-[42px]",
+        "min-h-[52px]",
         className,
       )}
       style={{ color: "var(--theme-text)", paddingLeft: 2, ...style }}

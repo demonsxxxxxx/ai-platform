@@ -1,15 +1,47 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CHAT_AGENT_OPTION_DEFINITIONS } from "../../../../types/agentOptions.ts";
-import { getAgentOptionSyncMode, normalizeAgentOptions } from "../useAgentOptions";
+import {
+  getAgentOptionSyncMode,
+  normalizeAgentOptions,
+  normalizeAgentOptionValues,
+} from "../useAgentOptions";
 
 test("keeps the real thinking parameter without an agent directory", () => {
   const options = normalizeAgentOptions(CHAT_AGENT_OPTION_DEFINITIONS);
 
-  assert.equal(options?.enable_thinking.default, "off");
+  assert.equal(options?.enable_thinking.default, "auto");
   assert.deepEqual(
     options?.enable_thinking.options?.map((item) => item.value),
-    ["off", "low", "medium", "high", "max"],
+    ["auto", "low", "medium", "high"],
+  );
+  assert.deepEqual(
+    normalizeAgentOptionValues({ enable_thinking: "off" }),
+    { enable_thinking: "auto" },
+  );
+  assert.deepEqual(
+    normalizeAgentOptionValues({ enable_thinking: "max" }),
+    { enable_thinking: "high" },
+  );
+});
+
+test("replaces stale server thinking options with the canonical levels", () => {
+  const options = normalizeAgentOptions({
+    enable_thinking: {
+      type: "string",
+      default: "off",
+      label: "Thinking",
+      options: [
+        { value: "off", label: "Off" },
+        { value: "max", label: "Max" },
+      ],
+    },
+  });
+
+  assert.equal(options?.enable_thinking.default, "auto");
+  assert.deepEqual(
+    options?.enable_thinking.options?.map((item) => item.value),
+    ["auto", "low", "medium", "high"],
   );
 });
 

@@ -11,8 +11,12 @@ from app.auth import (
     authority_checked_at_now,
     normalize_roles,
 )
+from app.platform.jwt_validation import JwtValidationError, decode_hs256_jwt
 from app.settings import get_settings
-from app.validation import assert_safe_id
+from app.validation import (
+    assert_safe_department_authority_id,
+    assert_safe_principal_user_id,
+)
 
 
 CURRENT_PRINCIPAL_DENIAL_REASON = "current_principal_authority_denied"
@@ -36,9 +40,7 @@ AI_USER_PERMISSIONS = (
 
 AI_ADMIN_PERMISSIONS = (
     "model:admin",
-    "settings:read",
     "settings:manage",
-    "settings:admin",
     "admin:status",
     "skill:write",
     "skill:delete",
@@ -90,12 +92,106 @@ class PrincipalAuthorityDenied(Exception):
         self.reason = CURRENT_PRINCIPAL_DENIAL_REASON
 
 
+class CompanyLoginJwtUnavailable(Exception):
+    """Report missing server-side verification configuration without accepting a token."""
+
+
+_REQUIRED_COMPANY_JWT_CLAIMS = (
+    "workid",
+    "username",
+    "cnname",
+    "depart",
+    "role",
+    "iat",
+    "nbf",
+    "exp",
+    "iss",
+    "aud",
+)
+
+
+def resolve_company_login_jwt(
+    company_jwt: str,
+    *,
+    settings: Any | None = None,
+) -> AuthPrincipal:
+    """Verify one company JWT and project its signed identity into platform authority."""
+
+    effective_settings = settings or get_settings()
+    secret = str(getattr(effective_settings, "company_login_jwt_secret", "") or "")
+    issuer = str(getattr(effective_settings, "company_login_jwt_issuer", "") or "").strip()
+    audience = str(getattr(effective_settings, "company_login_jwt_audience", "") or "").strip()
+    if len(secret.encode("utf-8")) < 32 or not issuer or not audience:
+        raise CompanyLoginJwtUnavailable()
+
+    try:
+        claims = decode_hs256_jwt(
+            company_jwt,
+            secret=secret,
+            issuer=issuer,
+            audience=audience,
+            required_claims=_REQUIRED_COMPANY_JWT_CLAIMS,
+        )
+    except JwtValidationError:
+        raise PrincipalAuthorityDenied() from None
+
+    work_id = _required_company_claim(claims, "workid", 128)
+    username = _required_company_claim(claims, "username", 128)
+    display_name = _required_company_claim(claims, "cnname", 128)
+    department = _required_company_claim(claims, "depart", 160)
+    role = _required_company_claim(claims, "role", 512)
+    try:
+        assert_safe_principal_user_id(work_id)
+        roles, department_id = _normalize_company_record(
+            expected_work_id=work_id,
+            tenant_id=str(effective_settings.default_tenant_id),
+            raw_user_info={
+                "workid": work_id,
+                "username": username,
+                "department": department,
+                "role": role,
+            },
+            settings=effective_settings,
+        )
+    except (PrincipalAuthorityDenied, ValueError):
+        raise PrincipalAuthorityDenied() from None
+
+    return AuthPrincipal(
+        user_id=work_id,
+        display_name=display_name,
+        tenant_id=effective_settings.default_tenant_id,
+        department_id=department_id,
+        roles=roles,
+        permissions=_effective_permissions(roles),
+        source="company-login",
+        authz_policy_version=COMPANY_AUTHZ_POLICY_VERSION,
+        authority_source="company-login-jwt",
+        authority_checked_at=authority_checked_at_now(),
+    )
+
+
+def _required_company_claim(claims: dict[str, Any], name: str, max_length: int) -> str:
+    value = claims.get(name)
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > max_length
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise PrincipalAuthorityDenied()
+    return value
+
+
 async def fetch_company_user_info(work_id: str, *, settings: Any | None = None) -> object:
     """Fetch one company user-info document without retries or response coercion."""
 
     effective_settings = settings or get_settings()
     base_url = effective_settings.existing_user_info_base_url.rstrip("/")
-    async with httpx.AsyncClient(timeout=effective_settings.existing_auth_timeout_seconds) as client:
+    async with httpx.AsyncClient(
+        timeout=effective_settings.existing_auth_timeout_seconds,
+        trust_env=False,
+    ) as client:
         response = await client.get(f"{base_url}/api/userManage/{work_id}/info")
         response.raise_for_status()
         return response.json()
@@ -282,11 +378,11 @@ def _department_from_user_info(payload: dict[str, Any]) -> str:
     value = payload.get("department")
     if not isinstance(value, str):
         return ""
-    candidate = value.strip()
+    candidate = value
     if not candidate:
         return ""
     try:
-        return assert_safe_id(candidate, "department")
+        return assert_safe_department_authority_id(candidate, "department")
     except ValueError:
         # Empty is intentionally unscoped: it cannot match a non-empty
         # department allowlist and never invents authority from display data.

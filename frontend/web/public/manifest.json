@@ -65,13 +65,6 @@
       "description": "Open the AI Platform skills workspace",
       "url": "/skills",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
-    },
-    {
-      "name": "Marketplace",
-      "short_name": "Market",
-      "description": "Browse AI Platform marketplace skills",
-      "url": "/marketplace",
-      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     }
   ],
   "screenshots": [

@@ -3,9 +3,10 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app import repositories
+from app.context import api as context_api
 from app.context_manifest import available_context_retrieval_tools
 from app.context.retrieval import (
     ContextRetrievalAuthority,
@@ -16,6 +17,7 @@ from app.db import transaction
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
 from app.runtime.sandbox.callback_tokens import (
@@ -23,28 +25,30 @@ from app.runtime.sandbox.callback_tokens import (
     callback_token_id_matches_binding,
     callback_token_matches,
 )
+from app.runtime.sandbox.container_provider import create_container_provider
 from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
+    ProviderSessionCallbackRequest,
+    ProviderSessionCallbackResponse,
     executor_callback_receipt_event_count,
+    executor_terminal_receipt_payload,
 )
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
-from app.runtime.sandbox.executor_signals import (
-    ExecutorSignalUnavailable,
-    publish_executor_terminal_signal,
-)
+from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
+from app.runs.api import RunDiagnosticsService
 from app.settings import get_settings
 from app.streaming.api import (
     V4ProjectionError,
+    V4PublicationTransportUnavailable,
     WorkerV4Capabilities,
-    admit_v4_stream,
+    publish_callback_rows,
     append_callback_v4_rows,
     callback_item_to_v4,
     callback_thinking_summary_to_v4,
-    publish_pending_v4_events,
 )
 from app.streaming.redis import get_stream_authority
-from app.storage import ObjectStorage
+from app.storage import ObjectStorage, run_storage_io
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -52,6 +56,29 @@ logger = logging.getLogger(__name__)
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
 _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
+MAX_PROVIDER_SESSION_CALLBACK_BODY_BYTES = context_api.MAX_PROVIDER_SESSION_BATCH_BYTES + 64 * 1024
+
+
+async def _enforce_provider_session_callback_body_limit(request: Request) -> bytes:
+    """Bound raw callback bytes before FastAPI materializes the request model."""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_PROVIDER_SESSION_CALLBACK_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="provider_session_request_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _provider_session_callback_from_request(
+    request: Request,
+) -> ProviderSessionCallbackRequest:
+    body = await _enforce_provider_session_callback_body_limit(request)
+    try:
+        return ProviderSessionCallbackRequest.model_validate_json(body)
+    except Exception as exc:  # noqa: BLE001 - expose only a stable validation detail.
+        raise HTTPException(status_code=422, detail="provider_session_request_invalid") from exc
 
 
 def _executor_callback_receipt(
@@ -76,6 +103,7 @@ async def record_executor_callback(
     callback: ExecutorCallbackEvent,
     *,
     capabilities: WorkerV4Capabilities,
+    run_diagnostics: RunDiagnosticsService | None = None,
 ) -> dict[str, object]:
     """Persist one fenced sandbox observation or terminal result."""
 
@@ -93,6 +121,7 @@ async def record_executor_callback(
     callback_for_events = callback.model_copy(update={"new_message": None})
     events = callback_event_to_run_events(callback_for_events)
     v4_items = []
+    committed_rows = ()
     authority = None
     callback_deduplicated = False
     tenant_id = ""
@@ -219,7 +248,7 @@ async def record_executor_callback(
             )
             if v4_items:
                 try:
-                    await append_callback_v4_rows(
+                    committed_rows = await append_callback_v4_rows(
                         capabilities,
                         conn,
                         tenant_id=tenant_id,
@@ -245,12 +274,27 @@ async def record_executor_callback(
         lease_id = str(lease.get("id") or "") if isinstance(lease, dict) else ""
         if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
             if callback.terminal_result is None:
-                raise HTTPException(status_code=422, detail="executor_terminal_result_required")
+                raise HTTPException(
+                    status_code=422, detail="executor_terminal_result_required"
+                )
             if not lease_id:
                 raise HTTPException(
                     status_code=503,
                     detail="sandbox_executor_lease_receipt_unavailable",
                 )
+            terminal_result = callback.terminal_result.model_dump(
+                mode="json", exclude_none=True
+            )
+            try:
+                terminal_receipt = executor_terminal_receipt_payload(
+                    callback.terminal_result
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="executor_terminal_result_invalid",
+                ) from exc
+            terminal_was_new = lease.get("executor_terminal_json") is None
             try:
                 await sandbox_lease_repository.record_sandbox_executor_terminal(
                     conn,
@@ -259,9 +303,7 @@ async def record_executor_callback(
                     attempt_id=callback.attempt_id,
                     lease_id=lease_id,
                     executor_status=callback.status,
-                    terminal_result=callback.terminal_result.model_dump(
-                        mode="json", exclude_none=True
-                    ),
+                    terminal_result=terminal_receipt,
                 )
             except (
                 sandbox_lease_repository.SandboxExecutorTerminalConflictError,
@@ -272,54 +314,178 @@ async def record_executor_callback(
                     status_code=409,
                     detail="sandbox_executor_terminal_conflict",
                 ) from exc
+            if terminal_was_new and run_diagnostics is not None:
+                await run_diagnostics.capture_failure_result(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    source="executor_callback",
+                    stage="terminal_receipt",
+                    error_code=str(
+                        terminal_result.get("error_code") or callback.status
+                    ),
+                    result_json=terminal_result,
+                    lease_id=lease_id,
+                    callback_id=callback.batch_id,
+                )
         elif lease_id:
-            heartbeat = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
-                conn,
-                tenant_id=tenant_id,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-                lease_id=lease_id,
-                executor_status="running",
-                ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
+            settings = get_settings()
+            heartbeat = (
+                await sandbox_lease_repository.record_sandbox_executor_heartbeat(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    lease_id=lease_id,
+                    executor_status="running",
+                    ttl_seconds=settings.sandbox_lease_ttl_seconds,
+                )
             )
             if heartbeat is None:
                 raise HTTPException(
                     status_code=409,
                     detail="sandbox_runtime_attempt_inactive",
                 )
+            if (
+                callback.state_patch.get("executor_heartbeat") is True
+                and isinstance(heartbeat, dict)
+                and str(heartbeat.get("provider") or "").strip().lower()
+                == "opensandbox"
+            ):
+                try:
+                    persisted_lease = container_lease_from_persisted_row(heartbeat)
+                    if (
+                        persisted_lease is None
+                        or persisted_lease.provider != "opensandbox"
+                    ):
+                        raise ValueError("sandbox_runtime_renewal_lease_unavailable")
+                    provider = create_container_provider(persisted_lease.provider)
+                    provider_expires_at = await renew_opensandbox_lifetime(
+                        provider,
+                        persisted_lease,
+                        settings,
+                        ttl_seconds=settings.sandbox_lease_ttl_seconds,
+                    )
+                except Exception as exc:  # noqa: BLE001 - renewal is one disclosure-safe failure boundary.
+                    raise HTTPException(
+                        status_code=503,
+                        detail="sandbox_runtime_renewal_failed",
+                    ) from exc
+                receipt = await sandbox_lease_repository.record_opensandbox_renewal_receipt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    lease_id=lease_id,
+                    provider_expires_at=provider_expires_at,
+                )
+                if receipt is None:
+                    raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
         await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
         )
-    if v4_items:
-        try:
-            if v4_items:
-                await admit_v4_stream(
-                    capabilities,
-                    tenant_id=tenant_id,
-                    run_id=callback.run_id,
-                    attempt_id=callback.attempt_id,
-                )
-            await publish_pending_v4_events(
-                capabilities,
-                tenant_id=tenant_id,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-            )
-        except Exception:  # noqa: BLE001 - PostgreSQL remains the callback authority.
-            logger.warning("callback_v4_publication_deferred", exc_info=True)
-    if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES and lease_id:
-        try:
-            await publish_executor_terminal_signal()
-        except ExecutorSignalUnavailable:
-            # PostgreSQL is authoritative; the worker falls back to bounded polling.
-            logger.warning("executor_terminal_signal_unavailable")
+    try:
+        await publish_callback_rows(capabilities, committed_rows, authority=authority)
+    except V4PublicationTransportUnavailable as exc:
+        raise HTTPException(
+            status_code=503, detail="callback_stream_unavailable"
+        ) from exc
     return _executor_callback_receipt(
         callback,
         deduplicated=callback_deduplicated,
     )
+
+
+_PROVIDER_SESSION_LIMIT_ERRORS = frozenset(
+    {
+        "provider_session_entry_too_large",
+        "provider_session_entry_batch_too_large",
+        "provider_session_transcript_too_large",
+    }
+)
+_PROVIDER_SESSION_CONFLICT_ERRORS = frozenset(
+    {
+        "provider_session_identity_mismatch",
+        "provider_session_append_conflict",
+        "provider_session_append_sequence_invalid",
+        "provider_session_epoch_unavailable",
+        "provider_session_spec_mismatch",
+        "provider_session_lineage_busy",
+        "provider_session_owner_invalid",
+        "provider_session_writer_conflict",
+        "provider_session_entry_conflict",
+    }
+)
+
+
+def _provider_session_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, context_api.ProviderSessionNotFoundError):
+        return HTTPException(status_code=404, detail="provider_session_not_found")
+    code = str(exc)
+    if code in _PROVIDER_SESSION_LIMIT_ERRORS:
+        return HTTPException(status_code=413, detail=code)
+    if code in _PROVIDER_SESSION_CONFLICT_ERRORS:
+        return HTTPException(status_code=409, detail=code)
+    return HTTPException(status_code=503, detail="provider_session_callback_failed")
+
+
+@router.post(
+    "/runtime/callbacks/provider-session",
+    response_model=ProviderSessionCallbackResponse,
+)
+async def provider_session_callback(
+    callback: ProviderSessionCallbackRequest = Depends(_provider_session_callback_from_request),
+    callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+) -> ProviderSessionCallbackResponse:
+    """Broker one exact-run Claude SessionStore operation."""
+
+    _require_valid_callback_token(
+        callback_token,
+        callback.callback_token_id,
+        run_id=callback.run_id,
+        attempt_id=callback.attempt_id,
+    )
+    try:
+        async with transaction() as conn:
+            run_identity, _lease = await _lock_current_runtime_attempt_then_run(
+                conn,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+            )
+            result = await context_api.execute_provider_session_callback(
+                conn,
+                tenant_id=str(run_identity.get("tenant_id") or ""),
+                workspace_id=str(run_identity.get("workspace_id") or ""),
+                user_id=str(run_identity.get("user_id") or ""),
+                session_id=str(run_identity.get("session_id") or ""),
+                agent_id=str(run_identity.get("agent_id") or ""),
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+                provider_session_id=callback.provider_session_id,
+                action=callback.action,
+                entries=callback.entries,
+                subpath=callback.subpath,
+                expected_sequence=callback.expected_sequence,
+            )
+            return ProviderSessionCallbackResponse(
+                action=result.action,
+                entries=list(result.entries),
+                subpaths=list(result.subpaths),
+                accepted=result.accepted,
+                entry_count=result.entry_count,
+                next_sequence=result.next_sequence,
+                last_sequence=result.last_sequence,
+            )
+    except HTTPException:
+        raise
+    except (context_api.ProviderSessionContinuityError, ValueError) as exc:
+        raise _provider_session_http_error(exc) from exc
+    except Exception as exc:  # noqa: BLE001 - callback details stay private.
+        raise HTTPException(status_code=503, detail="provider_session_callback_failed") from exc
 
 
 async def _require_current_runtime_attempt(
@@ -353,12 +519,12 @@ async def _lock_current_runtime_attempt_then_run(
     *,
     run_id: str,
     attempt_id: str,
-    session_id: str,
+    session_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     run_hint = await repositories.get_run_identity(conn, run_id=run_id, for_update=False)
     if run_hint is None:
         raise HTTPException(status_code=404, detail="run_not_found")
-    if str(run_hint.get("session_id") or "") != session_id:
+    if session_id is not None and str(run_hint.get("session_id") or "") != session_id:
         raise HTTPException(status_code=409, detail="callback_session_mismatch")
     if str(run_hint.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="run_already_terminal")
@@ -372,7 +538,7 @@ async def _lock_current_runtime_attempt_then_run(
     locked_run = await repositories.get_run_identity(conn, run_id=run_id, for_update=True)
     if locked_run is None or str(locked_run.get("tenant_id") or "") != tenant_id:
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
-    if str(locked_run.get("session_id") or "") != session_id:
+    if session_id is not None and str(locked_run.get("session_id") or "") != session_id:
         raise HTTPException(status_code=409, detail="callback_session_mismatch")
     if str(locked_run.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="run_already_terminal")
@@ -413,7 +579,9 @@ def _require_valid_callback_token(
 async def executor_callback(
     request: Request,
     callback: ExecutorCallbackEvent,
-    callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+    callback_token: str | None = Header(
+        default=None, alias="X-AI-Platform-Callback-Token"
+    ),
 ) -> dict[str, object]:
     _require_valid_callback_token(
         callback_token,
@@ -425,6 +593,7 @@ async def executor_callback(
     return await record_executor_callback(
         callback,
         capabilities=runtime.worker_capabilities,
+        run_diagnostics=request.app.state.run_diagnostics_service,
     )
 
 
@@ -474,7 +643,11 @@ async def executor_context_retrieval_callback(
             "run_id": request.run_id,
             "agent_id": agent_id,
         }
-        retrieval = ContextRetrievalAuthority.for_broker_connection(conn, ObjectStorage())
+        retrieval = ContextRetrievalAuthority.for_broker_connection(
+            conn,
+            ObjectStorage(),
+            storage_io=run_storage_io,
+        )
         try:
             result = await retrieval.execute(request.action, identity, request.arguments)
         except ContextRetrievalInputError as exc:

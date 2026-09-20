@@ -6,12 +6,9 @@ import { join } from "node:path";
 import {
   buildEffectiveSkills,
   countEnabledSkills,
-  resolveSettingsBooleanProjection,
   resolveComposerSkillsAvailability,
 } from "../skillAvailability.ts";
 import type {
-  SettingItem,
-  SettingsResponse,
   PublicSkillResponse,
   SkillResponse,
 } from "../../../../types";
@@ -31,21 +28,6 @@ function skill(name: string, enabled = true): SkillResponse {
     installed_from: "manual",
     is_published: false,
     marketplace_is_active: true,
-  };
-}
-
-function booleanSetting(key: string, value: boolean): SettingItem {
-  return {
-    key,
-    value,
-    type: "boolean",
-    category: "skills",
-    subcategory: "general",
-    description: key,
-    default_value: true,
-    requires_restart: false,
-    is_sensitive: false,
-    frontend_visible: true,
   };
 }
 
@@ -98,65 +80,12 @@ test("falls back to disabled-skills mode without a whitelist", () => {
   assert.equal(countEnabledSkills(result), 1);
 });
 
-test("keeps composer Skills usable when settings projection is degraded but skills are readable", () => {
+test("keeps composer Skills usable while catalog permissions are unresolved", () => {
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: true,
-      canReadSkills: true,
       catalogEffectivePermissions: [],
       catalogPermissionsKnown: false,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: false,
-    }),
-    {
-      shouldFetchSkills: true,
-      enableComposerSkills: true,
-    },
-  );
-});
-
-test("keeps composer Skills usable when settings response omits ENABLE_SKILLS", () => {
-  const projection = resolveSettingsBooleanProjection(
-    { settings: {} as SettingsResponse["settings"] },
-    "ENABLE_SKILLS",
-  );
-
-  assert.deepEqual(projection, { known: false, value: undefined });
-  assert.deepEqual(
-    resolveComposerSkillsAvailability({
-      isAuthenticated: true,
-      canReadSkills: true,
-      catalogEffectivePermissions: [],
-      catalogPermissionsKnown: false,
-      enableSkillsSettingKnown: projection.known,
-      enableSkillsSetting: projection.value ?? false,
-    }),
-    {
-      shouldFetchSkills: true,
-      enableComposerSkills: true,
-    },
-  );
-});
-
-test("keeps composer Skills reachable when legacy ENABLE_SKILLS is explicitly disabled", () => {
-  const projection = resolveSettingsBooleanProjection(
-    {
-      settings: {
-        skills: [booleanSetting("ENABLE_SKILLS", false)],
-      } as SettingsResponse["settings"],
-    },
-    "ENABLE_SKILLS",
-  );
-
-  assert.deepEqual(projection, { known: true, value: false });
-  assert.deepEqual(
-    resolveComposerSkillsAvailability({
-      isAuthenticated: true,
-      canReadSkills: true,
-      catalogEffectivePermissions: [],
-      catalogPermissionsKnown: false,
-      enableSkillsSettingKnown: projection.known,
-      enableSkillsSetting: projection.value ?? false,
     }),
     {
       shouldFetchSkills: true,
@@ -169,11 +98,8 @@ test("keeps composer Skills available while probing public catalog after login",
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: true,
-      canReadSkills: false,
       catalogEffectivePermissions: [],
       catalogPermissionsKnown: false,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: true,
     }),
     {
       shouldFetchSkills: true,
@@ -186,11 +112,8 @@ test("enables composer Skills from public catalog effective permissions", () => 
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: true,
-      canReadSkills: false,
       catalogEffectivePermissions: ["skill:read"],
       catalogPermissionsKnown: true,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: false,
     }),
     {
       shouldFetchSkills: true,
@@ -203,11 +126,8 @@ test("disables composer Skills when catalog permissions deny stale auth projecti
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: true,
-      canReadSkills: true,
       catalogEffectivePermissions: [],
       catalogPermissionsKnown: true,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: true,
     }),
     {
       shouldFetchSkills: true,
@@ -220,11 +140,8 @@ test("keeps composer Skills enabled from auth projection before catalog resolves
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: true,
-      canReadSkills: true,
       catalogEffectivePermissions: [],
       catalogPermissionsKnown: false,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: true,
     }),
     {
       shouldFetchSkills: true,
@@ -237,11 +154,8 @@ test("recognizes catalog skill admin as composer Skills read permission", () => 
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: true,
-      canReadSkills: false,
       catalogEffectivePermissions: ["skill:admin"],
       catalogPermissionsKnown: true,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: false,
     }),
     {
       shouldFetchSkills: true,
@@ -254,11 +168,8 @@ test("keeps composer Skills fail-closed after catalog resolves without read perm
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: true,
-      canReadSkills: false,
       catalogEffectivePermissions: [],
       catalogPermissionsKnown: true,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: true,
     }),
     {
       shouldFetchSkills: true,
@@ -271,11 +182,8 @@ test("keeps composer Skills fail-closed while logged out after catalog resolves"
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: false,
-      canReadSkills: false,
       catalogEffectivePermissions: ["skill:read"],
       catalogPermissionsKnown: true,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: true,
     }),
     {
       shouldFetchSkills: false,
@@ -288,11 +196,8 @@ test("keeps composer Skills fail-closed while logged out before catalog resolves
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: false,
-      canReadSkills: true,
       catalogEffectivePermissions: [],
       catalogPermissionsKnown: false,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: true,
     }),
     {
       shouldFetchSkills: false,
@@ -305,11 +210,8 @@ test("keeps composer Skills fail-closed while logged out before catalog permissi
   assert.deepEqual(
     resolveComposerSkillsAvailability({
       isAuthenticated: false,
-      canReadSkills: false,
       catalogEffectivePermissions: ["skill:read"],
       catalogPermissionsKnown: false,
-      enableSkillsSettingKnown: false,
-      enableSkillsSetting: true,
     }),
     {
       shouldFetchSkills: false,

@@ -68,9 +68,9 @@ export function UserMessageBubble({
   const hasContent = content && content.trim().length > 0;
 
   return (
-    <div className="w-full px-2 py-3 sm:py-4 sm:px-4 group">
-      <div className="mx-auto flex max-w-3xl lg:max-w-4xl xl:max-w-5xl justify-end px-2">
-        <div className="flex flex-col items-end max-w-[90%]">
+    <div className="group w-full px-2 py-2 sm:px-4 sm:py-3">
+      <div className="mx-auto flex max-w-[68rem] justify-end px-1 sm:px-2">
+        <div className="flex max-w-[90%] flex-col items-end sm:max-w-[75%]">
           {/* Attachment preview - outside message bubble */}
           {hasAttachments && renderAttachments()}
 
@@ -86,7 +86,7 @@ export function UserMessageBubble({
           {/* Message bubble */}
           {hasContent && (
             <div
-              className="max-w-full rounded-lg border px-5 py-2 shadow-[0_4px_12px_rgba(18,38,63,0.03)]"
+              className="max-w-full rounded-lg border px-4 py-2 shadow-[0_4px_12px_rgba(18,38,63,0.03)]"
               style={{
                 background:
                   "color-mix(in srgb, var(--theme-primary-light) 42%, var(--theme-bg-card))",
@@ -103,7 +103,7 @@ export function UserMessageBubble({
           )}
 
           {/* Action buttons - show on hover */}
-          <div className="flex justify-end mt-2 gap-1">
+          <div className="mt-1 flex justify-end gap-1">
             <button
               onClick={handleCopy}
               className={clsx(

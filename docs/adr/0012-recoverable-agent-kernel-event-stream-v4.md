@@ -1,6 +1,10 @@
 # ADR 0012: Recoverable Agent-Kernel Event Stream v4
 
-Status: accepted; active v4 wire and runtime contract
+Status: accepted v4 event model; publication and recovery superseded by [ADR 0013](0013-redis-stream-only-sse.md)
+
+The publication queues, Pub/Sub delivery, terminal intents and successor
+operations below describe the former implementation. Current transport and
+migration instructions belong to ADR 0013 and its linked owning contracts.
 
 Date: 2026-08-17
 
@@ -42,13 +46,15 @@ identity, Run identity, nullable-but-present message and causation references,
 committed business `seq`, stream incarnation, replayability, trace reference,
 commit time, and a strict event payload. Application `seq` is the committed
 Run-local business order and is separate from the Redis SSE cursor and semantic
-`event_id`. Message, thinking, model, tool, and subagent events require a
-non-null public `message_id`; Agent progress, artifact, policy, and Run events
-may use null.
+`event_id`. Message, commentary, thinking, model, tool, and subagent events
+require a non-null public `message_id`; Agent progress, artifact, policy, and Run
+events may use null.
 
 The closed Agent-kernel registry is:
 
 - `message.started`, `message.delta`, `message.completed`;
+- `commentary.delta` for disclosure-safe, tool-using Assistant progress that is
+  presented as work activity and never appended to the terminal answer;
 - `thinking.started`, `thinking.delta`, `thinking.completed`, `model.completed`;
 - `agent.progress` for fixed, server-owned execution-phase lifecycle;
 - `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;
@@ -59,25 +65,19 @@ The closed Agent-kernel registry is:
 - `run.cancel_requested`, `run.succeeded`, `run.cancelled`, `run.failed`.
 
 Every payload is bounded and closed. Public identifiers use disclosure-safe
-patterns; model-provided public reasoning summaries, server-owned phase messages,
-fixed Tool start/result summaries, final content, durations, turns, progress,
-artifact metadata, and reference arrays have explicit size bounds. The Claude SDK
-is configured with `thinking.display = summarized`; the Runner admits only the
-exact SDK `ThinkingBlock` type and extracts only its `thinking` value. That
-complete value is sanitized before it crosses the authenticated callback as one
-internal summary fact. The callback authority, rather than the caller, derives
-an opaque `thinking_id` and creates the ordered `thinking.started` /
-`thinking.delta` / `thinking.completed` sequence with bounded chunks. Sensitive
-fragments are redacted without discarding the remaining public summary. The SDK
-`signature` is never a callback or public field.
-Legacy v4 rows with an empty payload or fixed summary remain replayable, but new
-rows do not synthesize fixed reasoning text. Provider-internal reasoning not
-returned as public summarized thinking, raw SDK fields, commands, paths,
-arguments, outputs, exceptions, and raw capability or task identifiers are not
-protocol fields. Render families are registry
-metadata only in this phase: `text`, `thinking_state`, `agent_progress`,
-`tool_activity`, `subagent_activity`, `artifact`, `policy_result`,
-`public_error`, `cancelled`, and `terminal`.
+patterns; server-owned phase messages, sanitized commentary, fixed Tool
+start/result summaries, final content, durations, turns, progress, artifact
+metadata, and reference arrays have explicit size bounds. The Claude SDK is
+configured with
+`thinking.display = omitted`; the Runner does not admit `ThinkingBlock` content
+into the answer or callback projection. Internal model reasoning, raw SDK fields,
+commands, paths, arguments, outputs, exceptions, and raw capability or task
+identifiers are not protocol fields. Legacy `thinking.*` rows remain readable for
+stream compatibility, but current execution does not create them and current
+Chat renderers do not display them. Render families are registry metadata only in
+this phase: `text`, `thinking_state`, `agent_progress`, `tool_activity`,
+`subagent_activity`, `artifact`, `policy_result`, `public_error`, `cancelled`,
+and `terminal`.
 
 Transport controls use the separate schema
 `ai-platform.public-run-stream-control.v4`. The closed controls are
@@ -107,7 +107,15 @@ controls do not consume application ordering. Committed public `run_events`
 are published through claim-token-fenced, transaction-external Redis I/O.
 Missing terminal streams recover by building an inactive successor incarnation,
 verifying its persisted receipt and source fingerprint, and atomically
-activating it under the current Run and Attempt authority.
+activating it under the current Run and Attempt authority. A historical pending
+terminal event whose exact Redis stream and state have both expired, and whose
+Attempt authority and active sandbox lease no longer exist, cannot use that
+recovery path. Maintenance may instead suppress only that exact claimed
+terminal event after revalidating the matching terminal Run and stream
+authority. This disposition retains the durable row and an audit reason,
+creates no Redis receipt, and never applies to an active, mismatched, or merely
+unavailable stream. One failing publication scope does not prevent other bounded
+scopes from draining before the failure is reported.
 
 The hard cutover coordinates producer admission, durable draining, successor
 activation, gateway replay/live delivery, frontend reduction, packaging, and

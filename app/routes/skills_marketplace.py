@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from typing import Any, NoReturn
+from typing import Any
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
@@ -371,12 +371,6 @@ def _request_names(payload: Any) -> list[str]:
     if len(names) != len(set(names)):
         raise HTTPException(status_code=400, detail="duplicate_skill_names")
     return names
-
-
-def _direct_marketplace_write_not_backed(skill_name: str | None = None) -> NoReturn:
-    if skill_name is not None:
-        _safe_skill_name(skill_name)
-    raise HTTPException(status_code=409, detail="marketplace_direct_write_contract_not_backed")
 
 
 async def _read_skill_package_upload(file: UploadFile) -> bytes:
@@ -996,20 +990,6 @@ async def list_marketplace(
     )
 
 
-@router.post("/marketplace/")
-async def create_marketplace_skill(
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> MarketplaceSkillResponse:
-    """Retained compatibility route; release writes belong to the Admin lifecycle."""
-
-    _require_permission(principal, "marketplace:admin")
-    _require_ai_admin(principal)
-    if not isinstance(payload, dict) or not payload.get("skill_name"):
-        raise HTTPException(status_code=400, detail="marketplace_skill_name_required")
-    _direct_marketplace_write_not_backed(str(payload["skill_name"]))
-
-
 @router.get("/marketplace/tags", response_model=MarketplaceTagsResponse)
 async def list_marketplace_tags(
     principal: AuthPrincipal = Depends(require_principal),
@@ -1042,19 +1022,6 @@ async def get_marketplace_skill(
         ),
         principal,
     )
-
-
-@router.put("/marketplace/{skill_name}")
-async def update_marketplace_skill_direct(
-    skill_name: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> MarketplaceSkillResponse:
-    """Retained compatibility route; release writes belong to the Admin lifecycle."""
-
-    _require_permission(principal, "marketplace:admin")
-    _require_ai_admin(principal)
-    _direct_marketplace_write_not_backed(skill_name)
 
 
 @router.patch("/marketplace/{skill_name}/activate")

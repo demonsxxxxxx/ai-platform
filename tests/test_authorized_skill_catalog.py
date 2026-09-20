@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAccessDecision
 from app.executors.base import RunPayload
@@ -55,6 +57,20 @@ class _DispatchV4EventPersistence:
 _DISPATCH_V4_CAPABILITIES = types.SimpleNamespace(
     pending_admissions=_DispatchV4PendingAdmissions(),
     event_persistence=_DispatchV4EventPersistence(),
+)
+
+
+async def _no_attempt_lifecycle_operation(*_args, **_kwargs):
+    return None
+
+
+_TEST_ATTEMPT_LIFECYCLE = types.SimpleNamespace(
+    get=_no_attempt_lifecycle_operation,
+    get_for_queue_attempt=_no_attempt_lifecycle_operation,
+    start_worker=_no_attempt_lifecycle_operation,
+    assert_worker_current=_no_attempt_lifecycle_operation,
+    request_cancel=_no_attempt_lifecycle_operation,
+    terminalize=_no_attempt_lifecycle_operation,
 )
 
 
@@ -333,7 +349,7 @@ async def test_catalog_truncation_is_deterministic_bounded_and_explicit(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_catalog_truncation_preserves_every_agent_skill_set_root(monkeypatch):
+async def test_agent_skill_set_catalog_excludes_other_discoverable_skills(monkeypatch):
     monkeypatch.setattr(catalog, "MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES", 2)
     rows = [_skill_row(skill_id) for skill_id in ("skill-a", "skill-y", "skill-z")]
     rows_by_id = {str(row["skill_id"]): row for row in rows}
@@ -355,8 +371,9 @@ async def test_catalog_truncation_preserves_every_agent_skill_set_root(monkeypat
     )
 
     assert resolution.snapshot.available_skill_ids == ("skill-z", "skill-y")
-    assert resolution.snapshot.truncated is True
-    assert resolution.snapshot.omitted_count == 1
+    assert resolution.snapshot.truncated is False
+    assert resolution.snapshot.omitted_count == 0
+    assert resolution.snapshot.entry("skill-a") is None
     assert resolution.snapshot.materialized_skill_ids == ("skill-z", "skill-y")
 
 
@@ -451,6 +468,28 @@ async def test_runtime_catalog_rejects_identity_swap_and_manifest_set_expansion(
         "reference-fact-extraction",
     )
 
+    selected_pin = resolution.manifests[0]
+    compact_input = resolution.runtime_input_updates(pinned_manifests=[selected_pin])
+    assert [item["skill_id"] for item in compact_input[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY]] == [
+        "reference-fact-extraction"
+    ]
+    compact_loaded = load_runtime_authorized_skill_catalog(
+        compact_input, expected_binding=binding, pinned_manifests=[selected_pin]
+    )
+    assert compact_loaded is not None
+    assert compact_loaded.manifest_json == loaded.manifest_json
+    with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
+        load_runtime_authorized_skill_catalog(compact_input, expected_binding=binding)
+    tampered_pin = json.loads(json.dumps(selected_pin))
+    tampered_pin["description"] = "changed"
+    with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
+        load_runtime_authorized_skill_catalog(
+            compact_input, expected_binding=binding, pinned_manifests=[tampered_pin]
+        )
+    assert load_runtime_authorized_skill_catalog(
+        runtime_input, expected_binding=binding, pinned_manifests=[selected_pin]
+    ) == loaded
+
     with pytest.raises(AuthorizedSkillCatalogError, match="binding_mismatch"):
         load_runtime_authorized_skill_catalog(
             runtime_input,
@@ -463,6 +502,11 @@ async def test_runtime_catalog_rejects_identity_swap_and_manifest_set_expansion(
     )
     with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
         load_runtime_authorized_skill_catalog(injected, expected_binding=binding)
+
+    reordered = json.loads(json.dumps(runtime_input))
+    reordered[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY].reverse()
+    with pytest.raises(AuthorizedSkillCatalogError, match="materializations_mismatch"):
+        load_runtime_authorized_skill_catalog(reordered, expected_binding=binding)
 
     tampered = json.loads(json.dumps(runtime_input))
     tampered[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY][1]["description"] = "tampered"
@@ -659,6 +703,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
     loaded = load_runtime_authorized_skill_catalog(
         authorization.payload.input,
         expected_binding=_binding(selected_skill_id="ctd-32s73-stability-template-fill"),
+        pinned_manifests=authorization.payload.skill_manifests,
     )
     assert loaded is not None
     assert set(loaded.snapshot.available_skill_ids) == {
@@ -730,7 +775,9 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "skill_id": "general-chat",
         "model_id": stored["model_id"],
         "model_value": stored["model_value"],
-        "model_gateway_revision": None,
+        "model_gateway_revision": 1,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": ["admin"],
         "principal_department_id": "qa",
@@ -762,7 +809,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
     async def transaction():
         yield object()
 
-    async def mark_run_running(_conn, **kwargs):
+    async def lock_queued_run_for_attempt(_conn, **kwargs):
         calls.append(("lock", kwargs))
         return locked_run
 
@@ -802,9 +849,22 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
     async def no_publication(*_args, **_kwargs):
         return None
 
+    async def no_checkpoint_usage(_conn, **_kwargs):
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    async def no_provider_lineage(_conn, **_kwargs):
+        return None
+
     monkeypatch.setattr("app.worker.transaction", transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    _TEST_ATTEMPT_LIFECYCLE.lock_queued_run = lock_queued_run_for_attempt
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    async def load_frozen_model(_conn, **_kwargs):
+        return {key: locked_run[key] for key in (
+            "model_id", "model_value", "model_gateway_revision",
+            "max_input_tokens", "max_output_tokens",
+        )}
+
+    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
@@ -813,8 +873,16 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         materialize_run_skill_manifests,
     )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
+        no_checkpoint_usage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        no_provider_lineage,
+    )
     monkeypatch.setattr("app.worker.admit_v4_stream", no_publication)
-    monkeypatch.setattr("app.worker.publish_pending_run_terminal", no_publication)
+    monkeypatch.setattr("app.worker.publish_run_event", no_publication)
 
 
 @pytest.mark.parametrize(
@@ -865,13 +933,14 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
     monkeypatch.setattr("app.worker.repositories.validate_replay_skill_manifests", forbidden)
     monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", forbidden)
     monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", forbidden)
-    monkeypatch.setattr("app.worker._ensure_worker_context_snapshot", forbidden)
+    monkeypatch.setattr("app.worker.materialize_queued_worker_context_snapshot", forbidden)
     monkeypatch.setattr("app.worker._create_worker_runtime_sandbox_lease", forbidden)
 
     outcome = await process_run_payload(
         raw,
         registry=ForbiddenRegistry(),
         v4_capabilities=_DISPATCH_V4_CAPABILITIES,
+        run_attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert outcome.status == "failed"
@@ -952,6 +1021,7 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
         raw,
         registry=ForbiddenRegistry(),
         v4_capabilities=_DISPATCH_V4_CAPABILITIES,
+        run_attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
     )
 
     assert locked_run["principal_roles"] == ["admin"]
@@ -1075,6 +1145,12 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     selected_manifest = _manifest_from_row(rows[1])
+    compact_input = resolution.runtime_input_updates(
+        pinned_manifests=[selected_manifest]
+    )
+    assert [item["skill_id"] for item in compact_input[catalog.RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY]] == [
+        "reference-fact-extraction"
+    ]
     payload = RunPayload(
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -1085,7 +1161,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
         agent_id="general-agent",
         skill_id="ctd-32s73-stability-template-fill",
         file_ids=[],
-        input={"message": "Route this request", **resolution.runtime_input_updates()},
+        input={"message": "Route this request", **compact_input},
         skill_version=str(selected_manifest["version"]),
         release_decision={
             "schema_version": RELEASE_DECISION_SCHEMA_VERSION,
@@ -1093,7 +1169,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
             "selected_version": str(selected_manifest["version"]),
             "selected_track": "manifest_pin",
         },
-        skill_manifests=resolution.manifests,
+        skill_manifests=[selected_manifest],
     )
     workspace = tmp_path / "sandbox" / "workspace"
 
@@ -1312,6 +1388,7 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr(
@@ -1336,7 +1413,8 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
     assert result.error is None
     assert result.used_skills == ["skill-c"]
     assert result.used_skills_source == "executor_hook"
-    assert 'exactly this input: {"skill":"skill-c"}' in (
+    assert captured["prompt_messages"][0]["message"]["content"] == "route implicitly"
+    assert "Authoritative platform Skill requirement" not in (
         captured["prompt_messages"][0]["message"]["content"]
     )
 
@@ -1426,6 +1504,7 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         ResultMessage=ResultMessage,
         TextBlock=Message,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr(
@@ -1454,9 +1533,8 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
         },
     )
 
-    assert 'exactly this input: {"skill":"ctd-32s73-stability-template-fill"}' in captured[
-        "prompt"
-    ]
+    assert captured["prompt"] == "use selected"
+    assert "Authoritative platform Skill requirement" not in captured["prompt"]
     assert captured["skills"] == skill_ids
     assert captured["allowed_tools"] == [
         "Skill(ctd-32s73-stability-template-fill)",

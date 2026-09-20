@@ -18,6 +18,7 @@ function createImageAttachment(
     size: overrides.size ?? 42,
     url: overrides.url ?? "/api/ai/artifacts/image/download",
     uploadProgress: overrides.uploadProgress,
+    uploadStatus: overrides.uploadStatus,
     isUploading: overrides.isUploading,
   };
 }
@@ -46,4 +47,30 @@ test("AttachmentCard does not server-render raw safe platform image attachment U
 
   assert.doesNotMatch(markup, /<img\b/);
   assert.doesNotMatch(markup, /\/api\/ai\/artifacts\/safe-image\/download/);
+});
+
+test("AttachmentCard exposes queued and capacity-waiting upload states", () => {
+  const queued = renderToStaticMarkup(
+    React.createElement(AttachmentCard, {
+      attachment: createImageAttachment({
+        isUploading: true,
+        uploadStatus: "queued",
+      }),
+      isUploading: true,
+    }),
+  );
+  const retrying = renderToStaticMarkup(
+    React.createElement(AttachmentCard, {
+      attachment: createImageAttachment({
+        isUploading: true,
+        uploadStatus: "retrying",
+      }),
+      isUploading: true,
+    }),
+  );
+
+  assert.match(queued, /等待上传/);
+  assert.match(retrying, /等待可用上传名额/);
+  assert.doesNotMatch(queued, /role="progressbar"/);
+  assert.doesNotMatch(retrying, /role="progressbar"/);
 });

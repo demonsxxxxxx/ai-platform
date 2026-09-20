@@ -7,10 +7,12 @@ an invocation is either allowed now or denied now.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
-from app.validation import SAFE_ID_PATTERN
+from app.mcp.api import is_safe_mcp_id, is_valid_mcp_public_tool_name
 
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
@@ -32,6 +34,79 @@ BUILTIN_TOOL_IDENTITIES = frozenset(
         "Skill",
     }
 )
+
+
+@dataclass(frozen=True)
+class BuiltinToolParameterContract:
+    """Exact SDK parameter keys accepted for one builtin tool identity."""
+
+    allowed_parameter_keys: tuple[str, ...]
+    required_parameter_keys: tuple[str, ...] = ()
+
+
+BUILTIN_TOOL_PARAMETER_CONTRACTS: Mapping[
+    str, BuiltinToolParameterContract
+] = MappingProxyType(
+    {
+        "Read": BuiltinToolParameterContract(
+            ("file_path", "offset", "limit", "pages"),
+            ("file_path",),
+        ),
+        "Glob": BuiltinToolParameterContract(("pattern", "path"), ("pattern",)),
+        "Grep": BuiltinToolParameterContract(
+            (
+                "pattern",
+                "path",
+                "glob",
+                "output_mode",
+                "-i",
+                "multiline",
+                "head_limit",
+                "offset",
+                "context",
+                "-A",
+                "-B",
+                "-C",
+                "-n",
+                "-o",
+                "type",
+            ),
+            ("pattern",),
+        ),
+        "LS": BuiltinToolParameterContract(("path",)),
+        "Bash": BuiltinToolParameterContract(
+            ("command", "timeout", "description"),
+            ("command",),
+        ),
+        "Write": BuiltinToolParameterContract(
+            ("file_path", "content"),
+            ("file_path", "content"),
+        ),
+        "Edit": BuiltinToolParameterContract(
+            ("file_path", "old_string", "new_string", "replace_all"),
+            ("file_path", "old_string", "new_string"),
+        ),
+        "NotebookEdit": BuiltinToolParameterContract(
+            ("notebook_path", "new_source", "cell_id", "cell_type", "edit_mode"),
+            ("notebook_path", "new_source"),
+        ),
+        "Agent": BuiltinToolParameterContract(
+            ("agent", "prompt", "description"),
+            ("agent",),
+        ),
+        "WebFetch": BuiltinToolParameterContract(
+            ("url", "prompt"),
+            ("url",),
+        ),
+        "WebSearch": BuiltinToolParameterContract(("query",), ("query",)),
+        "Skill": BuiltinToolParameterContract(("skill",), ("skill",)),
+    }
+)
+
+if frozenset(BUILTIN_TOOL_PARAMETER_CONTRACTS) != BUILTIN_TOOL_IDENTITIES:
+    raise RuntimeError("builtin_tool_parameter_contract_identity_mismatch")
+
+
 @dataclass(frozen=True)
 class ToolPolicyDecision:
     """One synchronous policy result; ``outcome`` is always allow or deny."""
@@ -70,7 +145,7 @@ def _canonical_identity(value: object) -> str:
     if len(parts) != 2:
         return ""
     server, tool = parts
-    if not SAFE_ID_PATTERN.fullmatch(server) or not SAFE_ID_PATTERN.fullmatch(tool):
+    if not is_safe_mcp_id(server) or not is_valid_mcp_public_tool_name(tool):
         return ""
     return value
 

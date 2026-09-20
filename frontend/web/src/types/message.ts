@@ -24,10 +24,6 @@ export interface Message {
   runId?: string;
   // Server-authorized catalog label retained after Skill selection is accepted.
   lockedSkillLabel?: string;
-  // 用户对该消息的反馈 (从 feedback API 加载)
-  feedback?: import("./feedback").RatingValue;
-  // 反馈 ID
-  feedbackId?: string;
   // 是否被取消
   cancelled?: boolean;
 }
@@ -56,6 +52,7 @@ export interface SandboxPart {
   sandbox_id?: string;
   error?: string;
   timestamp?: string;
+  ready_duration_ms?: number;
 }
 
 // Token 使用统计块类型
@@ -128,12 +125,15 @@ export interface ExecutionTimelinePart {
   status: ExecutionTimelineStatus;
   progress: ExecutionTimelineProgress;
   safe_file_name: string | null;
+  started_at?: string;
+  completed_at?: string;
 }
 
 /** Terminal-only grouping of allowlisted public execution steps. */
 export interface ExecutionProcessPart {
   type: "execution_process";
   steps: ExecutionTimelinePart[];
+  elapsed_ms?: number;
 }
 
 export type ToolPermissionDecision = "allow_once" | "allow_for_run" | "deny";
@@ -223,7 +223,6 @@ export interface ToolPart {
   /** Server-authorized, non-sensitive identity used by the v4 Render Contract. */
   public_operation_id?: string;
   public_category?: string;
-  public_input_summary?: string;
   duration_ms?: number;
   evidence_refs?: string[];
   artifact_refs?: string[];

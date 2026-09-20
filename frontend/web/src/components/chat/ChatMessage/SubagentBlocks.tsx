@@ -12,7 +12,6 @@ import {
   XCircle,
   Ban,
   ChevronRight,
-  Brain,
   Users,
   Box,
   Loader2,
@@ -331,68 +330,6 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
 // Utility
 // ==========================================
 
-// Thinking Block - pill button, content in sidebar panel
-export function ThinkingBlock({
-  content,
-  isStreaming,
-  panelKey,
-}: {
-  content: string;
-  isStreaming?: boolean;
-  panelKey?: string;
-}) {
-  const { t } = useTranslation();
-
-  const status: CollapsibleStatus = isStreaming ? "loading" : "success";
-
-  useEffect(() => {
-    if (!isPersistentToolPanelOpen(panelKey)) return;
-    updatePersistentToolPanel(
-      (prev) => ({
-        ...prev,
-        status,
-        children: (
-          <div className="p-3 sm:p-4 [&_.markdown-preview]:thinking-content">
-            <MarkdownContent content={content} isStreaming={isStreaming} />
-          </div>
-        ),
-      }),
-      panelKey,
-    );
-  }, [content, isStreaming, panelKey, status]);
-
-  return (
-    <CollapsiblePill
-      status={status}
-      icon={
-        <Brain
-          size={12}
-          className="shrink-0 text-stone-500 dark:text-stone-400"
-        />
-      }
-      label={
-        isStreaming ? t("chat.message.thinking") : t("chat.message.thought")
-      }
-      variant="thinking"
-      animatedDots={isStreaming}
-      expandable={!!content}
-      onPanelOpen={() => {
-        openPersistentToolPanel({
-          title: t("chat.message.thought"),
-          icon: <Brain size={16} />,
-          status,
-          panelKey,
-          children: (
-            <div className="p-3 sm:p-4 [&_.markdown-preview]:thinking-content">
-              <MarkdownContent content={content} isStreaming={isStreaming} />
-            </div>
-          ),
-        });
-      }}
-    />
-  );
-}
-
 // Subagent Block - compact card, content always in sidebar panel
 export function SubagentBlock({
   agent_id,
@@ -687,18 +624,28 @@ export function SandboxItem({
   status,
   sandboxId,
   error,
+  readyDurationMs,
 }: {
   status: "starting" | "ready" | "error" | "cancelled";
   sandboxId?: string;
   error?: string;
+  readyDurationMs?: number;
 }) {
   const { t } = useTranslation();
-  const [isExpanded, setIsExpanded] = useState(false);
-
   const hasDetails =
     (status === "ready" && sandboxId) ||
     (status === "error" && error) ||
     status === "cancelled";
+  const duration =
+    status === "ready" &&
+    typeof readyDurationMs === "number" &&
+    Number.isInteger(readyDurationMs) &&
+    readyDurationMs >= 0 &&
+    readyDurationMs <= 86_400_000
+      ? readyDurationMs < 1000
+        ? `${readyDurationMs}毫秒`
+        : `${(readyDurationMs / 1000).toFixed(2)}秒`
+      : null;
 
   const pillStatus: CollapsibleStatus =
     status === "starting"
@@ -720,24 +667,31 @@ export function SandboxItem({
             ? t("chat.sandbox.ready")
             : t("chat.sandbox.name")
       }
+      suffix={
+        duration ? (
+          <span data-sandbox-ready-duration className="text-[10px] font-medium">
+            {t("chat.sandbox.readyDuration", { duration })}
+          </span>
+        ) : undefined
+      }
       expandable={!!hasDetails}
-      onExpandChange={setIsExpanded}
       animatedDots={status === "starting"}
+      formatLabel={false}
     >
-      {isExpanded && hasDetails && (
-        <div className="mt-1 ml-4 pl-3 border-l-2 border-stone-300 dark:border-stone-600 max-h-40 overflow-y-auto">
+      {hasDetails && (
+        <div className="ml-4 mt-1 max-h-40 overflow-y-auto border-l-2 border-stone-300 pl-3 dark:border-stone-600">
           {status === "ready" && sandboxId && (
-            <div className="text-xs text-stone-600 dark:text-stone-300 pl-1 py-1 font-mono">
+            <div className="py-1 pl-1 font-mono text-xs text-stone-600 dark:text-stone-300">
               ID: {sandboxId}
             </div>
           )}
           {status === "error" && error && (
-            <div className="text-xs text-red-600 dark:text-red-400 pl-1 py-1">
+            <div className="py-1 pl-1 text-xs text-red-600 dark:text-red-400">
               {error}
             </div>
           )}
           {status === "cancelled" && (
-            <div className="text-xs text-amber-600 dark:text-amber-400 pl-1 py-1">
+            <div className="py-1 pl-1 text-xs text-amber-600 dark:text-amber-400">
               {t("chat.cancelled")}
             </div>
           )}

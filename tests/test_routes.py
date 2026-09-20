@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
+from app.bootstrap.files import configure_file_preview_services
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.file_preview_contracts import XlsxPreviewResponse
 from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
@@ -61,7 +62,7 @@ EVENT_SCHEMA_FIELDS = {"schema_version": "ai-platform.event-envelope.v1"}
 _ORIGINAL_RESOLVE_AGENT_SKILL = repository_module.resolve_agent_skill
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
 _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES = repository_module.authorize_replay_run_capabilities
-_ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY = runs_module.reauthorize_pinned_run_for_replay
+_ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY = runs_module._agent_profile_authority.reauthorize_pinned_run_for_replay
 
 
 class _NoOpPendingAdmissions:
@@ -114,6 +115,17 @@ async def resume_run(*args, **kwargs):
 
 
 @pytest.fixture(autouse=True)
+def _stub_terminal_provider_lineage(monkeypatch):
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
+@pytest.fixture(autouse=True)
 def default_run_model_inheritance(monkeypatch):
     async def inherit_run_model(*_args, **_kwargs):
         return None
@@ -128,6 +140,8 @@ def default_run_model_binding(monkeypatch):
             model_id="platform-default",
             model_value="provider/default",
             connection_revision=None,
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
     async def bind_model(*_args, **_kwargs):
@@ -165,6 +179,13 @@ def _stub_run_control_operation_guard(monkeypatch, events):
 
     monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", record_lock)
     monkeypatch.setattr(repository_module, "get_run_control_operation", no_existing_operation)
+
+
+def _stub_retryable_run_source(monkeypatch):
+    async def retryable_source(conn, **kwargs):
+        return {"status": "failed", "error_code": None}
+
+    monkeypatch.setattr(repository_module, "get_authorized_run", retryable_source)
 
 
 def principal(**overrides):
@@ -276,7 +297,7 @@ def allow_existing_run_route_tests_through_enqueue_authorization(monkeypatch):
     monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", allow, raising=False)
     monkeypatch.setattr(repository_module, "update_run_auth_snapshot", update_auth_snapshot, raising=False)
     monkeypatch.setattr(
-        runs_module,
+        runs_module._agent_profile_authority,
         "reauthorize_pinned_run_for_replay",
         allow_persisted_run_reauthorization,
     )
@@ -1539,7 +1560,7 @@ async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(mo
         "expected_sha256": None,
         "expected_byte_count": len(raw),
     }
-    assert payload["schema_version"] == "ai-platform.file-preview.v1"
+    assert payload["schema_version"] == "ai-platform.file-preview.v2"
     assert payload["kind"] == "xlsx_table"
     assert payload["content"]["sheets"][0]["name"] == "Checks"
     assert "storage_key" not in payload
@@ -1665,6 +1686,29 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     async def fake_create_file(conn, **kwargs):
         assert kwargs["storage_key"].startswith("tenants/tenant-a/")
 
+    async def fake_get_file(conn, **kwargs):
+        return None
+
+    async def fake_get_upload_session(conn, **kwargs):
+        return {"state": "pending"} if kwargs.get("for_update") else None
+
+    async def fake_claim_direct_upload(conn, **kwargs):
+        return True
+
+    async def fake_complete_upload(conn, **kwargs):
+        return None
+
+    async def fake_cleanup_expired_uploads(storage):
+        return None
+
+    async def fake_get_file_storage_usage(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "default",
+            "user_id": "user-a",
+        }
+        return {"stored_bytes": 0, "reserved_bytes": 0, "active_uploads": 0}
+
     class FakeUpload:
         filename = "demo.txt"
         content_type = "text/plain"
@@ -1688,7 +1732,29 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     monkeypatch.setattr("app.routes.files.ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr("app.routes.files.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.files.create_file", fake_create_file)
+    monkeypatch.setattr("app.routes.files.get_file", fake_get_file)
+    monkeypatch.setattr(
+        "app.routes.files.get_authorized_file_upload_session",
+        fake_get_upload_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.files.claim_direct_file_upload_session",
+        fake_claim_direct_upload,
+    )
+    monkeypatch.setattr(
+        "app.routes.files.complete_file_upload_session",
+        fake_complete_upload,
+    )
+    monkeypatch.setattr(
+        "app.routes.files._cleanup_expired_upload_sessions",
+        fake_cleanup_expired_uploads,
+    )
+    monkeypatch.setattr("app.routes.files.get_file_storage_usage", fake_get_file_storage_usage)
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+    monkeypatch.setattr(
+        "app.routes.files._direct_upload_file_id",
+        lambda **_kwargs: "file_uploaded",
+    )
     monkeypatch.setattr("app.routes.files.new_id", lambda prefix: "file_uploaded")
 
     response = await upload_file(
@@ -1918,8 +1984,16 @@ async def test_preview_input_file_reads_storage_only_after_snapshot_authorizatio
     assert "content-disposition" not in response.headers
 
 
+@pytest.fixture
+def configured_file_preview_services() -> None:
+    configure_file_preview_services()
+
+
 @pytest.mark.asyncio
-async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser(monkeypatch):
+async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser(
+    monkeypatch,
+    configured_file_preview_services,
+):
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Checks"
@@ -1972,7 +2046,10 @@ async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser
 
 
 @pytest.mark.asyncio
-async def test_preview_input_file_returns_a_public_failure_from_the_real_child_parser(monkeypatch):
+async def test_preview_input_file_returns_a_public_failure_from_the_real_child_parser(
+    monkeypatch,
+    configured_file_preview_services,
+):
     raw = b"not an XLSX archive"
 
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
@@ -2710,6 +2787,12 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
                 "message": raw_terms[0],
                 "sdk_error": raw_terms[1],
                 "error": {"message": raw_terms[2]},
+                "runtime_diagnostics": {
+                    "sdk": {"errors": [raw_terms[0]]},
+                    "tool_calls": [
+                        {"tool_input": {"command": raw_terms[0]}}
+                    ],
+                },
             },
             "error_code": "claude_agent_sdk_runtime_error",
             "error_message": raw_terms[3],
@@ -2733,16 +2816,47 @@ async def test_get_run_allowlists_terminal_failure_and_preserves_admin_diagnosti
     ordinary = await get_run("run-a", principal=principal())
     admin = await get_run("run-a", principal=principal(roles=["admin"]))
 
-    fixed_message = "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
+    fixed_message = "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。"
     assert ordinary.result == {"message": fixed_message}
-    assert ordinary.error_code == "model_service_unavailable"
+    assert ordinary.error_code == "execution_service_unavailable"
     assert ordinary.error_message == fixed_message
     assert all(term not in ordinary.model_dump_json() for term in raw_terms)
+    assert "runtime_diagnostics" not in ordinary.model_dump_json()
     assert admin.result["message"] == raw_terms[0]
     assert admin.result["sdk_error"] == raw_terms[1]
     assert admin.result["error"] == {"message": raw_terms[2]}
     assert admin.error_code == "claude_agent_sdk_runtime_error"
     assert admin.error_message == raw_terms[3]
+
+    async def fake_projection_failure(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "failed",
+            "input_json": {},
+            "result_json": {
+                "sdk_turn_diagnostics": {
+                    "projection_failure_reason": "sanitizer_rejected",
+                    "private": raw_terms[0],
+                }
+            },
+            "error_code": "claude_agent_sdk_upstream_error",
+            "error_message": raw_terms[3],
+        }
+
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        fake_projection_failure,
+    )
+    projection_failure = await get_run("run-a", principal=principal())
+
+    assert projection_failure.error_code == "model_service_unavailable"
+    assert "projection_failure_reason" not in projection_failure.result
+    assert "sanitizer_rejected" not in projection_failure.error_message
+    assert all(term not in projection_failure.model_dump_json() for term in raw_terms)
 
 
 @pytest.mark.asyncio
@@ -3807,6 +3921,8 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
             model_id="catalog-default",
             model_value="provider/default",
             connection_revision=9,
+            max_input_tokens=32000,
+            max_output_tokens=2048,
         )
 
     async def bind_model(conn, **kwargs):
@@ -3878,6 +3994,8 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         "model_id": "catalog-default",
         "model_value": "provider/default",
         "connection_revision": 9,
+        "max_input_tokens": 32000,
+        "max_output_tokens": 2048,
     }
     snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")
     event_index = next(index for index, item in enumerate(calls) if item[0] == "event")
@@ -4086,7 +4204,7 @@ async def test_create_run_queues_skillless_harness_without_skill_authority(monke
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_agent", active_harness_agent)
-    monkeypatch.setattr(repository_module, "authorize_selected_chat_mcp_tools", authorize_mcp)
+    monkeypatch.setattr(runs_module, "authorize_selected_chat_mcp_tools", authorize_mcp)
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", fail_skill_path)
     monkeypatch.setattr(repository_module, "authorize_selected_run_capabilities", fail_skill_path)
     monkeypatch.setattr(repository_module, "insert_run_skill_snapshots_at_creation", fail_skill_path)
@@ -4288,6 +4406,7 @@ async def test_requeue_routes_audit_capability_denial_after_source_transaction_r
     monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", deny_prepare)
     monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
     _stub_run_control_operation_guard(monkeypatch, events)
+    _stub_retryable_run_source(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await route_func("run-source", principal=principal(department_id="finance", roles=["user"]))
@@ -4435,7 +4554,7 @@ async def test_prepare_copied_agent_profile_reauthorizes_complete_skill_set(monk
     monkeypatch.setattr(repository_module, "update_run_auth_snapshot", no_write)
     monkeypatch.setattr(repository_module, "append_event", no_write)
     monkeypatch.setattr(repository_module, "update_run_input_execution_snapshot", no_write)
-    monkeypatch.setattr(runs_module, "reauthorize_pinned_run_for_replay", reauthorize)
+    monkeypatch.setattr(runs_module._agent_profile_authority, "reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr(runs_module, "record_initial_context_snapshot", record_context)
 
     queue_payload = await runs_module.prepare_copied_run_for_queue(
@@ -4525,6 +4644,7 @@ async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypa
     monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
     _stub_run_control_operation_guard(monkeypatch, calls)
+    _stub_retryable_run_source(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await route(
@@ -4592,6 +4712,7 @@ async def test_copy_retry_resume_capability_lifecycle_denial_returns_403_without
     monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
     _stub_run_control_operation_guard(monkeypatch, calls)
+    _stub_retryable_run_source(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await route(
@@ -4711,7 +4832,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES,
     )
     monkeypatch.setattr(
-        runs_module,
+        runs_module._agent_profile_authority,
         "reauthorize_pinned_run_for_replay",
         _ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY,
     )
@@ -4876,8 +4997,8 @@ async def test_create_run_rejects_file_skill_without_files(monkeypatch):
         await create_run(
             CreateRunRequest(
                 workspace_id="default",
-                agent_id="baoyu-translate",
-                capability_id="document_translation",
+                agent_id="qa-word-review",
+                capability_id="document_review",
                 file_ids=[],
             ),
             principal=principal(),
@@ -4953,8 +5074,8 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
         CreateRunRequest(
             workspace_id="default",
             session_id="ses-existing",
-            agent_id="baoyu-translate",
-            capability_id="document_translation",
+            agent_id="qa-word-review",
+            capability_id="document_review",
         ),
         principal=principal(),
     )
@@ -5900,6 +6021,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     assert calls["context"]["skill_id"] == "qa-file-reviewer"
     assert calls["context"]["input_payload"] == {"message": "继续审核", "copied_from_run_id": "run_source"}
     assert calls["context"]["message_ids"] == []
+    assert calls["context"]["include_session_history"] is True
     assert calls["context"]["file_ids"] == ["file_1"]
     assert calls["queue"]["context_snapshot_id"] == "ctx_copy"
     assert calls["queue"]["context_snapshot"]["source"] == "copy_run"

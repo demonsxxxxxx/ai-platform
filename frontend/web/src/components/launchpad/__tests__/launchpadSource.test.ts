@@ -1,62 +1,106 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import test from "node:test";
 
 const panelSource = readFileSync(
-  join(import.meta.dirname, "../LaunchpadPanel.tsx"),
+  new URL("../LaunchpadPanel.tsx", import.meta.url),
   "utf8",
 );
 
-test("launchpad panel opens company destinations externally without iframe embedding", () => {
+const catalogSource = readFileSync(
+  new URL("../catalog.ts", import.meta.url),
+  "utf8",
+);
+
+const favoritesSource = readFileSync(
+  new URL("../favorites.ts", import.meta.url),
+  "utf8",
+);
+
+test("company navigation follows the welcome-dashboard reference inside the existing shell", () => {
   assert.match(panelSource, /data-company-navigation-shell/);
-  assert.match(panelSource, /window\.open\(href,\s*"_blank"/);
-  assert.match(panelSource, /tab\.url/);
-  assert.match(panelSource, /openUrl\(tab\.url\)/);
-  assert.match(panelSource, /tab\.runtimeUrlKey/);
-  assert.match(panelSource, /disabled=\{tabUnavailable\}/);
-  assert.match(panelSource, /"noopener,noreferrer"/);
-  assert.doesNotMatch(panelSource, /data-legacy-webui-frame/);
-  assert.doesNotMatch(panelSource, /<iframe/);
-  assert.doesNotMatch(panelSource, /sandbox=/);
-  assert.doesNotMatch(panelSource, /allow="clipboard-read; clipboard-write"/);
-  assert.doesNotMatch(panelSource, /handlePreview/);
-  assert.doesNotMatch(panelSource, /getLegacyWebUiFrameUrl/);
+  assert.match(panelSource, /data-launchpad-dashboard/);
+  assert.match(panelSource, /useAuth/);
+  assert.match(panelSource, /launchpad\.welcome/);
+  assert.match(panelSource, /launchpad\.welcomeSubtitle/);
+  assert.match(panelSource, /launchpad\.commonServices/);
+  assert.match(panelSource, /launchpad\.aiAssistants/);
+  assert.doesNotMatch(panelSource, /<main/);
+  assert.doesNotMatch(panelSource, /gradient/);
 });
 
-test("launchpad panel has tabs, search, and unavailable rendering", () => {
-  assert.match(panelSource, /launchpadTabs/);
+test("company navigation provides searchable responsive website sections", () => {
+  assert.match(panelSource, /id="launchpad-search"/);
   assert.match(panelSource, /filterLaunchpadGroups/);
-  assert.match(panelSource, /launchpad\.unavailable/);
-  assert.match(panelSource, /fetchBrowserRuntimeConfig/);
-  assert.match(panelSource, /configureLaunchpadCatalog/);
-  assert.match(panelSource, /UNAVAILABLE_LAUNCHPAD_RUNTIME_URLS/);
-  assert.match(panelSource, /useState<LaunchpadTabKey>\("common"\)/);
-  assert.doesNotMatch(panelSource, /useState<LaunchpadTabKey>\("lingxi"\)/);
+  assert.match(panelSource, /sm:grid-cols-2/);
+  assert.match(panelSource, /xl:grid-cols-4/);
+  assert.match(panelSource, /scroll-smooth/);
+  assert.match(panelSource, /motion-reduce:scroll-auto/);
+  assert.match(panelSource, /focus-visible:ring-2/);
 });
 
-test("launchpad panel localizes page chrome and has mobile group navigation", () => {
-  assert.match(panelSource, /useTranslation/);
-  assert.match(panelSource, /t\("launchpad\.title"\)/);
-  assert.match(panelSource, /t\("launchpad\.searchPlaceholder"\)/);
-  assert.match(panelSource, /lg:hidden/);
-  assert.match(panelSource, /aria-label=\{t\("launchpad\.groupNavigation"\)\}/);
+test("website cards use copied icons and safe external navigation", () => {
+  assert.match(panelSource, /getLaunchpadIconUrl/);
+  assert.match(panelSource, /<img/);
+  assert.match(panelSource, /size-12/);
+  assert.match(panelSource, /object-contain/);
+  assert.match(panelSource, /resolveLaunchpadDestination/);
+  assert.match(panelSource, /href=\{destination\.href\}/);
+  assert.match(panelSource, /target="_blank"/);
+  assert.match(panelSource, /rel="noopener noreferrer"/);
+  assert.match(panelSource, /companyNavigation\.openEntry/);
+  assert.match(panelSource, /onError=/);
+  assert.match(panelSource, /motion-safe:animate-pulse/);
 });
 
-test("launchpad renders as a compact authenticated workbench page", () => {
-  assert.match(panelSource, /data-launchpad-workbench/);
-  assert.match(panelSource, /data-launchpad-results/);
-  assert.doesNotMatch(panelSource, /launchpad\.boundary/);
-  assert.doesNotMatch(panelSource, /AI Platform is the home entry/);
-  assert.doesNotMatch(panelSource, /作为首页入口/);
+test("document translator handoff binds the company credential to one trusted child window", () => {
+  assert.match(panelSource, /DOCUMENT_TRANSLATOR_ORIGIN = "http:\/\/10\.56\.0\.210:8000"/);
+  assert.match(panelSource, /event\.origin !== DOCUMENT_TRANSLATOR_ORIGIN \|\| event\.source !== childWindow/);
+  assert.match(panelSource, /DOCUMENT_TRANSLATOR_NONCE\.test\(nonce\)/);
+  assert.match(panelSource, /readyAccepted = true/);
+  assert.match(panelSource, /authApi[\s\S]{0,80}\.getCompanyCredentialForHandoff\(/);
+  assert.match(panelSource, /AbortSignal\.timeout\(DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS\)/);
+  assert.match(panelSource, /\{ type: "doctrans:auth", nonce, token: credential \}/);
+  assert.match(panelSource, /childWindow\.postMessage\([\s\S]*DOCUMENT_TRANSLATOR_ORIGIN/);
+  assert.match(panelSource, /DOCUMENT_TRANSLATOR_HANDOFF_TIMEOUT_MS/);
+  assert.doesNotMatch(panelSource, /localStorage|sessionStorage/);
+  assert.doesNotMatch(panelSource, /[?&](?:authorization|jwt|token|usertoken)=/i);
 });
 
-test("launchpad search filters the whole company catalog", () => {
-  assert.match(panelSource, /query\.trim\(\) \? launchpadGroups : activeGroups/);
-  assert.match(panelSource, /filterLaunchpadGroups\(searchGroups, query\)/);
-  assert.match(
-    panelSource,
-    /navigationGroups = query\.trim\(\) \? visibleGroups : activeGroups/,
-  );
-  assert.match(panelSource, /navigationGroups\.map\(\(group\) =>/);
+test("favorites use authenticated profile persistence instead of browser storage", () => {
+  assert.match(panelSource, /aria-pressed=\{isFavorite\}/);
+  assert.match(panelSource, /launchpad\.addFavorite/);
+  assert.match(panelSource, /launchpad\.removeFavorite/);
+  assert.match(panelSource, /id="launchpad-favorites"/);
+  assert.match(panelSource, /authApi[\s\S]{0,40}\.getProfile/);
+  assert.match(panelSource, /authApi\.updateMetadata/);
+  assert.match(panelSource, /currentUserIdRef\.current !== requestOwnerId/);
+  assert.match(panelSource, /favoritesOwnerId === user\?\.id/);
+  assert.doesNotMatch(panelSource, /localStorage/);
+  assert.match(favoritesSource, /LAUNCHPAD_FAVORITES_METADATA_KEY/);
+  assert.match(favoritesSource, /allowedIds\.has/);
+});
+
+test("AI application destinations use internal routes and direct external URLs", () => {
+  assert.doesNotMatch(panelSource, /fetchBrowserRuntimeConfig/);
+  assert.doesNotMatch(panelSource, /configureLaunchpadCatalog/);
+  assert.match(panelSource, /resolveLaunchpadDestination/);
+  assert.match(panelSource, /destination\.kind === "internal"/);
+  assert.match(panelSource, /navigate\(destination\.path\)/);
+  assert.match(catalogSource, /internalPath: "\/ai-apps\/sop-assistant"/);
+  assert.match(catalogSource, /internalPath: "\/ai-apps\/word-review"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.0\.210:8000"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:21465\/zh"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:21463\/"/);
+  assert.match(catalogSource, /url: "http:\/\/10\.56\.1\.57:21464\/"/);
+});
+
+test("obsolete tabs, iframe, and legacy configuration paths stay deleted", () => {
+  for (const source of [catalogSource, panelSource]) {
+    assert.doesNotMatch(source, /launchpadTabs/);
+    assert.doesNotMatch(source, /activeTab/);
+    assert.doesNotMatch(source, /Lingxi/);
+    assert.doesNotMatch(source, /<iframe/);
+    assert.doesNotMatch(source, /VITE_LEGACY/);
+  }
 });

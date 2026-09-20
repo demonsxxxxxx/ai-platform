@@ -1,9 +1,27 @@
 import type { MessagePart } from "../../../types";
+import { groupPublicExecutionStepsForDisplay } from "../../../hooks/useAgent/publicStreamPresentation";
 
 const ACTIONABLE_RUN_STATUS_PATTERN =
   /error|failed|failure|denied|blocked|forbidden|unauthori[sz]ed/i;
 
+const WORK_ACTIVITY_TYPES: ReadonlySet<MessagePart["type"]> = new Set([
+  "sandbox",
+  "tool",
+  "subagent",
+  "execution_step",
+  "execution_process",
+  "todo",
+  "summary",
+]);
+
+export function isWorkActivityPart(part: MessagePart): boolean {
+  return WORK_ACTIVITY_TYPES.has(part.type);
+}
+
 export function isVisibleMessagePart(part: MessagePart): boolean {
+  if (part.type === "thinking") {
+    return false;
+  }
   if (part.type !== "run_status") {
     return true;
   }
@@ -16,7 +34,7 @@ export function isVisibleMessagePart(part: MessagePart): boolean {
 }
 
 export function getVisibleMessageParts(parts: MessagePart[]): MessagePart[] {
-  return parts.flatMap((part): MessagePart[] => {
+  const visible = parts.flatMap((part): MessagePart[] => {
     if (!isVisibleMessagePart(part)) {
       return [];
     }
@@ -26,4 +44,5 @@ export function getVisibleMessageParts(parts: MessagePart[]): MessagePart[] {
 
     return [{ ...part, parts: getVisibleMessageParts(part.parts) }];
   });
+  return groupPublicExecutionStepsForDisplay(visible);
 }

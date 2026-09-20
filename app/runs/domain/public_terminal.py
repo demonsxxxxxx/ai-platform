@@ -16,9 +16,10 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "capability_not_authorized": "当前账号不能使用所选能力。请重新选择或联系管理员。",
     "tool_permission_denied": "任务所需工具未获授权。请调整请求或联系管理员。",
     "tool_invocation_evidence_mismatch": "工具调用证据未完整确认（tool_invocation_evidence_mismatch）。请重试；如问题持续，请联系管理员。",
+    "tool_execution_outcome_unconfirmed": "工具执行结果尚未确认。为避免重复操作，请勿重试；请联系管理员并提供任务编号。",
     "required_capability_unavailable": "任务所需执行能力当前不可用。请调整请求或联系管理员。",
     "skill_sandbox_admission_failed": "所选 Skill 未能通过隔离沙箱准入。请调整 Skill 或联系管理员。",
-    "context_file_too_large": "文件超过 32 MB 处理上限。请选择更小的文件后重试。",
+    "context_file_too_large": "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。",
     "context_file_pdf_password_required": "PDF 文件需要密码。请先解除密码保护后重新上传。",
     "context_file_password_required": "文件受密码保护。请先解除密码保护后重新上传。",
     "context_file_unsafe_content": "文件包含不允许的活动内容、宏或外部引用。请导出安全副本后重试。",
@@ -34,11 +35,17 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "context_file_staging_unavailable": "文件暂存失败。请稍后重试；如问题持续，请联系管理员。",
     "context_file_parser_contract_invalid": "文件处理器未能验证输入。请重新上传；如问题持续，请联系管理员。",
     "context_file_preprocessing_failed": "文件预处理失败。请重新导出后上传；如问题持续，请联系管理员。",
+    "current_request_too_large": "当前请求超过 16 KB 执行上限。请缩短或拆分请求后重试。",
     "run_cancelled": "任务已取消。取消前已产生的公开内容仍会保留。",
 }
 
 PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "terminal_reconciliation_failed": "terminal_reconciliation_failed",
+    "capability_callback_not_acknowledged": "required_capability_unavailable",
+    "capability_lifecycle_sequence_invalid": "required_capability_unavailable",
+    "claude_agent_sdk_missing_structured_terminal": "execution_service_unavailable",
+    "claude_agent_sdk_tool_admission_failed": "required_capability_unavailable",
+    "claude_agent_sdk_upstream_error": "model_service_unavailable",
     "native_tool_admission_failed": "skill_sandbox_admission_failed",
     "attachment_materialized_fact_invalid": "context_file_identity_mismatch",
     "attachment_parser_file_mapping_invalid": "context_file_identity_mismatch",
@@ -86,10 +93,12 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "context_file_name_conflict": "context_file_name_conflict",
     "context_file_storage_unavailable": "context_file_storage_unavailable",
     "context_file_preprocessing_failed": "context_file_preprocessing_failed",
+    "current_request_too_large": "current_request_too_large",
     "executor_deadline_exceeded": "run_timeout",
     "executor_cleanup_timeout": "run_timeout",
     "claude_agent_sdk_turn_limit_exceeded": "run_budget_exhausted",
-    "claude_agent_sdk_runtime_error": "model_service_unavailable",
+    "claude_agent_sdk_runtime_error": "execution_service_unavailable",
+    "claude_agent_sdk_timeout": "run_timeout",
     "claude_agent_sdk_disabled": "execution_service_unavailable",
     "claude_agent_sdk_import_failed": "execution_service_unavailable",
     "claude_agent_sdk_unavailable": "execution_service_unavailable",
@@ -103,6 +112,8 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "mcp_tool_denied": "tool_permission_denied",
     "tool_permission_denied": "tool_permission_denied",
     "tool_invocation_evidence_mismatch": "tool_invocation_evidence_mismatch",
+    "mcp_execution_succeeded_receipt_incomplete": "tool_execution_outcome_unconfirmed",
+    "mcp_execution_outcome_unknown": "tool_execution_outcome_unconfirmed",
     "required_tool_unavailable": "required_capability_unavailable",
     "required_tool_declaration_mismatch": "required_capability_unavailable",
     "required_tool_scope_mismatch": "required_capability_unavailable",
@@ -118,26 +129,30 @@ CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
 def public_terminal_projection(
     status: object,
     error_code: object = None,
+    result: object = None,
 ) -> dict[str, object] | None:
     """Build the sole ordinary-user projection for failed or cancelled terminals."""
+    del result
     normalized_status = normalize_run_status(str(status or ""))
+    raw_error_code = str(error_code or "").strip()
     if normalized_status == "cancelled":
         detail_code = "run_cancelled"
         detail_kind = "cancelled"
     elif normalized_status == "failed":
-        raw_error_code = str(error_code or "").strip()
         detail_code = PUBLIC_TERMINAL_ERROR_CODE_ALIASES.get(raw_error_code, "run_failed")
         detail_kind = "failed"
     else:
         return None
     message = PUBLIC_TERMINAL_DETAIL_MESSAGES[detail_code]
+    projected_result: dict[str, object] = {"message": message}
+    event_payload: dict[str, object] = {}
     return {
         "detail_kind": detail_kind,
         "detail_code": detail_code,
         "message": message,
         "error_code": detail_code if detail_kind == "failed" else None,
-        "result": {"message": message},
-        "event_payload": {},
+        "result": projected_result,
+        "event_payload": event_payload,
     }
 
 

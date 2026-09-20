@@ -7,10 +7,11 @@ This contract covers the authenticated frontend Skills and Marketplace surfaces.
 All routes require an authenticated principal. Missing authentication returns `401`. Missing authorization returns `403` with `detail` formatted as `missing_permission:<permission>`.
 
 MCP lifecycle routes are platform-admin gated. Server registry create, update,
-delete, and enablement now persist tenant-scoped lifecycle metadata with
-redacted credential evidence; remaining import, tool-toggle, promote, and
-demote flows still return `409 mcp_lifecycle_contract_not_backed` until their
-governance paths are backed.
+delete, and enablement persist tenant-scoped lifecycle metadata with redacted
+credential evidence. The former compatibility-only routes `POST /api/mcp/import`,
+`PATCH /api/mcp/{name}/tools/{tool_name}`, `POST /api/admin/mcp/{name}/promote`,
+and `POST /api/admin/mcp/{name}/demote` are retired and absent; tool discovery
+and backed server lifecycle routes remain listed below.
 
 Effective permissions are projected from the principal permissions plus admin role expansion:
 
@@ -45,6 +46,16 @@ Backed routes:
 
 No public `/api/skills/{skill_name}/publish` route is backed. Global Skill release remains exclusively under the Admin review, materialization, promote, and rollback lifecycle at `/api/ai/admin/skills/*`.
 
+Admin ZIP uploads retain the content hash as the immutable release and execution
+identity. The admin catalog separately projects a human-readable upload version:
+the first uploaded package is `1.0.0`, and each later package for the same Skill
+increments the patch component. Legacy uploaded packages receive the same
+creation-order projection without rewriting their immutable records. The admin
+catalog also exposes `latest_uploaded_at` from the immutable latest uploaded
+version's creation timestamp (or `null` for built-in-only Skills). The management
+list uses it for update time before falling back to the public runtime timestamp;
+reusing identical package content does not create a new timestamp.
+
 `POST /api/skills/batch/delete` and `POST /api/skills/batch/toggle` map to tenant skill availability and audit each affected skill. Batch delete disables tenant availability; it does not delete global built-in Skill packages or admin release records.
 
 PUT `/api/skills/{skill_name}/files/{file_path}` stores a tenant/user-scoped UTF-8 text file overlay after `skill:write` passes. The overlay is audited, size-limited by backend configuration, and appears only in that user's public Skills projection. Binary/base64 asset overlays remain out of scope until the import storage slice is backed.
@@ -56,6 +67,11 @@ Marketplace file previews continue to read released Skill snapshots and do not i
 `POST /api/skills/upload/preview` accepts a multipart ZIP package in field
 `file`, validates the package `SKILL.md`, and returns package metadata without
 persistence. It only supports one Skill package per ZIP in this backend slice.
+Preview and actual upload use the same package parser: decoded file and directory
+name components must fit within 255 UTF-8 bytes; non-ASCII ZIP names without
+a UTF-8 flag or a verified Unicode Path (0x7075) extra field are rejected rather than
+guessed or silently renamed. ASCII names need no encoding flag. The admin
+Skill package preview and upload follow the same package-shape validation.
 
 `POST /api/skills/upload` accepts the same package shape for an existing public
 Skill and persists the package files as tenant/user-scoped public Skill file
@@ -98,22 +114,24 @@ Tenant Marketplace distribution lifecycle routes are backed for authorized marke
 - `PATCH /api/marketplace/{skill_name}/activate` accepts either `active` or the frontend-compatible `is_active` body field and updates tenant availability.
 - `DELETE /api/marketplace/{skill_name}` disables tenant Marketplace availability without deleting global Skill records.
 
-The following compatibility routes are fail-closed and return
-`409 marketplace_direct_write_contract_not_backed` without reading or mutating
-the Skill catalog, version rows, release policy, or tenant distribution:
-
-- `POST /api/marketplace/`
-- `PUT /api/marketplace/{skill_name}`
-
 The Admin release-management surface under `/api/ai/admin/skills/*` is the only
 authority for immutable version upload, review, promote, rollout policy, and
 rollback. Marketplace routes remain projections and tenant-distribution
 controls; they cannot create an active version or redirect a release policy.
 
+`GET /api/ai/admin/skills` and its detail route expose the current management
+catalog only. Every returned aggregate has `lifecycle_status: "active"`;
+distribution and version lifecycle remain separate fields. Retired global rows
+stay in PostgreSQL for historical Run, Session, snapshot, and audit references,
+while the management catalog excludes them. Built-in synchronization is bounded
+to Skills classified as public workbench capabilities or internal dependencies,
+so historical synthetic identities such as `general-chat` cannot be republished.
+
 ## MCP Routes
 
 Backed read and server lifecycle routes:
 
+- `GET /api/mcp/chat-tools`
 - `GET /api/mcp/`
 - `GET /api/mcp/{name}`
 - `GET /api/mcp/{name}/tools`
@@ -126,44 +144,44 @@ Backed read and server lifecycle routes:
 - `PUT /api/admin/mcp/{name}`
 - `DELETE /api/admin/mcp/{name}`
 
-The MCP read projection is built from the tenant MCP server registry and falls
-back to platform-registered MCP tools plus tenant tool policies for seeded
-tools. It exposes governed server/tool directory metadata for frontend
-discovery without raw credentials, server headers, runtime paths, or unmanaged
-tool execution controls.
+`GET /api/mcp/chat-tools` discovers each user's current effective tools from
+every distributed MCP Server by calling `tools/list` with that user's
+server-side company JWT. Dynamic Gateway tool definitions and ACLs are not
+persisted or cached in AI Platform; every request performs a fresh discovery,
+while each Gateway owns its internal catalog and ACL caching. A single
+unavailable Server does not hide tools from other Servers. Responses expose
+stable `mcp_server_id::public_tool_name`
+references and bounded display metadata, never JWTs, static headers, Gateway
+internal IDs, or cache keys. The code-owned RAGFlow row remains the only local
+`mcp_tools` compatibility entry while its built-in dependency is retained.
 
 Server lifecycle writes require a platform-admin principal. They persist only
-tenant-scoped registry metadata, redacted endpoint shape, allowed roles,
-department enablement, quotas, credential state, credential metadata such as
-header names or env key names, and a credential fingerprint. Raw URL query
-secrets, header values, commands, and credential values are not returned in API
-responses and are not written to audit payloads.
+tenant-scoped registry metadata, allowed roles, department enablement, quotas,
+credential state, bounded metadata, and a credential fingerprint. Endpoint and
+static headers are stored only in a tenant/Server-bound encrypted envelope;
+static headers cannot use the reserved `JWT-Authorization` name. Raw URL query
+secrets, header names or values, commands, JWTs, and credential values are not
+returned in API responses or written to audit payloads.
 
-Explicitly fail-closed follow-up routes:
+Company login stores one encrypted MCP JWT per `tenant_id + user_id` in Redis;
+the JWT's own `exp` is its lifetime and a later login replaces the earlier
+value. Ordinary MCP flows never return this JWT to the browser. The document
+translator is the only exception: `POST /api/ai/auth/company-credential-handoff`
+returns the current user's JWT to an authenticated same-origin page with
+`Cache-Control: private, no-store`; the page keeps it only in memory and sends
+it to the fixed translator origin after validating the child window and its
+nonce. It is never placed in a URL or AI Platform browser storage. The
+translator stores the received JWT in its own tab-scoped `sessionStorage` for
+its API calls. At MCP execution time the Worker reuses the existing Capability
+Distribution and Tool Policy plan and reads the current JWT and encrypted
+Server target. The executor opens remote MCP sessions with static headers plus
+`JWT-Authorization`, then exposes only the authorized selected tools through
+the SDK's in-process MCP interface. SDK calls pass through that adapter to the
+original remote tool names. There is no separate MCP Broker capability or host
+Relay, and runtime connection material is removed from reconciliation persistence.
 
-- `POST /api/mcp/import`
-- `PATCH /api/mcp/{name}/tools/{tool_name}`
-- `POST /api/admin/mcp/{name}/promote`
-- `POST /api/admin/mcp/{name}/demote`
+The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selected-tool exposure, SDK alias mapping, HTTP/SSE transport limits, and runnable acceptance. Command/stdin (`sandbox`) configuration writes are rejected until a governed process adapter exists; existing rows remain readable but do not authorize command execution. Ordinary directory responses with `unavailable_reason` display unavailable state rather than an empty successful catalog.
 
-Those follow-up routes require platform admin and then return
-`409 mcp_lifecycle_contract_not_backed`. Tool policy writes remain under
-`/api/ai/admin/tool-policies/*`; ordinary users do not gain MCP server CRUD,
-credential lifecycle, or write-tool bypass authority from this public route set.
-
-## Retired Runtime Tool-Permission Writes
-
-Runtime tool policy is zero-click: it synchronously allows or denies an
-already-authorized tool subject and never creates an approval request. The
-following compatibility writes were deprecated on `2026-07-17` and return
-`410 Gone` without mutating a request, decision, audit, or event:
-
-- `POST /api/ai/runs/{run_id}/tool-permissions/request`
-- `POST /api/ai/runs/{run_id}/tool-permissions/{request_id}/decision`
-- `POST /api/ai/tool-permissions/inbox/{request_id}/decision`
-
-`GET /api/ai/tool-permissions/inbox` remains a redacted historical read;
-pre-existing rows may still terminalize safely. The write routes remain only
-for compatibility. Their earliest physical removal is `2026-08-17`, and
-requires a consumer inventory plus recorded no-call evidence; frontend code
-must not call or depend on them.
+Tool policy writes remain under `/api/ai/admin/tool-policies/*`; ordinary users
+do not gain MCP server CRUD, credential lifecycle, or write-tool bypass
+authority from this public route set.

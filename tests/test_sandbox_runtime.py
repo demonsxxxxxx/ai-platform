@@ -57,7 +57,7 @@ def request(**overrides) -> SandboxRuntimeRequest:
         "attempt_id": "qat_test-runtime-attempt",
         "agent_id": "general-agent",
         "skill_ids": ["general-chat"],
-        "mcp_tool_ids": ["knowledge.search"],
+        "mcp_tool_ids": ["gateway::knowledge.search"],
         "input_message": "hello",
         "file_ids": ["file-a"],
         "sandbox_mode": "ephemeral",
@@ -104,8 +104,9 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
 
     events = []
+    workspace_root = _short_sandbox_workspace_root(tmp_path)
     runtime = SandboxRuntime(
-        workspace_root=tmp_path,
+        workspace_root=workspace_root,
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         callback_token_resolver=lambda token_id: "secret-token",
@@ -117,12 +118,13 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         request(
             materialized_file_names=["z.docx", "a.docx"],
             system_prompt="Private profile instruction",
+            thinking_effort="high",
         ),
         event_sink=events.append,
     )
 
     run_root = (
-        tmp_path
+        workspace_root
         / "tenants"
         / "tenant-a"
         / "workspaces"
@@ -155,15 +157,16 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert sent[0][1].permission_mode == "default"
     assert sent[0][1].config == {
         "model": "deepseek-v4-flash",
+        "thinking_effort": "high",
         "browser_enabled": True,
         "resource_limits": {"max_seconds": 120, "max_tool_calls": 20},
         "skill_ids": ["general-chat"],
-        "mcp_tool_ids": ["knowledge.search"],
+        "mcp_tool_ids": ["gateway::knowledge.search"],
         "tool_policy_subjects": [],
         "input_files": ["file-a"],
         "materialized_file_names": ["z.docx", "a.docx"],
         "system_prompt": "Private profile instruction",
-        "require_selected_skill_invocation": True,
+        "provider_session_resume_required": False,
     }
     assert [event.type for event in events] == ["runtime_container_started"]
     assert lease_calls[0][0] == "record"
@@ -192,7 +195,10 @@ async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and
         async def validate_for_dispatch(self, lease, runtime_request, workspace):
             steps.append("validate")
 
-        async def collect_workspace(self, lease, runtime_request, workspace):
+        async def collect_workspace(
+            self, lease, runtime_request, workspace, response_files=()
+        ):
+            assert list(response_files) == ["outputs/final.txt"]
             steps.append("collect")
 
         async def stop(self, lease, *, reason):
@@ -201,7 +207,12 @@ async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and
 
     async def execute(*_args, **_kwargs):
         steps.append("dispatch")
-        return {"status": "completed", "session_id": "session-a", "run_id": "run-a"}
+        return {
+            "status": "completed",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "response_files": ["outputs/final.txt"],
+        }
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     runtime = SandboxRuntime(
@@ -243,7 +254,9 @@ async def test_runtime_workspace_transfer_failure_is_terminal_and_cleans_up(tmp_
             if failure_phase == "stage":
                 raise RuntimeError("stage failed")
 
-        async def collect_workspace(self, lease, runtime_request, workspace):
+        async def collect_workspace(
+            self, lease, runtime_request, workspace, response_files=()
+        ):
             calls.append("collect")
             if failure_phase == "collect":
                 raise RuntimeError("collect failed")
@@ -1087,7 +1100,9 @@ async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tm
         async def stage_workspace(self, lease, runtime_request, leased_workspace):
             return None
 
-        async def collect_workspace(self, lease, runtime_request, leased_workspace):
+        async def collect_workspace(
+            self, lease, runtime_request, leased_workspace, response_files=()
+        ):
             return None
 
     async def execute(executor_url, task_request):
@@ -1298,6 +1313,8 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
                 kwargs["attempt_id"],
                 kwargs["reconciliation_context"]["schema_version"],
                 kwargs["reconciliation_context"]["adapter_name"],
+                kwargs["reconciliation_context"]["dispatch_timings"]["schema_version"],
+                set(kwargs["reconciliation_context"]["dispatch_timings"]),
             )
         )
         return {"id": kwargs["lease_id"]}
@@ -1373,6 +1390,23 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
             "qat_test-runtime-attempt",
             "ai-platform.executor-reconciliation.v1",
             "claude-agent-worker",
+            "ai-platform.sandbox-latency-split.v1",
+            {
+                "schema_version",
+                "sandbox_queue_wait_latency_ms",
+                "sandbox_lease_acquire_latency_ms",
+                "sandbox_container_start_latency_ms",
+                "sandbox_container_cold_start_latency_ms",
+                "sandbox_healthcheck_latency_ms",
+                "sandbox_executor_dispatch_latency_ms",
+                "executor_first_token_latency_ms",
+                "executor_tool_call_latency_ms",
+                "executor_model_latency_ms",
+                "document_processing_latency_ms",
+                "artifact_upload_latency_ms",
+                "sandbox_cleanup_latency_ms",
+                "sandbox_total_latency_ms",
+            },
         ),
     ]
 
@@ -1398,8 +1432,8 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         callback_subject="callback-boundary-subject-a",
         denial_subject="gateway-deny-subject-a",
         network_id="profile-a",
-        network_name="opensandbox.local:8080",
-        network_internal=False,
+        network_name="ai-platform-opensandbox-egress-internal-v1",
+        network_internal=True,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
         user_id="user-a",
@@ -1866,8 +1900,8 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
                 callback_subject="callback-a",
                 denial_subject="deny-a",
                 network_id="profile-a",
-                network_name="opensandbox-a",
-                network_internal=False,
+                network_name="ai-platform-opensandbox-egress-internal-v1",
+                network_internal=True,
                 tenant_id=request.tenant_id,
                 workspace_id=request.workspace_id,
                 user_id=request.user_id,
@@ -2302,7 +2336,9 @@ async def test_runtime_cleanup_timeout_force_stops_all_sandbox_modes_before_retu
     calls = []
 
     class RecordingProvider(FakeContainerProvider):
-        async def collect_workspace(self, lease, runtime_request, workspace):
+        async def collect_workspace(
+            self, lease, runtime_request, workspace, response_files=()
+        ):
             calls.append(("collect", lease.container_id))
 
         async def stop(self, lease, *, reason):

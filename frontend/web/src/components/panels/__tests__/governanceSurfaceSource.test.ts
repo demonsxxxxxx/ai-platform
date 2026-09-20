@@ -34,7 +34,7 @@ test("skills hub exposes governed catalog status without composer help copy", ()
   assert.doesNotMatch(source, /data-skills-hub-state-detail/);
   assert.doesNotMatch(source, /skillsHub\.composerEntry/);
   assert.doesNotMatch(source, /data-skills-hub-composer-entry/);
-  assert.match(source, /marketplace:\s*"\/marketplace"/);
+  assert.doesNotMatch(source, /MarketplacePanel|\/marketplace/);
   assert.match(source, /data-auth-projection-has-permission/);
   assert.match(source, /onCatalogStateChange/);
   assert.match(source, /isAiAdminUser\(user\)/);
@@ -122,11 +122,12 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
     /onChange=\{\(event\) => setAllowedDepartmentsInput\(event\.target\.value\)\}/,
   );
   assert.doesNotMatch(form, /value=\{allowedDepartments\.join/);
-  assert.match(form, /if \(server\) \{[\s\S]*setUrl\(""\);[\s\S]*setHeaders\(\[\]\);[\s\S]*setCommand\(""\);[\s\S]*setEnvKeys\(\[\]\);/);
+  assert.match(form, /if \(server\) \{[\s\S]*setUrl\(""\);[\s\S]*setHeaders\(\[\]\);/);
+  assert.doesNotMatch(form, /setCommand|setEnvKeys|EnvKeysSelector/);
   assert.match(form, /else \{[\s\S]*setAllowedDepartmentsInput\(""\);/);
   assert.ok(
     form.indexOf('t("mcp.form.connectionReentry")') <
-      form.indexOf("{/* ── Sandbox-specific fields ── */}"),
+      form.indexOf("{/* HTTP/SSE connection */}"),
     "write-only re-entry warning must apply to every transport",
   );
   assert.match(ordinaryCatalog, /data-ordinary-mcp-catalog/);
@@ -174,17 +175,6 @@ test("mcp governance copy exists in the shipped Chinese catalog", () => {
   }
   assert.equal(typeof locale("zh").mcp.form.removeRole, "string");
   assert.equal(locale("zh").mcp.available.empty, "暂无可用工具");
-});
-
-test("share dialog fails closed until ai-platform share ACL projection exists", () => {
-  const source = readFileSync(
-    join(root, "src/components/share/ShareDialog.tsx"),
-    "utf8",
-  );
-  assert.match(source, /ShareUnavailableState/);
-  assert.match(source, /share\.unavailable\.unavailable/);
-  assert.doesNotMatch(source, /shareApi\.create|listBySession|delete\(/);
-  assert.doesNotMatch(source, /ShareVisibility|visibility|public|authenticated/);
 });
 
 test("tool selector cannot toggle system disabled MCP tools", () => {

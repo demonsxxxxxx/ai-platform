@@ -266,7 +266,7 @@ body {
   }
 }
 
-/* Allow scrolling on full-page public routes (landing, auth, shared, etc.) */
+/* Allow scrolling on full-page public routes such as authentication. */
 html.allow-scroll,
 html.allow-scroll body,
 html.allow-scroll #root {

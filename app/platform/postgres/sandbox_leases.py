@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from typing import Any
+
+from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 
 
 class SandboxLeaseReleaseScopeMismatchError(RuntimeError):
@@ -194,6 +197,39 @@ async def record_sandbox_executor_heartbeat(
     return dict(row) if row is not None else None
 
 
+async def record_opensandbox_renewal_receipt(
+    connection: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    lease_id: str,
+    provider_expires_at: datetime,
+) -> dict[str, Any] | None:
+    if provider_expires_at.tzinfo is None or provider_expires_at.utcoffset() is None:
+        raise ValueError("opensandbox_renewal_receipt_timezone_invalid")
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set provider_renewed_at = now(),
+            provider_expires_at = %s,
+            updated_at = now()
+        where id = %s
+          and tenant_id = %s
+          and run_id = %s
+          and attempt_id = %s
+          and provider = 'opensandbox'
+          and status = 'active'
+          and (expires_at is null or expires_at > now())
+          and executor_terminal_json is null
+        returning *
+        """,
+        (provider_expires_at, lease_id, tenant_id, run_id, attempt_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
 async def release_sandbox_lease(
     connection: Any,
     *,
@@ -356,6 +392,11 @@ async def record_sandbox_executor_terminal(
     terminal_result: dict[str, Any],
     claim_token: str | None = None,
 ) -> dict[str, Any]:
+    ensure_json_size(
+        terminal_result,
+        max_bytes=RUN_RESULT_MAX_BYTES,
+        code="executor_terminal_receipt_too_large",
+    )
     if executor_status not in {"completed", "failed", "cancelled"}:
         raise ValueError("sandbox_executor_terminal_status_invalid")
     normalized_result_status = str(terminal_result.get("status") or "").strip().lower()
@@ -388,11 +429,17 @@ async def record_sandbox_executor_terminal(
         )
     existing = current.get("executor_terminal_json")
     if existing is not None:
-        if existing == terminal_result and str(current.get("executor_status") or "") == executor_status:
+        if (
+            existing == terminal_result
+            and str(current.get("executor_status") or "") == executor_status
+            and (
+                claim_token is None
+                or str(current.get("executor_reconciliation_claim_token") or "")
+                == claim_token
+            )
+        ):
             return dict(current)
-        raise SandboxExecutorTerminalConflictError(
-            "sandbox_executor_terminal_conflict"
-        )
+        raise SandboxExecutorTerminalConflictError("sandbox_executor_terminal_conflict")
     cursor = await connection.execute(
         """
         update sandbox_leases
@@ -434,9 +481,7 @@ async def record_sandbox_executor_terminal(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise SandboxExecutorTerminalConflictError(
-            "sandbox_executor_terminal_conflict"
-        )
+        raise SandboxExecutorTerminalConflictError("sandbox_executor_terminal_conflict")
     return dict(row)
 
 
@@ -614,7 +659,16 @@ async def claim_sandbox_executor_reconciliations(
             and executor_terminal_json is not null
             and executor_reconciliation_context_json is not null
             and (
-              executor_reconciliation_status in ('pending', 'retry')
+              executor_reconciliation_status = 'pending'
+              or (
+                executor_reconciliation_status = 'retry'
+                and updated_at <= now() - make_interval(
+                  secs => least(
+                    30,
+                    greatest(1, executor_terminal_reconciliation_attempt_count)
+                  )
+                )
+              )
               or (
                 executor_reconciliation_status = 'claimed'
                 and executor_reconciliation_claimed_at < now() - make_interval(secs => %s)

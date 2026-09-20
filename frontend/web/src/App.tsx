@@ -26,34 +26,9 @@ import type { TabType } from "./components/layout/AppContent/types";
 import { APP_ROUTE_PATHS } from "./appRouteManifest";
 import { ChatRouteBoundary } from "./components/common/ChatRouteBoundary";
 
-const SharedPage = lazy(() =>
-  import("./components/share/SharedPage").then((m) => ({
-    default: m.SharedPage,
-  })),
-);
 const OAuthCallback = lazy(() =>
   import("./components/auth/OAuthCallback").then((m) => ({
     default: m.OAuthCallback,
-  })),
-);
-const ForgotPassword = lazy(() =>
-  import("./components/auth/ForgotPassword").then((m) => ({
-    default: m.ForgotPassword,
-  })),
-);
-const ResetPassword = lazy(() =>
-  import("./components/auth/ResetPassword").then((m) => ({
-    default: m.ResetPassword,
-  })),
-);
-const VerifyEmail = lazy(() =>
-  import("./components/auth/VerifyEmail").then((m) => ({
-    default: m.VerifyEmail,
-  })),
-);
-const RegistrationPending = lazy(() =>
-  import("./components/auth/RegistrationPending").then((m) => ({
-    default: m.RegistrationPending,
   })),
 );
 const AuthPage = lazy(() =>
@@ -77,6 +52,11 @@ const AgentMarketRoute = lazy(() =>
 const AgentWorkspaceRoute = lazy(() =>
   import("./features/agent-market/AgentWorkspaceRoute").then((m) => ({
     default: m.AgentWorkspaceRoute,
+  })),
+);
+const AgentApplicationRoute = lazy(() =>
+  import("./features/ai-applications/AgentApplicationRoute").then((m) => ({
+    default: m.AgentApplicationRoute,
   })),
 );
 const NotFoundPage = lazy(() =>
@@ -178,7 +158,7 @@ function RootRedirect() {
   }
 
   return isAuthenticated ? (
-    <Navigate to={APP_ROUTE_PATHS.agentMarket} replace />
+    <Navigate to={APP_ROUTE_PATHS.apps} replace />
   ) : (
     <Navigate to="/auth/login" replace />
   );
@@ -219,15 +199,6 @@ function RolesPage() {
     path: "/roles",
   });
   return <AppContent key="roles" activeTab="roles" />;
-}
-
-function SettingsPage() {
-  useSEO({
-    title: "seo.settings.title",
-    description: "seo.settings.description",
-    path: "/settings",
-  });
-  return <AppContent key="settings" activeTab="settings" />;
 }
 
 function MCPPage() {
@@ -311,23 +282,18 @@ function WorkbenchForbiddenPage({
   );
 }
 
-// Auth page wrapper - opens the Agent-first service catalog after login/register.
-function AuthPageWrapper({
-  initialMode,
-}: {
-  initialMode?: "login" | "register";
-}) {
+// Auth page wrapper - opens Company Navigation after login/register.
+function AuthPageWrapper() {
   const navigate = useNavigate();
   useSEO({
-    title: initialMode === "register" ? "auth.register" : "auth.login",
-    path: initialMode === "register" ? "/auth/register" : "/auth/login",
+    title: "auth.login",
+    path: APP_ROUTE_PATHS.login,
     noindex: true,
   });
   return (
     <AuthPage
-      initialMode={initialMode}
       onSuccess={(redirectPath) =>
-        navigate(redirectPath ?? APP_ROUTE_PATHS.agentMarket, { replace: true })
+        navigate(redirectPath ?? APP_ROUTE_PATHS.apps, { replace: true })
       }
     />
   );
@@ -374,10 +340,6 @@ function App() {
             {/* Auth routes */}
             <Route path={APP_ROUTE_PATHS.login} element={<AuthPageWrapper />} />
             <Route
-              path={APP_ROUTE_PATHS.register}
-              element={<AuthPageWrapper initialMode="register" />}
-            />
-            <Route
               path={APP_ROUTE_PATHS.chat}
               element={
                 <ProtectedRoute>
@@ -410,6 +372,14 @@ function App() {
               }
             />
             <Route
+              path={APP_ROUTE_PATHS.aiApplication}
+              element={
+                <ProtectedRoute>
+                  <AgentApplicationRoute />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path={APP_ROUTE_PATHS.agentMarketDetail}
               element={
                 <ProtectedRoute>
@@ -430,14 +400,6 @@ function App() {
               element={
                 <ProtectedRoute>
                   <SkillsPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path={APP_ROUTE_PATHS.marketplace}
-              element={
-                <ProtectedRoute>
-                  <Navigate to="/skills" replace />
                 </ProtectedRoute>
               }
             />
@@ -469,7 +431,7 @@ function App() {
               path={APP_ROUTE_PATHS.settings}
               element={
                 <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
-                  <SettingsPage />
+                  <Navigate to={APP_ROUTE_PATHS.models} replace />
                 </ProtectedRoute>
               }
             />
@@ -526,22 +488,6 @@ function App() {
             />
             {/* OAuth callback page - handles OAuth redirect from backend */}
             <Route path={APP_ROUTE_PATHS.oauthCallback} element={<OAuthCallback />} />
-            {/* Password reset pages - no auth required */}
-            <Route path={APP_ROUTE_PATHS.resetRequest} element={<ForgotPassword />} />
-            <Route path={APP_ROUTE_PATHS.resetPassword} element={<ResetPassword />} />
-            {/* Email verification page - no auth required */}
-            <Route path={APP_ROUTE_PATHS.verifyEmail} element={<VerifyEmail />} />
-            {/* Registration pending verification page - no auth required */}
-            <Route path={APP_ROUTE_PATHS.registrationPending} element={<RegistrationPending />} />
-            {/* Public shared session page - no auth required */}
-            <Route
-              path={APP_ROUTE_PATHS.shared}
-              element={
-                <Suspense fallback={null}>
-                  <SharedPage />
-                </Suspense>
-              }
-            />
             <Route path={APP_ROUTE_PATHS.notFound} element={<NotFoundPage />} />
           </Routes>
         </Suspense>

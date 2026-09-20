@@ -61,15 +61,15 @@ test("launchpad tab is registered in layout and sidebar", () => {
   assert.match(sidebarPartsSource, /nav\.apps/);
 });
 
-test("Agent market is the default authenticated landing destination", () => {
-  assert.match(authRedirectSource, /return redirectPath \|\| "\/agent-market"/);
+test("Company Navigation is the default authenticated landing destination", () => {
+  assert.match(authRedirectSource, /return redirectPath \|\| "\/apps"/);
   assert.match(
     appSource,
-    /navigate\(redirectPath \?\? APP_ROUTE_PATHS\.agentMarket/,
+    /navigate\(redirectPath \?\? APP_ROUTE_PATHS\.apps/,
   );
   assert.match(
     oauthCallbackSource,
-    /getRedirectPath\(\) \|\| "\/agent-market"/,
+    /getRedirectPath\(\) \|\| "\/apps"/,
   );
 });
 
@@ -80,7 +80,7 @@ test("root path routes by auth state instead of rendering the marketing landing 
   assert.match(appSource, /function RootRedirect\(\)/);
   assert.match(
     appSource,
-    /<Navigate to=\{APP_ROUTE_PATHS\.agentMarket\} replace \/>/,
+    /<Navigate to=\{APP_ROUTE_PATHS\.apps\} replace \/>/,
   );
   assert.match(
     chatRouteBoundarySource,

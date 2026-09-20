@@ -24,7 +24,8 @@ from app.platform.postgres.errors import (
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
 from app.skills.infrastructure import postgres as skill_persistence
 from app.routes import sandbox_runtime_cleanup
-from app.runs.api import RunTerminalizationProgress
+from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
+from app.runs.infrastructure import postgres as run_attempt_persistence
 from app.runs.application.cancellation import RunCancellationUseCase
 from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.platform.postgres.sandbox_leases import (
@@ -33,6 +34,7 @@ from app.platform.postgres.sandbox_leases import (
     create_sandbox_lease,
     fence_sandbox_lease_release,
     list_expired_active_sandbox_leases,
+    record_opensandbox_renewal_receipt,
     record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
 )
@@ -95,7 +97,7 @@ class _CancellationEventWriter:
 
 class _RunAttemptCursor:
     async def fetchone(self):
-        return {"id": "attempt-a"}
+        return None
 
 
 class _CancellationTestConnection:
@@ -104,7 +106,7 @@ class _CancellationTestConnection:
 
     async def execute(self, sql, params):
         normalized = " ".join(sql.split())
-        if normalized.startswith("select id from run_attempts"):
+        if normalized.startswith("select * from run_attempts"):
             return _RunAttemptCursor()
         return await self._conn.execute(sql, params)
 
@@ -117,6 +119,9 @@ async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
     use_case = RunCancellationUseCase(
         transaction_factory=transaction_factory,
         persistence=PostgresRunCancellationPersistence(
+            attempt_lifecycle=RunAttemptLifecycleService(
+                persistence=run_attempt_persistence
+            ),
             append_event=repositories.append_event,
             append_audit_log=repositories.append_audit_log,
             list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
@@ -140,6 +145,9 @@ async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
     use_case = RunCancellationUseCase(
         transaction_factory=transaction_factory,
         persistence=PostgresRunCancellationPersistence(
+            attempt_lifecycle=RunAttemptLifecycleService(
+                persistence=run_attempt_persistence
+            ),
             append_event=repositories.append_event,
             append_audit_log=repositories.append_audit_log,
             list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
@@ -155,7 +163,7 @@ async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
     return result.as_route_result() if result is not None else None
 
 
-def test_repository_facade_binds_agent_profiles_to_one_canonical_module():
+def test_global_repository_has_no_agent_profile_persistence_facade():
     canonical_names = (
         "acquire_agent_profile_lifecycle_lock",
         "create_agent_profile_revision",
@@ -172,9 +180,8 @@ def test_repository_facade_binds_agent_profiles_to_one_canonical_module():
         "record_agent_profile_withdrawal",
     )
 
-    for name in canonical_names:
-        assert getattr(repositories, name) is getattr(agent_profile_persistence, name)
-
+    assert all(not hasattr(repositories, name) for name in canonical_names)
+    assert all(callable(getattr(agent_profile_persistence, name)) for name in canonical_names)
     assert RepositoryConflictError is PlatformRepositoryConflictError
 
 
@@ -482,12 +489,11 @@ class SingleRowConnection:
         "published_by",
         "published_from_revision",
         "expected_published_at",
-        "expected_legacy_status",
     ),
     [
-        ("draft", None, None, None, "draft"),
-        ("published", "publisher-a", 7, "database-timestamp", "published"),
-        ("withdrawn", None, None, None, "draft"),
+        ("draft", None, None, None),
+        ("published", "publisher-a", 7, "database-timestamp"),
+        ("withdrawn", None, None, None),
     ],
 )
 async def test_create_agent_profile_revision_preserves_typed_publication_bindings(
@@ -495,7 +501,6 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
     published_by,
     published_from_revision,
     expected_published_at,
-    expected_legacy_status,
 ):
     class Connection:
         def __init__(self):
@@ -508,23 +513,25 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                 return SingleRowCursor({"current_revision": 7})
             if "insert into agent_profile_revisions" in normalized:
                 return SingleRowCursor(
-                    {"published_at": None if params[32] is None else "database-timestamp"}
+                    {"published_at": None if params[20] is None else "database-timestamp"}
                 )
             return SingleRowCursor(None)
 
     conn = Connection()
-    saved = await repositories.create_agent_profile_revision(
+    saved = await agent_profile_persistence.create_agent_profile_revision(
         conn,
         tenant_id="tenant-a",
         agent_id="agt_support",
         status=status,
         name="Support assistant",
         description="Approved support helper.",
+        starter_prompts=[],
         instructions="Private instruction",
-        legacy_model_id="model-a",
-        skill_id="general-chat",
-        skill_version="version-a",
+        skill_set=[{"skill_id": "general-chat"}],
         mcp_tool_ids=["mcp-a", "mcp-b"],
+        avatar_ref="builtin:agent",
+        avatar_seed="support-assistant",
+        market_tags=["support"],
         content_hash="a" * 64,
         created_by="creator-a",
         published_by=published_by,
@@ -533,43 +540,36 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
     )
 
     insert_sql, params = conn.calls[2]
-    assert insert_sql == " ".join(
-        """
-        insert into agent_profile_revisions(
-          tenant_id, agent_id, revision, status, revision_status, name, description, instructions,
-          model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
-          avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
-          allowed_user_ids, welcome_message, starter_prompts, capability_summary,
-          recommended_tasks, supported_input_types, supported_file_types, expected_outputs,
-          permissions_and_data_access_notice, avatar_asset_id,
-          created_by, published_by, published_at,
-          published_from_revision, withdrawn_from_revision
-        )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
-                %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s::jsonb,
-                %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s,
-                %s, %s, %s, case when %s::text is null then null else now() end, %s, %s)
-        returning tenant_id, agent_id, revision, revision_status as status, name, description, instructions,
-                  model_id, skill_id, skill_version, skill_set, mcp_tool_ids, content_hash,
-                  avatar_ref, avatar_seed, category, visibility, allowed_department_ids, allowed_roles,
-                  allowed_user_ids, welcome_message, starter_prompts, capability_summary,
-                  recommended_tasks, supported_input_types,
-                  supported_file_types as legacy_supported_file_types, expected_outputs,
-                  permissions_and_data_access_notice, avatar_asset_id,
-                  created_at, published_at
-        """.split()
+    assert "revision_status" in insert_sql
+    assert "starter_prompts" in insert_sql
+    assert "skill_set" in insert_sql
+    assert "market_tags" in insert_sql
+    for retired_column in (
+        " welcome_message",
+        " capability_summary",
+        " recommended_tasks",
+        " supported_input_types",
+        " supported_file_types",
+        " expected_outputs",
+        " permissions_and_data_access_notice",
+        " model_id",
+        " skill_id",
+        " skill_version",
+        " avatar_style_ref",
+        " avatar_asset_id",
+        " category",
+        " market_tag,",
+    ):
+        assert retired_column not in insert_sql
+    assert len(params) == insert_sql.count("%s") == 23
+    assert params[0:6] == (
+        "tenant-a", "agt_support", 8, status, "Support assistant", "Approved support helper."
     )
-    assert len(params) == insert_sql.count("%s") == 35
-    assert params == (
-        "tenant-a", "agt_support", 8, expected_legacy_status, status,
-        "Support assistant", "Approved support helper.",
-        "Private instruction", "model-a", "general-chat", "version-a",
-        '[{"skill_id": "general-chat", "expected_version": "version-a"}]',
-        '["mcp-a", "mcp-b"]',
-        "a" * 64, "builtin:agent", "", "general", "tenant", "[]", "[]", "[]",
-        "", "[]", "", "[]", '["text"]', "[]", "[]", "", None,
-        "creator-a", published_by, published_by, published_from_revision, None,
-    )
+    assert params[7] == "Private instruction"
+    assert params[8] == '[{"skill_id": "general-chat"}]'
+    assert params[9] == '["mcp-a", "mcp-b"]'
+    assert params[11:15] == ("builtin:agent", "support-assistant", '["support"]', "tenant")
+    assert params[19:23] == (published_by, published_by, published_from_revision, None)
     assert saved["published_at"] == expected_published_at
 
 
@@ -590,29 +590,28 @@ async def test_list_published_agent_profiles_searches_safe_public_use_fields():
             return RowsCursor()
 
     conn = Connection()
-    rows = await repositories.list_current_published_agent_profiles(
+    rows = await agent_profile_persistence.list_current_published_agent_profiles(
         conn,
         tenant_id="company-default",
         query="内部通知润色",
-        category="writing",
         limit=500,
     )
 
     assert rows == []
     assert "normalize(agent_profile_revisions.name, NFKC) ilike %s" in conn.sql
     assert "normalize(agent_profile_revisions.description, NFKC) ilike %s" in conn.sql
-    assert "normalize(agent_profile_revisions.capability_summary, NFKC) ilike %s" in conn.sql
     assert "jsonb_array_elements_text" in conn.sql
-    assert "jsonb_typeof(agent_profile_revisions.recommended_tasks) = 'array'" in conn.sql
-    assert "normalize(recommended_task.value, NFKC) ilike %s" in conn.sql
-    assert conn.sql.count("escape E'\\\\'") == 4
+    assert "normalize(tag.value, NFKC) ilike %s" in conn.sql
+    assert "select count(*)" in conn.sql
+    assert "runs.tenant_id = agent_profile_revisions.tenant_id" in conn.sql
+    assert "runs.agent_id = agent_profile_revisions.agent_id" in conn.sql
+    assert "runs.status = 'succeeded'" in conn.sql
+    assert conn.sql.count("escape E'\\\\'") == 3
     assert conn.params == (
         "company-default",
         "%内部通知润色%",
         "%内部通知润色%",
         "%内部通知润色%",
-        "%内部通知润色%",
-        "writing",
         200,
     )
 
@@ -632,7 +631,7 @@ async def test_list_published_agent_profiles_escapes_like_metacharacters():
             return RowsCursor()
 
     conn = Connection()
-    await repositories.list_current_published_agent_profiles(
+    await agent_profile_persistence.list_current_published_agent_profiles(
         conn,
         tenant_id="company-default",
         query="%_\\",
@@ -640,7 +639,6 @@ async def test_list_published_agent_profiles_escapes_like_metacharacters():
 
     assert conn.params == (
         "company-default",
-        "%\\%\\_\\\\%",
         "%\\%\\_\\\\%",
         "%\\%\\_\\\\%",
         "%\\%\\_\\\\%",
@@ -1318,6 +1316,9 @@ async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
     assert lock_params == (20,)
     assert "insert into object_deletion_outbox" in write_sql
     assert "snapshots.included_artifact_ids ? artifacts.id" in write_sql
+    assert "'retention_artifact_cleanup', true" in write_sql
+    assert "'deletion_owner_run_id', artifacts.run_id" in write_sql
+    assert "run_id = null" in write_sql
     assert json.loads(write_params[0]) == ["artifact-a"]
 
     await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)
@@ -2455,8 +2456,8 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
             "status": "active",
         },
         {
-            "id": "baoyu-translate",
-            "default_skill_id": "baoyu-translate",
+            "id": "retired-agent",
+            "default_skill_id": "retired-skill",
             "status": "active",
         },
     ]
@@ -2481,7 +2482,7 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
         },
         {
             "capability_kind": "skill",
-            "capability_id": "baoyu-translate",
+            "capability_id": "retired-skill",
             "status": "disabled",
             "visible_to_user": False,
             "scope_mode": "allowlist",
@@ -2530,13 +2531,13 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
     assert [row["id"] for row in admin_rows] == [
         "general-agent",
         "qa-word-review",
-        "baoyu-translate",
+        "retired-agent",
     ]
     assert len(audits) == 3
     assert {audit["target_id"] for audit in audits} == {
         "general-chat",
         "qa-file-reviewer",
-        "baoyu-translate",
+        "retired-skill",
     }
     for audit in audits:
         assert audit["action"] == "capability_distribution.admin_bypass"
@@ -3896,7 +3897,7 @@ async def test_create_context_snapshot_preserves_private_context_manifest_refs_w
         },
     )
 
-    persisted_payload = json.loads(conn.params[-1])
+    persisted_payload = json.loads(conn.params[-2])
     assert persisted_payload["context_manifest"]["recent_messages"] == [
         {"message_id": "msg-a", "requires_retrieval": True}
     ]
@@ -4372,84 +4373,6 @@ async def test_list_public_skill_catalog_hides_non_materializable_current_versio
 
 
 @pytest.mark.asyncio
-async def test_list_workbench_skills_projects_distribution_without_legacy_status_or_visibility(monkeypatch):
-    async def no_backfill(conn, *, tenant_id):
-        return None
-
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
-
-    class Cursor:
-        async def fetchall(self):
-            return [
-                {
-                    "skill_id": "qa-file-reviewer",
-                    "name": "QA Word Review",
-                    "version": "0.1.0",
-                    "description": "Review",
-                    "input_modes": ["docx"],
-                    "output_modes": ["reviewed_docx"],
-                    "executor_type": "claude-agent-worker",
-                    "lifecycle_status": "active",
-                    "status": "disabled",
-                    "visible_to_user": False,
-                }
-            ]
-
-    class Connection:
-        async def execute(self, sql, params):
-            self.sql = " ".join(sql.split())
-            self.params = params
-            return Cursor()
-
-    conn = Connection()
-    rows = await repositories.list_workbench_skills(conn, tenant_id="tenant-a", include_disabled=True)
-
-    assert rows[0]["status"] == "disabled"
-    assert "tenant_capability_distributions" in conn.sql
-    assert "tenant_workbench_skills" not in conn.sql
-    assert "skills.status as lifecycle_status" in conn.sql
-    assert "general-chat" not in conn.sql
-
-
-@pytest.mark.asyncio
-async def test_list_workbench_capabilities_uses_global_lifecycle_and_distribution_authority(monkeypatch):
-    async def no_backfill(conn, *, tenant_id):
-        assert tenant_id == "tenant-a"
-
-    class Cursor:
-        async def fetchall(self):
-            return []
-
-    class Connection:
-        def __init__(self):
-            self.sql = ""
-            self.params = None
-
-        async def execute(self, sql, params=()):
-            self.sql = " ".join(sql.split())
-            self.params = params
-            return Cursor()
-
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
-    conn = Connection()
-
-    rows = await repositories.list_workbench_capabilities(conn, tenant_id="tenant-a")
-
-    assert rows == []
-    assert "tenant_workbench_skills" not in conn.sql
-    assert "join tenant_capability_distributions" in conn.sql
-    assert "skills.status" in conn.sql
-    assert "tenant_capability_distributions.status" in conn.sql
-    assert "tenant_capability_distributions.visible_to_user" in conn.sql
-    assert "left join skills on skills.id = agents.default_skill_id" in conn.sql
-    assert (
-        "when agents.agent_type = 'chat' and agents.default_skill_id is null then 'active'"
-        in conn.sql
-    )
-    assert conn.params == ("tenant-a", "tenant-a")
-
-
-@pytest.mark.asyncio
 async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_default(monkeypatch):
     async def no_backfill(conn, *, tenant_id):
         return None
@@ -4479,7 +4402,7 @@ async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_d
             return [
                 catalog_row("general-chat", "active"),
                 catalog_row("qa-file-reviewer", "released"),
-                catalog_row("baoyu-translate", "draft"),
+                catalog_row("retired-skill", "draft"),
                 catalog_row("ragflow-knowledge-search", "reviewed"),
                 catalog_row("ctd-32s73-stability-template-fill", "disabled"),
                 catalog_row("custom-deprecated-skill", "deprecated"),
@@ -5850,7 +5773,7 @@ async def test_list_run_events_supports_sequence_cursor_and_limit():
 
     sql, params = conn.calls[0]
     assert "sequence > %s" in sql
-    assert "order by sequence asc, created_at asc" in sql
+    assert "order by event.sequence asc, event.created_at asc" in sql
     assert "limit %s" in sql
     assert params == ("tenant-a", "run-a", 7, 20)
 
@@ -6001,8 +5924,8 @@ async def test_create_context_snapshot_sanitizes_payload_and_summary_before_inse
     )
 
     _sql, params = conn.calls[0]
-    inserted_summary = json.loads(params[-2])
-    inserted_payload = json.loads(params[-1])
+    inserted_summary = json.loads(params[-3])
+    inserted_payload = json.loads(params[-2])
     assert inserted_summary == {"source": "internal", "note": "authorization=[redacted-secret]"}
     assert inserted_payload == {
         "window": "current",
@@ -7083,19 +7006,9 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     class RegistryCursor:
         async def fetchone(self):
             return {
-                "tool_id": "qa-search",
-                "server_id": "qa-mcp",
-                "name": "QA Search",
-                "description": "Search QA records.",
-                "registry_status": "active",
-                "server_status": "active",
-                "registry_write_capable": False,
-                "registry_risk_level": "low",
-                "registry_visible_to_user": True,
-                "policy_status": "active",
-                "policy_write_capable": False,
-                "policy_risk_level": "low",
-                "policy_visible_to_user": True,
+                "name": "qa-mcp",
+                "transport": "streamable_http",
+                "status": "active",
             }
 
     class RegistryConnection:
@@ -7111,20 +7024,14 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
     row = await repositories.get_mcp_tool_registry_entry(
         conn,
         tenant_id="tenant-a",
-        tool_id="qa-search",
+        tool_id="qa-mcp::qa.search",
     )
 
     sql, params = conn.calls[0]
-    assert "join mcp_servers" in sql
-    assert "mcp_servers.tenant_id = %s" in sql
-    assert "mcp_servers.name = mcp_tools.server_id" in sql
-    assert "mcp_tools.id = %s" in sql
-    assert "catalog_entry.tenant_id = %s" in sql
-    assert "catalog_entry.catalog_generation = catalog_server.catalog_generation" in sql
-    assert "catalog_server.catalog_status = 'available'" in sql
-    assert "catalog_any" not in sql
-    assert sql.count("%s") == len(params)
-    assert params == ("tenant-a", "qa-search", "tenant-a")
+    assert "from mcp_servers" in sql
+    assert "mcp_tools" not in sql
+    assert "mcp_tool_catalog_entries" not in sql
+    assert params == ("tenant-a", "qa-mcp")
     assert row is not None
     assert {
         key: row[key]
@@ -7139,25 +7046,24 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
             "risk_level",
             "visible_to_user",
             "effective_status",
-            "source",
         )
     } == {
-        "tool_id": "qa-search",
+        "tool_id": "qa-mcp::qa.search",
         "server_id": "qa-mcp",
-        "name": "QA Search",
-        "description": "Search QA records.",
+        "name": "qa.search",
+        "description": "",
         "registry_status": "active",
         "server_status": "active",
-        "write_capable": False,
-        "risk_level": "low",
+        "write_capable": True,
+        "risk_level": "high",
         "visible_to_user": True,
         "effective_status": "active",
-        "source": "tenant",
     }
+    assert repositories.mcp_runtime_metadata_usable(row)
 
 
 @pytest.mark.asyncio
-async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tenant_catalog():
+async def test_chat_catalog_query_accepts_only_the_known_builtin_as_local_compatibility():
     class Cursor:
         async def fetchall(self):
             return []
@@ -7175,9 +7081,9 @@ async def test_chat_catalog_query_accepts_only_the_known_builtin_or_current_tena
     conn = Connection()
     assert await repositories.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
 
-    assert "ragflow-knowledge-search" in conn.sql
-    assert "catalog_entry.tenant_id = %s" in conn.sql
-    assert "catalog_any" not in conn.sql
+    assert "mcp_tools.id = 'ragflow-knowledge-search'" in conn.sql
+    assert "mcp_tools.server_id = 'ragflow'" in conn.sql
+    assert "catalog_entry.tenant_id = %s" not in conn.sql
     assert conn.params == ("tenant-a", "tenant-a")
 
 
@@ -8507,8 +8413,6 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
 
         async def execute(self, sql, _params):
             normalized = " ".join(sql.split())
-            if normalized.startswith("select id from run_attempts"):
-                return SingleRowCursor({"id": "attempt-a"})
             if normalized.startswith("with eligible_run as"):
                 self.attempt += 1
                 return SingleRowCursor(
@@ -9076,8 +8980,6 @@ async def test_cancel_request_response_reports_actual_conflicting_terminal_statu
     class Connection:
         async def execute(self, sql, _params):
             normalized = " ".join(sql.split())
-            if normalized.startswith("select id from run_attempts"):
-                return SingleRowCursor({"id": "attempt-a"})
             assert normalized.startswith("with eligible_run as")
             row = {
                 "id": "run-a",
@@ -9852,6 +9754,48 @@ async def test_sandbox_executor_heartbeat_renews_only_unexpired_attempt_lease():
         "run-a",
         "attempt-a",
     )
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_renewal_receipt_is_provider_and_attempt_fenced():
+    class RecordingConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return SingleRowCursor(None)
+
+    conn = RecordingConnection()
+    expiration = datetime.now(timezone.utc) + timedelta(minutes=30)
+    assert await record_opensandbox_renewal_receipt(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        provider_expires_at=expiration,
+    ) is None
+
+    sql, params = conn.calls[0]
+    assert "provider_renewed_at = now()" in sql
+    assert "provider_expires_at = %s" in sql
+    assert "provider = 'opensandbox'" in sql
+    assert "status = 'active'" in sql
+    assert "attempt_id = %s" in sql
+    assert "(expires_at is null or expires_at > now())" in sql
+    assert "executor_terminal_json is null" in sql
+    assert params == (expiration, "lease-a", "tenant-a", "run-a", "attempt-a")
+    with pytest.raises(ValueError, match="timezone_invalid"):
+        await record_opensandbox_renewal_receipt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            lease_id="lease-a",
+            provider_expires_at=datetime.now(),
+        )
+    assert len(conn.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -11298,7 +11242,7 @@ async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable
 
 
 @pytest.mark.asyncio
-async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_drift():
+async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_drift(monkeypatch):
     manifests = [
         {
             "skill_id": skill_id,
@@ -11316,19 +11260,18 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
         )
     ]
     refs = repositories.skill_manifest_refs(manifests)
+    stored_rows = [
+        {
+            "skill_id": item["skill_id"],
+            "materialization_sha256": repositories.skill_manifest_materialization_sha256(item),
+            "manifest_json": item,
+        }
+        for item in reversed(manifests)
+    ]
 
     class Cursor:
         async def fetchall(self):
-            return [
-                {
-                    "skill_id": item["skill_id"],
-                    "materialization_sha256": repositories.skill_manifest_materialization_sha256(
-                        item
-                    ),
-                    "manifest_json": item,
-                }
-                for item in reversed(manifests)
-            ]
+            return stored_rows
 
     class Connection:
         async def execute(self, sql, params):
@@ -11336,6 +11279,17 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
             assert params == ("tenant-a", "run-a")
             return Cursor()
 
+    from app.skills import pinning
+
+    hash_manifest = pinning.skill_manifest_materialization_sha256
+    hash_count = 0
+
+    def counted(manifest):
+        nonlocal hash_count
+        hash_count += 1
+        return hash_manifest(manifest)
+
+    monkeypatch.setattr(pinning, "skill_manifest_materialization_sha256", counted)
     loaded = await repositories.materialize_run_skill_manifests(
         Connection(),
         tenant_id="tenant-a",
@@ -11344,6 +11298,7 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
     )
 
     assert [item["skill_id"] for item in loaded] == ["primary", "dependency"]
+    assert hash_count == len(manifests)
     with pytest.raises(
         RepositoryConflictError,
         match="run_skill_materialization_identity_mismatch",

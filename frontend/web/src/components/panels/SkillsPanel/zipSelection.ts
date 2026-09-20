@@ -18,11 +18,15 @@ export function adminReleaseActionForStatus(status: string): AdminReleaseAction 
 export function canSelectZipSkill(
   skill: ZipSkillPreview,
   adminRelease: boolean,
+  targetSkillName?: string | null,
 ) {
   // AI admins release exactly one package version and may target either a new
   // catalog Skill or a new immutable version of an existing catalog Skill.
   // Ordinary ZIP import remains an overlay and cannot create catalog Skills.
-  return adminRelease || skill.already_exists;
+  return (
+    (adminRelease || skill.already_exists) &&
+    (!targetSkillName || skill.name === targetSkillName)
+  );
 }
 
 export function selectableZipSkillNames(
@@ -37,8 +41,12 @@ export function selectableZipSkillNames(
 export function initialZipSkillSelection(
   skills: ZipSkillPreview[],
   adminRelease: boolean,
+  targetSkillName?: string | null,
 ) {
   const selectable = selectableZipSkillNames(skills, adminRelease);
+  if (targetSkillName) {
+    return selectable.includes(targetSkillName) ? [targetSkillName] : [];
+  }
   return adminRelease ? selectable.slice(0, 1) : selectable;
 }
 
@@ -57,9 +65,10 @@ export function toggleZipSkillSelection(
   name: string,
   skills: ZipSkillPreview[],
   adminRelease: boolean,
+  targetSkillName?: string | null,
 ) {
   const skill = skills.find((item) => item.name === name);
-  if (!skill || !canSelectZipSkill(skill, adminRelease)) {
+  if (!skill || !canSelectZipSkill(skill, adminRelease, targetSkillName)) {
     return selectedNames;
   }
   if (adminRelease) {

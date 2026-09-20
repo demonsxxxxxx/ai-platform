@@ -1,9 +1,68 @@
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from app.skills.domain.internal_dependencies import (
     INTERNAL_DEPENDENCY_SKILL_IDS,
     is_internal_dependency_skill,
 )
+from app.skills.domain.snapshot_paths import (
+    skill_snapshot_components_fit as skill_snapshot_components_fit,
+)
+from app.skills.domain.version_labels import (
+    next_uploaded_skill_display_version,
+    resolve_uploaded_skill_display_versions,
+)
+
+
+class AdminSkillSummaryResponse(TypedDict):
+    skill_id: str
+    name: str
+    description: str
+    lifecycle_status: Literal["active"]
+    distribution_status: Literal["active", "disabled"]
+    visible_to_user: bool
+    latest_version: str | None
+    latest_version_status: str | None
+    current_version: str | None
+    rollout_percent: int | None
+    latest_display_version: str | None
+    current_display_version: str | None
+    latest_uploaded_at: str | None
+
+
+class AdminSkillListResponse(TypedDict):
+    items: list[AdminSkillSummaryResponse]
+
+
+_skill_display_version_persistence: Any | None = None
+
+
+def configure_skill_display_version_persistence(persistence: Any) -> None:
+    global _skill_display_version_persistence
+    _skill_display_version_persistence = persistence
+
+
+def _display_version_persistence() -> Any:
+    if _skill_display_version_persistence is None:
+        raise RuntimeError("skill_display_version_persistence_not_configured")
+    return _skill_display_version_persistence
+
+
+async def lock_skill_for_version_upload(conn: Any, *, skill_id: str) -> None:
+    await _display_version_persistence().lock_skill_for_version_upload(
+        conn,
+        skill_id=skill_id,
+    )
+
+
+async def list_uploaded_skill_display_version_rows(
+    conn: Any,
+    *,
+    skill_ids: list[str],
+) -> list[dict[str, Any]]:
+    return await _display_version_persistence().list_uploaded_skill_display_version_rows(
+        conn,
+        skill_ids=skill_ids,
+    )
 
 
 _ADMITTED_MANIFEST_COLLECTION_FIELDS = (
@@ -72,7 +131,14 @@ def restore_admitted_skill_manifest_authority(
 
 
 __all__ = [
+    "AdminSkillListResponse",
+    "AdminSkillSummaryResponse",
     "INTERNAL_DEPENDENCY_SKILL_IDS",
+    "configure_skill_display_version_persistence",
     "is_internal_dependency_skill",
+    "list_uploaded_skill_display_version_rows",
+    "lock_skill_for_version_upload",
+    "next_uploaded_skill_display_version",
+    "resolve_uploaded_skill_display_versions",
     "restore_admitted_skill_manifest_authority",
 ]

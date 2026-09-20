@@ -30,12 +30,6 @@ export type AdminSkillReleasePhase =
   | "promoting"
   | "refreshing";
 
-interface GitHubSkill {
-  name: string;
-  path: string;
-  description: string;
-}
-
 export function useSkillsActions(options?: {
   allAuthorizedCatalog?: boolean;
   enabled?: boolean;
@@ -95,8 +89,6 @@ export function useSkillsActions(options?: {
     adminListSkills,
     previewZipSkills,
     adminPreviewZipSkills,
-    previewGitHubSkills,
-    installGitHubSkills,
     clearError,
     fetchSkills,
   } = useSkills({
@@ -104,22 +96,6 @@ export function useSkillsActions(options?: {
     listParams,
     allAuthorizedCatalog: options?.allAuthorizedCatalog,
   });
-  const filteredSkills = useMemo(() => {
-    if (!options?.allAuthorizedCatalog) return skills;
-    const query = searchQuery.trim().normalize("NFKC").toLocaleLowerCase();
-    return skills.filter((skill) => {
-      if (
-        query &&
-        !`${skill.name}\n${skill.description}`
-          .normalize("NFKC")
-          .toLocaleLowerCase()
-          .includes(query)
-      ) {
-        return false;
-      }
-      return selectedTags.every((tag) => skill.tags.includes(tag));
-    });
-  }, [options?.allAuthorizedCatalog, searchQuery, selectedTags, skills]);
   const canAdminUploadSkills = isAiAdminUser(user);
 
   useEffect(() => {
@@ -136,13 +112,6 @@ export function useSkillsActions(options?: {
     setSearchQuery(prefillSearch);
     navigate(location.pathname, { replace: true });
   }, [location.pathname, location.state, navigate]);
-
-  const paginatedSkills = options?.allAuthorizedCatalog
-    ? filteredSkills.slice((page - 1) * pageSize, page * pageSize)
-    : filteredSkills;
-  const total = options?.allAuthorizedCatalog
-    ? filteredSkills.length
-    : catalogTotal;
 
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) =>
@@ -180,6 +149,9 @@ export function useSkillsActions(options?: {
   const [zipPreviewing, setZipPreviewing] = useState(false);
   const [zipSkills, setZipSkills] = useState<ZipSkillPreview[]>([]);
   const [selectedZipSkills, setSelectedZipSkills] = useState<string[]>([]);
+  const [zipTargetSkillName, setZipTargetSkillName] = useState<string | null>(
+    null,
+  );
   const [adminReleasePhase, setAdminReleasePhase] =
     useState<AdminSkillReleasePhase>("idle");
   const [adminReleaseBlocked, setAdminReleaseBlocked] = useState(false);
@@ -202,18 +174,6 @@ export function useSkillsActions(options?: {
       void refreshAdminSkillCatalog();
     }
   }, [canAdminUploadSkills, options?.loadAdminCatalog, refreshAdminSkillCatalog]);
-
-  // GitHub import state
-  const [showGithubModal, setShowGithubModal] = useState(false);
-  const [githubUrl, setGithubUrl] = useState("");
-  const [githubBranch, setGithubBranch] = useState("main");
-  const [githubSkills, setGithubSkills] = useState<GitHubSkill[]>([]);
-  const [selectedGithubSkills, setSelectedGithubSkills] = useState<string[]>(
-    [],
-  );
-  const [githubLoading, setGithubLoading] = useState(false);
-  const [githubInstalling, setGithubInstalling] = useState(false);
-  const [githubExporting, setGithubExporting] = useState(false);
 
   // CRUD handlers
   const handleEdit = async (skill: SkillResponse) => {
@@ -322,7 +282,7 @@ export function useSkillsActions(options?: {
     });
   };
 
-  const handleSelectAll = (names = filteredSkills.map((skill) => skill.name)) => {
+  const handleSelectAll = (names: readonly string[]) => {
     const selectableNames = [...new Set(names)];
     if (
       selectableNames.length > 0 &&
@@ -399,10 +359,11 @@ export function useSkillsActions(options?: {
   };
 
   // ZIP upload handlers
-  const handleZipClick = () => {
+  const handleZipClick = (targetSkillName?: string) => {
     setZipFile(null);
     setZipSkills([]);
     setSelectedZipSkills([]);
+    setZipTargetSkillName(targetSkillName ?? null);
     setAdminReleasePhase("idle");
     setAdminReleaseBlocked(false);
     setIsDragging(false);
@@ -441,7 +402,11 @@ export function useSkillsActions(options?: {
       if (result && result.skills) {
         setZipSkills(result.skills);
         setSelectedZipSkills(
-          initialZipSkillSelection(result.skills, canAdminUploadSkills),
+          initialZipSkillSelection(
+            result.skills,
+            canAdminUploadSkills,
+            zipTargetSkillName,
+          ),
         );
       }
     } finally {
@@ -470,10 +435,17 @@ export function useSkillsActions(options?: {
   };
 
   const handleZipSkillToggle = (name: string) => {
+    if (zipTargetSkillName && name !== zipTargetSkillName) return;
     setAdminReleasePhase("idle");
     setAdminReleaseBlocked(false);
     setSelectedZipSkills((prev) =>
-      toggleZipSkillSelection(prev, name, zipSkills, canAdminUploadSkills),
+      toggleZipSkillSelection(
+        prev,
+        name,
+        zipSkills,
+        canAdminUploadSkills,
+        zipTargetSkillName,
+      ),
     );
   };
 
@@ -605,11 +577,18 @@ export function useSkillsActions(options?: {
           toast.error(t("skills.adminReleaseRefreshFailed"));
           return;
         }
-        toast.success(t("skills.adminReleaseSuccess"));
+        toast.success(
+          t(
+            selectedSkill.already_exists
+              ? "skills.adminUpdateSuccess"
+              : "skills.adminPublishSuccess",
+          ),
+        );
         setShowZipModal(false);
         setZipFile(null);
         setZipSkills([]);
         setSelectedZipSkills([]);
+        setZipTargetSkillName(null);
         setAdminReleasePhase("idle");
         return;
       }
@@ -619,85 +598,10 @@ export function useSkillsActions(options?: {
         setZipFile(null);
         setZipSkills([]);
         setSelectedZipSkills([]);
+        setZipTargetSkillName(null);
       }
     } finally {
       setZipUploading(false);
-    }
-  };
-
-  // GitHub import handlers
-  const handleGithubClick = () => {
-    setGithubUrl("");
-    setGithubBranch("main");
-    setGithubSkills([]);
-    setSelectedGithubSkills([]);
-    setShowGithubModal(true);
-  };
-
-  const handleGithubPreview = async () => {
-    if (!githubUrl.trim()) return;
-    setGithubLoading(true);
-    setGithubSkills([]);
-    setSelectedGithubSkills([]);
-    try {
-      const result = await previewGitHubSkills(githubUrl, githubBranch);
-      if (result && result.skills) {
-        setGithubSkills(result.skills);
-      }
-    } finally {
-      setGithubLoading(false);
-    }
-  };
-
-  const handleGithubSkillToggle = (name: string) => {
-    setSelectedGithubSkills((prev) =>
-      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
-    );
-  };
-
-  const handleGithubInstall = async () => {
-    if (selectedGithubSkills.length === 0) return;
-    setGithubInstalling(true);
-    try {
-      const result = await installGitHubSkills(
-        githubUrl,
-        selectedGithubSkills,
-        githubBranch,
-      );
-      if (result) {
-        setShowGithubModal(false);
-        setGithubSkills([]);
-        setSelectedGithubSkills([]);
-      }
-    } finally {
-      setGithubInstalling(false);
-    }
-  };
-
-  const handleGithubExport = async () => {
-    if (selectedGithubSkills.length === 0) return;
-    setGithubExporting(true);
-    try {
-      const result = await installGitHubSkills(
-        githubUrl,
-        selectedGithubSkills,
-        githubBranch,
-      );
-      if (!result?.installed?.length) {
-        toast.error(t("skills.exportFailed"));
-        return;
-      }
-      const installedSkill = await getFullSkill(result.installed[0]);
-      if (!installedSkill) {
-        toast.error(t("skills.exportFailed"));
-        return;
-      }
-      await exportProjectZip(installedSkill.files, installedSkill.name);
-      toast.success(t("skills.exportSuccess"));
-    } catch {
-      toast.error(t("skills.exportFailed"));
-    } finally {
-      setGithubExporting(false);
     }
   };
 
@@ -707,13 +611,11 @@ export function useSkillsActions(options?: {
     isLoading,
     error,
     listError,
-    filteredSkills,
-    paginatedSkills,
     availableTags,
     effectivePermissions,
     effectivePermissionsKnown,
     catalogReadResolved,
-    total,
+    total: catalogTotal,
     page,
     pageSize,
 
@@ -766,6 +668,7 @@ export function useSkillsActions(options?: {
     zipPreviewing,
     zipSkills,
     selectedZipSkills,
+    zipTargetSkillName,
     adminReleasePhase,
     adminReleaseBlocked,
     adminCatalogItems,
@@ -781,23 +684,5 @@ export function useSkillsActions(options?: {
     handleZipUpload,
     canAdminUploadSkills,
 
-    // GitHub import
-    showGithubModal,
-    setShowGithubModal,
-    githubUrl,
-    setGithubUrl,
-    githubBranch,
-    setGithubBranch,
-    githubSkills,
-    selectedGithubSkills,
-    githubLoading,
-    githubInstalling,
-    githubExporting,
-    handleGithubClick,
-    handleGithubPreview,
-    handleGithubSkillToggle,
-    setSelectedGithubSkills,
-    handleGithubInstall,
-    handleGithubExport,
   };
 }

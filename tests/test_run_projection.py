@@ -170,6 +170,24 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
     assert "source_file_id" not in str(card)
     assert "storage_key" not in str(card)
 
+    selected = artifact_card(
+        {
+            "id": "artifact-selected",
+            "artifact_type": "document",
+            "label": "customer-summary.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "storage_key": "tenants/private/customer-summary.docx",
+            "size_bytes": 18,
+            "manifest_version": "ai-platform.artifact-manifest.v1",
+            "manifest_json": {"delivery_scope": "assistant_response"},
+            "created_at": None,
+        },
+        principal=principal(),
+    )
+    assert selected["label"] == "customer-summary.docx"
+    assert selected["manifest"] == {}
+    assert "delivery_scope" not in str(selected)
+
     admin_step = run_step_response(
         {
             "id": "step-a",
@@ -275,6 +293,29 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert admin["detail_code"] == "required_capability_unavailable"
     assert ordinary["message"] == admin["message"]
     assert "Bash" not in str(ordinary)
+    assert public_terminal_projection("failed", "claude_agent_sdk_timeout")[
+        "detail_code"
+    ] == "run_timeout"
+    assert public_terminal_projection("failed", "claude_agent_sdk_upstream_error")[
+        "detail_code"
+    ] == "model_service_unavailable"
+    assert public_terminal_projection(
+        "failed", "required_tool_completion_evidence_mismatch"
+    )["detail_code"] == "required_capability_unavailable"
+    assert public_terminal_projection(
+        "failed", "capability_lifecycle_sequence_invalid"
+    )["detail_code"] == "required_capability_unavailable"
+
+
+def test_unconfirmed_mcp_execution_terminal_projection_forbids_blind_retry():
+    projection = public_terminal_projection(
+        "failed", "mcp_execution_succeeded_receipt_incomplete"
+    )
+
+    assert projection["detail_code"] == "tool_execution_outcome_unconfirmed"
+    assert projection["error_code"] == "tool_execution_outcome_unconfirmed"
+    assert "请勿重试" in projection["message"]
+    assert "mcp_execution" not in str(projection)
 
 
 def test_terminal_projection_has_one_runs_owner_and_preserves_fences():
@@ -306,7 +347,7 @@ def test_terminal_projection_has_one_runs_owner_and_preserves_fences():
     assert unknown["error_code"] == "run_failed"
     assert "executor_private_exception" not in str(unknown)
 
-    cancelled = public_terminal_projection("canceled", "executor_private_exception")
+    cancelled = public_terminal_projection("canceled")
     assert cancelled == {
         "detail_kind": "cancelled",
         "detail_code": "run_cancelled",
@@ -345,7 +386,7 @@ def test_context_file_size_terminal_projection_is_specific_and_safe():
 
     assert projection["detail_code"] == "context_file_too_large"
     assert projection["error_code"] == "context_file_too_large"
-    assert projection["message"] == "文件超过 32 MB 处理上限。请选择更小的文件后重试。"
+    assert projection["message"] == "文件超过 128 MB，或文件总量超过 256 MB。请选择更小的文件或减少文件数量后重试。"
     assert projection["event_payload"] == {}
 
 
@@ -441,6 +482,14 @@ def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
             "id": "run-b",
             "status": "failed",
             "error_code": "required_tool_unavailable",
+            "result_json": {
+                "runtime_diagnostics": {
+                    "sdk": {"errors": ["actual private SDK failure"]},
+                    "tool_policy_denials": [
+                        {"tool_input": {"command": "printf private"}}
+                    ],
+                }
+            },
         }
     )
 
@@ -448,7 +497,11 @@ def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
         "event_type": "message:chunk",
         "payload": {
             "projection_version": "ai-platform.chat-public-projection.v1",
-            "projection_kind": "assistant_final",
+            "projection_kind": "assistant_delta",
+            "event_id": "run-a:final",
+            "message_id": "run-a:assistant",
+            "run_id": "run-a",
+            "source": "worker_answer_delta_v1",
             "content": "当前（general-agent），没有 Bash 工具，无法执行。",
         },
         "message": "当前（general-agent），没有 Bash 工具，无法执行。",
@@ -465,6 +518,8 @@ def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
     }
     assert failed["event_payload"] == {"detail_code": "required_capability_unavailable"}
     assert failed["severity"] == "error"
+    assert "actual private SDK failure" not in str(failed)
+    assert "printf private" not in str(failed)
 
 
 @pytest.mark.parametrize(
@@ -787,9 +842,16 @@ def test_live_delta_and_terminal_final_converge_to_same_public_text():
     final = public_chat_terminal_projection(
         {**run, "result_json": {"message": full_answer}}
     )
-    assert final is not None
     assert final["event_type"] == "message:chunk"
-    assert final["payload"]["projection_kind"] == "assistant_final"
+    assert final["payload"] == {
+        "projection_version": "ai-platform.chat-public-projection.v1",
+        "projection_kind": "assistant_delta",
+        "event_id": "run-a:final",
+        "message_id": "run-a:assistant",
+        "run_id": "run-a",
+        "source": "worker_answer_delta_v1",
+        "content": "general-agent 已处理该文档，document-review 审核通过。",
+    }
 
     assembled = (
         public_chat_answer_text(run, delta_fragment)
@@ -902,7 +964,7 @@ def test_stream_projector_matches_terminal_for_every_secret_split(secret_text):
         assert secret_text not in streamed
 
 
-def test_stream_projector_blocks_a_forbidden_marker_split_across_chunks():
+def test_stream_projector_preserves_a_path_split_across_chunks():
     run = {
         "id": "run-a",
         "agent_id": "general-agent",
@@ -916,4 +978,4 @@ def test_stream_projector_blocks_a_forbidden_marker_split_across_chunks():
 
     assert safe_prefix == ""
     assert blocked_suffix == ""
-    assert projector.flush() == ""
+    assert projector.flush() == "已生成安全摘要。 /var/private/result.txt"

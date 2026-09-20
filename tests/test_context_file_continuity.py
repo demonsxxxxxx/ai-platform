@@ -1,6 +1,12 @@
+from contextlib import asynccontextmanager
+
+import pytest
+
+from app.context.api import ContextFileContentError
 from app.context.file_continuity import (
     compatible_reusable_file_ids,
     has_file_input_mode,
+    materialize_run_context_files,
     primary_file_ids_for_run,
     snapshot_file_ids,
 )
@@ -107,3 +113,43 @@ def test_snapshot_file_ids_preserves_all_current_files_and_bounds_only_history()
         *(f"file-prior-{index}" for index in range(7)),
         "file-current",
     ]
+
+
+@pytest.mark.asyncio
+async def test_materialization_rejects_overlong_legacy_filename_before_storage(tmp_path):
+    class Repository:
+        async def get_scoped_context_file(self, _conn, **_kwargs):
+            return {
+                "original_name": f"{'测' * 85}.md",
+                "content_type": "text/markdown",
+                "size_bytes": 5,
+                "storage_key": "private/file-a",
+            }
+
+    @asynccontextmanager
+    async def transaction_factory():
+        yield object()
+
+    async def storage_io(*_args, **_kwargs):
+        raise AssertionError("storage must not be read for an invalid filename")
+
+    with pytest.raises(ContextFileContentError) as raised:
+        await materialize_run_context_files(
+            transaction_factory=transaction_factory,
+            repository=Repository(),
+            storage=object(),
+            storage_io=storage_io,
+            storage_size_limit_error=RuntimeError,
+            workspace=tmp_path,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_ids=["file-a"],
+        )
+
+    assert raised.value.code == "context_file_staging_write_failed"
+    assert raised.value.phase == "staging"
+    assert raised.value.attachment_index == 1
+    assert not (tmp_path / "inputs").exists()

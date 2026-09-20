@@ -1,15 +1,4 @@
 // ============================================
-// Feedback Types (re-export from feedback.ts)
-// ============================================
-export type {
-  RatingValue,
-  Feedback,
-  FeedbackCreate,
-  FeedbackStats,
-  FeedbackListResponse,
-} from "./feedback";
-
-// ============================================
 // Message Types
 // ============================================
 export type {
@@ -62,21 +51,15 @@ export type {
   SelectedSkillRequest,
   SkillsResponse,
   SkillCreate,
-  MarketplaceSkillResponse,
-  MarketplaceListResponse,
-  MarketplaceSkillFilesResponse,
-  MarketplaceSkillFileResponse,
-  MarketplaceInstallResponse,
-  MarketplaceUpdateResponse,
-  TagsResponse,
 } from "./skill";
 
-export type { AgentOption } from "./agentOptions";
+export type { AgentOption, AgentThinkingEffort } from "./agentOptions";
 export type {
   AgentProfileAdminProjection,
   AgentProfileDraftRequest,
   AgentProfileMutationResponse,
   AgentProfilePublicProjection,
+  AgentProfileSkillReference,
   SelectedAgentProfileRequest,
 } from "./agentProfile";
 
@@ -99,22 +82,14 @@ export type {
 export {
   Permission,
   type User,
-  type UserCreate,
   type UserUpdate,
   type UserListResponse,
-  type RegisterResponse,
   type Role,
-  type RoleCreate,
   type RoleListResponse,
-  type RoleUpdate,
   type RoleLimits,
   type LoginRequest,
-  type TokenResponse,
   type TokenPayload,
   type AuthState,
-  type PermissionInfo,
-  type PermissionGroup,
-  type PermissionsResponse,
 } from "./auth";
 
 // ============================================
@@ -129,15 +104,9 @@ export type {
   MCPServerUpdate,
   MCPServerToggleResponse,
   MCPRoleQuota,
-  MCPImportRequest,
-  MCPImportResponse,
-  MCPExportResponse,
-  MCPServerMoveRequest,
-  MCPServerMoveResponse,
   MCPToolInfo,
   MCPToolParamInfo,
   MCPToolDiscoveryResponse,
-  MCPToolToggleResponse,
 } from "./mcp";
 
 // ============================================
@@ -152,19 +121,6 @@ export type {
 } from "./tool";
 
 // ============================================
-// Settings Types
-// ============================================
-export type {
-  SettingType,
-  SettingCategory,
-  SettingDependsOn,
-  SettingItem,
-  SettingsResponse,
-  SettingUpdate,
-  SettingResetResponse,
-} from "./settings";
-
-// ============================================
 // File Upload Types
 // ============================================
 export type {
@@ -175,20 +131,6 @@ export type {
   UploadLimitsBytes,
   UploadResult,
 } from "./upload";
-
-// ============================================
-// Share Types
-// ============================================
-export type {
-  ShareType,
-  ShareVisibility,
-  SharedSession,
-  ShareCreate,
-  ShareResponse,
-  ShareListResponse,
-  SharedContentOwner,
-  SharedContentResponse,
-} from "./share";
 
 // ============================================
 // Role Governance Types
@@ -209,11 +151,6 @@ export type {
   RoleGovernanceWorkbenchGovernance,
   RoleGovernanceWorkspace,
 } from "./roleGovernance";
-
-// ============================================
-// Version Types
-// ============================================
-export type { VersionInfo } from "./common";
 
 // ============================================
 // Project Types

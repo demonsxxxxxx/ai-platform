@@ -21,33 +21,67 @@ V4_PENDING_ADMISSION_SCHEMA_VERSION = "2026.08.26.2"
 V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION = "2026.08.27.1"
 V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION = "2026.08.27.2"
 MODEL_CONTROL_PLANE_SCHEMA_VERSION = "2026.08.28.1"
-TARGET_SCHEMA_VERSION = MODEL_CONTROL_PLANE_SCHEMA_VERSION
+MCP_DYNAMIC_TOOL_DISCOVERY_SCHEMA_VERSION = "2026.08.29.1"
+RUN_ATTEMPT_RECONCILER_TAKEOVER_SCHEMA_VERSION = "2026.08.30.1"
+RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION = "2026.08.30.2"
+RUN_ATTEMPT_HEARTBEAT_CLOCK_SAFETY_SCHEMA_VERSION = "2026.08.30.3"
+EXPERT_MARKET_SCHEMA_VERSION = "2026.09.01.1"
+AGENT_AVATAR_STYLE_SCHEMA_VERSION = "2026.09.01.2"
+USER_PROFILE_METADATA_SCHEMA_VERSION = "2026.09.02.1"
+FILE_UPLOAD_SESSION_SCHEMA_VERSION = "2026.09.03.1"
+CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION = "2026.09.04.1"
+EXPERT_SKILL_NAME_SCHEMA_VERSION = "2026.09.03.2"
+BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION = "2026.09.07.1"
+EXPERT_MARKET_MULTI_TAG_SCHEMA_VERSION = "2026.09.07.2"
+STREAM_ONLY_SCHEMA_VERSION = "2026.09.12.1"
+RUN_DIAGNOSTICS_SCHEMA_VERSION = "2026.09.13.1"
+MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION = "2026.09.15.1"
+CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION = "2026.09.15.2"
+SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION = "2026.09.16.1"
+TARGET_SCHEMA_VERSION = SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION
+# Concurrent-index authority advances only when its exact index contract changes.
+# The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
+CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = STREAM_ONLY_SCHEMA_VERSION
+RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
+    "users",
     "runs",
+    "run_diagnostics",
     "model_gateway_revisions",
     "model_catalog_entries",
     "run_attempts",
     "run_skill_materializations",
     "run_events",
+    "agent_profile_favorites",
     "sse_stream_authorities",
-    "sse_stream_rebuild_items",
     "messages",
     "files",
+    "file_upload_sessions",
     "artifacts",
     "object_deletion_outbox",
     "audit_logs",
     "sandbox_leases",
+    "mcp_servers",
+    "mcp_server_credentials",
+    "mcp_tools",
+    "provider_session_heads",
+    "provider_session_epochs",
+    "provider_session_entries",
+    "provider_session_append_receipts",
+    "provider_turn_receipts",
+    "conversation_context_checkpoints",
+    "run_context_snapshots",
 )
 CRITICAL_COLUMNS = (
+    ("users", "metadata_json", "jsonb", True),
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
-    # Temporary physical compatibility for the previous binary; product DTOs ignore it.
-    ("agent_profile_revisions", "supported_file_types", "jsonb", True),
+    ("agent_profile_revisions", "market_tags", "jsonb", True),
     ("runs", "execution_kind", "text", True),
     ("runs", "skill_id", "text", False),
     ("runs", "authz_policy_version", "int4", True),
@@ -56,6 +90,16 @@ CRITICAL_COLUMNS = (
     ("runs", "model_id", "text", False),
     ("runs", "model_value", "text", False),
     ("runs", "model_gateway_revision", "int8", False),
+    ("runs", "max_input_tokens", "int8", False),
+    ("runs", "max_output_tokens", "int8", False),
+    ("run_diagnostics", "diagnostic_id", "text", True),
+    ("run_diagnostics", "tenant_id", "text", True),
+    ("run_diagnostics", "run_id", "text", True),
+    ("run_diagnostics", "schema_version", "text", True),
+    ("run_diagnostics", "revision", "int8", True),
+    ("run_diagnostics", "payload_json", "jsonb", True),
+    ("run_diagnostics", "created_at", "timestamptz", True),
+    ("run_diagnostics", "updated_at", "timestamptz", True),
     ("model_gateway_revisions", "revision", "int8", True),
     ("model_gateway_revisions", "base_url", "text", True),
     ("model_gateway_revisions", "api_key_ciphertext", "bytea", True),
@@ -71,6 +115,8 @@ CRITICAL_COLUMNS = (
     ("model_catalog_entries", "upstream_available", "bool", True),
     ("model_catalog_entries", "is_default", "bool", True),
     ("model_catalog_entries", "display_order", "int4", True),
+    ("model_catalog_entries", "max_input_tokens", "int8", False),
+    ("model_catalog_entries", "max_output_tokens", "int8", False),
     ("model_catalog_entries", "first_seen_revision", "int8", True),
     ("model_catalog_entries", "last_seen_revision", "int8", True),
     ("model_catalog_entries", "first_seen_at", "timestamptz", True),
@@ -112,13 +158,6 @@ CRITICAL_COLUMNS = (
     ("object_deletion_outbox", "dead_letter_at", "timestamptz", False),
     ("object_deletion_outbox", "reconcile_required", "bool", True),
     ("audit_logs", "payload_json", "jsonb", True),
-    ("run_events", "stream_publication_state", "text", False),
-    ("run_events", "stream_publication_attempts", "int4", False),
-    ("run_events", "stream_publication_next_attempt_at", "timestamptz", False),
-    ("run_events", "stream_publication_redis_id", "text", False),
-    ("run_events", "stream_publication_last_error", "text", False),
-    ("run_events", "stream_publication_claim_token", "text", False),
-    ("run_events", "stream_publication_claim_expires_at", "timestamptz", False),
     ("sse_stream_authorities", "attempt_id", "text", True),
     ("sse_stream_authorities", "design_id", "text", True),
     ("sse_stream_authorities", "projection_version", "text", True),
@@ -133,39 +172,14 @@ CRITICAL_COLUMNS = (
     ("sse_stream_authorities", "admission_created_at", "timestamptz", True),
     ("sse_stream_authorities", "admission_confirmed_at", "timestamptz", False),
     ("sse_stream_authorities", "updated_at", "timestamptz", True),
-    ("sse_stream_rebuilds", "attempt_id", "text", True),
-    ("sse_stream_rebuilds", "source_incarnation", "int8", True),
-    ("sse_stream_rebuilds", "source_authorization_epoch", "int8", True),
-    ("sse_stream_rebuilds", "origin_incarnation", "int8", True),
-    ("sse_stream_rebuilds", "origin_authorization_epoch", "int8", True),
-    ("sse_stream_rebuilds", "successor_incarnation", "int8", True),
-    ("sse_stream_rebuilds", "successor_authorization_epoch", "int8", True),
-    ("sse_stream_rebuilds", "source_authority_fingerprint", "text", True),
-    ("sse_stream_rebuilds", "source_cursor_sequence", "int8", True),
-    ("sse_stream_rebuilds", "source_through_sequence", "int8", True),
-    ("sse_stream_rebuilds", "successor_open_bytes", "text", True),
-    ("sse_stream_rebuilds", "claim_token_digest", "text", True),
-    ("sse_stream_rebuilds", "claim_expires_at", "timestamptz", True),
-    ("sse_stream_rebuilds", "state", "text", True),
-    ("sse_stream_rebuilds", "item_count", "int4", True),
-    ("sse_stream_rebuilds", "receipt_entry_count", "int4", False),
-    ("sse_stream_rebuilds", "receipt_open_event_id", "text", False),
-    ("sse_stream_rebuilds", "receipt_terminal_event_id", "text", False),
-    ("sse_stream_rebuilds", "receipt_end_event_id", "text", False),
-    ("sse_stream_rebuilds", "receipt_last_redis_id", "text", False),
-    ("sse_stream_rebuilds", "receipt_last_envelope_bytes", "text", False),
-    ("sse_stream_rebuilds", "receipt_last_envelope_digest", "text", False),
-    ("sse_stream_rebuilds", "receipt_digest", "text", False),
-    ("sse_stream_rebuild_items", "sequence", "int8", True),
-    ("sse_stream_rebuild_items", "canonical_envelope_bytes", "text", True),
-    ("sse_stream_rebuild_items", "envelope_digest", "text", True),
-    ("sse_stream_rebuild_items", "redis_id", "text", False),
     ("sandbox_leases", "attempt_id", "text", False),
     ("sandbox_leases", "runtime_container_id", "text", False),
     ("sandbox_leases", "runtime_container_name", "text", False),
     ("sandbox_leases", "runtime_executor_url", "text", False),
     ("sandbox_leases", "runtime_workspace_container_path", "text", False),
     ("sandbox_leases", "runtime_handle_verified_at", "timestamptz", False),
+    ("sandbox_leases", "provider_renewed_at", "timestamptz", False),
+    ("sandbox_leases", "provider_expires_at", "timestamptz", False),
     ("sandbox_leases", "executor_status", "text", True),
     ("sandbox_leases", "executor_heartbeat_at", "timestamptz", False),
     ("sandbox_leases", "executor_terminal_json", "jsonb", False),
@@ -183,9 +197,59 @@ CRITICAL_COLUMNS = (
     ),
     ("sandbox_leases", "executor_reconciliation_error", "text", True),
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
+    ("mcp_server_credentials", "credential_envelope", "text", True),
+    ("run_context_snapshots", "conversation_authority_json", "jsonb", False),
+    ("conversation_context_checkpoints", "id", "text", True),
+    ("conversation_context_checkpoints", "tenant_id", "text", True),
+    ("conversation_context_checkpoints", "session_id", "text", True),
+    ("conversation_context_checkpoints", "source_snapshot_id", "text", True),
+    ("conversation_context_checkpoints", "source_sha256", "text", True),
+    ("conversation_context_checkpoints", "summary_sha256", "text", False),
+    ("conversation_context_checkpoints", "state", "text", True),
+    ("conversation_context_checkpoints", "owner_run_id", "text", True),
+    ("provider_session_heads", "tenant_id", "text", True),
+    ("provider_session_heads", "workspace_id", "text", True),
+    ("provider_session_heads", "user_id", "text", True),
+    ("provider_session_heads", "session_id", "text", True),
+    ("provider_session_heads", "agent_id", "text", True),
+    ("provider_session_heads", "engine", "text", True),
+    ("provider_session_heads", "current_epoch_id", "text", False),
+    ("provider_session_heads", "next_epoch_number", "int8", True),
+    ("provider_session_heads", "active_run_id", "text", False),
+    ("provider_session_heads", "active_attempt_id", "text", False),
+    ("provider_session_epochs", "id", "text", True),
+    ("provider_session_epochs", "tenant_id", "text", True),
+    ("provider_session_epochs", "session_id", "text", True),
+    ("provider_session_epochs", "provider_session_id", "uuid", True),
+    ("provider_session_epochs", "next_sequence", "int8", True),
+    ("provider_session_epochs", "state", "text", True),
+    ("provider_session_epochs", "coverage_source_sha256", "text", False),
+    ("provider_session_epochs", "writer_owner_generation", "int8", False),
+    ("provider_session_entries", "id", "text", True),
+    ("provider_session_entries", "tenant_id", "text", True),
+    ("provider_session_entries", "workspace_id", "text", True),
+    ("provider_session_entries", "user_id", "text", True),
+    ("provider_session_entries", "session_id", "text", True),
+    ("provider_session_entries", "agent_id", "text", True),
+    ("provider_session_entries", "engine", "text", True),
+    ("provider_session_entries", "epoch_id", "text", True),
+    ("provider_session_entries", "subpath", "text", True),
+    ("provider_session_entries", "sequence", "int8", True),
+    ("provider_session_entries", "sdk_entry_uuid", "text", False),
+    ("provider_session_entries", "entry_json", "jsonb", True),
+    ("provider_session_entries", "created_at", "timestamptz", True),
+    ("provider_session_append_receipts", "epoch_id", "text", True),
+    ("provider_session_append_receipts", "expected_sequence", "int8", True),
+    ("provider_session_append_receipts", "batch_sha256", "text", True),
+    ("provider_session_append_receipts", "owner_generation", "int8", True),
+    ("provider_turn_receipts", "epoch_id", "text", True),
+    ("provider_turn_receipts", "execution_spec_sha256", "text", True),
+    ("provider_turn_receipts", "committed_coverage_sha256", "text", False),
 )
 CRITICAL_CONSTRAINTS = (
+    ("users", "chk_users_metadata_json_object"),
     ("runs", "fk_runs_model_gateway_revision"),
+    ("runs", "chk_runs_model_token_limits"),
     ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
     ("model_gateway_revisions", "chk_model_gateway_base_url"),
     ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),
@@ -195,10 +259,17 @@ CRITICAL_CONSTRAINTS = (
     ("model_catalog_entries", "chk_model_catalog_upstream_id"),
     ("model_catalog_entries", "chk_model_catalog_display_name"),
     ("model_catalog_entries", "chk_model_catalog_default_enabled"),
+    ("model_catalog_entries", "chk_model_catalog_token_limits"),
     ("sessions", "chk_sessions_title_source"),
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
     ("runs", "chk_runs_execution_skill_identity"),
+    ("run_diagnostics", "run_diagnostics_pkey"),
+    ("run_diagnostics", "fk_run_diagnostics_run"),
+    ("run_diagnostics", "chk_run_diagnostics_identity"),
+    ("run_diagnostics", "chk_run_diagnostics_revision"),
+    ("run_diagnostics", "chk_run_diagnostics_payload"),
+    ("run_diagnostics", "run_diagnostics_tenant_id_run_id_key"),
     ("run_attempts", "fk_run_attempts_run"),
     ("run_attempts", "chk_run_attempts_ordinal"),
     ("run_attempts", "chk_run_attempts_owner_generation"),
@@ -211,52 +282,70 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempts", "chk_run_attempts_terminal_time"),
     ("run_attempts", "run_attempts_tenant_id_run_id_ordinal_key"),
     ("run_attempts", "run_attempts_tenant_id_run_id_queue_attempt_id_key"),
-    ("run_events", "chk_run_events_stream_publication_state"),
-    ("run_events", "chk_run_events_stream_publication_claim"),
     ("sse_stream_authorities", "chk_sse_stream_authority_open_format"),
     ("sse_stream_authorities", "chk_sse_stream_authority_pending_confirmation"),
-    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_identity"),
-    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_authority"),
-    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_origin"),
-    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_progress"),
-    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_state"),
-    ("sse_stream_rebuilds", "chk_sse_stream_rebuild_receipt"),
-    ("sse_stream_rebuilds", "fk_sse_stream_rebuild_authority"),
-    ("sse_stream_rebuild_items", "sse_stream_rebuild_items_pkey"),
-    ("sse_stream_rebuild_items", "chk_sse_stream_rebuild_item"),
-    ("sse_stream_rebuild_items", "chk_sse_stream_rebuild_item_redis_id"),
-    ("sse_stream_rebuild_items", "fk_sse_stream_rebuild_item_operation"),
-    ("sse_stream_rebuild_items", "uq_sse_stream_rebuild_item_event"),
     ("files", "chk_files_lifecycle_state"),
     ("artifacts", "chk_artifacts_lifecycle_state"),
+    ("artifacts", "chk_artifacts_run_owner"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_state"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_target"),
     ("object_deletion_outbox", "chk_object_deletion_outbox_target_state"),
     ("object_deletion_outbox", "object_deletion_outbox_file_id_fkey"),
     ("sandbox_leases", "chk_sandbox_leases_executor_status"),
     ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
+    ("mcp_servers", "mcp_servers_endpoint_not_persisted"),
+    ("mcp_tools", "mcp_tools_endpoint_not_persisted"),
+    ("conversation_context_checkpoints", "fk_context_checkpoint_session"),
+    ("conversation_context_checkpoints", "fk_context_checkpoint_owner_scope"),
+    ("conversation_context_checkpoints", "fk_context_checkpoint_source_scope"),
+    ("conversation_context_checkpoints", "fk_context_checkpoint_predecessor"),
+    ("conversation_context_checkpoints", "chk_context_checkpoint_ready"),
+    ("provider_session_heads", "pk_provider_session_heads"),
+    ("provider_session_heads", "fk_provider_head_session"),
+    ("provider_session_heads", "fk_provider_head_current_epoch"),
+    ("provider_session_epochs", "fk_provider_epoch_head"),
+    ("provider_session_epochs", "uq_provider_epoch_scope"),
+    ("provider_session_epochs", "uq_provider_epoch_number"),
+    ("provider_session_epochs", "uq_provider_epoch_provider_id"),
+    ("provider_session_entries", "provider_session_entries_pkey"),
+    ("provider_session_entries", "fk_provider_entry_epoch"),
+    ("provider_session_entries", "uq_provider_entry_global_sequence"),
+    ("provider_session_append_receipts", "provider_session_append_receipts_pkey"),
+    ("provider_turn_receipts", "fk_provider_turn_epoch"),
 )
 CRITICAL_TRIGGERS = (
+    (
+        "run_attempts",
+        "trg_run_attempt_heartbeat_monotonicity_guard",
+        "ai_platform_guard_run_attempt_heartbeat_monotonicity",
+        19,
+    ),
     (
         "run_attempts",
         "trg_run_attempt_transition_guard",
         "ai_platform_guard_run_attempt_transition",
         23,
     ),
-    (
-        "agent_profile_revisions",
-        "trg_agent_profile_legacy_insert_compatibility",
-        "agent_profile_legacy_insert_compatibility",
-        7,
-    ),
-    (
-        "agent_profile_revisions",
-        "trg_agent_profile_legacy_insert_reconcile",
-        "agent_profile_legacy_insert_reconcile",
-        5,
-    ),
 )
 MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "runs",
+        "chk_runs_model_token_limits",
+        "c",
+        "CHECK (max_input_tokens IS NULL AND max_output_tokens IS NULL OR "
+        "max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
+        "max_output_tokens >= 1 AND max_output_tokens <= 10000000)",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_token_limits",
+        "c",
+        "CHECK (max_input_tokens IS NULL AND max_output_tokens IS NULL OR "
+        "max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
+        "max_output_tokens >= 1 AND max_output_tokens <= 10000000)",
+    ),
     (
         "runs",
         "fk_runs_model_gateway_revision",
@@ -321,6 +410,65 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
 )
 
 CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "users",
+        "chk_users_metadata_json_object",
+        "c",
+        "CHECK ((jsonb_typeof(metadata_json) = 'object'::text))",
+    ),
+    (
+        "run_diagnostics",
+        "run_diagnostics_pkey",
+        "p",
+        "PRIMARY KEY (diagnostic_id)",
+    ),
+    (
+        "run_diagnostics",
+        "fk_run_diagnostics_run",
+        "f",
+        "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+    ),
+    (
+        "run_diagnostics",
+        "chk_run_diagnostics_identity",
+        "c",
+        "CHECK (diagnostic_id <> ''::text AND tenant_id <> ''::text "
+        "AND run_id <> ''::text)",
+    ),
+    (
+        "run_diagnostics",
+        "chk_run_diagnostics_revision",
+        "c",
+        "CHECK (revision > 0)",
+    ),
+    (
+        "run_diagnostics",
+        "chk_run_diagnostics_payload",
+        "c",
+        "CHECK (jsonb_typeof(payload_json) = 'object'::text "
+        "AND payload_json ? 'schema_version'::text "
+        "AND (payload_json ->> 'schema_version'::text) IS NOT NULL "
+        "AND (payload_json ->> 'schema_version'::text) = schema_version "
+        "AND octet_length(payload_json::text) <= 147456)",
+    ),
+    (
+        "run_diagnostics",
+        "run_diagnostics_tenant_id_run_id_key",
+        "u",
+        "UNIQUE (tenant_id, run_id)",
+    ),
+    (
+        "mcp_servers",
+        "mcp_servers_endpoint_not_persisted",
+        "c",
+        "CHECK (endpoint_redacted = ''::text)",
+    ),
+    (
+        "mcp_tools",
+        "mcp_tools_endpoint_not_persisted",
+        "c",
+        "CHECK (endpoint = ''::text)",
+    ),
     (
         "run_attempts",
         "fk_run_attempts_run",
@@ -412,22 +560,6 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "UNIQUE (tenant_id, run_id, queue_attempt_id)",
     ),
     (
-        "run_events",
-        "chk_run_events_stream_publication_state",
-        "c",
-        "CHECK (stream_publication_state IS NULL OR (stream_publication_state = ANY (ARRAY["
-        "'pending'::text, 'published'::text, 'suppressed'::text])))",
-    ),
-    (
-        "run_events",
-        "chk_run_events_stream_publication_claim",
-        "c",
-        "CHECK (stream_publication_claim_token IS NULL AND "
-        "stream_publication_claim_expires_at IS NULL OR "
-        "stream_publication_claim_token IS NOT NULL AND "
-        "stream_publication_claim_expires_at IS NOT NULL)",
-    ),
-    (
         "sse_stream_authorities",
         "chk_sse_stream_authority_open_format",
         "c",
@@ -442,115 +574,31 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "OR state <> 'admission_pending'::text AND admission_confirmed_at IS NOT NULL)",
     ),
     (
-        "sse_stream_rebuilds",
-        "chk_sse_stream_rebuild_identity",
-        "c",
-        "CHECK (id <> ''::text AND attempt_id <> ''::text "
-        "AND successor_open_event_id <> ''::text AND successor_open_bytes <> ''::text "
-        "AND source_authority_fingerprint ~ '^[0-9a-f]{64}$'::text "
-        "AND successor_open_digest ~ '^[0-9a-f]{64}$'::text "
-        "AND claim_token_digest ~ '^[0-9a-f]{64}$'::text)",
-    ),
-    (
-        "sse_stream_rebuilds",
-        "chk_sse_stream_rebuild_authority",
-        "c",
-        "CHECK (source_incarnation > 0 AND successor_incarnation > source_incarnation "
-        "AND source_authorization_epoch > 0 "
-        "AND successor_authorization_epoch > source_authorization_epoch)",
-    ),
-    (
-        "sse_stream_rebuilds",
-        "chk_sse_stream_rebuild_origin",
-        "c",
-        "CHECK (origin_incarnation > 0 AND origin_incarnation <= source_incarnation "
-        "AND origin_authorization_epoch > 0 "
-        "AND origin_authorization_epoch <= source_authorization_epoch)",
-    ),
-    (
-        "sse_stream_rebuilds",
-        "chk_sse_stream_rebuild_progress",
-        "c",
-        "CHECK (source_cursor_sequence >= source_through_sequence "
-        "AND source_through_sequence > 0 AND item_count > 0 "
-        "AND built_through_sequence >= 0 "
-        "AND built_through_sequence <= source_through_sequence)",
-    ),
-    (
-        "sse_stream_rebuilds",
-        "chk_sse_stream_rebuild_state",
-        "c",
-        "CHECK (state = ANY (ARRAY['building'::text, 'ready'::text, "
-        "'cutover'::text, 'aborted'::text, 'expired'::text]))",
-    ),
-    (
-        "sse_stream_rebuilds",
-        "chk_sse_stream_rebuild_receipt",
-        "c",
-        "CHECK (receipt_entry_count IS NULL AND receipt_open_event_id IS NULL "
-        "AND receipt_terminal_event_id IS NULL AND receipt_end_event_id IS NULL "
-        "AND receipt_last_redis_id IS NULL AND receipt_last_envelope_bytes IS NULL "
-        "AND receipt_last_envelope_digest IS NULL AND receipt_digest IS NULL "
-        "OR receipt_entry_count IS NOT NULL "
-        "AND receipt_entry_count = (item_count + 2) "
-        "AND receipt_open_event_id IS NOT NULL AND receipt_open_event_id <> ''::text "
-        "AND receipt_terminal_event_id IS NOT NULL "
-        "AND receipt_terminal_event_id <> ''::text "
-        "AND receipt_end_event_id IS NOT NULL AND receipt_end_event_id <> ''::text "
-        "AND receipt_last_redis_id IS NOT NULL "
-        "AND receipt_last_redis_id ~ '^[0-9]+-[0-9]+$'::text "
-        "AND receipt_last_envelope_bytes IS NOT NULL "
-        "AND receipt_last_envelope_bytes <> ''::text "
-        "AND receipt_last_envelope_digest IS NOT NULL "
-        "AND receipt_last_envelope_digest ~ '^[0-9a-f]{64}$'::text "
-        "AND receipt_digest IS NOT NULL "
-        "AND receipt_digest ~ '^[0-9a-f]{64}$'::text)",
-    ),
-    (
-        "sse_stream_rebuilds",
-        "fk_sse_stream_rebuild_authority",
-        "f",
-        "FOREIGN KEY (tenant_id, run_id) "
-        "REFERENCES sse_stream_authorities(tenant_id, run_id)",
-    ),
-    (
-        "sse_stream_rebuild_items",
-        "sse_stream_rebuild_items_pkey",
-        "p",
-        "PRIMARY KEY (rebuild_id, sequence)",
-    ),
-    (
-        "sse_stream_rebuild_items",
-        "chk_sse_stream_rebuild_item",
-        "c",
-        "CHECK (sequence > 0 AND event_id <> ''::text AND event_type <> ''::text "
-        "AND canonical_envelope_bytes <> ''::text "
-        "AND envelope_digest ~ '^[0-9a-f]{64}$'::text)",
-    ),
-    (
-        "sse_stream_rebuild_items",
-        "chk_sse_stream_rebuild_item_redis_id",
-        "c",
-        "CHECK (redis_id IS NULL OR redis_id ~ '^[0-9]+-[0-9]+$'::text)",
-    ),
-    (
-        "sse_stream_rebuild_items",
-        "fk_sse_stream_rebuild_item_operation",
-        "f",
-        "FOREIGN KEY (rebuild_id) REFERENCES sse_stream_rebuilds(id)",
-    ),
-    (
-        "sse_stream_rebuild_items",
-        "uq_sse_stream_rebuild_item_event",
-        "u",
-        "UNIQUE (rebuild_id, event_id)",
-    ),
-    (
         "files",
         "chk_files_lifecycle_state",
         "c",
         "CHECK (lifecycle_state = ANY (ARRAY["
         "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+    ),
+    (
+        "artifacts",
+        "chk_artifacts_lifecycle_state",
+        "c",
+        "CHECK (lifecycle_state = ANY (ARRAY["
+        "'active'::text, 'delete_pending'::text, 'deleted'::text]))",
+    ),
+    (
+        "artifacts",
+        "chk_artifacts_run_owner",
+        "c",
+        "CHECK (run_id IS NOT NULL AND lifecycle_state = 'active'::text OR "
+        "run_id IS NULL AND lifecycle_state = 'delete_pending'::text "
+        "AND manifest_json @> '{\"provisional_reconciliation_cleanup\": true}'::jsonb "
+        "AND NULLIF(manifest_json ->> 'expected_run_id'::text, ''::text) IS NOT NULL OR "
+        "run_id IS NULL AND (lifecycle_state = ANY (ARRAY["
+        "'delete_pending'::text, 'deleted'::text])) "
+        "AND manifest_json @> '{\"retention_artifact_cleanup\": true}'::jsonb "
+        "AND NULLIF(manifest_json ->> 'deletion_owner_run_id'::text, ''::text) IS NOT NULL)",
     ),
     (
         "object_deletion_outbox",
@@ -637,40 +685,6 @@ class StaticIndexDefinition:
 
 
 CONCURRENT_INDEX_MIGRATIONS = (
-    ConcurrentIndexMigration(
-        "idx_run_events_stream_publication_retry",
-        "create index concurrently if not exists idx_run_events_stream_publication_retry "
-        "on run_events(stream_publication_next_attempt_at asc, created_at asc, id asc) "
-        "where visible_to_user = true and stream_publication_state = 'pending'",
-        "run_events",
-        ("stream_publication_next_attempt_at", "created_at", "id"),
-        (False, False, False),
-        "visible_to_user = true and stream_publication_state = 'pending'",
-    ),
-    ConcurrentIndexMigration(
-        "idx_run_events_stream_publication_claim",
-        "create index concurrently if not exists idx_run_events_stream_publication_claim "
-        "on run_events(tenant_id, run_id, sequence asc, id asc) "
-        "where visible_to_user = true and stream_publication_state = 'pending' "
-        "and payload_json ? '__stream_v4'",
-        "run_events",
-        ("tenant_id", "run_id", "sequence", "id"),
-        (False, False, False, False),
-        "visible_to_user = true and stream_publication_state = 'pending' "
-        "and payload_json ? '__stream_v4'",
-    ),
-    ConcurrentIndexMigration(
-        "idx_run_events_v4_due_scope",
-        "create index concurrently if not exists idx_run_events_v4_due_scope "
-        "on run_events(tenant_id, run_id, sequence asc) "
-        "where visible_to_user = true and payload_json ? '__stream_v4' "
-        "and stream_publication_state = 'pending'",
-        "run_events",
-        ("tenant_id", "run_id", "sequence"),
-        (False, False, False),
-        "visible_to_user = true and payload_json ? '__stream_v4' "
-        "and stream_publication_state = 'pending'",
-    ),
     ConcurrentIndexMigration(
         "idx_messages_tenant_session_created",
         "create index concurrently if not exists idx_messages_tenant_session_created "
@@ -831,42 +845,6 @@ STATIC_INDEX_DEFINITIONS = (
         (False, False, False, False),
     ),
     StaticIndexDefinition(
-        "idx_sse_stream_authority_pending",
-        "sse_stream_authorities",
-        ("state", "updated_at", "tenant_id", "run_id"),
-        (False, False, False, False),
-        "state = 'admission_pending'",
-    ),
-    StaticIndexDefinition(
-        "uq_sse_stream_rebuild_successor",
-        "sse_stream_rebuilds",
-        ("tenant_id", "run_id", "successor_incarnation"),
-        (False, False, False),
-        unique=True,
-    ),
-    StaticIndexDefinition(
-        "uq_sse_stream_rebuild_active",
-        "sse_stream_rebuilds",
-        ("tenant_id", "run_id"),
-        (False, False),
-        "state = any array['building', 'ready']",
-        unique=True,
-    ),
-    StaticIndexDefinition(
-        "idx_sse_stream_rebuild_claim_expiry",
-        "sse_stream_rebuilds",
-        ("state", "claim_expires_at", "tenant_id", "run_id"),
-        (False, False, False, False),
-        "state = any array['building', 'ready']",
-    ),
-    StaticIndexDefinition(
-        "uq_sse_stream_rebuild_item_event",
-        "sse_stream_rebuild_items",
-        ("rebuild_id", "event_id"),
-        (False, False),
-        unique=True,
-    ),
-    StaticIndexDefinition(
         "uq_run_attempts_one_open",
         "run_attempts",
         ("tenant_id", "run_id"),
@@ -887,6 +865,27 @@ STATIC_INDEX_DEFINITIONS = (
         ("lease_expires_at", "tenant_id", "run_id", "id"),
         (False, False, False, False),
         "status = any array['claimed', 'running', 'cancel_requested', 'expired']",
+    ),
+    StaticIndexDefinition(
+        "idx_provider_entry_view",
+        "provider_session_entries",
+        ("epoch_id", "subpath", "sequence"),
+        (False, False, False),
+    ),
+    StaticIndexDefinition(
+        "uq_provider_entry_sdk_uuid",
+        "provider_session_entries",
+        ("epoch_id", "subpath", "sdk_entry_uuid"),
+        (False, False, False),
+        "sdk_entry_uuid is not null and sdk_entry_uuid <> ''",
+        unique=True,
+    ),
+    StaticIndexDefinition(
+        "idx_sessions_provider_scope",
+        "sessions",
+        ("tenant_id", "workspace_id", "user_id", "id", "agent_id"),
+        (False, False, False, False, False),
+        unique=True,
     ),
 )
 CRITICAL_INDEXES = (
@@ -1086,7 +1085,7 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
         index_ready = await _index_is_ready(conn, migration)
         if (
             ledger_row is not None
-            and ledger_row.get("target_version") == TARGET_SCHEMA_VERSION
+            and ledger_row.get("target_version") == CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
             and ledger_row.get("checksum_sha256") == migration.checksum_sha256
             and ledger_row.get("state") == "ready"
             and index_ready
@@ -1108,7 +1107,11 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
               last_error_code = null,
               updated_at = now()
             """,
-            (migration.name, TARGET_SCHEMA_VERSION, migration.checksum_sha256),
+            (
+                migration.name,
+                CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
+                migration.checksum_sha256,
+            ),
         )
         try:
             if not index_ready:
@@ -1132,7 +1135,11 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
             set state = 'ready', completed_at = now(), last_error_code = null, updated_at = now()
             where index_name = %s and target_version = %s and checksum_sha256 = %s
             """,
-            (migration.name, TARGET_SCHEMA_VERSION, migration.checksum_sha256),
+            (
+                migration.name,
+                CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
+                migration.checksum_sha256,
+            ),
         )
         applied = True
     cleanup = await conn.execute(
@@ -1150,67 +1157,48 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
     return applied
 
 
-async def rollback_v4_successor_rebuild_migration(conn: Any) -> None:
-    """Remove dormant successor snapshots, but never activated lineage."""
-
-    activated = await conn.execute(
-        "select 1 from sse_stream_rebuilds where state = 'cutover' limit 1"
-    )
-    if await activated.fetchone() is not None:
-        raise SchemaMigrationError("v4_successor_rebuild_rollback_cutover_exists")
-    await conn.execute("drop table if exists sse_stream_rebuild_items")
-    await conn.execute("drop table if exists sse_stream_rebuilds")
-    await conn.execute("drop index if exists idx_run_events_v4_due_scope")
-    await conn.execute(
-        "delete from schema_index_migrations where index_name = %s",
-        ("idx_run_events_v4_due_scope",),
-    )
-    await conn.execute(
-        "delete from schema_migrations where version in (%s, %s, %s)",
-        (
-            V4_SUCCESSOR_REBUILD_SCHEMA_VERSION,
-            V4_SUCCESSOR_ACTIVATION_SCHEMA_VERSION,
-            V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION,
-        ),
-    )
 
 
-async def rollback_v4_publication_migration(conn: Any) -> None:
-    """Remove only additive publication bookkeeping; event facts stay intact."""
 
-    await conn.execute("drop index if exists idx_run_events_stream_publication_claim")
-    await conn.execute("drop index if exists idx_run_events_stream_publication_retry")
-    await conn.execute("drop index if exists idx_run_events_v4_due_scope")
-    await conn.execute(
-        "delete from schema_index_migrations where index_name in (%s, %s, %s)",
-        (
-            "idx_run_events_stream_publication_claim",
-            "idx_run_events_stream_publication_retry",
-            "idx_run_events_v4_due_scope",
-        ),
-    )
-    await conn.execute(
-        "delete from schema_migrations where version in (%s, %s)",
-        (V4_PUBLICATION_SCHEMA_VERSION, V4_CONCURRENT_DUE_INDEX_SCHEMA_VERSION),
-    )
-    await conn.execute(
-        "alter table run_events drop constraint if exists chk_run_events_stream_publication_claim"
-    )
-    await conn.execute(
-        "alter table run_events drop constraint if exists chk_run_events_stream_publication_state"
-    )
-    await conn.execute(
+
+async def _require_no_future_open_attempt_heartbeats(conn: Any) -> None:
+    """Block the monotonic guard until clock-poisoned open rows are remediated."""
+
+    contract_cursor = await conn.execute(
         """
-        alter table run_events
-          drop column if exists stream_publication_claim_token,
-          drop column if exists stream_publication_claim_expires_at,
-          drop column if exists stream_publication_state,
-          drop column if exists stream_publication_attempts,
-          drop column if exists stream_publication_next_attempt_at,
-          drop column if exists stream_publication_redis_id,
-          drop column if exists stream_publication_last_error
+        select
+          to_regclass('run_attempts') is not null
+          and exists (
+            select 1
+            from pg_attribute
+            where attrelid = to_regclass('run_attempts')
+              and attname = 'last_heartbeat_at'
+              and not attisdropped
+          ) as supported
         """
     )
+    contract = await contract_cursor.fetchone() or {}
+    if not bool(contract.get("supported")):
+        return
+    future_cursor = await conn.execute(
+        """
+        select exists (
+          select 1
+          from run_attempts
+          where status in (
+            'created', 'queued', 'claimed', 'running',
+            'cancel_requested', 'expired'
+          )
+            and last_heartbeat_at > clock_timestamp() + make_interval(secs => %s)
+        ) as blocked
+        """,
+        (RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS,),
+    )
+    future = await future_cursor.fetchone() or {}
+    if bool(future.get("blocked")):
+        raise SchemaMigrationError(
+            "run_attempt_future_heartbeat_requires_remediation"
+        )
 
 
 async def apply_migrations(
@@ -1240,6 +1228,7 @@ async def apply_migrations(
                 if str(row.get("checksum_sha256") or "") != checksum:
                     raise SchemaMigrationError("schema_migration_checksum_mismatch")
             else:
+                await _require_no_future_open_attempt_heartbeats(conn)
                 await conn.execute(sql)
                 await conn.execute(
                     """
@@ -1270,7 +1259,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
     index_ledger_contract = tuple(
         (
             migration.name,
-            TARGET_SCHEMA_VERSION,
+            CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
             migration.checksum_sha256,
         )
         for migration in CONCURRENT_INDEX_MIGRATIONS
@@ -1317,8 +1306,16 @@ async def schema_status(conn: Any) -> dict[str, object]:
           and constraints.convalidated
           and constraints.contype::text = expected.constraint_type
           and regexp_replace(
-            lower(pg_get_constraintdef(constraints.oid, true)), '\\s+', '', 'g'
-          ) = regexp_replace(lower(expected.definition), '\\s+', '', 'g')
+            regexp_replace(
+              lower(pg_get_constraintdef(constraints.oid, true)), '\\s+', '', 'g'
+            ),
+            '^check\\(\\((.*)\\)\\)$',
+            'check(\\1)'
+          ) = regexp_replace(
+            regexp_replace(lower(expected.definition), '\\s+', '', 'g'),
+            '^check\\(\\((.*)\\)\\)$',
+            'check(\\1)'
+          )
         ), false) as current
         from jsonb_to_recordset(%s::jsonb)
           as expected(

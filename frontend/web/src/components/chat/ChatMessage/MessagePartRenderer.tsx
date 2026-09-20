@@ -21,23 +21,19 @@ import { MarkdownContent } from "./MarkdownContent";
 import { formatFileSize, getFileTypeInfo } from "../../documents/utils";
 import {
   ToolCallItem,
-  FileRevealItem,
-  ProjectRevealItem,
   ReadFileItem,
   EditFileItem,
   WriteFileItem,
   GrepItem,
   LsItem,
   GlobItem,
-  ExecuteItem,
 } from "./ToolCallItem";
-import { ThinkingBlock, SubagentBlock, SandboxItem } from "./SubagentBlocks";
+import { SubagentBlock, SandboxItem } from "./SubagentBlocks";
 import { TodoBlock } from "./TodoBlock";
 import { SummaryItem } from "./SummaryItem";
 import { PublicExecutionProcess } from "./PublicExecutionProcess";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
-import { createToolPartAnchorId } from "./messagePartAnchors";
 import {
   getOrdinaryUserToolPermissionPresentation,
 } from "./toolPermissionCardState";
@@ -57,29 +53,23 @@ export function MessagePartRenderer({
   partIndex,
   isStreaming,
   isLast,
-  allowAutoPreview,
-  activePreview,
   onOpenPreview,
   artifactDownloadScope,
+  withinWorkDetails,
 }: {
   part: MessagePart;
   messageId?: string;
   partIndex?: number;
   isStreaming?: boolean;
   isLast: boolean;
-  allowAutoPreview?: boolean;
-  activePreview?: RevealPreviewRequest | null;
   onOpenPreview?: (
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
   ) => boolean;
   artifactDownloadScope?: ArtifactDownloadScope;
+  withinWorkDetails?: boolean;
 }) {
   const { t } = useTranslation();
-  const toolPartAnchorId =
-    messageId !== undefined && partIndex !== undefined
-      ? createToolPartAnchorId(messageId, partIndex)
-      : undefined;
 
   if (part.type === "text") {
     return (
@@ -99,6 +89,23 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "tool") {
+    if (part.public_operation_id && part.public_category) {
+      return (
+        <ToolCallItem
+          name={part.name}
+          args={part.args}
+          result={part.result}
+          success={part.success}
+          status={part.status}
+          isPending={part.isPending}
+          cancelled={part.cancelled}
+          publicCategory={part.public_category}
+          publicOperationId={part.public_operation_id}
+          durationMs={part.duration_ms}
+        />
+      );
+    }
+
     // Detect Read tool, use dedicated component (strips line numbers, shows file path)
     if (part.name === "read_file") {
       return (
@@ -111,45 +118,8 @@ export function MessagePartRenderer({
         />
       );
     }
-    // Detect reveal_file tool, use dedicated component
-    if (part.name === "reveal_file") {
-      return (
-        <div
-          id={toolPartAnchorId}
-          className="scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/80 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.25)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/60 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.12)]"
-        >
-          <FileRevealItem
-            args={part.args}
-            result={part.result}
-            success={part.success}
-            isPending={part.isPending}
-            cancelled={part.cancelled}
-            allowAutoPreview={allowAutoPreview}
-            activePreview={activePreview}
-            onOpenPreview={onOpenPreview}
-          />
-        </div>
-      );
-    }
-    // Detect reveal_project tool, use dedicated component
-    if (part.name === "reveal_project") {
-      return (
-        <div
-          id={toolPartAnchorId}
-          className="scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/80 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.25)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/60 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.12)]"
-        >
-          <ProjectRevealItem
-            args={part.args}
-            result={part.result}
-            success={part.success}
-            isPending={part.isPending}
-            cancelled={part.cancelled}
-            allowAutoPreview={allowAutoPreview}
-            activePreview={activePreview}
-            onOpenPreview={onOpenPreview}
-          />
-        </div>
-      );
+    if (part.name === "reveal_file" || part.name === "reveal_project") {
+      return null;
     }
     // Detect edit_file tool, use dedicated component
     if (part.name === "edit_file") {
@@ -211,18 +181,6 @@ export function MessagePartRenderer({
         />
       );
     }
-    // Detect execute tool, use dedicated component
-    if (part.name === "execute") {
-      return (
-        <ExecuteItem
-          args={part.args}
-          result={part.result}
-          success={part.success}
-          isPending={part.isPending}
-          cancelled={part.cancelled}
-        />
-      );
-    }
     return (
       <ToolCallItem
         name={part.name}
@@ -237,13 +195,7 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "thinking") {
-    return (
-      <ThinkingBlock
-        content={part.content}
-        isStreaming={isStreaming && isLast && part.isStreaming}
-        panelKey={part.thinking_id}
-      />
-    );
+    return null;
   }
 
   if (part.type === "subagent") {
@@ -276,6 +228,7 @@ export function MessagePartRenderer({
         status={part.status}
         sandboxId={part.sandbox_id}
         error={part.error}
+        readyDurationMs={part.ready_duration_ms}
       />
     );
   }
@@ -333,7 +286,14 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "execution_process") {
-    return <PublicExecutionProcess steps={part.steps} isStreaming={false} />;
+    return (
+      <PublicExecutionProcess
+        steps={part.steps}
+        isStreaming={isStreaming === true}
+        expandable={!withinWorkDetails && isStreaming !== true}
+        elapsedMs={part.elapsed_ms}
+      />
+    );
   }
 
   if (part.type === "cancelled") {

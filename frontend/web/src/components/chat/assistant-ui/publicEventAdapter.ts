@@ -1,18 +1,23 @@
 import {
-  PUBLIC_STREAM_EVENT_TYPES,
+  PUBLIC_APPLICATION_ENVELOPE_FIELDS,
+  PUBLIC_APPLICATION_EVENT_TYPES,
+  PUBLIC_CONTROL_ENVELOPE_FIELDS,
+  PUBLIC_CONTROL_EVENT_TYPES,
+  PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES,
+  PUBLIC_PAYLOAD_ENUMS,
+  PUBLIC_PAYLOAD_FIELDS,
+  PUBLIC_PAYLOAD_INTEGER_BOUNDS,
+  PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS,
+  PUBLIC_PAYLOAD_REF_ARRAY_FIELDS,
+  PUBLIC_PAYLOAD_REF_FIELDS,
+  PUBLIC_PAYLOAD_STRING_BOUNDS,
+  PUBLIC_REQUIRED_PAYLOAD_FIELDS,
   type PublicRunStreamEventV4,
 } from "../../../generated/publicRunStreamV4";
-import {
-  isPublicAgentProgressPayload,
-  type StreamEvent,
-} from "../../../hooks/useAgent/types";
+import { isPublicAgentProgressPayload } from "../../../hooks/useAgent/types";
 
-export type V4ApplicationEventType = (typeof PUBLIC_STREAM_EVENT_TYPES)[number];
-export type V4ControlEventType =
-  | "stream.open"
-  | "stream.heartbeat"
-  | "stream.gap"
-  | "stream.end";
+export type V4ApplicationEventType = (typeof PUBLIC_APPLICATION_EVENT_TYPES)[number];
+export type V4ControlEventType = (typeof PUBLIC_CONTROL_EVENT_TYPES)[number];
 export type V4EventType = V4ApplicationEventType | V4ControlEventType;
 
 export interface V4SseFrame {
@@ -43,85 +48,22 @@ export interface V4AdapterBinding {
   streamIncarnation?: number | null;
 }
 
-const APPLICATION_EVENT_TYPES = new Set<string>(PUBLIC_STREAM_EVENT_TYPES);
-const CONTROL_EVENT_TYPES = new Set<V4ControlEventType>([
-  "stream.open",
-  "stream.heartbeat",
-  "stream.gap",
-  "stream.end",
-]);
+const APPLICATION_EVENT_TYPES = new Set<string>(PUBLIC_APPLICATION_EVENT_TYPES);
+const MESSAGE_CORRELATED_EVENT_TYPES = new Set<V4ApplicationEventType>(
+  PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES,
+);
+const CONTROL_EVENT_TYPES = new Set<V4ControlEventType>(PUBLIC_CONTROL_EVENT_TYPES);
 
-const PAYLOAD_KEYS: Record<string, readonly string[]> = {
-  "message.started": [],
-  "message.delta": ["delta"],
-  "message.completed": ["content"],
-  "thinking.started": ["thinking_id", "public_summary"],
-  "thinking.delta": ["thinking_id", "delta"],
-  "thinking.completed": ["thinking_id", "public_summary"],
-  "agent.progress": ["schema_version", "step_id", "phase", "lifecycle", "message"],
-  "model.completed": ["duration_ms", "turn_count", "stop_category"],
-  "tool.started": ["operation_id", "category", "display_name", "input_summary", "evidence_refs"],
-  "tool.completed": ["operation_id", "category", "display_name", "duration_ms", "result_summary", "evidence_refs", "artifact_refs"],
-  "tool.failed": ["operation_id", "category", "display_name", "duration_ms", "failure_category", "evidence_refs"],
-  "tool.denied": ["operation_id", "category", "display_name", "denial_code"],
-  "subagent.started": ["subagent_id", "display_name"],
-  "subagent.progress": ["subagent_id", "display_name", "duration_ms", "current_category", "progress_percent"],
-  "subagent.completed": ["subagent_id", "display_name", "duration_ms"],
-  "subagent.failed": ["subagent_id", "display_name", "duration_ms", "failure_category"],
-  "subagent.cancelled": ["subagent_id", "display_name", "duration_ms", "reason_code"],
-  "artifact.created": ["artifact_id", "filename", "media_type", "size_bytes", "status", "evidence_ref"],
-  "artifact.ready": ["artifact_id", "filename", "media_type", "size_bytes", "status", "evidence_ref"],
-  "artifact.failed": ["artifact_id", "status", "failure_category", "filename", "media_type"],
-  "policy.checking": ["decision_id", "category", "display_name"],
-  "policy.allowed": ["decision_id", "category", "display_name", "decision_code"],
-  "policy.denied": ["decision_id", "category", "display_name", "decision_code"],
-  "run.cancel_requested": ["source"],
-  "run.succeeded": ["terminal_event_id", "hydrate_required"],
-  "run.cancelled": ["terminal_event_id", "hydrate_required", "reason_code"],
-  "run.failed": ["terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"],
-  "stream.open": ["design_id"],
-  "stream.heartbeat": ["status"],
-  "stream.gap": ["reason", "recovery", "requested_event_id", "requested_stream_incarnation", "current_stream_incarnation", "earliest_available_event_id", "latest_available_event_id"],
-  "stream.end": ["terminal_event_id"],
-};
+export function isV4MessageCorrelatedEventType(
+  eventType: V4EventType,
+): eventType is V4ApplicationEventType {
+  return MESSAGE_CORRELATED_EVENT_TYPES.has(
+    eventType as V4ApplicationEventType,
+  );
+}
 
-const REQUIRED_PAYLOAD_KEYS: Record<string, readonly string[]> = {
-  "message.delta": ["delta"],
-  "message.completed": ["content"],
-  "thinking.delta": ["thinking_id", "delta"],
-  "agent.progress": ["schema_version", "step_id", "phase", "lifecycle", "message"],
-  "model.completed": ["duration_ms", "turn_count", "stop_category"],
-  "tool.started": ["operation_id", "category", "display_name"],
-  "tool.completed": ["operation_id", "category", "display_name", "duration_ms"],
-  "tool.failed": ["operation_id", "category", "display_name", "duration_ms", "failure_category"],
-  "tool.denied": ["operation_id", "category", "display_name", "denial_code"],
-  "subagent.started": ["subagent_id", "display_name"],
-  "subagent.progress": ["subagent_id", "display_name", "duration_ms", "current_category"],
-  "subagent.completed": ["subagent_id", "display_name", "duration_ms"],
-  "subagent.failed": ["subagent_id", "display_name", "duration_ms", "failure_category"],
-  "subagent.cancelled": ["subagent_id", "display_name", "duration_ms", "reason_code"],
-  "artifact.created": ["artifact_id", "filename", "media_type", "size_bytes", "status"],
-  "artifact.ready": ["artifact_id", "filename", "media_type", "size_bytes", "status"],
-  "artifact.failed": ["artifact_id", "status", "failure_category"],
-  "policy.checking": ["decision_id", "category", "display_name"],
-  "policy.allowed": ["decision_id", "category", "display_name", "decision_code"],
-  "policy.denied": ["decision_id", "category", "display_name", "decision_code"],
-  "run.cancel_requested": ["source"],
-  "run.succeeded": ["terminal_event_id", "hydrate_required"],
-  "run.cancelled": ["terminal_event_id", "hydrate_required", "reason_code"],
-  "run.failed": ["terminal_event_id", "hydrate_required", "projection_version", "code", "default_message", "detail"],
-  "stream.open": ["design_id"],
-  "stream.heartbeat": ["status"],
-  "stream.gap": ["reason", "recovery", "requested_event_id", "requested_stream_incarnation", "current_stream_incarnation", "earliest_available_event_id", "latest_available_event_id"],
-  "stream.end": ["terminal_event_id"],
-};
-
-const APPLICATION_KEYS = [
-  "schema", "event_id", "run_id", "message_id", "seq", "event_type",
-  "stream_incarnation", "replayable", "trace_ref", "causation_event_id",
-  "emitted_at", "payload",
-] as const;
-const CONTROL_KEYS = APPLICATION_KEYS;
+const APPLICATION_KEYS = PUBLIC_APPLICATION_ENVELOPE_FIELDS;
+const CONTROL_KEYS = PUBLIC_CONTROL_ENVELOPE_FIELDS;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -159,50 +101,6 @@ const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REDIS_ID_PATTERN = /^(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$/;
 const SAFE_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/;
 const SAFE_FILENAME_PATTERN = /^[^/\\]+$/;
-const TOOL_CATEGORIES = new Set(["skill", "mcp", "read", "write", "edit", "search", "execute"]);
-const PAYLOAD_ENUMS: Record<string, ReadonlySet<string>> = {
-  category: TOOL_CATEGORIES,
-  current_category: TOOL_CATEGORIES,
-  stop_category: new Set(["completed", "max_turns", "cancelled", "failed", "unknown"]),
-  failure_category: new Set(["invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed", "subagent_failed", "artifact_failed"]),
-  denial_code: new Set(["capability_not_authorized", "policy_denied"]),
-  reason_code: new Set(["user_cancelled", "run_cancelled", "policy_cancelled", "timeout"]),
-  source: new Set(["user", "system"]),
-  status: new Set(["created", "ready", "failed"]),
-  reason: new Set(["retained_history_unavailable", "stream_missing", "stream_continuity_unproven", "stream_incarnation_mismatch"]),
-  recovery: new Set(["reload_durable_state"]),
-  decision_code: new Set(["allowed", "capability_not_authorized", "policy_denied"]),
-  design_id: new Set(["ai-platform.redis-streams-sse-event-channel.v4"]),
-  projection_version: new Set(["ai-platform.chat-public-projection.v1"]),
-  schema_version: new Set(["ai-platform.public-agent-progress.v1"]),
-  phase: new Set(["attachment_materialization", "skill_staging", "sandbox_preparation", "sandbox_submission", "model_wait", "artifact_validation", "artifact_recovery"]),
-  lifecycle: new Set(["started", "progress", "completed", "failed"]),
-};
-const EVENT_PAYLOAD_ENUMS: Record<string, ReadonlySet<string>> = {
-  "artifact.created.status": new Set(["created"]),
-  "artifact.ready.status": new Set(["ready"]),
-  "artifact.failed.status": new Set(["failed"]),
-  "stream.heartbeat.status": new Set(["queued", "running"]),
-  "subagent.cancelled.reason_code": new Set(["user_cancelled", "run_cancelled", "timeout"]),
-  "run.cancelled.reason_code": new Set(["user_cancelled", "policy_cancelled", "timeout"]),
-  "policy.allowed.decision_code": new Set(["allowed"]),
-  "policy.denied.decision_code": new Set(["capability_not_authorized", "policy_denied"]),
-  "tool.failed.failure_category": new Set(["invalid_input", "not_found", "permission_denied", "timeout", "unavailable", "execution_failed"]),
-  "subagent.failed.failure_category": new Set(["subagent_failed"]),
-  "artifact.failed.failure_category": new Set(["artifact_failed", "unavailable"]),
-  "thinking.started.public_summary": new Set(["Analyzing the request"]),
-  "thinking.completed.public_summary": new Set(["Analysis step completed"]),
-};
-const PAYLOAD_STRING_MAX: Record<string, number> = {
-  delta: 8192, content: 262144, display_name: 128, public_summary: 512,
-  input_summary: 512, result_summary: 2048, message: 128, media_type: 128,
-  default_message: 1024, detail: 2048, code: 128,
-};
-const NON_EMPTY_PAYLOAD_STRINGS = new Set(["delta", "display_name", "public_summary", "message", "media_type", "code", "default_message"]);
-const PAYLOAD_NUMBER_MAX: Record<string, number> = {
-  duration_ms: 86400000, turn_count: 10000, progress_percent: 100, size_bytes: 1099511627776,
-};
-
 function parseTransportCursor(value: unknown, runId: string): { incarnation: number; redisId: string } | null {
   if (typeof value !== "string") return null;
   const prefix = `${runId}:`;
@@ -262,7 +160,15 @@ function isSafeFilename(value: unknown): value is string {
   });
 }
 function isPayloadRefKey(key: string): boolean {
-  return ["thinking_id", "operation_id", "artifact_id", "decision_id", "subagent_id", "terminal_event_id", "step_id"].includes(key);
+  return PUBLIC_PAYLOAD_REF_FIELDS.includes(key as (typeof PUBLIC_PAYLOAD_REF_FIELDS)[number]);
+}
+
+function isNullablePayloadRefKey(key: string): boolean {
+  return PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS.includes(key as (typeof PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS)[number]);
+}
+
+function isPayloadRefArrayKey(key: string): boolean {
+  return PUBLIC_PAYLOAD_REF_ARRAY_FIELDS.includes(key as (typeof PUBLIC_PAYLOAD_REF_ARRAY_FIELDS)[number]);
 }
 
 function isNullableSafeRef(value: unknown): boolean {
@@ -283,31 +189,36 @@ function isRfc3339DateTime(value: unknown): value is string {
 
 function payloadIsValid(eventType: string, payload: unknown, _runId: string, incarnation: number): payload is Record<string, unknown> {
   if (!isRecord(payload) || Object.keys(payload).length > 64) return false;
-  const allowed = PAYLOAD_KEYS[eventType];
+  const allowed = PUBLIC_PAYLOAD_FIELDS[eventType as keyof typeof PUBLIC_PAYLOAD_FIELDS];
   if (!allowed || !hasOnlyKeys(payload, allowed)) return false;
-  for (const key of REQUIRED_PAYLOAD_KEYS[eventType] || []) {
+  for (const key of PUBLIC_REQUIRED_PAYLOAD_FIELDS[eventType as keyof typeof PUBLIC_REQUIRED_PAYLOAD_FIELDS] || []) {
     if (!Object.hasOwn(payload, key)) return false;
   }
   if (eventType === "agent.progress" && !isPublicAgentProgressPayload(payload)) {
     return false;
   }
   for (const [key, value] of Object.entries(payload)) {
-    const enumValues = EVENT_PAYLOAD_ENUMS[`${eventType}.${key}`] || PAYLOAD_ENUMS[key];
-    if (enumValues && (typeof value !== "string" || !enumValues.has(value))) return false;
-    if (key.endsWith("_refs")) {
+    const enumValues = (PUBLIC_PAYLOAD_ENUMS as Record<string, readonly unknown[]>)[`${eventType}.${key}`];
+    if (enumValues && !enumValues.includes(value)) return false;
+    if (isPayloadRefArrayKey(key)) {
       if (!Array.isArray(value) || value.length > 32 || new Set(value).size !== value.length || value.some((entry) => typeof entry !== "string" || !SAFE_REF_PATTERN.test(entry))) return false;
     }
     if (isPayloadRefKey(key) && (!nonEmptyString(value) || !SAFE_REF_PATTERN.test(value))) return false;
-    if (key === "evidence_ref" && !isNullableSafeRef(value)) return false;
+    if (isNullablePayloadRefKey(key) && !isNullableSafeRef(value)) return false;
     if (key === "detail" && value === null) continue;
-    const stringMax = PAYLOAD_STRING_MAX[key];
+    const stringBounds = (PUBLIC_PAYLOAD_STRING_BOUNDS as Record<string, readonly [number, number]>)[`${eventType}.${key}`];
     if (
-      stringMax !== undefined &&
-      !boundedCodePointString(value, stringMax, NON_EMPTY_PAYLOAD_STRINGS.has(key))
+      stringBounds !== undefined &&
+      !boundedCodePointString(value, stringBounds[1], stringBounds[0] > 0)
     ) return false;
-    const numberMax = PAYLOAD_NUMBER_MAX[key];
-    if (numberMax !== undefined && !safeInteger(value, 0, numberMax)) return false;
+    const numberBounds = (PUBLIC_PAYLOAD_INTEGER_BOUNDS as Record<string, readonly [number, number | null]>)[`${eventType}.${key}`];
+    if (numberBounds !== undefined && value !== null && !safeInteger(value, numberBounds[0], numberBounds[1] ?? Number.MAX_SAFE_INTEGER)) return false;
     if (key === "hydrate_required" && value !== true) return false;
+    if (
+      eventType === "message.completed" &&
+      (key === "delta_count" || key === "text_length") &&
+      !safeInteger(value, 1, Number.MAX_SAFE_INTEGER)
+    ) return false;
     if (["requested_event_id", "earliest_available_event_id", "latest_available_event_id"].includes(key)) {
       if (value !== null && typeof value !== "string") return false;
     }
@@ -352,7 +263,7 @@ function eventShapeIsValid(value: Record<string, unknown>, eventType: V4EventTyp
   if (isControl) {
     if (value.message_id !== null || value.seq !== null || value.trace_ref !== null || typeof value.replayable !== "boolean") return false;
   } else if (
-    ["message.started", "message.delta", "message.completed", "thinking.started", "thinking.delta", "thinking.completed", "model.completed", "tool.started", "tool.completed", "tool.failed", "tool.denied", "subagent.started", "subagent.progress", "subagent.completed", "subagent.failed", "subagent.cancelled"].includes(eventType) &&
+    isV4MessageCorrelatedEventType(eventType) &&
     (!nonEmptyString(value.message_id) || !SAFE_REF_PATTERN.test(value.message_id))
   ) {
     return false;
@@ -410,156 +321,4 @@ export function adaptPublicRunStreamEventV4(
     semanticKey: semanticKey(frame.value, eventType as V4EventType),
     causationEventId: (frame.value.causation_event_id as string | null) ?? null,
   };
-}
-
-export interface V4LegacyDispatchEvent {
-  streamEvent: StreamEvent;
-  messageId: string;
-}
-
-/** Convert v4 public events into the existing useAgent handler vocabulary. */
-export function projectV4EventToLegacyHandler(event: V4PublicEvent, fallbackMessageId: string): V4LegacyDispatchEvent | null {
-  const payload = (event.event as unknown as { payload: Record<string, unknown> }).payload;
-  const base = {
-    event_id: event.eventId,
-    message_id: event.messageId,
-    run_id: event.runId,
-    sequence: event.sequence,
-    timestamp: event.emittedAt,
-    trace_ref: (event.event as unknown as { trace_ref: string | null }).trace_ref,
-    causation_event_id: event.causationEventId,
-  };
-  const messageTarget = fallbackMessageId;
-  const activity = (
-    phase: string,
-    message: string,
-    severity: "info" | "warning" | "error" = "info",
-    activityPayload?: Record<string, unknown>,
-  ) => ({
-    event: "run_event" as const,
-    data: JSON.stringify({
-      ...base,
-      event_type: "public_activity",
-      projection_version: "ai-platform.chat-public-projection.v1",
-      stage: phase,
-      status: phase,
-      severity,
-      message,
-      ...(activityPayload ? { payload: activityPayload } : {}),
-    }),
-  });
-  const publicTool = (status: "started" | "completed" | "failed" | "denied") => ({
-    event: "run_event" as const,
-    data: JSON.stringify({
-      ...base,
-      event_type: "public_tool_activity",
-      operation_id: payload.operation_id,
-      category: payload.category,
-      display_name: payload.display_name,
-      status,
-      duration_ms: payload.duration_ms,
-      result_summary: payload.result_summary,
-      failure_category: payload.failure_category,
-      denial_code: payload.denial_code,
-      input_summary: payload.input_summary,
-      evidence_refs: payload.evidence_refs,
-      artifact_refs: payload.artifact_refs,
-    }),
-  });
-  const publicSubagent = (status: "started" | "progress" | "completed" | "failed" | "cancelled") => ({
-    event: "run_event" as const,
-    data: JSON.stringify({
-      ...base,
-      event_type: "public_subagent_activity",
-      subagent_id: payload.subagent_id,
-      display_name: payload.display_name,
-      status,
-      duration_ms: payload.duration_ms,
-      progress_percent: payload.progress_percent,
-      current_category: payload.current_category,
-      // causation_event_id remains an event identity. The reducer resolves a
-      // parent subagent only from an already accepted parent event.
-      causation_event_id: event.causationEventId,
-    }),
-  });
-  switch (event.eventType) {
-    case "stream.open":
-      return { streamEvent: { event: "stream_open", data: JSON.stringify(base) }, messageId: fallbackMessageId };
-    case "stream.heartbeat":
-      return { streamEvent: { event: "heartbeat", data: JSON.stringify(base) }, messageId: fallbackMessageId };
-    case "stream.end":
-      return { streamEvent: { event: "end", data: JSON.stringify({ ...base, payload: { terminal_event_id: payload.terminal_event_id } }) }, messageId: fallbackMessageId };
-    case "stream.gap":
-      return null;
-    case "message.started":
-      return { streamEvent: { event: "run_event", data: JSON.stringify({ ...base, event_type: "public_activity", projection_version: "ai-platform.chat-public-projection.v1", stage: "message_started", status: "running", message: "Assistant response started" }) }, messageId: messageTarget };
-    case "message.delta":
-      return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.delta, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_delta" }) }, messageId: messageTarget };
-    case "message.completed":
-      return { streamEvent: { event: "message:chunk", data: JSON.stringify({ ...base, content: payload.content, projection_version: "ai-platform.chat-public-projection.v1", projection_kind: "assistant_final" }) }, messageId: messageTarget };
-    case "thinking.started":
-      return { streamEvent: activity("thinking_started", typeof payload.public_summary === "string" ? payload.public_summary : "", "info", payload), messageId: messageTarget };
-    case "thinking.delta":
-      return { streamEvent: activity("thinking_delta", payload.delta as string, "info", payload), messageId: messageTarget };
-    case "thinking.completed":
-      return { streamEvent: activity("thinking_completed", typeof payload.public_summary === "string" ? payload.public_summary : "", "info", payload), messageId: messageTarget };
-    case "agent.progress":
-      return { streamEvent: { event: "run_event", data: JSON.stringify({
-        ...base,
-        event_type: "agent_public_progress",
-        projection_version: "ai-platform.chat-public-projection.v1",
-        stage: payload.phase,
-        status: payload.lifecycle,
-        message: payload.message,
-        payload,
-      }) }, messageId: fallbackMessageId };
-    case "model.completed":
-      return { streamEvent: activity("model_completed", "Model response complete", "info"), messageId: messageTarget };
-    case "tool.started":
-      return { streamEvent: publicTool("started"), messageId: messageTarget };
-    case "tool.completed":
-      return { streamEvent: publicTool("completed"), messageId: messageTarget };
-    case "tool.failed":
-      return { streamEvent: publicTool("failed"), messageId: messageTarget };
-    case "tool.denied":
-      return { streamEvent: publicTool("denied"), messageId: messageTarget };
-    case "subagent.started":
-      return { streamEvent: publicSubagent("started"), messageId: messageTarget };
-    case "subagent.progress":
-      return { streamEvent: publicSubagent("progress"), messageId: messageTarget };
-    case "subagent.completed":
-      return { streamEvent: publicSubagent("completed"), messageId: messageTarget };
-    case "subagent.failed":
-      return { streamEvent: publicSubagent("failed"), messageId: messageTarget };
-    case "subagent.cancelled":
-      return { streamEvent: publicSubagent("cancelled"), messageId: messageTarget };
-    case "artifact.created":
-    case "artifact.ready":
-    case "artifact.failed":
-      return { streamEvent: { event: "artifact_card", data: JSON.stringify({
-        ...base,
-        artifact_id: payload.artifact_id,
-        artifact_type: payload.media_type || "artifact",
-        label: payload.filename || "Artifact unavailable",
-        content_type: payload.media_type || "application/octet-stream",
-        size_bytes: payload.size_bytes ?? 0,
-        status: payload.status,
-      }) }, messageId: fallbackMessageId };
-    case "policy.checking":
-      return { streamEvent: activity("policy_checking", payload.display_name as string), messageId: messageTarget };
-    case "policy.allowed":
-      return { streamEvent: activity("policy_allowed", payload.display_name as string), messageId: messageTarget };
-    case "policy.denied":
-      return { streamEvent: activity("policy_denied", payload.display_name as string, "warning"), messageId: messageTarget };
-    case "run.succeeded":
-      return { streamEvent: { event: "done", data: JSON.stringify({ ...base, status: "succeeded", hydrate_required: true }) }, messageId: fallbackMessageId };
-    case "run.cancelled":
-      return { streamEvent: { event: "final_detail", data: JSON.stringify({ ...base, projection_version: "ai-platform.chat-public-projection.v1", detail_code: "run_cancelled", detail_kind: "cancelled" }) }, messageId: fallbackMessageId };
-    case "run.failed":
-      return { streamEvent: { event: "final_detail", data: JSON.stringify({ ...base, projection_version: "ai-platform.chat-public-projection.v1", detail_code: payload.code, detail_kind: "failed" }) }, messageId: fallbackMessageId };
-    case "run.cancel_requested":
-      return { streamEvent: activity("cancel_requested", "Cancellation requested", "warning"), messageId: messageTarget };
-    default:
-      return null;
-  }
 }

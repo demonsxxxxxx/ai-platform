@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import uuid
-from dataclasses import replace
 from typing import Any
 
 from app import repositories
+from app.context.api import ProviderSessionConflictError, ProviderSessionContinuityError
 from app.db import transaction
 from app.execution.api import restored_sandbox_run_payload
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.persistence.artifacts import reserve_provisional_artifact_cleanup
 from app.routes.sandbox_runtime_cleanup import (
     cleanup_failed_sandbox_executor_reconciliation_leases,
     container_lease_from_persisted_row,
@@ -22,27 +24,35 @@ from app.runtime.sandbox.container_provider import create_container_provider
 from app.runtime.sandbox.contracts import (
     ExecutorTerminalResult,
     SandboxRuntimeRequest,
+    executor_terminal_receipt_payload,
     normalize_executor_terminal_status,
 )
-from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
 from app.runtime.sandbox.executor_signals import (
     ExecutorSignalUnavailable,
-    publish_executor_terminal_signal,
     wait_for_executor_reconciliation_signal,
 )
 from app.runtime.sandbox.providers.opensandbox.startup import (
     is_authoritative_not_found_error,
+    opensandbox_probe_error_facts,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
+from app.runs.api import RunAttemptLifecycleService, RunDiagnosticsService
+from app.sandbox.api import (
+    SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    exception_chain_from_error,
+)
 from app.settings import get_settings
+from app.storage import run_storage_io
 from app.tool_permission_lifecycle import (
+    cancel_run_with_v4,
     drain_run_tool_permission_terminalization,
     fail_run_with_v4,
     reconcile_terminalized_permission_run,
 )
 from app.worker import (
     WorkerV4Capabilities,
-    publish_pending_run_terminal,
+    publish_run_event,
     reconcile_executor_terminal_result,
 )
 
@@ -52,7 +62,6 @@ _RECONCILIATION_WORK_TIMEOUT_SECONDS = 240.0
 _RECONCILIATION_IDLE_SECONDS = 30.0
 _EXECUTOR_HEARTBEAT_STALE_SECONDS = 45
 _EXECUTOR_PROBE_FAILURE_LIMIT = 3
-_RECONCILIATION_FAILURE_LIMIT = 5
 _TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 _logger = logging.getLogger(__name__)
 
@@ -148,19 +157,18 @@ def _permanent_reconciliation_error(
 
 
 def _reconciliation_error_code(exc: Exception) -> str:
-    if isinstance(exc, PermanentExecutorReconciliationError):
+    if isinstance(
+        exc,
+        (PermanentExecutorReconciliationError, ProviderSessionContinuityError),
+    ):
         return exc.code
     return type(exc).__name__
 
 
-def _reconciliation_failure_is_terminal(
-    lease_row: dict[str, Any],
-    exc: Exception,
-) -> bool:
-    attempts = int(lease_row.get("executor_terminal_reconciliation_attempt_count") or 0)
-    return (
-        isinstance(exc, PermanentExecutorReconciliationError)
-        or attempts >= _RECONCILIATION_FAILURE_LIMIT
+def _reconciliation_failure_is_terminal(exc: Exception) -> bool:
+    return isinstance(exc, PermanentExecutorReconciliationError) or (
+        isinstance(exc, ProviderSessionConflictError)
+        and exc.code.startswith("provider_session_terminal_")
     )
 
 
@@ -238,7 +246,6 @@ def _reconciliation_request(
         trace_id=run_payload.trace_id,
         callback_url="http://127.0.0.1/internal/runtime/callback",
         callback_token_id="reconciler",
-        require_selected_skill_invocation=False,
     )
 
 
@@ -293,16 +300,22 @@ async def _terminalize_reconciliation_failure(
     claim_token: str,
     logger: logging.Logger,
     v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: RunAttemptLifecycleService,
+    run_diagnostics: RunDiagnosticsService | None,
+    reconciliation_error_code: str,
 ) -> None:
     tenant_id = str(lease_row["tenant_id"])
     run_id = str(lease_row["run_id"])
     progress = None
     run_was_terminal = False
+    attempt_id = str(lease_row.get("attempt_id") or "") or None
     async with transaction() as conn:
-        claimed = await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
-            conn,
-            lease_id=str(lease_row["id"]),
-            claim_token=claim_token,
+        claimed = (
+            await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
+                conn,
+                lease_id=str(lease_row["id"]),
+                claim_token=claim_token,
+            )
         )
         if not claimed:
             raise RuntimeError("executor_reconciliation_claim_lost")
@@ -314,26 +327,78 @@ async def _terminalize_reconciliation_failure(
         )
         if run is None:
             return
+        if run_diagnostics is not None:
+            await run_diagnostics.capture_reconciliation_failure(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                terminal_result=lease_row.get("executor_terminal_json"),
+                reconciliation_error_code=reconciliation_error_code,
+                lease_id=str(lease_row["id"]),
+            )
         if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
             run_was_terminal = True
         else:
-            progress = await fail_run_with_v4(
-                conn,
-                capabilities=v4_capabilities,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                error_code="terminal_reconciliation_failed",
-                error_message="Executor terminal reconciliation could not be completed.",
-                result_json={
-                    "message": "Executor terminal reconciliation could not be completed.",
-                },
-            )
+            cancel_requested = bool(run.get("cancel_requested_at")) or str(
+                run.get("permission_terminalization_target") or ""
+            ) in {"cancel_requested", "cancelled"}
+            if attempt_id is not None and cancel_requested:
+                await attempt_lifecycle.request_cancel(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                )
+            if cancel_requested:
+                progress = await cancel_run_with_v4(
+                    conn,
+                    capabilities=v4_capabilities,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    result_json={"message": "任务已取消"},
+                )
+            else:
+                progress = await fail_run_with_v4(
+                    conn,
+                    capabilities=v4_capabilities,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    error_code="terminal_reconciliation_failed",
+                    error_message="Executor terminal reconciliation could not be completed.",
+                    result_json={
+                        "message": "Executor terminal reconciliation could not be completed.",
+                    },
+                )
+            if progress.is_terminal() and attempt_id is not None:
+                await attempt_lifecycle.terminalize(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    status=str(progress.status),
+                    terminal_reason=(
+                        "run_cancelled"
+                        if progress.status == "cancelled"
+                        else "executor_terminal_reconciliation_failed"
+                    ),
+                    error_code=(
+                        "terminal_reconciliation_failed"
+                        if progress.status == "failed"
+                        else None
+                    ),
+                )
     if progress is not None and not progress.is_terminal():
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=tenant_id,
             run_id=run_id,
             capabilities=v4_capabilities,
             transaction_factory=transaction,
+            attempt_lifecycle=attempt_lifecycle,
+            attempt_id=attempt_id,
+            attempt_error_code=(
+                None if cancel_requested else "terminal_reconciliation_failed"
+            ),
         )
     if progress is not None and progress.did_transition and progress.needs_reconcile:
         try:
@@ -342,6 +407,7 @@ async def _terminalize_reconciliation_failure(
                 run_id=run_id,
                 progress=progress,
                 transaction_factory=transaction,
+                attempt_lifecycle=attempt_lifecycle,
             )
         except Exception:  # noqa: BLE001 - durable child reconciliation remains retryable.
             logger.exception(
@@ -350,7 +416,7 @@ async def _terminalize_reconciliation_failure(
             )
     if run_was_terminal:
         return
-    await publish_pending_run_terminal(
+    await publish_run_event(
         v4_capabilities,
         tenant_id=tenant_id,
         run_id=run_id,
@@ -400,12 +466,17 @@ async def _finish_terminal_reconciliation_failure(
     error_code: str,
     logger: logging.Logger,
     v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: RunAttemptLifecycleService,
+    run_diagnostics: RunDiagnosticsService | None,
 ) -> None:
     await _terminalize_reconciliation_failure(
         lease_row,
         claim_token=claim_token,
         logger=logger,
         v4_capabilities=v4_capabilities,
+        attempt_lifecycle=attempt_lifecycle,
+        run_diagnostics=run_diagnostics,
+        reconciliation_error_code=error_code,
     )
     lease = container_lease_from_persisted_row(lease_row)
     if lease is None:
@@ -438,6 +509,21 @@ async def _finish_terminal_reconciliation_failure(
             lease_row,
             claim_token=claim_token,
             error_code=error_code,
+        )
+
+
+async def _reserve_reconciliation_artifact_cleanup(
+    *,
+    tenant_id: str,
+    run_id: str,
+    storage_key: str,
+) -> str:
+    async with transaction() as conn:
+        return await reserve_provisional_artifact_cleanup(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            storage_key=storage_key,
         )
 
 
@@ -481,34 +567,80 @@ async def _collect_workspace_and_convert_result(
     provider = _container_provider_for_lease(lease)
     collection_error: Exception | None = None
     try:
-        await provider.collect_workspace(lease, request, workspace)
+        raw_response_files = terminal_result.get("response_files", [])
+        if not isinstance(raw_response_files, list) or not all(
+            isinstance(path, str) for path in raw_response_files
+        ):
+            raise ValueError("executor response file selection is invalid")
+        await provider.collect_workspace(
+            lease,
+            request,
+            workspace,
+            raw_response_files,
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - converted into a controlled terminal result.
         collection_error = exc
+    adapter_context = dict(context.get("adapter_context") or {})
+    if collection_error is not None:
+        exception_chain_losses: list[dict[str, object]] = []
+        terminal_result = {
+            **terminal_result,
+            "status": "failed",
+            "error_code": "sandbox_workspace_collection_failed",
+            "message": "Sandbox workspace collection failed.",
+            "runtime_diagnostics": {
+                "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                "error_code": "sandbox_workspace_collection_failed",
+                "failure_source": "sandbox_runtime",
+                "failure_stage": "workspace_collection",
+                "sdk": {
+                    "exception_type": type(collection_error).__name__,
+                    "exception_message": str(collection_error),
+                    "exception_chain": exception_chain_from_error(
+                        collection_error,
+                        losses=exception_chain_losses,
+                    ),
+                },
+                "normalization_losses": exception_chain_losses,
+            },
+        }
+    abandoned = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def reserve_artifact_storage(storage_key: str) -> str:
+        receipt = asyncio.run_coroutine_threadsafe(
+            _reserve_reconciliation_artifact_cleanup(
+                tenant_id=str(lease_row["tenant_id"]),
+                run_id=str(lease_row["run_id"]),
+                storage_key=storage_key,
+            ),
+            loop,
+        )
+        return receipt.result()
+
+    adapter_context["_artifact_storage_scope"] = run_payload.attempt_id
+    adapter_context["_artifact_collection_abandoned"] = abandoned
+    adapter_context["_reserve_artifact_storage"] = reserve_artifact_storage
     try:
-        result = adapter.reconcile_sandbox_terminal(
+        result = await run_storage_io(
+            adapter.reconcile_sandbox_terminal,
             payload=run_payload,
             terminal_result=terminal_result,
-            adapter_context=context.get("adapter_context") or {},
+            adapter_context=adapter_context,
             provider=str(lease_row.get("provider") or ""),
             timings=context.get("dispatch_timings") or {},
+            on_abandoned=abandoned.set,
         )
     except (KeyError, TypeError, ValueError) as exc:
+        abandoned.set()
         raise _permanent_reconciliation_error(
             "executor_reconciliation_terminal_result_invalid"
         ) from exc
-    if collection_error is not None:
-        result = replace(
-            result,
-            status="failed",
-            artifacts=[],
-            result={
-                **result.result,
-                "message": "Sandbox workspace collection failed.",
-                "error_code": "sandbox_workspace_collection_failed",
-            },
-        )
+    except BaseException:
+        abandoned.set()
+        raise
     return result, provider, lease
 
 
@@ -518,7 +650,10 @@ async def _persist_probe_terminal(
     executor_status: str,
     terminal_result: dict[str, Any],
     claim_token: str,
+    run_diagnostics: RunDiagnosticsService | None = None,
+    protocol_failure: dict[str, Any] | None = None,
 ) -> None:
+    terminal_receipt = executor_terminal_receipt_payload(terminal_result)
     async with transaction() as conn:
         await sandbox_lease_repository.record_sandbox_executor_terminal(
             conn,
@@ -527,17 +662,38 @@ async def _persist_probe_terminal(
             attempt_id=str(lease_row["attempt_id"]),
             lease_id=str(lease_row["id"]),
             executor_status=executor_status,
-            terminal_result=terminal_result,
+            terminal_result=terminal_receipt,
             claim_token=claim_token,
         )
-    try:
-        await publish_executor_terminal_signal()
-    except ExecutorSignalUnavailable:
-        pass
+        if run_diagnostics is not None:
+            if protocol_failure is not None:
+                await run_diagnostics.capture_executor_protocol_failure(
+                    conn,
+                    tenant_id=str(lease_row["tenant_id"]),
+                    run_id=str(lease_row["run_id"]),
+                    attempt_id=str(lease_row["attempt_id"]),
+                    lease_id=str(lease_row["id"]),
+                    task_status=protocol_failure.get("task_status"),
+                    terminal_result=protocol_failure.get("terminal_result"),
+                    validation_errors=protocol_failure.get("validation_errors"),
+                )
+            else:
+                await run_diagnostics.capture_failure_result(
+                    conn,
+                    tenant_id=str(lease_row["tenant_id"]),
+                    run_id=str(lease_row["run_id"]),
+                    attempt_id=str(lease_row["attempt_id"]),
+                    source="executor_probe",
+                    stage="terminal_receipt",
+                    error_code=str(terminal_result.get("error_code") or executor_status),
+                    result_json=terminal_result,
+                    lease_id=str(lease_row["id"]),
+                )
 
 
 async def probe_suspect_executor_tasks_once(
     *,
+    run_diagnostics: RunDiagnosticsService | None = None,
     limit: int = _RECONCILIATION_BATCH_SIZE,
 ) -> int:
     claim_token = uuid.uuid4().hex
@@ -548,8 +704,10 @@ async def probe_suspect_executor_tasks_once(
             stale_after_seconds=_EXECUTOR_HEARTBEAT_STALE_SECONDS,
             limit=limit,
         )
+    persisted_count = 0
     for lease_row in claimed:
         lease_id = str(lease_row["id"])
+        failure_stage = "attempt_reconstruction"
         try:
             _context, run_payload = _context_payload(lease_row)
             request = _reconciliation_request(lease_row, run_payload)
@@ -557,8 +715,10 @@ async def probe_suspect_executor_tasks_once(
             if lease is None:
                 raise ValueError("executor_reconciliation_runtime_handle_invalid")
             provider = _container_provider_for_lease(lease)
+            failure_stage = "provider_endpoint"
             executor_url, executor_headers = await provider.executor_control_endpoint(lease, request)
             client = SandboxExecutorClient(timeout_seconds=10.0)
+            failure_stage = "run_state_check"
             async with transaction() as conn:
                 run = await repositories.get_run(
                     conn,
@@ -566,12 +726,14 @@ async def probe_suspect_executor_tasks_once(
                     run_id=str(lease_row["run_id"]),
                 )
             if run is not None and str(run.get("status") or "") == "cancelled":
+                failure_stage = "executor_cancel"
                 await client.cancel(
                     executor_url,
                     run_id=str(lease_row["run_id"]),
                     attempt_id=str(lease_row["attempt_id"]),
                     executor_headers=executor_headers,
                 )
+            failure_stage = "executor_status"
             status = await client.get_status(
                 executor_url,
                 run_id=str(lease_row["run_id"]),
@@ -580,20 +742,53 @@ async def probe_suspect_executor_tasks_once(
             )
             terminal_result = status.get("terminal_result")
             if terminal_result is not None:
+                validation_errors: list[dict[str, Any]] = []
                 try:
                     canonical_result = ExecutorTerminalResult.model_validate(
                         terminal_result
                     ).model_dump(mode="json", exclude_none=True)
-                except ValueError:
+                except ValueError as exc:
                     canonical_result = None
-                executor_status = (
-                    normalize_executor_terminal_status(
+                    error_details = getattr(exc, "errors", None)
+                    validation_errors = (
+                        error_details(
+                            include_url=False,
+                            include_context=False,
+                            include_input=False,
+                        )
+                        if callable(error_details)
+                        else [
+                            {
+                                "loc": [],
+                                "type": "value_error",
+                                "msg": "Terminal result validation failed",
+                            }
+                        ]
+                    )
+                if canonical_result is None:
+                    executor_status = None
+                elif canonical_result.get("run_id") != str(lease_row["run_id"]):
+                    executor_status = None
+                    validation_errors = [
+                        {
+                            "loc": ["run_id"],
+                            "type": "run_id_mismatch",
+                            "msg": "Terminal result Run does not match the claimed Run",
+                        }
+                    ]
+                else:
+                    executor_status = normalize_executor_terminal_status(
                         status.get("status"),
                         canonical_result.get("status"),
                     )
-                    if canonical_result is not None
-                    else None
-                )
+                    if executor_status is None:
+                        validation_errors = [
+                            {
+                                "loc": ["status"],
+                                "type": "status_mismatch",
+                                "msg": "Executor task status does not match terminal result status",
+                            }
+                        ]
                 if executor_status is None:
                     await _persist_probe_terminal(
                         lease_row,
@@ -606,14 +801,23 @@ async def probe_suspect_executor_tasks_once(
                             "error_message": "Sandbox executor returned an invalid terminal result",
                         },
                         claim_token=claim_token,
+                        run_diagnostics=run_diagnostics,
+                        protocol_failure={
+                            "task_status": status.get("status"),
+                            "terminal_result": terminal_result,
+                            "validation_errors": validation_errors,
+                        },
                     )
+                    persisted_count += 1
                     continue
                 await _persist_probe_terminal(
                     lease_row,
                     executor_status=executor_status,
                     terminal_result=canonical_result,
                     claim_token=claim_token,
+                    run_diagnostics=run_diagnostics,
                 )
+                persisted_count += 1
                 continue
             async with transaction() as conn:
                 await sandbox_lease_repository.release_sandbox_executor_probe_claim(
@@ -626,7 +830,11 @@ async def probe_suspect_executor_tasks_once(
             raise
         except Exception as exc:  # noqa: BLE001 - persisted retry before eventual terminalization.
             attempts = int(lease_row.get("executor_reconciliation_attempt_count") or 0)
-            if is_authoritative_not_found_error(exc) or attempts >= _EXECUTOR_PROBE_FAILURE_LIMIT:
+            authoritative_absence = is_authoritative_not_found_error(exc)
+            if authoritative_absence or attempts >= _EXECUTOR_PROBE_FAILURE_LIMIT:
+                facts = opensandbox_probe_error_facts(exc)
+                if isinstance(exc, SandboxExecutorHttpError):
+                    facts = {"http_status": exc.status_code, "executor_error_code": exc.error_code}
                 await _persist_probe_terminal(
                     lease_row,
                     executor_status="failed",
@@ -635,18 +843,33 @@ async def probe_suspect_executor_tasks_once(
                         "status": "failed",
                         "error_code": "sandbox_executor_lost",
                         "error_message": "Sandbox executor stopped responding",
+                        "runtime_diagnostics": {
+                            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                            "error_code": "sandbox_executor_lost",
+                            "failure_source": "executor_probe",
+                            "failure_stage": failure_stage,
+                            "sdk": {
+                                "exception_type": type(exc).__name__,
+                                "errors": [{
+                                    "reason": "provider_absent" if authoritative_absence else "probe_retry_exhausted",
+                                    **facts,
+                                }],
+                            },
+                        },
                     },
                     claim_token=claim_token,
+                    run_diagnostics=run_diagnostics,
                 )
+                persisted_count += 1
             else:
                 async with transaction() as conn:
                     await sandbox_lease_repository.release_sandbox_executor_probe_claim(
                         conn,
                         lease_id=lease_id,
                         claim_token=claim_token,
-                        error=str(exc),
+                        error="sandbox_executor_probe_failed",
                     )
-    return len(claimed)
+    return persisted_count
 
 
 async def reconcile_pending_executor_terminals_once(
@@ -654,6 +877,8 @@ async def reconcile_pending_executor_terminals_once(
     registry: AdapterRegistry | None = None,
     worker_id: str | None = None,
     v4_capabilities: WorkerV4Capabilities | None = None,
+    attempt_lifecycle: RunAttemptLifecycleService,
+    run_diagnostics: RunDiagnosticsService | None = None,
     limit: int = _RECONCILIATION_BATCH_SIZE,
 ) -> int:
     claim_token = uuid.uuid4().hex
@@ -669,17 +894,17 @@ async def reconcile_pending_executor_terminals_once(
         )
     if not claimed:
         return 0
+    reconciled_count = 0
     adapter_registry = registry or AdapterRegistry()
     for lease_row in claimed:
+        reconciled_count += 1
         try:
             async with asyncio.timeout_at(reconciliation_deadline):
                 async with transaction() as conn:
-                    claimed_current = (
-                        await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
-                            conn,
-                            lease_id=str(lease_row["id"]),
-                            claim_token=claim_token,
-                        )
+                    claimed_current = await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
+                        conn,
+                        lease_id=str(lease_row["id"]),
+                        claim_token=claim_token,
                     )
                     if not claimed_current:
                         raise RuntimeError("executor_reconciliation_claim_lost")
@@ -691,20 +916,10 @@ async def reconcile_pending_executor_terminals_once(
                     )
                 if run is None:
                     raise ValueError("executor_reconciliation_run_missing")
-                attempt_count = int(
-                    lease_row.get("executor_terminal_reconciliation_attempt_count") or 0
-                )
-                if attempt_count > _RECONCILIATION_FAILURE_LIMIT:
-                    await _finish_terminal_reconciliation_failure(
-                        lease_row,
-                        claim_token=claim_token,
-                        error_code="executor_reconciliation_retry_exhausted",
-                        logger=_logger,
-                        v4_capabilities=v4_capabilities,
-                    )
-                    continue
                 if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
-                    context, _terminal_result, run_payload = _context_and_payload(lease_row)
+                    context, _terminal_result, run_payload = _context_and_payload(
+                        lease_row
+                    )
                     request = _reconciliation_request(lease_row, run_payload)
                     workspace = SandboxWorkspaceManager().prepare(request)
                     lease = container_lease_from_persisted_row(lease_row)
@@ -717,7 +932,11 @@ async def reconcile_pending_executor_terminals_once(
                     )
                     provider = _container_provider_for_lease(lease)
                 else:
-                    result, provider, lease = await _collect_workspace_and_convert_result(
+                    (
+                        result,
+                        provider,
+                        lease,
+                    ) = await _collect_workspace_and_convert_result(
                         lease_row,
                         registry=adapter_registry,
                         claim_token=claim_token,
@@ -730,6 +949,7 @@ async def reconcile_pending_executor_terminals_once(
                         claim_token=claim_token,
                         transaction_factory=transaction,
                         v4_capabilities=v4_capabilities,
+                        run_attempt_lifecycle=attempt_lifecycle,
                     )
                 await _release_reconciled_lease(
                     lease_row,
@@ -746,7 +966,7 @@ async def reconcile_pending_executor_terminals_once(
             attempt_count = int(
                 lease_row.get("executor_terminal_reconciliation_attempt_count") or 0
             )
-            terminal_failure = _reconciliation_failure_is_terminal(lease_row, exc)
+            terminal_failure = _reconciliation_failure_is_terminal(exc)
             _logger.exception(
                 "executor_terminal_reconciliation_attempt_failed",
                 extra={
@@ -761,11 +981,13 @@ async def reconcile_pending_executor_terminals_once(
             )
             if not terminal_failure:
                 async with transaction() as conn:
-                    await sandbox_lease_repository.retry_sandbox_executor_reconciliation(
-                        conn,
-                        lease_id=str(lease_row["id"]),
-                        claim_token=claim_token,
-                        error=error_code,
+                    await (
+                        sandbox_lease_repository.retry_sandbox_executor_reconciliation(
+                            conn,
+                            lease_id=str(lease_row["id"]),
+                            claim_token=claim_token,
+                            error=error_code,
+                        )
                     )
                 continue
             try:
@@ -776,17 +998,21 @@ async def reconcile_pending_executor_terminals_once(
                         error_code=error_code,
                         logger=_logger,
                         v4_capabilities=v4_capabilities,
+                        attempt_lifecycle=attempt_lifecycle,
+                        run_diagnostics=run_diagnostics,
                     )
             except asyncio.CancelledError:
                 await _release_claimed_terminal_batch(claimed, claim_token)
                 raise
             except TimeoutError:
                 async with transaction() as conn:
-                    await sandbox_lease_repository.retry_sandbox_executor_reconciliation(
-                        conn,
-                        lease_id=str(lease_row["id"]),
-                        claim_token=claim_token,
-                        error="TimeoutError",
+                    await (
+                        sandbox_lease_repository.retry_sandbox_executor_reconciliation(
+                            conn,
+                            lease_id=str(lease_row["id"]),
+                            claim_token=claim_token,
+                            error="TimeoutError",
+                        )
                     )
             except Exception as terminal_exc:  # noqa: BLE001 - retry the durable failure handler.
                 _logger.exception(
@@ -798,13 +1024,15 @@ async def reconcile_pending_executor_terminals_once(
                     },
                 )
                 async with transaction() as conn:
-                    await sandbox_lease_repository.retry_sandbox_executor_reconciliation(
-                        conn,
-                        lease_id=str(lease_row["id"]),
-                        claim_token=claim_token,
-                        error="terminal_reconciliation_failure_handler_failed",
+                    await (
+                        sandbox_lease_repository.retry_sandbox_executor_reconciliation(
+                            conn,
+                            lease_id=str(lease_row["id"]),
+                            claim_token=claim_token,
+                            error="terminal_reconciliation_failure_handler_failed",
+                        )
                     )
-    return len(claimed)
+    return reconciled_count
 
 
 async def run_executor_terminal_reconciler(
@@ -813,16 +1041,18 @@ async def run_executor_terminal_reconciler(
     registry: AdapterRegistry | None = None,
     worker_id: str | None = None,
     v4_capabilities: WorkerV4Capabilities | None = None,
+    attempt_lifecycle: RunAttemptLifecycleService,
+    run_diagnostics: RunDiagnosticsService | None = None,
 ) -> None:
     while not stop_event.is_set():
+        reconciled = 0
         try:
-            await reconcile_pending_executor_terminals_once(
+            reconciled = await reconcile_pending_executor_terminals_once(
                 registry=registry,
                 worker_id=worker_id,
                 v4_capabilities=v4_capabilities,
-            )
-            await cleanup_failed_sandbox_executor_reconciliation_leases(
-                provider_factory=create_container_provider,
+                attempt_lifecycle=attempt_lifecycle,
+                run_diagnostics=run_diagnostics,
             )
         except asyncio.CancelledError:
             raise
@@ -830,12 +1060,30 @@ async def run_executor_terminal_reconciler(
             _logger.exception("executor_terminal_reconciliation_scan_failed")
         if stop_event.is_set():
             break
+        if reconciled:
+            continue
         try:
-            await probe_suspect_executor_tasks_once()
+            await cleanup_failed_sandbox_executor_reconciliation_leases(
+                provider_factory=create_container_provider,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - cleanup failures must not stop terminal recovery.
+            _logger.exception("executor_terminal_reconciliation_cleanup_failed")
+        probed = 0
+        try:
+            probe_kwargs = (
+                {"run_diagnostics": run_diagnostics}
+                if run_diagnostics is not None
+                else {}
+            )
+            probed = await probe_suspect_executor_tasks_once(**probe_kwargs)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - polling failures must not stop terminal recovery.
             _logger.exception("executor_suspect_probe_failed")
+        if probed:
+            continue
         try:
             await asyncio.wait_for(
                 wait_for_executor_reconciliation_signal(
@@ -845,7 +1093,9 @@ async def run_executor_terminal_reconciler(
             )
         except ExecutorSignalUnavailable:
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=_RECONCILIATION_IDLE_SECONDS)
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=_RECONCILIATION_IDLE_SECONDS
+                )
             except TimeoutError:
                 pass
         except TimeoutError:

@@ -2,6 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.streaming.events import EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES
 from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE = "claude_sdk_thinking_summary"
@@ -42,30 +43,7 @@ SUPPORTED_AGENT_EVENT_TYPES = {
     "run_completed",
     "run_cancelled",
     CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
-    "message.started",
-    "message.delta",
-    "message.completed",
-    "model.completed",
-    "tool.started",
-    "tool.completed",
-    "tool.failed",
-    "tool.denied",
-    "subagent.started",
-    "subagent.progress",
-    "subagent.completed",
-    "subagent.failed",
-    "subagent.cancelled",
-    "artifact.created",
-    "artifact.ready",
-    "artifact.failed",
-    "policy.checking",
-    "policy.allowed",
-    "policy.denied",
-    "run.cancel_requested",
-    "run.succeeded",
-    "run.cancelled",
-    "run.failed",
-}
+} | set(EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES)
 
 
 class RunContext(BaseModel):

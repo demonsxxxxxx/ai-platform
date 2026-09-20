@@ -18,8 +18,6 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
 FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 CODE_GOVERNANCE = ROOT / "tools" / "code_governance.py"
-AGENT_RULES = ROOT / "AGENTS.md"
-ISSUE_WORKFLOW = ROOT / "docs" / "agent-rules" / "github-issue-pr-workflow.md"
 TRUSTED_RUFF_REGEX = r"[0-9]+\.[0-9]+\.[0-9]+"
 TRUSTED_JSONSCHEMA_REGEX = r"[0-9]+(?:\.[0-9]+)+"
 TRUSTED_WORKFLOW_IMPORTS = (
@@ -29,7 +27,12 @@ TRUSTED_WORKFLOW_IMPORTS = (
     ("import", (("sys", None),)),
     ("import", (("tomllib", None),)),
     ("from", "pathlib", 0, (("Path", None),)),
-    ("from", "packaging.requirements", 0, (("InvalidRequirement", None), ("Requirement", None))),
+    (
+        "from",
+        "packaging.requirements",
+        0,
+        (("InvalidRequirement", None), ("Requirement", None)),
+    ),
     ("from", "packaging.utils", 0, (("canonicalize_name", None),)),
     ("from", "packaging.version", 0, (("InvalidVersion", None), ("Version", None))),
 )
@@ -53,6 +56,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_claude_agent_sdk_installed_contract.py",
         "tests/test_claude_agent_sdk_runner.py",
         "tests/test_claude_agent_worker_adapter.py",
+        "tests/test_claude_agent_worker_file_continuity.py",
+        "tests/test_context_file_content.py",
+        "tests/test_sandbox_document_capability.py",
         "tests/test_required_tool_contract.py",
         "tests/test_intent_router.py",
         "tests/test_public_answer_stream.py",
@@ -68,7 +74,12 @@ BACKEND_TEST_SHARDS = {
     ),
     "repository-worker-streaming": (
         "tests/test_repositories.py",
+        "tests/test_queue.py",
+        "tests/test_run_attempt_application.py",
+        "tests/test_run_attempt_repository.py",
+        "tests/test_context_checkpoint_leases_postgres.py",
         "tests/test_worker_main.py",
+        "tests/test_worker_heartbeat_postgres_redis_integration.py",
         "tests/test_sse_runtime_cutover.py",
         "tests/test_streaming_redis.py",
         "tests/test_streaming_control.py",
@@ -82,8 +93,8 @@ BACKEND_TEST_SHARDS = {
     ),
     "model-control-plane": (
         "tests/test_model_management.py",
-        "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_comes_from_settings",
-        "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids",
+        "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_is_empty_without_governed_connection",
+        "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preserves_raw_ids",
         "tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity",
         "tests/test_execution_spec.py::test_execution_spec_rejects_unsafe_upstream_model_identity",
         "tests/test_schema.py::test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog",
@@ -100,17 +111,22 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_admission_terminalization.py",
         "tests/test_run_cancellation_use_case.py",
         "tests/test_run_control_routes.py",
+        "tests/test_run_diagnostics.py",
         "tests/test_run_persistence.py",
         "tests/test_run_projection.py",
-        "tests/test_sse_v3_contract_generation.py",
         "tests/test_sse_v4_contract_generation.py",
         "tests/test_streaming_contracts.py",
+        "tests/test_worker_attempt_lifecycle.py",
     ),
     "schema-migrations": (
+        "tests/test_run_diagnostics_postgres.py",
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
+        "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
     ),
     "v4-durable-streaming": (
+        "tests/test_streaming_callback_direct.py",
+        "tests/test_retire_legacy_sse_streams.py",
         "tests/test_streaming_v4_durable.py",
         "tests/test_streaming_v4_postgres_integration.py",
         "tests/test_streaming_v4_redis_integration.py",
@@ -133,6 +149,8 @@ BACKEND_TEST_SHARDS = {
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
+        "tests/test_compose_package_deploy.py",
+        "tests/test_production_bootstrap.py",
         "tests/test_release_authority.py",
         "tests/test_s75_opensandbox_transition.py",
     ),
@@ -157,7 +175,10 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "branches:" in pull_request_block
     assert "- main" in pull_request_block
     assert "paths:" not in pull_request_block
-    assert "group: ai-platform-backend-${{ github.event.pull_request.number || github.run_id }}" in workflow
+    assert (
+        "group: ai-platform-backend-${{ github.event.pull_request.number || github.run_id }}"
+        in workflow
+    )
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     assert "name: backend required" in workflow
     assert (
@@ -173,6 +194,8 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "tests/test_packaging_publish_workflow.py" in workflow
     assert "tests/test_release_image_manifest.py" in workflow
     assert "tests/test_governance_readiness.py" in workflow
+    assert "tests/test_compose_package_deploy.py" in workflow
+    assert "tests/test_production_bootstrap.py" in workflow
     assert "tests/test_release_authority.py" in workflow
     assert "tests/test_s75_opensandbox_transition.py" in workflow
     assert "tests/test_contract.py" in workflow
@@ -254,19 +277,21 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "release-governance-policy": ("", ""),
         "release-governance-authority": ("", ""),
     }
-    all_selectors = [selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors]
-    assert len(all_selectors) == len(set(all_selectors)) == 71
+    all_selectors = [
+        selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
+    ]
+    assert len(all_selectors) == len(set(all_selectors)) == 86
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job
     assert '"6379:6379"' in tests_job
     assert '--health-cmd "redis-cli ping"' in tests_job
-    assert (
-        "AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}" in tests_job
-    )
+    assert "AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}" in tests_job
     assert "AI_PLATFORM_S0A_SCHEMA_TEST_DSN: ${{ matrix.postgres_url }}" in tests_job
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
-    assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("timeout --signal")
+    assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index(
+        "timeout --signal"
+    )
     assert "timeout --signal=TERM --kill-after=30s 10m" in pytest_step
     assert "uv run --locked --extra test python -m pytest" in pytest_step
     assert "${{ matrix.test_files }}" in pytest_step
@@ -276,7 +301,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert '--junitxml ".pytest-tmp/${{ matrix.shard }}.xml"' in pytest_step
     assert (
         'if [[ "${{ matrix.shard }}" =~ '
-        '^(repository-worker-streaming|run-control-contracts|schema-migrations|v4-durable-streaming)$ ]]'
+        "^(repository-worker-streaming|run-control-contracts|schema-migrations|v4-durable-streaming)$ ]]"
         in pytest_step
     )
     assert "tools/require_zero_junit_skips.py" in pytest_step
@@ -311,14 +336,12 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     assert "timeout-minutes: 15" in agent_skill_job
     assert (
         "AGENT_SKILL_SOURCE_COMMIT: "
-        "${{ github.event.pull_request.head.sha || github.sha }}"
-        in agent_skill_job
+        "${{ github.event.pull_request.head.sha || github.sha }}" in agent_skill_job
     )
     assert "ref: ${{ env.AGENT_SKILL_SOURCE_COMMIT }}" in agent_skill_job
     assert "persist-credentials: false" in agent_skill_job
     assert (
-        'test "$(git rev-parse HEAD)" = "$AGENT_SKILL_SOURCE_COMMIT"'
-        in agent_skill_job
+        'test "$(git rev-parse HEAD)" = "$AGENT_SKILL_SOURCE_COMMIT"' in agent_skill_job
     )
     assert "uv lock --check" in agent_skill_job
     assert "uv sync --locked --extra test --no-install-project" in agent_skill_job
@@ -348,7 +371,9 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     }
 
     run_script = pytest_step[1].split("run: |", 1)[1]
-    assert run_script.index("mkdir -p .pytest-tmp") < run_script.index("timeout --signal")
+    assert run_script.index("mkdir -p .pytest-tmp") < run_script.index(
+        "timeout --signal"
+    )
     timeout_script = run_script.split("mkdir -p .pytest-tmp", 1)[1]
     normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", timeout_script)
     tokens = shlex.split(normalized_run)
@@ -428,9 +453,9 @@ def test_ruff_is_pinned_in_the_test_extra_without_enabling_broad_linting():
 def _frontend_ruff_requirement_resolver(workflow: str | None = None):
     if workflow is None:
         workflow = FRONTEND_WORKFLOW.read_text(encoding="utf-8")
-    install_step = workflow.split("- name: Install Python test dependencies", 1)[1].split(
-        "- name: Verify static frontend Python contracts", 1
-    )[0]
+    install_step = workflow.split("- name: Install Python test dependencies", 1)[
+        1
+    ].split("- name: Verify static frontend Python contracts", 1)[0]
     install_script = install_step.split("@'\n", 1)[1]
     heredoc_end = re.search(r"(?m)^\s*'@ \| python -\s*$", install_script)
     if heredoc_end is None:
@@ -440,7 +465,12 @@ def _frontend_ruff_requirement_resolver(workflow: str | None = None):
     imports = []
     for statement in module.body:
         if isinstance(statement, ast.Import):
-            imports.append(("import", tuple((alias.name, alias.asname) for alias in statement.names)))
+            imports.append(
+                (
+                    "import",
+                    tuple((alias.name, alias.asname) for alias in statement.names),
+                )
+            )
         elif isinstance(statement, ast.ImportFrom):
             imports.append(
                 (
@@ -463,9 +493,15 @@ def _frontend_ruff_requirement_resolver(workflow: str | None = None):
             and statement.targets[0].id == name
         ]
         if len(assignments) != 1:
-            raise RuntimeError(f"frontend workflow must define exactly one {name} constant")
+            raise RuntimeError(
+                f"frontend workflow must define exactly one {name} constant"
+            )
         value = assignments[0].value
-        literal = ast.get_source_segment(script, value.args[0]) if isinstance(value, ast.Call) and value.args else None
+        literal = (
+            ast.get_source_segment(script, value.args[0])
+            if isinstance(value, ast.Call) and value.args
+            else None
+        )
         if (
             not isinstance(value, ast.Call)
             or not isinstance(value.func, ast.Attribute)
@@ -478,14 +514,17 @@ def _frontend_ruff_requirement_resolver(workflow: str | None = None):
             or value.args[0].value != pattern
             or literal != f'r"{pattern}"'
         ):
-            raise RuntimeError(f"frontend workflow {name} must be a trusted pure regex literal")
+            raise RuntimeError(
+                f"frontend workflow {name} must be a trusted pure regex literal"
+            )
 
     trusted_regex_constant("CANONICAL_RUFF_VERSION", TRUSTED_RUFF_REGEX)
     trusted_regex_constant("CANONICAL_JSONSCHEMA_VERSION", TRUSTED_JSONSCHEMA_REGEX)
     functions = [
         statement
         for statement in module.body
-        if isinstance(statement, ast.FunctionDef) and statement.name == "resolve_ruff_requirement"
+        if isinstance(statement, ast.FunctionDef)
+        and statement.name == "resolve_ruff_requirement"
     ]
     if len(functions) != 1:
         raise RuntimeError("frontend workflow must define exactly one Ruff resolver")
@@ -505,24 +544,60 @@ def _frontend_ruff_requirement_resolver(workflow: str | None = None):
         or arguments.kwonlyargs
         or arguments.defaults
         or any(default is not None for default in arguments.kw_defaults)
-        or any(argument.annotation is not None or argument.type_comment is not None for argument in argument_nodes)
+        or any(
+            argument.annotation is not None or argument.type_comment is not None
+            for argument in argument_nodes
+        )
     ):
         raise RuntimeError("frontend Ruff resolver has unsafe definition-time effects")
 
     allowed_nodes = {
-        ast.FunctionDef, ast.arguments, ast.arg, ast.Assign, ast.Attribute, ast.BoolOp,
-        ast.Call, ast.Compare, ast.Constant, ast.Eq, ast.ExceptHandler, ast.Expr,
-        ast.For, ast.FormattedValue, ast.If, ast.IsNot, ast.JoinedStr, ast.List,
-        ast.Load, ast.Name, ast.Not, ast.NotEq, ast.Or, ast.Raise, ast.Return,
-        ast.Store, ast.Subscript, ast.Try, ast.UnaryOp,
+        ast.FunctionDef,
+        ast.arguments,
+        ast.arg,
+        ast.Assign,
+        ast.Attribute,
+        ast.BoolOp,
+        ast.Call,
+        ast.Compare,
+        ast.Constant,
+        ast.Eq,
+        ast.ExceptHandler,
+        ast.Expr,
+        ast.For,
+        ast.FormattedValue,
+        ast.If,
+        ast.IsNot,
+        ast.JoinedStr,
+        ast.List,
+        ast.Load,
+        ast.Name,
+        ast.Not,
+        ast.NotEq,
+        ast.Or,
+        ast.Raise,
+        ast.Return,
+        ast.Store,
+        ast.Subscript,
+        ast.Try,
+        ast.UnaryOp,
     }
     unexpected = next(
-        (node for node in ast.walk(resolver_definition) if type(node) not in allowed_nodes),
+        (
+            node
+            for node in ast.walk(resolver_definition)
+            if type(node) not in allowed_nodes
+        ),
         None,
     )
     if unexpected is not None:
-        raise RuntimeError(f"frontend Ruff resolver contains unsafe AST node {type(unexpected).__name__}")
-    if sum(isinstance(node, ast.FunctionDef) for node in ast.walk(resolver_definition)) != 1:
+        raise RuntimeError(
+            f"frontend Ruff resolver contains unsafe AST node {type(unexpected).__name__}"
+        )
+    if (
+        sum(isinstance(node, ast.FunctionDef) for node in ast.walk(resolver_definition))
+        != 1
+    ):
         raise RuntimeError("frontend Ruff resolver cannot nest function definitions")
 
     local_names = {
@@ -537,14 +612,29 @@ def _frontend_ruff_requirement_resolver(workflow: str | None = None):
         if isinstance(handler, ast.ExceptHandler) and handler.name is not None
     )
     trusted_names = {
-        "CANONICAL_RUFF_VERSION", "InvalidRequirement", "Requirement", "RuntimeError",
-        "InvalidVersion", "Version", "canonicalize_name", "len", "list", "str",
+        "CANONICAL_RUFF_VERSION",
+        "InvalidRequirement",
+        "Requirement",
+        "RuntimeError",
+        "InvalidVersion",
+        "Version",
+        "canonicalize_name",
+        "len",
+        "list",
+        "str",
     }
     for node in ast.walk(resolver_definition):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in local_names | trusted_names:
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id not in local_names | trusted_names
+        ):
             raise RuntimeError(f"frontend Ruff resolver uses unsafe name {node.id}")
         if isinstance(node, ast.Attribute):
-            if not isinstance(node.value, ast.Name) or (node.value.id, node.attr) not in {
+            if not isinstance(node.value, ast.Name) or (
+                node.value.id,
+                node.attr,
+            ) not in {
                 ("CANONICAL_RUFF_VERSION", "fullmatch"),
                 ("requirement", "name"),
                 ("ruff_requirements", "append"),
@@ -555,15 +645,26 @@ def _frontend_ruff_requirement_resolver(workflow: str | None = None):
                 ("specifier", "operator"),
                 ("specifier", "version"),
             }:
-                raise RuntimeError("frontend Ruff resolver uses an unsafe dynamic attribute")
+                raise RuntimeError(
+                    "frontend Ruff resolver uses an unsafe dynamic attribute"
+                )
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
                 allowed_call = node.func.id in {
-                    "Requirement", "RuntimeError", "Version", "canonicalize_name", "len", "list", "str",
+                    "Requirement",
+                    "RuntimeError",
+                    "Version",
+                    "canonicalize_name",
+                    "len",
+                    "list",
+                    "str",
                 }
-            elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            elif isinstance(node.func, ast.Attribute) and isinstance(
+                node.func.value, ast.Name
+            ):
                 allowed_call = (node.func.value.id, node.func.attr) in {
-                    ("CANONICAL_RUFF_VERSION", "fullmatch"), ("ruff_requirements", "append"),
+                    ("CANONICAL_RUFF_VERSION", "fullmatch"),
+                    ("ruff_requirements", "append"),
                 }
             else:
                 allowed_call = False
@@ -597,7 +698,13 @@ def _frontend_ruff_requirement_resolver(workflow: str | None = None):
         "canonicalize_name": canonicalize_name,
     }
     exec(  # noqa: S102 -- only a statically validated, definition-time-safe function is compiled.
-        compile(ast.fix_missing_locations(ast.Module(body=[trusted_definition], type_ignores=[])), "<frontend-ruff-resolver>", "exec"),
+        compile(
+            ast.fix_missing_locations(
+                ast.Module(body=[trusted_definition], type_ignores=[])
+            ),
+            "<frontend-ruff-resolver>",
+            "exec",
+        ),
         namespace,
     )
     resolver = namespace.get("resolve_ruff_requirement")
@@ -610,7 +717,9 @@ def test_frontend_ruff_requirement_resolver_extraction_does_not_run_installation
     monkeypatch: pytest.MonkeyPatch,
 ):
     def reject_install(*args: object, **kwargs: object) -> None:
-        raise AssertionError(f"resolver extraction must not install dependencies: {args!r}")
+        raise AssertionError(
+            f"resolver extraction must not install dependencies: {args!r}"
+        )
 
     monkeypatch.setattr(subprocess, "check_call", reject_install)
 
@@ -633,8 +742,16 @@ def _mutate_frontend_workflow(before: str, after: str) -> str:
             'CANONICAL_RUFF_VERSION = subprocess.check_call([sys.executable, "-m", "pip", "install", "attacker"]) or re.compile(r"[0-9]+\\.[0-9]+\\.[0-9]+")',
             id="assignment-call",
         ),
-        pytest.param("          import re", "          import re as trusted_re", id="import-alias"),
-        pytest.param("          import re", "          import re\n          import attacker", id="piggyback-import"),
+        pytest.param(
+            "          import re",
+            "          import re as trusted_re",
+            id="import-alias",
+        ),
+        pytest.param(
+            "          import re",
+            "          import re\n          import attacker",
+            id="piggyback-import",
+        ),
         pytest.param(
             "          def resolve_ruff_requirement(test_dependencies):",
             '          @subprocess.check_call([sys.executable, "-m", "pip", "install", "attacker"])\n          def resolve_ruff_requirement(test_dependencies):',
@@ -690,16 +807,22 @@ def test_frontend_static_contracts_install_only_the_pinned_test_extra_ruff():
     import tomllib
 
     workflow = FRONTEND_WORKFLOW.read_text(encoding="utf-8")
-    install_step = workflow.split("- name: Install Python test dependencies", 1)[1].split(
-        "- name: Verify static frontend Python contracts", 1
-    )[0]
+    install_step = workflow.split("- name: Install Python test dependencies", 1)[
+        1
+    ].split("- name: Verify static frontend Python contracts", 1)[0]
 
     with PYPROJECT.open("rb") as handle:
         pyproject = tomllib.load(handle)
 
     test_dependencies = pyproject["project"]["optional-dependencies"]["test"]
-    assert 'tomllib.load(handle)["project"]["optional-dependencies"]["test"]' in install_step
-    assert "from packaging.requirements import InvalidRequirement, Requirement" in install_step
+    assert (
+        'tomllib.load(handle)["project"]["optional-dependencies"]["test"]'
+        in install_step
+    )
+    assert (
+        "from packaging.requirements import InvalidRequirement, Requirement"
+        in install_step
+    )
     assert "from packaging.utils import canonicalize_name" in install_step
     assert "for dependency in test_dependencies:" in install_step
     assert 'canonicalize_name(requirement.name) == "ruff"' in install_step
@@ -736,11 +859,17 @@ def test_frontend_ruff_requirement_resolver_normalizes_a_canonical_pin():
             "exact canonical version pin",
             id="marker",
         ),
-        pytest.param(["ruff[cli]==0.11.13"], "exact canonical version pin", id="extras"),
-        pytest.param(["ruff===0.11.13"], "exact canonical version pin", id="arbitrary-equals"),
+        pytest.param(
+            ["ruff[cli]==0.11.13"], "exact canonical version pin", id="extras"
+        ),
+        pytest.param(
+            ["ruff===0.11.13"], "exact canonical version pin", id="arbitrary-equals"
+        ),
         pytest.param(["ruff==0.11.*"], "exact canonical version pin", id="wildcard"),
         pytest.param(["ruff>=0.11.13"], "exact canonical version pin", id="range"),
-        pytest.param(["ruff==00.11.13"], "exact canonical version pin", id="noncanonical-version"),
+        pytest.param(
+            ["ruff==00.11.13"], "exact canonical version pin", id="noncanonical-version"
+        ),
     ],
 )
 def test_frontend_ruff_requirement_resolver_rejects_noncanonical_declarations(
@@ -761,15 +890,13 @@ def test_backend_preflight_uses_exact_candidate_source_without_duplicate_governa
     assert "timeout-minutes: 10" in preflight
     assert (
         "BACKEND_PREFLIGHT_SOURCE_COMMIT: "
-        "${{ github.event.pull_request.head.sha || github.sha }}"
-        in preflight
+        "${{ github.event.pull_request.head.sha || github.sha }}" in preflight
     )
     assert "ref: ${{ env.BACKEND_PREFLIGHT_SOURCE_COMMIT }}" in preflight
     assert "persist-credentials: false" in preflight
     assert "persist-credentials: true" not in preflight
     assert (
-        'test "$(git rev-parse HEAD)" = "$BACKEND_PREFLIGHT_SOURCE_COMMIT"'
-        in preflight
+        'test "$(git rev-parse HEAD)" = "$BACKEND_PREFLIGHT_SOURCE_COMMIT"' in preflight
     )
     assert "uv lock --check" in preflight
     assert "uv sync --locked --extra test --no-install-project" in preflight
@@ -782,7 +909,9 @@ def test_backend_preflight_uses_exact_candidate_source_without_duplicate_governa
 
 
 def test_python_safe_path_blocks_a_head_root_ruff_module(tmp_path: Path):
-    (tmp_path / "ruff.py").write_text('raise RuntimeError("head ruff.py was imported")\n', encoding="utf-8")
+    (tmp_path / "ruff.py").write_text(
+        'raise RuntimeError("head ruff.py was imported")\n', encoding="utf-8"
+    )
     environment = os.environ.copy()
     environment["PYTHONSAFEPATH"] = "1"
     environment.pop("PYTHONPATH", None)
@@ -804,8 +933,7 @@ def test_python_safe_path_blocks_a_head_root_ruff_module(tmp_path: Path):
 def test_candidate_dependencies_use_one_pinned_lock_keyed_uv_cache_contract_per_job():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     setup_uv = (
-        "uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d "
-        "# v10.0.1"
+        "uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1"
     )
 
     assert workflow.count(setup_uv) == 3
@@ -834,14 +962,13 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert "id: image-scope" in image_job
     assert "python tools/ci_image_scope.py" in image_job
     assert '--event-name "$GITHUB_EVENT_NAME"' in image_job
-    assert '--role backend' in image_job
+    assert "--role backend" in image_job
     assert '--base-ref "$IMAGE_BASE_COMMIT"' in image_job
     assert '--head-ref "$IMAGE_SOURCE_COMMIT"' in image_job
     assert "- name: Report backend image build disposition" in image_job
     assert "if: steps.image-scope.outputs.build != 'true'" in image_job
     assert (
-        "IMAGE_DISPOSITION: ${{ steps.image-scope.outputs.disposition }}"
-        in image_job
+        "IMAGE_DISPOSITION: ${{ steps.image-scope.outputs.disposition }}" in image_job
     )
     assert 'case "$IMAGE_DISPOSITION" in' in image_job
     assert "not_affected)" in image_job
@@ -849,7 +976,9 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert 'test "$GITHUB_EVENT_NAME" = "pull_request"' in image_job
     assert 'test "$GITHUB_EVENT_NAME" != "pull_request"' in image_job
     assert "backend_image_validation=not_affected" in image_job
-    assert "backend_image_build=delegated owner=ai-platform-packaging-publish" in image_job
+    assert (
+        "backend_image_build=delegated owner=ai-platform-packaging-publish" in image_job
+    )
     assert "base_commit=%s head_commit=%s" in image_job
     assert "unexpected_disposition" in image_job
     for step_name in [
@@ -859,21 +988,34 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
         "Verify backend image runtime contract",
         "Verify backend image startup",
     ]:
-        step = image_job.split(f"- name: {step_name}", 1)[1].split("\n      - name:", 1)[0]
+        step = image_job.split(f"- name: {step_name}", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
         assert "if: steps.image-scope.outputs.build == 'true'" in step
-    assert "IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in image_job
+    assert (
+        "IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}"
+        in image_job
+    )
     assert "- name: Resolve image source repository" in image_job
     assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in image_job
     assert '[[ "$IMAGE_SOURCE_HEAD_REPOSITORY" =~ ^[A-Za-z0-9]' in image_job
-    assert 'image_source_repository="https://github.com/${IMAGE_SOURCE_HEAD_REPOSITORY}.git"' in image_job
-    assert 'printf \'IMAGE_SOURCE_REPOSITORY=%s\\n\' "$image_source_repository" >> "$GITHUB_ENV"' in image_job
-    assert "IMAGE_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}.git" not in image_job
+    assert (
+        'image_source_repository="https://github.com/${IMAGE_SOURCE_HEAD_REPOSITORY}.git"'
+        in image_job
+    )
+    assert (
+        'printf \'IMAGE_SOURCE_REPOSITORY=%s\\n\' "$image_source_repository" >> "$GITHUB_ENV"'
+        in image_job
+    )
+    assert (
+        "IMAGE_SOURCE_REPOSITORY: https://github.com/${{ github.repository }}.git"
+        not in image_job
+    )
     assert "docker build" in image_job
     assert "-f Dockerfile" in image_job
     assert "- name: Block fixable backend image vulnerabilities" in image_job
     assert (
-        "uses: aquasecurity/trivy-action@"
-        "ed142fd0673e97e23eac54620cfb913e5ce36c25"
+        "uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25"
     ) in image_job
     assert "image-ref: ai-platform-backend:${{ env.IMAGE_SOURCE_COMMIT }}" in image_job
     assert "severity: HIGH,CRITICAL" in image_job
@@ -885,12 +1027,20 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     assert 'labels["org.opencontainers.image.revision"]' in image_job
     assert 'labels["ai-platform.source-repository"]' in image_job
     assert '--env IMAGE_SOURCE_COMMIT="$IMAGE_SOURCE_COMMIT"' in image_job
-    assert "import app.main, claude_agent_sdk" in image_job
+    assert "--network none" in image_job
+    assert "target=/tmp/sandbox-documents,readonly" in image_job
+    assert "import anydoc, app.main, claude_agent_sdk" in image_job
+    assert 'anydoc.to_markdown(root / name, ocr=\\"reject\\")' in image_job
+    for fixture in ("legacy.doc", "legacy.xls", "legacy.ppt", "modern.pptx"):
+        assert fixture in image_job
     assert "http://127.0.0.1:18020/api/ai/health" in image_job
     assert "python - <<'PY'" not in startup_step
     assert "os.urandom(32)" in startup_step
     assert '--env AI_SESSION_SECRET="$session_secret"' in startup_step
-    assert 'BACKEND_HEALTH_FILE="$RUNNER_TEMP/backend-health.json" python -c' in startup_step
+    assert (
+        'BACKEND_HEALTH_FILE="$RUNNER_TEMP/backend-health.json" python -c'
+        in startup_step
+    )
     assert "backend_container_state=" in startup_step
     assert "docker logs --tail 80" in startup_step
     assert "backend_redacted_container_log_tail_lines=" in startup_step
@@ -902,26 +1052,3 @@ def test_backend_image_job_builds_only_affected_pull_request_candidates_and_chec
     required_job = workflow.split("  required:", 1)[1]
     assert "IMAGE_RESULT: ${{ needs.backend-image.result }}" in required_job
     assert "IMAGE_DISPOSITION" not in required_job
-
-
-def test_backend_required_contract_preserves_high_risk_design_boundaries():
-    guidance = " ".join(
-        "\n".join(
-            [
-                AGENT_RULES.read_text(encoding="utf-8"),
-                ISSUE_WORKFLOW.read_text(encoding="utf-8"),
-            ]
-        ).split()
-    )
-
-    assert "Use a bounded Change Contract for goal-sized work" in guidance
-    for boundary in (
-        "authentication, authorization, tenant or workspace isolation",
-        "secrets, credentials, or ordinary-user projection redaction",
-        "destructive lifecycle, retention, schema migration",
-        "sandbox, command, tool, Skill, MCP, or executor admission",
-        "public API, callback, event, or streaming protocols",
-        "workflow, image, release, deployment, or rollback authority",
-    ):
-        assert boundary in guidance
-    assert "A separate ADR or design is required only" in guidance

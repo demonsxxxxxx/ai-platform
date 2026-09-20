@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import io
 import logging
@@ -8,8 +9,10 @@ import zipfile
 
 import pytest
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as SpreadsheetImage
 
 from app import file_preview_contracts
+from app.bootstrap.files import configure_file_preview_services
 from app.file_parser_contracts import AttachmentParserRequirement, parser_spec_for_attachment
 from app.file_preview_contracts import (
     _stage_xlsx_preview_bytes,
@@ -23,6 +26,11 @@ from app.file_preview_contracts import (
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _configure_preview_services() -> None:
+    configure_file_preview_services()
+
+
 def _workbook_bytes(*, formulas: list[str] | None = None) -> bytes:
     workbook = Workbook()
     worksheet = workbook.active
@@ -33,6 +41,27 @@ def _workbook_bytes(*, formulas: list[str] | None = None) -> bytes:
         worksheet.append([formula])
     buffer = io.BytesIO()
     workbook.save(buffer)
+    workbook.close()
+    return buffer.getvalue()
+
+
+def _workbook_with_image_bytes(*, image_count: int = 1) -> bytes:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Checks"
+    worksheet.append(["requirement"])
+    with tempfile.TemporaryDirectory() as directory:
+        image_path = Path(directory) / "logo.png"
+        image_path.write_bytes(
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAADUlEQVR4nGP8z0A+YgAA"
+                "AP//AwAF/gL+WAAAAABJRU5ErkJggg=="
+            )
+        )
+        for _ in range(image_count):
+            worksheet.add_image(SpreadsheetImage(image_path), "B3")
+        buffer = io.BytesIO()
+        workbook.save(buffer)
     workbook.close()
     return buffer.getvalue()
 
@@ -124,6 +153,45 @@ def test_xlsx_preview_rejects_mismatched_source_identity(identity):
     assert preview.status == "failed"
     assert preview.error is not None
     assert preview.error.code == "xlsx_preview_failed"
+
+
+def test_xlsx_preview_materializes_bounded_embedded_images_in_the_v2_dto():
+    raw = _workbook_with_image_bytes()
+    preview = _build_preview(
+        raw=raw,
+        file_id="file-image",
+        file_name="image.xlsx",
+        content_type=XLSX_CONTENT_TYPE,
+        expected_sha256=hashlib.sha256(raw).hexdigest(),
+        expected_byte_count=len(raw),
+    )
+
+    assert preview.status == "ready"
+    assert preview.content is not None
+    images = preview.content.sheets[0].images
+    assert len(images) == 1
+    assert images[0].mime_type == "image/png"
+    assert images[0].data_url.startswith("data:image/png;base64,")
+    assert images[0].anchor_from.col == 1
+    assert images[0].anchor_from.row == 2
+    assert images[0].extent is not None
+    assert images[0].anchor_to is None
+
+
+def test_xlsx_preview_truncates_images_at_the_public_projection_limit():
+    raw = _workbook_with_image_bytes(image_count=17)
+    preview = _build_preview(
+        raw=raw,
+        file_id="file-many-images",
+        file_name="many-images.xlsx",
+        content_type=XLSX_CONTENT_TYPE,
+    )
+
+    assert preview.status == "truncated"
+    assert preview.truncated is True
+    assert preview.content is not None
+    assert len(preview.content.sheets[0].images) == 16
+    assert "images_truncated" in preview.warnings
 
 
 def test_xlsx_preview_redacts_local_and_external_formula_source():
@@ -390,6 +458,7 @@ def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_da
         b"sanitized",
         requirement.model_dump(mode="json"),
         5.0,
+        file_preview_contracts.xlsx_preview_image_extractor(),
     )
 
     assert file_preview_contracts.os.environ["OPENPYXL_LXML"] == "False"

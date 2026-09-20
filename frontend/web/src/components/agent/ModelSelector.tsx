@@ -1,7 +1,6 @@
 import { memo, useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Check, Info, Pin, PinOff } from "lucide-react";
-import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { ModelIconImg } from "./modelIcon.tsx";
 import { shouldCloseModelSelector } from "./modelSelectorGuards";
@@ -187,38 +186,11 @@ const ModelSelector = memo(function ModelSelector({
   onTogglePinnedModel,
   onSelectModel,
 }: ModelSelectorProps) {
-  const { t } = useTranslation();
   const [showSelector, setShowSelector] = useState(false);
-  const [defaultTick, setDefaultTick] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const currentModelInfo = models.find((m) => m.id === currentModelId);
-
-  const isDefault = (() => {
-    void defaultTick;
-    return localStorage.getItem("defaultModelId") === currentModelId;
-  })();
-
-  const handleSetDefault = useCallback(() => {
-    if (!currentModelInfo) return;
-    localStorage.setItem("defaultModelId", currentModelId);
-    localStorage.setItem("defaultModel", currentModelInfo.value);
-    window.dispatchEvent(
-      new CustomEvent("model-preference-updated", {
-        detail: { modelId: currentModelId, modelValue: currentModelInfo.value },
-      }),
-    );
-    setDefaultTick((t) => t + 1);
-    toast.success(t("models.defaultModelSet"));
-  }, [currentModelId, currentModelInfo, t]);
-
-  useEffect(() => {
-    const handler = () => setDefaultTick((t) => t + 1);
-    window.addEventListener("model-preference-updated", handler);
-    return () =>
-      window.removeEventListener("model-preference-updated", handler);
-  }, []);
 
   const handleSelectModel = useCallback(
     (modelId: string, modelValue: string) => {
@@ -287,7 +259,7 @@ const ModelSelector = memo(function ModelSelector({
         className="flex items-center gap-1.5 hover:opacity-70 transition-opacity"
       >
         <span className="text-base font-semibold text-stone-600 dark:text-stone-300 max-w-[200px] truncate">
-          {currentModelInfo?.label || currentModelId}
+          {currentModelInfo?.label || "选择模型"}
         </span>
         <ChevronDown
           size={16}
@@ -296,15 +268,6 @@ const ModelSelector = memo(function ModelSelector({
           }`}
         />
       </button>
-
-      {!isDefault && (
-        <button
-          onClick={handleSetDefault}
-          className="absolute left-[1px] top-full mt-[1px] text-[0.7rem] text-stone-400 hover:text-stone-600 dark:text-stone-500 dark:hover:text-stone-300 transition-colors cursor-pointer select-none"
-        >
-          {t("models.setDefault")}
-        </button>
-      )}
 
       {showSelector &&
         createPortal(

@@ -5,41 +5,19 @@ import test from "node:test";
 import React from "react";
 
 import { Permission } from "../../../types/auth.ts";
-import {
-  AGENT_PROFILE_CATEGORIES,
-  AGENT_PROFILE_CATEGORY_LABELS,
-  type AgentProfilePublicProjection,
-} from "../../../types/agentProfile.ts";
+import type { AgentProfilePublicProjection } from "../../../types/agentProfile.ts";
+import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb.ts";
 
 const enterpriseProfileFields = {
-  welcome_message: "欢迎使用企业专家。",
   starter_prompts: ["帮我处理企业任务"] as string[],
-  capability_summary: "在授权范围内处理企业任务。",
-  recommended_tasks: ["企业任务处理"] as string[],
-  supported_input_types: ["text", "file"] as ["text", "file"],
-  expected_outputs: ["处理建议"] as string[],
-  permissions_and_data_access_notice: "仅访问当前用户授权的数据。",
+  avatar_seed: "enterprise-profile",
+  market_tags: ["企业服务"] as string[],
+  is_favorite: false,
   published_at: "2026-08-04T01:00:00Z",
 };
 
 register(new URL("./frontendAssetLoader.mjs", import.meta.url), import.meta.url);
 await new Promise<void>((resolve) => setImmediate(resolve));
-
-test("Agent Profile category labels cover the canonical category contract", () => {
-  assert.deepEqual(
-    AGENT_PROFILE_CATEGORIES.map((category) => [
-      category,
-      AGENT_PROFILE_CATEGORY_LABELS[category],
-    ]),
-    [
-      ["general", "通用专家"],
-      ["support", "支持服务"],
-      ["writing", "内容写作"],
-      ["research", "研究分析"],
-      ["operations", "运营效率"],
-    ],
-  );
-});
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -474,13 +452,14 @@ function installDom() {
     configurable: true,
     value: { userAgent: "node", locks: new TestLockManager() },
   });
+  installBrowserAuthTestDb();
   return { document, window: windowTarget };
 }
 
 async function prepareShellHarness({ authenticated = false } = {}) {
   await import("../../../i18n/index.ts");
   const { AuthProvider, useAuth } = await import("../../../hooks/useAuth.tsx");
-  const { SettingsProvider } = await import("../../../contexts/SettingsContext.tsx");
+  const { ModelCatalogProvider } = await import("../../../contexts/ModelCatalogContext.tsx");
   const { ThemeProvider } = await import("../../../contexts/ThemeContext.tsx");
   const { authApi } = await import("../../../services/api/auth.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -495,7 +474,11 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     getPinnedModelIds: modelPublicApi.getPinnedModelIds,
     getActiveNotifications: notificationPublicApi.getActive,
   };
-  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.bootstrapAuthContext = async (request) => ({
+    status: "ready",
+    protocol_version: 2,
+    generation: request.generation,
+  });
   authApi.getCurrentUser = authenticated
     ? async () => ({
         id: "user-a",
@@ -523,10 +506,14 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     has_more: false,
   });
   modelPublicApi.listAvailable = async () => ({
-    models: [],
-    count: 0,
-    enabled_count: 0,
-    default_model_id: null,
+    models: [{
+      id: "model-default",
+      value: "model-default",
+      label: "默认模型",
+    }],
+    count: 1,
+    enabled_count: 1,
+    default_model_id: "model-default",
   });
   modelPublicApi.getPinnedModelIds = async () => [];
   notificationPublicApi.getActive = async () => [];
@@ -546,7 +533,7 @@ async function prepareShellHarness({ authenticated = false } = {}) {
         React.createElement(
           AuthProvider,
           null,
-          React.createElement(SettingsProvider, null, shellChildren),
+          React.createElement(ModelCatalogProvider, null, shellChildren),
         ),
       );
     },
@@ -569,17 +556,18 @@ test("market search commits Chinese IME text only after composition ends", async
   const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const shellHarness = await prepareShellHarness();
-  const profile = {
+  const profiles: AgentProfilePublicProjection[] = Array.from({ length: 10 }, (_, index) => ({
     ...enterpriseProfileFields,
-    agent_id: "agt_support",
+    agent_id: `agt_support_${index + 1}`,
     expected_revision: 1,
-    name: "支持助手",
+    name: `支持助手 ${index + 1}`,
     description: "处理支持请求。",
+    market_tags: [`标签 ${index + 1}`],
     avatar_ref: "builtin:assistant",
     category: "support",
-  } as const;
+  }));
   const originalListPublished = agentProfileApi.listPublished;
-  agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
+  agentProfileApi.listPublished = async () => ({ agent_profiles: profiles });
   let currentPath = "";
   function LocationProbe() {
     const location = useLocation();
@@ -615,6 +603,27 @@ test("market search commits Chinese IME text only after composition ends", async
       await Promise.resolve();
       await Promise.resolve();
     });
+
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 10);
+    const moreTags = container.querySelector("details");
+    assert.ok(moreTags, "additional market tags stay reachable without a sidebar");
+    const eighthTag = moreTags.querySelectorAll("button")
+      .find((button) => button.textContent?.includes("标签 8"));
+    assert.ok(eighthTag);
+    await React.act(async () => {
+      eighthTag.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.match(currentPath, /tag=%E6%A0%87%E7%AD%BE\+8/);
+    const allTags = container.querySelector("[data-agent-market-filter]")?.querySelectorAll("button")
+      .find((button) => button.textContent?.trim() === "全部");
+    assert.ok(allTags);
+    await React.act(async () => {
+      allTags.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market");
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 10);
 
     const search = container.querySelector("[data-agent-market-search]");
     assert.ok(search);
@@ -663,6 +672,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       description: "已发布的支持服务。",
       avatar_ref: "builtin:assistant",
       category: "support",
+      market_tags: ["客户服务"],
     },
     {
       ...enterpriseProfileFields,
@@ -672,7 +682,8 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       description: "核对报销材料。",
       avatar_ref: "builtin:document",
       category: "operations",
-      instructions: "PRIVATE_PROMPT",
+      market_tags: ["财务"],
+      completed_tasks: 7,
       model_id: "private-model",
       mcp_tool_ids: ["private-mcp"],
       selected_skill: {
@@ -728,7 +739,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     const navigate = useNavigate();
     return React.createElement("button", {
       "data-agent-workspace": true,
-      onClick: () => navigate("/agent-market?q=财务&category=operations"),
+      onClick: () => navigate("/agent-market?q=财务&tag=财务"),
       type: "button",
     });
   }
@@ -740,7 +751,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market?q=财务&category=operations"] },
+          { initialEntries: ["/agent-market?q=财务&tag=财务"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -775,40 +786,114 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     const categoryGroup = container.querySelector("[data-agent-market-filter]");
     assert.ok(categoryGroup);
     assert.equal(categoryGroup.getAttribute("role"), "group");
-    assert.equal(categoryGroup.getAttribute("aria-label"), "专家分类");
-    assert.equal(categoryGroup.querySelectorAll('[role="tab"]').length, 0);
-    const categoryButtons = categoryGroup.querySelectorAll("button");
+    assert.equal(categoryGroup.getAttribute("aria-label"), "市场标签");
+    const favoriteControl = container.querySelector("[data-agent-market-favorites]");
+    assert.ok(favoriteControl);
+    assert.equal(favoriteControl.getAttribute("aria-pressed"), "false");
+    assert.ok(container.querySelector("[data-agent-market-view]"));
+    assert.ok(container.querySelector("[data-agent-market-sort]"));
     assert.equal(
-      categoryButtons.find((button) => button.textContent === "运营效率")?.getAttribute(
+      categoryGroup.querySelectorAll("button").find((button) => button.textContent?.includes("财务"))?.getAttribute(
         "aria-pressed",
       ),
       "true",
     );
     assert.equal(
-      categoryButtons.find((button) => button.textContent === "全部")?.getAttribute(
+      categoryGroup.querySelectorAll("button").find((button) => button.textContent === "全部")?.getAttribute(
         "aria-pressed",
       ),
       "false",
     );
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
-    assert.deepEqual(catalogRequest, { query: "财务", category: "operations" });
-    assert.ok(container.querySelector("[data-workbench-header]"), "market must render in AppShell");
-    assert.ok(
-      container.querySelector("[data-librechat-desktop-sidebar]"),
-      "market must retain SessionSidebar",
+    const customerServiceTag = categoryGroup
+      .querySelectorAll("button")
+      .find((button) => button.textContent?.includes("客户服务"));
+    assert.ok(customerServiceTag);
+    await React.act(async () => {
+      customerServiceTag.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(
+      currentPath,
+      "/agent-market?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1&tag=%E5%AE%A2%E6%88%B7%E6%9C%8D%E5%8A%A1",
     );
+    assert.equal(
+      categoryGroup.querySelectorAll("button").find((button) => button.textContent?.includes("财务"))?.getAttribute(
+        "aria-pressed",
+      ),
+      "true",
+    );
+    assert.equal(customerServiceTag.getAttribute("aria-pressed"), "true");
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    await React.act(async () => {
+      customerServiceTag.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1");
+    assert.equal(customerServiceTag.getAttribute("aria-pressed"), "false");
+    const listView = container.querySelector('[aria-label="列表视图"]');
+    assert.ok(listView);
+    await React.act(async () => {
+      listView.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.equal(listView.getAttribute("aria-pressed"), "true");
+    const marketCardClassName = container.querySelector("[data-agent-market-card]")?.getAttribute("class") ?? "";
+    assert.match(marketCardClassName, /flex-col/);
+    assert.match(marketCardClassName, /sm:flex-row/);
+    const sortGroup = container.querySelector('[data-agent-market-sort]');
+    assert.ok(sortGroup);
+    assert.equal(sortGroup.querySelectorAll("button")[0].textContent, "我的收藏");
+    const taskSort = sortGroup
+      .querySelectorAll("button")
+      .find((button) => button.textContent === "完成任务最多");
+    assert.ok(taskSort);
+    await React.act(async () => {
+      taskSort.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.equal(taskSort.getAttribute("aria-pressed"), "true");
+    assert.equal(catalogRequest, undefined);
+
+    const favoritesTab = container
+      .querySelectorAll("button")
+      .find((button) => button.textContent === "我的收藏");
+    assert.ok(favoritesTab);
+    await React.act(async () => {
+      favoritesTab.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market?q=%E8%B4%A2%E5%8A%A1&tab=favorites");
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 0);
+    assert.match(container.textContent, /尚未收藏专家/);
+
+    const tagsTab = container.querySelector("[data-agent-market-favorites]");
+    assert.ok(tagsTab);
+    await React.act(async () => {
+      tagsTab.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market?q=%E8%B4%A2%E5%8A%A1");
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    assert.ok(container.querySelector("[data-agent-market]"));
 
     const search = container.querySelector("[data-agent-market-search]");
     assert.ok(search);
     assert.equal(search.value, "财务");
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
     assert.match(container.textContent, /财务助手/);
-    assert.match(container.textContent, /运营效率/);
+    assert.match(container.textContent, /财务/);
+    assert.match(container.textContent, /已完成任务/);
+    assert.match(container.textContent, /7/);
     assert.doesNotMatch(container.textContent, /支持助手/);
 
     const primaryAction = container
       .querySelectorAll("button")
-      .find((button) => button.getAttribute("aria-label") === "使用 财务助手 开始任务");
+      .find((button) => button.getAttribute("aria-label") === "使用 财务助手 开始合作");
     assert.ok(primaryAction, "filtered published card should open its dedicated workspace");
     assert.equal(primaryAction.nodeName, "BUTTON", "native button semantics preserve keyboard activation");
     assert.equal(primaryAction.getAttribute("type"), "button");
@@ -843,13 +928,13 @@ test("rendered Marketplace opens a productized bare workspace without creating a
 
     assert.equal(
       currentPath,
-      "/agent-market/agt_finance/2?q=%E8%B4%A2%E5%8A%A1&category=operations",
+      "/agent-market/agt_finance/2?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1",
     );
     assert.ok(container.querySelector("[data-agent-market-detail]"));
     assert.match(container.textContent, /核对报销材料/);
     assert.match(container.textContent, /企业已发布/);
-    assert.match(container.textContent, /版本 2/);
-    assert.match(container.textContent, /适合处理/);
+    assert.doesNotMatch(container.textContent, /版本 2/);
+    assert.match(container.textContent, /已发布的 Skill Set/);
     assert.doesNotMatch(
       container.textContent,
       /PRIVATE_PROMPT|private-model|private-mcp|private-skill|private-version/,
@@ -1070,7 +1155,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     assert.equal(currentPath, "/agent-market");
     const marketStart = container
       .querySelectorAll("button")
-      .find((button) => button.getAttribute("aria-label") === "使用 支持助手 开始任务");
+      .find((button) => button.getAttribute("aria-label") === "使用 支持助手 开始合作");
     assert.ok(marketStart);
     await React.act(async () => {
       marketStart.dispatchEvent({ type: "click", bubbles: true });
@@ -1079,14 +1164,14 @@ test("Agent starter prompts draft before explicit first-message submission", asy
 
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     assert.deepEqual(selections, []);
-    assert.match(container.textContent, /欢迎使用企业专家/);
+    assert.match(container.textContent, /处理企业内部支持请求/);
     assert.ok(container.querySelector("[data-agent-starter-prompts]"));
     assert.ok(container.querySelector("textarea"));
 
     await draftStarterPrompt(0);
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     await submitDraft(1, "session-support-1");
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-1");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
 
     const startNewTask = container
       .querySelectorAll("button")
@@ -1108,7 +1193,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     await draftStarterPrompt(1);
     assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     await submitDraft(2, "session-support-2");
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-support-2");
+    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
     assert.deepEqual(
       selections.map(({ selection }) => selection),
       [

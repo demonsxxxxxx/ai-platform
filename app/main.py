@@ -4,15 +4,29 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.bootstrap.agent_profiles import configure_agent_profile_routes
+from app.bootstrap.context import configure_context_services
+from app.bootstrap.files import (
+    configure_file_preview_services,
+    configure_file_upload_services,
+)
+from app.bootstrap.identity import build_admin_users_router, build_identity_profile_router
 from app.bootstrap.model_services import (
     build_model_management_router,
     configure_model_services,
 )
+from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.run_lifecycle import build_run_cancellation_use_case
+from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
+from app.bootstrap.run_diagnostics import build_run_diagnostics_service
+from app.bootstrap.skills import configure_skill_services
 from app.bootstrap.streaming import build_run_stream_runtime
 from app.db import close_pool, transaction
 from app.redis_client import close_redis_client
-from app.routes.agent_profiles import router as agent_profiles_router
+from app.routes.agent_profiles import (
+    configure_agent_profile_favorites,
+    router as agent_profiles_router,
+)
 from app.routes.admin_runtime import router as admin_runtime_router
 from app.routes.admin_runs import router as admin_runs_router
 from app.routes.admin_skills import router as admin_skills_router
@@ -33,7 +47,6 @@ from app.routes.runtime_callbacks import router as runtime_callbacks_router
 from app.routes.runs import router as runs_router
 from app.routes.sandbox_leases import router as sandbox_leases_router
 from app.routes.skills_marketplace import router as skills_marketplace_router
-from app.routes.tool_permissions import router as tool_permissions_router
 from app.routes.workbench_projections import router as workbench_projections_router
 from app.settings import get_settings
 
@@ -51,7 +64,9 @@ def _cors_origins(raw_value: str) -> list[str]:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     run_stream_runtime = build_run_stream_runtime(transaction)
     app.state.run_stream_runtime = run_stream_runtime
-    app.state.run_cancellation_use_case = build_run_cancellation_use_case()
+    app.state.run_cancellation_use_case = build_run_cancellation_use_case(
+        attempt_lifecycle=app.state.run_attempt_lifecycle,
+    )
     try:
         yield
     finally:
@@ -65,8 +80,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    configure_file_upload_services()
+    configure_file_preview_services()
+    configure_context_services()
+    configure_mcp_runtime()
     configure_model_services()
+    configure_skill_services()
+    configure_agent_profile_routes(configure_agent_profile_favorites)
     app = FastAPI(title="AI Platform API", version="0.1.0", lifespan=lifespan)
+    app.state.run_attempt_lifecycle = build_run_attempt_lifecycle_service()
+    app.state.run_diagnostics_service = build_run_diagnostics_service()
     settings = get_settings()
     app.add_middleware(
         CORSMiddleware,
@@ -83,11 +106,11 @@ def create_app() -> FastAPI:
     app.include_router(context_router, prefix="/api/ai")
     app.include_router(files_router, prefix="/api/ai")
     app.include_router(runs_router, prefix="/api/ai")
-    app.include_router(tool_permissions_router, prefix="/api/ai")
     app.include_router(sandbox_leases_router, prefix="/api/ai")
     app.include_router(runtime_callbacks_router, prefix="/api/ai")
     app.include_router(admin_runtime_router, prefix="/api/ai")
     app.include_router(admin_runs_router, prefix="/api/ai")
+    app.include_router(build_admin_users_router(), prefix="/api/ai")
     app.include_router(admin_skills_router, prefix="/api/ai")
     app.include_router(admin_tool_policies_router, prefix="/api/ai")
     app.include_router(build_model_management_router(), prefix="/api/ai")
@@ -97,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(frontend_projections_router, prefix="/api")
     app.include_router(role_governance_router, prefix="/api")
     app.include_router(workbench_projections_router, prefix="/api")
+    app.include_router(build_identity_profile_router(), prefix="/api")
     app.include_router(lambchat_compat_router, prefix="/api")
     app.include_router(mcp_router, prefix="/api")
     app.include_router(chat_sessions_router, prefix="/api")

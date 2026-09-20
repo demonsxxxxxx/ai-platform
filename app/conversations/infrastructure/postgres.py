@@ -22,6 +22,38 @@ from app.platform.postgres.limits import (
 )
 
 
+_LEGACY_AGENT_SESSION_TITLE_SELECT_SQL = (
+    "coalesce(legacy_first_user.title, sessions.title) as title"
+)
+_LEGACY_AGENT_SESSION_TITLE_JOIN_SQL = """left join lateral (
+          select left(
+            btrim(
+              translate(
+                messages.content,
+                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
+                '     '
+              )
+            ),
+            32
+          ) as title
+          from messages
+          where sessions.title_source = 'initial'
+            and sessions.title = profile.name
+            and messages.tenant_id = sessions.tenant_id
+            and messages.session_id = sessions.id
+            and messages.role = 'user'
+            and btrim(
+              translate(
+                messages.content,
+                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
+                '     '
+              )
+            ) <> ''
+          order by messages.created_at asc, messages.id asc
+          limit 1
+        ) legacy_first_user on true"""
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -135,33 +167,32 @@ async def list_authorized_sessions(
     user_id: str,
 ) -> list[dict[str, Any]]:
     cursor = await conn.execute(
-        """
-        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title, sessions.purpose,
+        f"""
+        select sessions.id, sessions.workspace_id, sessions.agent_id,
+               {_LEGACY_AGENT_SESSION_TITLE_SELECT_SQL}, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
+               session_agent.default_skill_id as agent_default_skill_id,
+               (profile.skill_set @> '[{{"skill_id": "baoyu-translate"}}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
-               profile.welcome_message as agent_profile_welcome_message,
                profile.starter_prompts as agent_profile_starter_prompts,
-               profile.capability_summary as agent_profile_capability_summary,
-               profile.recommended_tasks as agent_profile_recommended_tasks,
-               profile.supported_input_types as agent_profile_supported_input_types,
-               profile.expected_outputs as agent_profile_expected_outputs,
-               profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
                profile.avatar_seed as agent_profile_avatar_seed,
-               profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
+        left join agents session_agent
+          on session_agent.tenant_id = sessions.tenant_id
+         and session_agent.id = sessions.agent_id
         left join agent_profile_revisions profile
           on profile.tenant_id = sessions.tenant_id
          and profile.agent_id = sessions.agent_id
          and profile.revision = sessions.admitted_agent_profile_revision
          and profile.content_hash = sessions.admitted_agent_profile_hash
+        {_LEGACY_AGENT_SESSION_TITLE_JOIN_SQL}
         where sessions.tenant_id = %s
           and sessions.user_id = %s
           and sessions.status = 'active'
-          and sessions.admitted_agent_profile_revision is null
         order by sessions.updated_at desc, sessions.created_at desc
         limit 100
         """,
@@ -184,20 +215,18 @@ async def get_authorized_session_projection(
         select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
+               session_agent.default_skill_id as agent_default_skill_id,
+               (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
-               profile.welcome_message as agent_profile_welcome_message,
                profile.starter_prompts as agent_profile_starter_prompts,
-               profile.capability_summary as agent_profile_capability_summary,
-               profile.recommended_tasks as agent_profile_recommended_tasks,
-               profile.supported_input_types as agent_profile_supported_input_types,
-               profile.expected_outputs as agent_profile_expected_outputs,
-               profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
                profile.avatar_seed as agent_profile_avatar_seed,
-               profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
+        left join agents session_agent
+          on session_agent.tenant_id = sessions.tenant_id
+         and session_agent.id = sessions.agent_id
         left join agent_profile_revisions profile
           on profile.tenant_id = sessions.tenant_id
          and profile.agent_id = sessions.agent_id
@@ -223,12 +252,23 @@ async def get_authorized_lambchat_session(
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
-        select id, workspace_id, agent_id, title, title_source, status, created_at, updated_at
+        select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title,
+               sessions.title_source, sessions.status, sessions.created_at, sessions.updated_at,
+               session_agent.default_skill_id as agent_default_skill_id,
+               (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill
         from sessions
-        where tenant_id = %s
-          and id = %s
-          and user_id = %s
-          and status = 'active'
+        left join agents session_agent
+          on session_agent.tenant_id = sessions.tenant_id
+         and session_agent.id = sessions.agent_id
+        left join agent_profile_revisions profile
+          on profile.tenant_id = sessions.tenant_id
+         and profile.agent_id = sessions.agent_id
+         and profile.revision = sessions.admitted_agent_profile_revision
+         and profile.content_hash = sessions.admitted_agent_profile_hash
+        where sessions.tenant_id = %s
+          and sessions.id = %s
+          and sessions.user_id = %s
+          and sessions.status = 'active'
         """,
         (tenant_id, session_id, user_id),
     )
@@ -471,21 +511,15 @@ async def list_authorized_agent_conversations(
     result = await conn.execute(
         f"""
         select sessions.id, sessions.workspace_id, sessions.agent_id,
-               coalesce(legacy_first_user.title, sessions.title) as title, sessions.purpose,
+               {_LEGACY_AGENT_SESSION_TITLE_SELECT_SQL}, sessions.purpose,
                sessions.admitted_agent_profile_revision, sessions.admitted_agent_profile_hash,
                sessions.created_at, sessions.updated_at,
+               (profile.skill_set @> '[{{"skill_id": "baoyu-translate"}}]'::jsonb) as agent_profile_has_retired_skill,
                profile.name as agent_profile_name,
                profile.description as agent_profile_description,
-               profile.welcome_message as agent_profile_welcome_message,
                profile.starter_prompts as agent_profile_starter_prompts,
-               profile.capability_summary as agent_profile_capability_summary,
-               profile.recommended_tasks as agent_profile_recommended_tasks,
-               profile.supported_input_types as agent_profile_supported_input_types,
-               profile.expected_outputs as agent_profile_expected_outputs,
-               profile.permissions_and_data_access_notice as agent_profile_permissions_and_data_access_notice,
                profile.avatar_ref as agent_profile_avatar_ref,
                profile.avatar_seed as agent_profile_avatar_seed,
-               profile.category as agent_profile_category,
                profile.published_at as agent_profile_published_at
         from sessions
         join agent_profile_revisions profile
@@ -493,33 +527,7 @@ async def list_authorized_agent_conversations(
          and profile.agent_id = sessions.agent_id
          and profile.revision = sessions.admitted_agent_profile_revision
          and profile.content_hash = sessions.admitted_agent_profile_hash
-        left join lateral (
-          select left(
-            btrim(
-              translate(
-                messages.content,
-                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
-                '     '
-              )
-            ),
-            32
-          ) as title
-          from messages
-          where sessions.title_source = 'initial'
-            and sessions.title = profile.name
-            and messages.tenant_id = sessions.tenant_id
-            and messages.session_id = sessions.id
-            and messages.role = 'user'
-            and btrim(
-              translate(
-                messages.content,
-                chr(13) || chr(10) || chr(9) || chr(11) || chr(12),
-                '     '
-              )
-            ) <> ''
-          order by messages.created_at asc, messages.id asc
-          limit 1
-        ) legacy_first_user on true
+        {_LEGACY_AGENT_SESSION_TITLE_JOIN_SQL}
         where sessions.tenant_id = %s
           and sessions.user_id = %s
           and sessions.agent_id = %s

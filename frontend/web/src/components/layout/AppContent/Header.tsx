@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
@@ -15,7 +15,7 @@ import {
 import { ModelSelector } from "../../agent/ModelSelector";
 import { UserMenu } from "../UserMenu";
 import { useTheme } from "../../../contexts/ThemeContext";
-import { useSettingsContext } from "../../../contexts/SettingsContext";
+import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { notificationPublicApi } from "../../../services/api/notificationPublic";
 import { NotificationDialog } from "../../notification/NotificationDialog";
 import type { TabType } from "./types";
@@ -42,6 +42,8 @@ interface HeaderProps {
   showOutlineButton?: boolean;
   allowNewSessionAction?: boolean;
   newSessionActionLabel?: string;
+  chatIdentity?: ReactNode;
+  showUserMenu?: boolean;
 }
 
 export function Header({
@@ -57,20 +59,27 @@ export function Header({
   showOutlineButton,
   allowNewSessionAction = true,
   newSessionActionLabel,
+  chatIdentity,
+  showUserMenu = true,
 }: HeaderProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
-  const { pinnedModelIds, togglePinnedModel } = useSettingsContext();
+  const { pinnedModelIds, togglePinnedModel } = useModelCatalogContext();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
   const [activeNotifCount, setActiveNotifCount] = useState(0);
+  const [menuPositionOverride, setMenuPositionOverride] = useState<{
+    top: number;
+    right: number;
+  } | null>(null);
 
   const getMenuPosition = useCallback(() => {
+    if (menuPositionOverride) return menuPositionOverride;
     const rect = mobileMenuBtnRef.current?.getBoundingClientRect();
     if (!rect) return { top: 52, right: 12 };
     return { top: rect.bottom + 4, right: window.innerWidth - rect.right };
-  }, []);
+  }, [menuPositionOverride]);
 
   const refreshNotifCount = useCallback(() => {
     notificationPublicApi
@@ -83,6 +92,16 @@ export function Header({
   }, [refreshNotifCount]);
   const mobileMenuBtnRef = useRef<HTMLButtonElement>(null);
   const mobileMenuPanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleExternalMenuOpen = (event: Event) => {
+      const detail = (event as CustomEvent<{ top: number; right: number }>).detail;
+      setMenuPositionOverride(detail);
+      setMobileMenuOpen(true);
+    };
+    window.addEventListener("workbench-menu-open", handleExternalMenuOpen);
+    return () => window.removeEventListener("workbench-menu-open", handleExternalMenuOpen);
+  }, []);
 
   // Close mobile menu on outside click
   useEffect(() => {
@@ -114,11 +133,11 @@ export function Header({
     <>
       <header
         data-workbench-header
-        className="relative z-50 flex min-h-[2.75rem] items-center border-b border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-3 pb-2 sm:px-5"
-        style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))" }}
+        className="relative z-50 flex min-h-[2.75rem] items-center border-b border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-3 pb-1.5 sm:px-5"
+        style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top))" }}
       >
         {/* Left */}
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {activeTab === "chat" ? (
             <>
               <button
@@ -153,6 +172,14 @@ export function Header({
                   />
                 )}
 
+              {chatIdentity ? (
+                <div
+                  className={`flex min-w-0 items-center gap-2 ${showUserMenu ? "border-l border-[var(--theme-border)] pl-2 sm:pl-3" : ""}`}
+                  data-chat-header-identity
+                >
+                  {chatIdentity}
+                </div>
+              ) : null}
             </>
           ) : (
             <div className="flex items-center gap-1.5">
@@ -172,16 +199,16 @@ export function Header({
           )}
         </div>
 
-        {/* Spacer */}
-        <div className="flex-1" />
-
-        {/* Right */}
-        <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-          {/* Overflow menu (unified for all screen sizes) */}
-          <div className="relative">
+        {showUserMenu || mobileMenuOpen ? (
+          <div className="flex flex-shrink-0 items-center gap-1.5 sm:gap-2">
+            <div className={showUserMenu ? "relative" : "hidden"}>
+            {/* Overflow menu (unified for all screen sizes) */}
             <button
               ref={mobileMenuBtnRef}
-              onClick={() => setMobileMenuOpen((v) => !v)}
+              onClick={() => {
+                setMenuPositionOverride(null);
+                setMobileMenuOpen((v) => !v);
+              }}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] transition-colors"
               title={t("common.menu")}
             >
@@ -295,10 +322,11 @@ export function Header({
                 </div>,
                 document.body,
               )}
-          </div>
+            </div>
 
-          <UserMenu />
-        </div>
+            {showUserMenu ? <UserMenu /> : null}
+          </div>
+        ) : null}
       </header>
 
       <NotificationDialog

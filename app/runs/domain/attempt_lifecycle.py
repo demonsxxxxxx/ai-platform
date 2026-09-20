@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 
 
 RUN_ATTEMPT_STATUSES = frozenset(
@@ -43,6 +44,21 @@ class RunAttemptTransitionError(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def run_attempt_id_for_queue_attempt(
+    *,
+    tenant_id: str,
+    run_id: str,
+    queue_attempt_id: str,
+) -> str:
+    """Derive one stable durable identity from an opaque queue lease attempt."""
+
+    identity = (tenant_id, run_id, queue_attempt_id)
+    if any(not isinstance(value, str) or not value.strip() for value in identity):
+        raise RunAttemptTransitionError("run_attempt_identity_invalid")
+    material = "\x00".join(value.strip() for value in identity).encode("utf-8")
+    return f"rat_{sha256(material).hexdigest()}"
 
 
 @dataclass(frozen=True, slots=True)

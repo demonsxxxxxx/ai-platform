@@ -9,29 +9,49 @@ test("market keeps one, two, and three cards responsive while resolving durable 
     "utf8",
   );
 
-  assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\{\s*query,\s*category\s*\}\)/);
+  assert.match(source, /agentProfileApi\s*\.\s*listPublished\(\)/);
+  assert.doesNotMatch(source, /listPublished\(\{\s*query\s*,\s*category\s*\}\)/);
+  assert.match(source, /activeTab === "favorites"/);
+  assert.match(source, /我的收藏/);
   assert.match(source, /agentProfileApi\s*\.\s*getPublished\(agentId\)/);
   assert.doesNotMatch(source, /agentProfileApi\s*\.\s*createConversation\(/);
   assert.match(source, /navigate\(buildAgentMarketWorkspacePath\(profile\)\)/);
+  assert.match(source, /navigate\(`\/chat\/\$\{encodeURIComponent\(sessionId\)\}`\)/);
+  assert.match(source, /navigationOnly\s+showSessionHistory/);
   assert.match(source, /navigate\(catalogReturnPath, \{ replace: true \}\)/);
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
+  assert.match(source, /min-h-0 flex-1 overflow-y-auto/);
+  assert.doesNotMatch(source, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/);
+  assert.match(source, /更多标签/);
+  assert.match(source, /data-agent-market-sort/);
+  assert.match(source, /data-agent-market-view/);
+  assert.doesNotMatch(source, /<Check/);
+  assert.doesNotMatch(source, /BadgeCheck/);
   assert.match(source, /mobileSidebarOpen/);
   assert.match(source, /useParams/);
   assert.match(source, /data-agent-market-search/);
   assert.match(source, /data-agent-market-filter/);
   assert.match(source, /data-agent-market-card/);
+  assert.doesNotMatch(source, /MARKET_PAGE_SIZE|paginatedProfiles|<Pagination/);
+  assert.match(source, /visibleProfiles\.map/);
+  assert.match(source, /rounded-full p-1 transition-colors/);
+  assert.match(source, /text-amber-600/);
+  assert.doesNotMatch(source, /bg-amber-/);
+  assert.doesNotMatch(source, /企业专家目录/);
+  assert.doesNotMatch(source, /选择一位企业专家/);
+  assert.doesNotMatch(source, /找到 \{visibleProfiles\.length\} 位专家/);
   assert.match(source, /data-agent-market-detail/);
   assert.match(source, /data-agent-market-start-chat/);
   assert.match(source, /企业已发布/);
-  assert.match(source, /输入与输出/);
-  assert.match(source, /权限与数据访问/);
+  assert.match(source, /已完成任务/);
+  assert.match(source, /已发布的 Skill Set/);
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /buildAgentMarketDetailPath/);
   assert.match(source, /buildAgentMarketWorkspacePath/);
-  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,22rem\),1fr\)\)\]/);
-  assert.doesNotMatch(source, /xl:grid-cols-3/);
-  assert.doesNotMatch(source, /grid-cols-1[\s\S]*md:grid-cols-2[\s\S]*xl:grid-cols-3/);
+  assert.match(source, /grid-cols-1[^\n]*sm:grid-cols-2[^\n]*lg:grid-cols-3[^\n]*xl:grid-cols-4[^\n]*2xl:grid-cols-5/);
+  assert.match(source, /overflow-y-auto pr-1/);
+  assert.match(source, /content-visibility:auto/);
   assert.match(source, /MARKET_CATALOG_LOAD_ERROR/);
   assert.doesNotMatch(source, /<textarea/);
   assert.doesNotMatch(
@@ -42,7 +62,7 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.doesNotMatch(source, /CANONICAL_CHAT_PATH/);
   assert.match(source, /AgentIdentityAvatar/);
   assert.match(source, /Skill Set/);
-  assert.match(source, /附件可选，不由专家限定格式/);
+  assert.match(source, /已发布的 Skill Set/);
 });
 
 test("Agent product surfaces do not expose attachment type configuration", () => {
@@ -55,8 +75,7 @@ test("Agent product surfaces do not expose attachment type configuration", () =>
     "utf8",
   );
 
-  assert.match(marketSource, /附件可选，不由专家限定格式/);
-  assert.doesNotMatch(marketSource, /supported_file_types/);
+  assert.doesNotMatch(marketSource, /welcome_message|capability_summary|supported_input_types|supported_file_types/);
   assert.doesNotMatch(builderSource, /data-agent-builder-input-settings/);
   assert.doesNotMatch(builderSource, /常见附件类型提示/);
 });

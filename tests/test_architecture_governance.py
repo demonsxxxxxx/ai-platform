@@ -747,112 +747,76 @@ def test_candidate_policy_self_relaxation_does_not_change_authority(
     assert evaluation.policy["owner"] == "platform-architecture"
 
 
-def _root_inventory_repair_policy(*, added_path: str) -> dict[str, Any]:
+def test_root_retirement_does_not_require_inventory_repair(governance_repo):
+    repo, authority = governance_repo
+    retired = repo / "app/quality_golden_set_readiness.py"
+    retired.unlink()
+    head = _commit(repo, "retire an unbridged offline root module")
+
+    assert _evaluate(repo, authority, authority, head).status == "pass"
+    # The accepted head remains a valid authority for the following PR.
+    assert _evaluate(repo, head, head, head).status == "pass"
+
+
+def test_stale_root_allowance_cannot_restore_a_retired_module(governance_repo):
+    repo, authority = governance_repo
+    path = "app/quality_golden_set_readiness.py"
+    (repo / path).unlink()
+    retired = _commit(repo, "retire root")
+    _write(repo, path, "RESTORED = True\n")
+    restored = _commit(repo, "try to restore retired root")
+
+    assert "unapproved_app_root_module" in _codes(
+        _evaluate(repo, retired, retired, restored)
+    )
+
+
+def test_missing_authority_root_entry_still_fails_closed(governance_repo):
+    repo, _authority = governance_repo
+    _write(repo, "app/unregistered_root.py", "VALUE = True\n")
+    broken = _commit(repo, "invalid authority fixture")
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, broken, broken, broken)
+    assert caught.value.code == "invalid_policy"
+
+
+def test_candidate_policy_cannot_repair_an_invalid_authority(governance_repo):
+    repo, _authority = governance_repo
+    path = "app/unregistered_root.py"
+    _write(repo, path, "VALUE = True\n")
+    broken = _commit(repo, "invalid authority fixture")
     policy = _fixture_policy()
-    policy["approved_root_modules"] = sorted(
-        [*policy["approved_root_modules"], added_path]
+    policy["approved_root_modules"] = sorted([*policy["approved_root_modules"], path])
+    _write(repo, POLICY_PATH.name, json.dumps(policy, indent=2) + "\n")
+    head = _commit(repo, "candidate cannot replace trusted authority")
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, broken, broken, head)
+    assert caught.value.code == "invalid_policy"
+
+
+def test_candidate_root_allowance_does_not_authorize_a_new_root(governance_repo):
+    repo, authority = governance_repo
+    path = "app/new_root.py"
+    policy = _fixture_policy()
+    policy["approved_root_modules"] = sorted([*policy["approved_root_modules"], path])
+    _write(repo, POLICY_PATH.name, json.dumps(policy, indent=2) + "\n")
+    _write(repo, path, "VALUE = True\n")
+    head = _commit(repo, "candidate self-authorization")
+    assert "unapproved_app_root_module" in _codes(
+        _evaluate(repo, authority, authority, head)
     )
-    return policy
 
 
-def _broken_root_inventory_authority(repo: Path, *, stale_exception: bool = False) -> str:
-    _write(repo, "app/new_root_service.py", "VALUE = True\n")
-    if stale_exception:
-        _write(repo, ".architecture-governance-exception.json", "{}\n")
-    return _commit(repo, "introduce unregistered root module")
-
-
-def test_invalid_authority_root_inventory_can_be_repaired_exactly(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, _authority = governance_repo
-    broken_authority = _broken_root_inventory_authority(repo)
-    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
-    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
-    head = _commit(repo, "repair exact root inventory")
-
-    evaluation = _evaluate(repo, broken_authority, broken_authority, head)
-
-    assert evaluation.status == "pass"
-    assert evaluation.findings == ()
-
-
-def test_root_inventory_repair_may_delete_stale_exception(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, _authority = governance_repo
-    broken_authority = _broken_root_inventory_authority(repo, stale_exception=True)
-    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
-    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
-    (repo / ".architecture-governance-exception.json").unlink()
-    head = _commit(repo, "repair inventory and remove stale exception")
-
-    assert _evaluate(repo, broken_authority, broken_authority, head).status == "pass"
-
-
-def test_root_inventory_repair_rejects_older_authority_than_broken_base(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, original_authority = governance_repo
-    broken_base = _broken_root_inventory_authority(repo)
-    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
-    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
-    head = _commit(repo, "attempt repair from stale authority")
-
-    with pytest.raises(architecture_governance.ArchitectureError) as caught:
-        _evaluate(repo, original_authority, broken_base, head)
-
-    assert caught.value.code == "invalid_policy_repair"
-
-
-@pytest.mark.parametrize(
-    ("extra_path", "mutate_policy", "keep_exception"),
-    [
-        ("README.md", False, False),
-        (None, True, False),
-        (None, False, True),
-    ],
-)
-def test_root_inventory_repair_rejects_broader_candidate_changes(
-    governance_repo: tuple[Path, str],
-    extra_path: str | None,
-    mutate_policy: bool,
-    keep_exception: bool,
-) -> None:
-    repo, _authority = governance_repo
-    broken_authority = _broken_root_inventory_authority(
-        repo,
-        stale_exception=keep_exception,
-    )
-    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
-    if mutate_policy:
-        repaired["owner"] = "candidate-owner"
-    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
-    if extra_path is not None:
-        _write(repo, extra_path, "candidate change\n")
-    head = _commit(repo, "attempt broad inventory repair")
-
-    with pytest.raises(architecture_governance.ArchitectureError) as caught:
-        _evaluate(repo, broken_authority, broken_authority, head)
-
-    assert caught.value.code == "invalid_policy_repair"
-
-
-def test_root_inventory_repair_rejects_nonexistent_approved_module(
-    governance_repo: tuple[Path, str],
-) -> None:
-    repo, _authority = governance_repo
-    broken_authority = _broken_root_inventory_authority(repo)
-    repaired = _root_inventory_repair_policy(added_path="app/new_root_service.py")
-    repaired["approved_root_modules"].append("app/not_in_git.py")
-    repaired["approved_root_modules"].sort()
-    _write(repo, POLICY_PATH.name, json.dumps(repaired, indent=2, sort_keys=True) + "\n")
-    head = _commit(repo, "attempt over-approved inventory repair")
-
-    with pytest.raises(architecture_governance.ArchitectureError) as caught:
-        _evaluate(repo, broken_authority, broken_authority, head)
-
-    assert caught.value.code == "invalid_policy_repair"
+def test_stale_root_entries_can_be_pruned_without_new_authority(governance_repo):
+    repo, authority = governance_repo
+    path = "app/quality_golden_set_readiness.py"
+    (repo / path).unlink()
+    retired = _commit(repo, "retire root")
+    policy = _fixture_policy()
+    policy["approved_root_modules"].remove(path)
+    _write(repo, POLICY_PATH.name, json.dumps(policy, indent=2) + "\n")
+    head = _commit(repo, "prune unused allowance")
+    assert _evaluate(repo, retired, retired, head).status == "pass"
 
 
 def test_new_cross_domain_internal_import_is_non_exemptible(
@@ -2165,7 +2129,228 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
-def test_context_snapshot_persistence_bridge_authority_is_exact_and_pending() -> None:
+def test_live_agent_catalog_persistence_bridge_is_exact_and_active() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.agent_apps.infrastructure.catalog_postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.agent_apps.infrastructure.catalog_postgres",
+        "module_alias": "agent_catalog_persistence",
+        "symbols": [
+            "get_agent",
+            "get_tenant_profile_validation_agent",
+            "list_lambchat_agents",
+        ],
+        "owner": "agent_apps",
+        "reason": (
+            "The frozen global repository may expose these existing tenant-scoped "
+            "Agent catalog read symbols only as exact identity aliases while their "
+            "PostgreSQL implementation moves to the Agent Apps catalog adapter."
+        ),
+        "removal_condition": (
+            "After the Agent catalog persistence move, migrate supported internal "
+            "callers to the Agent Apps boundary, inventory external imports, and "
+            "remove this bridge in an authority-only change before deleting the "
+            "repositories aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/agent_apps/infrastructure/catalog_postgres.py"
+    source_tree = ast.parse(
+        (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
+    )
+
+    assert target_path.exists()
+    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
+    source_local_definitions = {
+        node.name
+        for node in source_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    target_local_definitions = [
+        node.name
+        for node in target_tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in bridge["symbols"]
+    ]
+
+    assert set(bridge["symbols"]).isdisjoint(source_local_definitions)
+    assert sorted(target_local_definitions) == bridge["symbols"]
+    assert [
+        (node.module, [(imported.name, imported.asname) for imported in node.names])
+        for node in target_tree.body
+        if isinstance(node, ast.ImportFrom)
+    ] == [
+        ("__future__", [("annotations", None)]),
+        ("typing", [("Any", None)]),
+        ("psycopg", [("AsyncConnection", None)]),
+    ]
+    assert not any(isinstance(node, ast.Import) for node in target_tree.body)
+    assert [
+        (imported.name, imported.asname)
+        for node in source_tree.body
+        if isinstance(node, ast.Import)
+        for imported in node.names
+        if imported.name == bridge["target_module"]
+    ] == [(bridge["target_module"], bridge["module_alias"])]
+
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(
+        source_tree
+    )
+    assert {
+        symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]
+    } == {symbol: 1 for symbol in bridge["symbols"]}
+    source_aliases = [
+        (target.id, node.value.value.id, node.value.attr)
+        for node in source_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and target.id in bridge["symbols"]
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ]
+    assert sorted(source_aliases) == [
+        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
+    ]
+    target_binding_counts = architecture_governance._top_level_local_binding_counts(
+        target_tree
+    )
+    assert {
+        symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]
+    } == {symbol: 1 for symbol in bridge["symbols"]}
+
+    from app import repositories
+    from app.agent_apps.infrastructure import (
+        catalog_postgres as agent_catalog_persistence,
+    )
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(agent_catalog_persistence, symbol)
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import app.agent_apps.infrastructure.catalog_postgres; "
+                "assert 'app.repositories' not in sys.modules"
+            ),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_live_identity_principal_persistence_bridge_is_exact_and_active() -> None:
+    bridge = _migration_bridge(
+        source_path="app/repositories.py",
+        target_module="app.identity.infrastructure.postgres",
+    )
+
+    assert bridge == {
+        "source_path": "app/repositories.py",
+        "target_module": "app.identity.infrastructure.postgres",
+        "module_alias": "identity_persistence",
+        "symbols": [
+            "ensure_submission_principal",
+            "ensure_user",
+            "get_user",
+            "tenant_exists",
+        ],
+        "owner": "identity",
+        "reason": (
+            "The frozen global repository may expose these existing tenant and "
+            "principal persistence symbols only as exact identity aliases while "
+            "their implementation moves to the Identity PostgreSQL adapter."
+        ),
+        "removal_condition": (
+            "After the Identity principal persistence move, migrate supported "
+            "internal callers to the Identity API, inventory external imports, "
+            "and remove this bridge in an authority-only change before deleting "
+            "the repositories aliases."
+        ),
+    }
+
+    target_path = REPO_ROOT / "app/identity/infrastructure/postgres.py"
+    source_tree = ast.parse((REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8"))
+
+    assert target_path.exists()
+    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
+    source_local_definitions = {
+        node.name
+        for node in source_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    target_local_definitions = [
+        node.name
+        for node in target_tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in bridge["symbols"]
+    ]
+
+    assert set(bridge["symbols"]).isdisjoint(source_local_definitions)
+    assert sorted(target_local_definitions) == bridge["symbols"]
+    assert [
+        (imported.name, imported.asname)
+        for node in source_tree.body
+        if isinstance(node, ast.Import)
+        for imported in node.names
+        if imported.name == bridge["target_module"]
+    ] == [(bridge["target_module"], bridge["module_alias"])]
+
+    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
+    assert {symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+    source_aliases = [
+        (target.id, node.value.value.id, node.value.attr)
+        for node in source_tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and target.id in bridge["symbols"]
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ]
+    assert sorted(source_aliases) == [
+        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
+    ]
+    target_binding_counts = architecture_governance._top_level_local_binding_counts(target_tree)
+    assert {symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+
+    from app import repositories
+    from app.identity.infrastructure import postgres as identity_persistence
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(identity_persistence, symbol)
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import app.identity.infrastructure.postgres; "
+                "assert 'app.repositories' not in sys.modules"
+            ),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_live_context_snapshot_persistence_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/repositories.py",
         target_module="app.context.infrastructure.snapshot_postgres",
@@ -2203,27 +2388,55 @@ def test_context_snapshot_persistence_bridge_authority_is_exact_and_pending() ->
     target_path = REPO_ROOT / "app/context/infrastructure/snapshot_postgres.py"
     source_tree = ast.parse((REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8"))
 
-    assert not target_path.exists()
+    assert target_path.exists()
+    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
+    source_local_definitions = {
+        node.name
+        for node in source_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    target_local_definitions = [
+        node.name
+        for node in target_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in bridge["symbols"]
+    ]
+
+    assert set(bridge["symbols"][1:]).isdisjoint(source_local_definitions)
+    assert sorted(target_local_definitions) == bridge["symbols"][1:]
     assert [
         (imported.name, imported.asname)
         for node in source_tree.body
         if isinstance(node, ast.Import)
         for imported in node.names
         if imported.name == bridge["target_module"]
-    ] == []
+    ] == [(bridge["target_module"], bridge["module_alias"])]
+
     source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
     assert {symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
         symbol: 1 for symbol in bridge["symbols"]
     }
-    assert {
-        node.name
+    source_aliases = [
+        (target.id, node.value.value.id, node.value.attr)
         for node in source_tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in bridge["symbols"]
-    } == set(bridge["symbols"][1:])
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+        and target.id in bridge["symbols"]
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+    ]
+    assert sorted(source_aliases) == [
+        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
+    ]
+    target_binding_counts = architecture_governance._top_level_local_binding_counts(target_tree)
+    assert {symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
+        symbol: 1 for symbol in bridge["symbols"]
+    }
+
     batch_limit_assignments = [
         node
-        for node in source_tree.body
+        for node in target_tree.body
         if isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
@@ -2231,6 +2444,26 @@ def test_context_snapshot_persistence_bridge_authority_is_exact_and_pending() ->
     ]
     assert len(batch_limit_assignments) == 1
     assert ast.literal_eval(batch_limit_assignments[0].value) == 128
+
+    from app import repositories
+    from app.context.infrastructure import snapshot_postgres
+
+    for symbol in bridge["symbols"]:
+        assert getattr(repositories, symbol) is getattr(snapshot_postgres, symbol)
+
+    program = """
+import sys
+
+import app.context.infrastructure.snapshot_postgres
+
+assert "app.context.retrieval" not in sys.modules
+assert "app.repositories" not in sys.modules
+"""
+    subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=REPO_ROOT,
+        check=True,
+    )
 
 
 def test_live_context_source_persistence_bridge_is_exact_and_active() -> None:
@@ -2622,9 +2855,7 @@ def test_run_lifecycle_boundary_document_freezes_explicit_composition() -> None:
         "RunLifecycleService",
         "StreamingEventLedgerWriter",
         "AuditLedgerWriter",
-        "TerminalIntentRecorder",
         "SandboxRuntimeClient",
-        "sse_terminal_publication_intents",
         "A route, transport helper, or admission helper MUST NOT import",
         "`ContextVar`, thread-local, request-local, or connection attributes",
     ):
@@ -2780,13 +3011,17 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
         if entry["source_path"] == "app/repositories.py"
     ]
     assert {bridge["target_module"] for bridge in bridges} == {
+        "app.agent_apps.infrastructure.catalog_postgres",
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
         "app.context.infrastructure.snapshot_postgres",
         "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
+        "app.identity.infrastructure.postgres",
+        "app.mcp.infrastructure.registry_postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
+        "app.skills.infrastructure.legacy_workbench",
         "app.skills.infrastructure.postgres",
     }
     bridges[1]["module_alias"] = bridges[0]["module_alias"]
@@ -2808,13 +3043,17 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
         if entry["source_path"] == "app/repositories.py"
     ]
     assert {bridge["target_module"] for bridge in bridges} == {
+        "app.agent_apps.infrastructure.catalog_postgres",
         "app.agent_apps.infrastructure.postgres",
         "app.context.infrastructure.postgres",
         "app.context.infrastructure.snapshot_postgres",
         "app.context.infrastructure.sources_postgres",
         "app.conversations.infrastructure.postgres",
+        "app.identity.infrastructure.postgres",
+        "app.mcp.infrastructure.registry_postgres",
         "app.platform.postgres.errors",
         "app.runs.infrastructure.postgres",
+        "app.skills.infrastructure.legacy_workbench",
         "app.skills.infrastructure.postgres",
     }
     duplicate_symbol = bridges[0]["symbols"][0]

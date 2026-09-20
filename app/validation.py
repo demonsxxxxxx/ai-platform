@@ -1,14 +1,31 @@
 import re
+import unicodedata
 
 
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 SAFE_PRINCIPAL_USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}$")
+MAX_DEPARTMENT_AUTHORITY_ID_CHARS = 160
 MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS = 16_000
 CANONICAL_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def assert_safe_id(value: str, field_name: str) -> str:
     if not SAFE_ID_PATTERN.fullmatch(value):
+        raise ValueError(f"{field_name} contains unsupported characters")
+    return value
+
+
+def assert_safe_department_authority_id(
+    value: str,
+    field_name: str = "department_id",
+) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > MAX_DEPARTMENT_AUTHORITY_ID_CHARS
+        or "," in value
+        or any(unicodedata.category(character).startswith("C") for character in value)
+    ):
         raise ValueError(f"{field_name} contains unsupported characters")
     return value
 

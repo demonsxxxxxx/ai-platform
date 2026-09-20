@@ -17,7 +17,7 @@ from app.control_plane_contracts import (
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
 from app.memory_redaction import sanitizer_unstable_suffix_length
-from app.platform.public_payload import FORBIDDEN_PUBLIC_MARKERS
+from app.platform.public_payload import sanitize_public_answer_text
 from app.projection_redaction import (
     PUBLIC_AGENT_ID_BY_CAPABILITY,
     capability_id_from_skill,
@@ -65,6 +65,7 @@ def public_text_or_fallback(value: object, fallback: object = "") -> str:
 
 
 RESULT_UNAVAILABLE_MESSAGE = "本次执行未能生成可展示的回复内容。"
+CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
 
 
 def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
@@ -82,7 +83,7 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
     otherwise redacted. A private or unprojectable answer is never fabricated
     into a success message: an empty result propagates to the caller.
     """
-    content = sanitize_public_text(value)
+    content = sanitize_public_answer_text(value)
     if not content:
         return ""
     raw_skill_id = str(run.get("skill_id") or "")
@@ -119,7 +120,7 @@ def public_chat_answer_text(run: dict[str, object], value: object) -> str:
         else:
             redaction_pattern = re.compile(rf"\s*{token_pattern.pattern}\s*")
             content = redaction_pattern.sub("", content)
-    content = sanitize_public_text(content)
+    content = sanitize_public_answer_text(content)
     return content if content.strip() else ""
 
 
@@ -160,10 +161,6 @@ class PublicChatAnswerStreamProjector:
                 if start and token_character.fullmatch(self._raw[start - 1]):
                     continue
                 unstable = max(unstable, length)
-        for marker in FORBIDDEN_PUBLIC_MARKERS:
-            for length in range(2, min(len(marker) - 1, len(self._raw)) + 1):
-                if self._raw.endswith(marker[:length]):
-                    unstable = max(unstable, length)
         unstable = max(
             unstable,
             sanitizer_unstable_suffix_length(
@@ -214,18 +211,25 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
     status = normalize_run_status(str(run.get("status") or ""))
     if status == "succeeded":
         content = public_chat_answer_text(run, _chat_terminal_answer_candidate(run))
-        if content:
+        run_id = str(run.get("id") or "")
+        if content and run_id:
             return {
                 "event_type": "message:chunk",
                 "payload": {
                     "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                    "projection_kind": "assistant_final",
+                    "projection_kind": "assistant_delta",
+                    "event_id": f"{run_id}:final",
+                    "message_id": f"{run_id}:assistant",
+                    "run_id": run_id,
+                    "source": CHAT_ASSISTANT_DELTA_SOURCE,
                     "content": content,
                 },
                 "message": content,
                 "event_payload": {},
                 "severity": "info",
             }
+        if content:
+            return None
         return {
             "event_type": "final_detail",
             "payload": {
@@ -238,7 +242,11 @@ def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object]
             "event_payload": {"detail_code": "result_unavailable"},
             "severity": "info",
         }
-    terminal = public_terminal_projection(status, run.get("error_code"))
+    terminal = public_terminal_projection(
+        status,
+        run.get("error_code"),
+        run.get("result_json"),
+    )
     if terminal is None:
         return None
     detail_kind = str(terminal["detail_kind"])
@@ -310,11 +318,17 @@ def _ordinary_artifact_card(row: dict[str, object]) -> dict[str, object]:
     artifact_type = _public_artifact_type(row.get("artifact_type"))
     content_type = _public_artifact_content_type(row.get("content_type"))
     xlsx_identity = xlsx_preview_identity_from_metadata(row)
+    manifest = row.get("manifest_json") if isinstance(row.get("manifest_json"), dict) else {}
+    label = (
+        public_text_or_fallback(row.get("label"), artifact_type)
+        if manifest.get("delivery_scope") == "assistant_response"
+        else artifact_type
+    )
     return {
         "id": artifact_id,
         "artifact_id": artifact_id,
         "artifact_type": artifact_type,
-        "label": artifact_type,
+        "label": label,
         "content_type": content_type,
         "size_bytes": _bounded_nonnegative_int(row.get("size_bytes")),
         "download_url": artifact_download_url(artifact_id),

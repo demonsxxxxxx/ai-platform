@@ -128,10 +128,25 @@ async def claim_object_deletions(
           where (
               target_type = 'artifact'
               and (
-                (state in ('pending', 'failed') and available_at <= now())
-                or (state = 'processing' and leased_at <= now() - interval '5 minutes')
+                (
+                  (state in ('pending', 'failed') and available_at <= now())
+                  or (state = 'processing' and leased_at <= now() - interval '5 minutes')
+                )
+                and attempts < %s
+                or (
+                  state = 'deleted'
+                  and updated_at <= now() - interval '1 day'
+                  and exists (
+                    select 1
+                    from artifacts
+                    where artifacts.id = object_deletion_outbox.artifact_id
+                      and artifacts.tenant_id = object_deletion_outbox.tenant_id
+                      and artifacts.storage_key = object_deletion_outbox.storage_key
+                      and artifacts.lifecycle_state = 'delete_pending'
+                      and artifacts.manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
+                  )
+                )
               )
-              and attempts < %s
             ) or (
               target_type = 'file'
               and (
@@ -152,7 +167,10 @@ async def claim_object_deletions(
               when target_type = 'file' then 'file_processing'
               else 'processing'
             end,
-            attempts = attempts + 1,
+            attempts = case
+              when state = 'deleted' then 1
+              else attempts + 1
+            end,
             lease_generation = lease_generation + 1,
             leased_at = now(),
             updated_at = now()
@@ -186,7 +204,16 @@ async def complete_object_deletion(
           for update
         ), updated_artifact as (
           update artifacts
-          set lifecycle_state = 'deleted', deleted_at = coalesce(deleted_at, now())
+          set lifecycle_state = case
+                when artifacts.manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
+                  then 'delete_pending'
+                else 'deleted'
+              end,
+              deleted_at = case
+                when artifacts.manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
+                  then null
+                else coalesce(deleted_at, now())
+              end
           from claimed
           where claimed.target_type = 'artifact'
             and artifacts.tenant_id = claimed.tenant_id

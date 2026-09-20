@@ -30,14 +30,11 @@ test("Chinese is the only shipped locale and language switching is retired", () 
   assert.doesNotMatch(i18n, /locales\/(?:en|ja|ko|ru)\.json/);
 });
 
-test("product language controls are absent from authentication, landing, workbench, and shared surfaces", () => {
+test("product language controls are absent from authentication and workbench surfaces", () => {
   for (const relativePath of [
     "components/auth/AuthLayout.tsx",
     "components/auth/AuthPage.tsx",
-    "components/auth/ForgotPassword.tsx",
-    "components/auth/ResetPassword.tsx",
     "components/layout/AppContent/Header.tsx",
-    "components/share/SharedPage.tsx",
   ]) {
     const source = read(relativePath);
     assert.doesNotMatch(source, /LanguageToggle|changeLanguage|common\.language/);
@@ -113,4 +110,18 @@ test("chat help control uses the Chinese help-document translation", () => {
   assert.match(helpMenu, /t\("chat\.helpDocs", "帮助文档"\)/);
   assert.doesNotMatch(helpMenu, /aria-label="Help"/);
   assert.doesNotMatch(helpMenu, /AI Platform documentation/);
+});
+
+test("single-enterprise UI does not expose the internal tenant scope", () => {
+  const zh = read("i18n/locales/zh.json");
+  const roles = read("components/panels/RolesPanel.tsx");
+  const projections = read("components/workbench/WorkbenchProjectionPages.tsx");
+
+  assert.doesNotMatch(zh, /租户/);
+  assert.doesNotMatch(roles, /\{role\.scope\}|\{skill\.inherited_from\}/);
+  assert.doesNotMatch(
+    projections,
+    /user\.tenant_id|tenant:\s*governance\.tenant_id/,
+  );
+  assert.match(zh, /"tenant_admin": "企业管理员"/);
 });

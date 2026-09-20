@@ -13,14 +13,30 @@ customer-selectable tenant and does not introduce tenant management.
 
 Department, role, and permission facts come from the existing company login and
 user-info authority. Ordinary clients cannot choose them. A trusted gateway may
-inject principal headers only when it presents the configured shared secret.
-Production configuration fails during startup when the secret is absent or the
-frontend POC header path is enabled. Company principals are revalidated against
-the current authority before worker dispatch. Browser and bearer principal
-snapshots preserve the policy version, authority source, and check timestamp;
-policy mismatch or authority facts older than the configured short freshness
-window (15 minutes by default) fail closed and require login refresh. This is
-intentionally shorter than the browser context's maximum lifetime.
+inject principal headers only with the configured shared secret. Production
+startup rejects an absent secret or the frontend POC header path.
+
+Windows login first obtains the company-signed JWT from `GetADName`. AI Platform
+accepts only that JWT, verifies its HS256 signature, issuer, audience, and
+lifetime, and projects the signed `workid`, `username`, `cnname`, `depart`, and
+`role` claims into platform authority. It does not trust browser-supplied
+identity fields or repeat the PermissionMS user-info lookup already performed by
+`GetADName`. The superseded AD request shape and login-time requery have no
+compatibility owner and are removed atomically; password login and Worker
+current-authority revalidation continue to use the existing user-info endpoint.
+
+[ADR 0007](../adr/0007-fixed-browser-authentication-day.md) owns the browser
+authentication lifetime: signed token, server authentication context and company
+authority freshness use one absolute, non-sliding 86,400-second day. Policy/source
+metadata is retained; expiry and policy mismatch fail closed. The former
+15-minute browser freshness description is superseded. Company permissions in a
+valid authenticated snapshot may remain effective for that accepted window;
+Worker reauthorization does not imply instant upstream-company revocation.
+
+The per-connection SSE authorization lease is a separate mechanism described in
+[Streaming execution control](redis-streams-sse-execution-control.md). Its short
+frame-admission deadline is not the browser authentication lifetime and cannot
+by itself invalidate an unrefreshed upstream company snapshot.
 
 Successful login and run admission retain only the non-sensitive facts needed
 to explain an authorization decision: `department_id`, authorization policy
@@ -34,14 +50,28 @@ ACL and must never create a second department authority.
 
 | Data class | Authority | Contract |
 | --- | --- | --- |
-| Users, sessions, runs, messages, artifact metadata, ACL and audit facts | PostgreSQL | Durable business facts and authorization evidence. |
+| Users, sessions, runs, private Run diagnostics, messages, artifact metadata, ACL and audit facts | PostgreSQL | Durable business facts and authorization evidence. Private diagnostics use a separate tenant/Run-scoped bounded record and are not public answer data. |
 | Queue entries, leases and bounded SSE transport | Redis | Ephemeral coordination only; it is not the terminal record. |
 | Uploaded files, generated artifacts and Skill packages | MinIO/S3 | Object bytes live here; PostgreSQL stores keys, digests, sizes, schemas and bounded summaries. |
 | Executor workspace | Sandbox filesystem | Attempt-scoped temporary copy; never a durable authority. |
-| `assistant_delta` | Redis/SSE projection | It is deliberately not re-persisted into PostgreSQL; durable messages and terminal events remain the source of truth. |
+| Canonical v4 `message.delta` | PostgreSQL public Run-event ledger | Persists as one safe committed event with semantic identity/sequence, then publishes through the bounded Redis transport. |
+| Legacy `assistant_delta` projection | Legacy ingress suppressed after V4 answer projection is accepted | It must not become a second durable answer producer. The ban on a PostgreSQL browser fallback does not forbid canonical v4 event persistence. |
 
-Full raw prompts, Claude transcripts, file bytes, and sandbox directories are
-not valid PostgreSQL payloads.
+Bounded user/assistant `messages` and authorized executor-private conversation
+materialization are legitimate business data under the owning message/context
+contracts. Arbitrary raw SDK transcripts, prompt/log dumps, file bytes and
+sandbox directories are not valid Run-event or public-manifest payloads. Keep
+message storage distinct from public projection and private operational logs.
+
+### Change Contract: persisted user profile metadata
+
+- **Owner:** Identity owns authenticated user profile metadata; Company Navigation owns only its `company_navigation_favorite_ids` value.
+- **Bounded paths:** this document, `app/schema.sql`, `app/schema_migrations.py`, `app/identity/api.py`, `app/identity/infrastructure/postgres.py`, the existing authenticated profile routes, Company Navigation frontend state, and their focused tests.
+- **Reached invariants:** company login remains identity authority; the returned employee `workId` remains `AuthPrincipal.user_id` and `users.id`; every metadata read and write binds both the authenticated `tenant_id` and user ID; client metadata cannot replace trusted principal fields; the final merged JSON value is bounded before write.
+- **Acceptance and regression proof:** focused backend tests prove tenant/user-scoped locked merge, rejection of oversized or reserved metadata, and route read-after-write behavior; focused frontend tests prove catalog-filtered server metadata and removal of browser-local favorite authority.
+- **Evidence ceiling:** source and local focused checks do not prove that a deployed PostgreSQL schema was migrated or that cross-browser persistence works on a packaged runtime.
+- **Migration and rollback:** add one non-null JSONB object column with an empty-object default and advance the schema ledger; rollback restores the previous application image while leaving the additive column installed and unused.
+- **Stop conditions:** stop if employee `workId` is not stably provisioned as the scoped local user, the migration becomes destructive, tenant/user predicates are absent, the final merged value cannot be bounded under lock, or Company Navigation would require Redis or browser storage as durable authority.
 
 ## Schema lifecycle and readiness
 
@@ -64,9 +94,7 @@ across the concurrent index build. Every committed schema change must advance
 checksum mismatch.
 
 Compose runs this command as a one-shot `migrate` service before API and worker
-startup. The legacy authenticated `POST /admin/apply-schema` endpoint delegates
-to the same runner for compatibility; it is not the normal release path.
-`python -m app.schema_migrations status`, API readiness, and worker startup all
+startup. `python -m app.schema_migrations status`, API readiness, and worker startup all
 verify the target ledger and index-ledger entries, checksum, critical column
 types/nullability, named constraints, and valid/ready indexes. Connectivity or
 relation existence alone is insufficient.
@@ -97,6 +125,19 @@ There is no automatic down migration. A checksum mismatch or missing critical
 contract is a stop condition requiring operator investigation, not a reason to
 bypass readiness.
 
+`run_diagnostics` is an additive Runs-owned relation with one row per
+`(tenant_id, run_id)`, a composite Run foreign key, a versioned JSON payload and
+monotonic revision. Schema readiness verifies the relation, columns, named
+constraints and target ledger before API or Worker startup. New application
+versions strip the private carrier from `runs.result_json`; historical result
+diagnostics remain read-only through the authorized Runs projection.
+
+OpenSandbox renewal observations add two nullable columns to `sandbox_leases`
+under a new core-schema ledger version. The existing platform `expires_at`
+retains its lease authority, and older application images ignore the added
+columns on rollback. Do not drop the columns until all renewal-receipt callers
+are retired; no legacy provider-expiry reader is retained.
+
 Before rolling back to an artifact-only worker, stop the file-delete producer.
 Namespaced file rows remain invisible to that worker, so rollback cannot make it
 physically delete them; however, deletion progress stops until a target-aware
@@ -120,33 +161,30 @@ working but receive only the bounded first page.
 
 ## Retention and physical deletion
 
-### Release note: object-deletion ownership and settings
+### Object-deletion ownership and settings
 
-The 2026-08-12 release separates persistence ownership without changing the
-deletion protocol. Generic claim, receipt, retry, dead-letter, and operator
-requeue logic now belongs to the object-deletion boundary. Artifact expiry and
-ACL reads remain artifact-owned, owner-requested file admission is file-owned,
-and the worker still runs one shared bounded loop.
+Generic claim, receipt, retry, dead-letter, and operator requeue logic belongs
+to the object-deletion boundary. Artifact expiry and ACL reads remain
+artifact-owned, owner-requested file admission is file-owned, and the worker
+runs one shared bounded loop.
 
-New deployments should use the following generic worker settings:
+Deployments use only the shared worker settings:
 
-| Canonical setting | Deprecated fallback | Scope |
-| --- | --- | --- |
-| `OBJECT_DELETE_BATCH_LIMIT` | `ARTIFACT_RETENTION_CLEANUP_LIMIT` | Shared artifact/file outbox claim batch. |
-| `OBJECT_DELETE_MAX_ATTEMPTS` | `ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS` | Shared retry/dead-letter threshold. |
-| `OBJECT_DELETE_RETRY_BASE_SECONDS` | `ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS` | Shared retry backoff base. |
-| `OBJECT_DELETE_RETRY_CAP_SECONDS` | `ARTIFACT_OBJECT_DELETE_RETRY_CAP_SECONDS` | Shared retry backoff cap. |
+| Setting | Scope |
+| --- | --- |
+| `OBJECT_DELETE_BATCH_LIMIT` | Shared artifact/file outbox claim batch. |
+| `OBJECT_DELETE_MAX_ATTEMPTS` | Shared retry/dead-letter threshold. |
+| `OBJECT_DELETE_RETRY_BASE_SECONDS` | Shared retry backoff base. |
+| `OBJECT_DELETE_RETRY_CAP_SECONDS` | Shared retry backoff cap. |
 
-When both names are present, the canonical `OBJECT_DELETE_*` value wins. When a
-canonical value is absent, the deprecated value preserves the previous
-behavior. `ARTIFACT_RETENTION_CLEANUP_LIMIT` remains the artifact-expiry
-selection limit; only its fallback role as the shared object claim limit is
-deprecated. The old names and the logic-free
-`app.artifact_lifecycle_repository` import facade are supported through
-2026-10-31 and may be removed no earlier than 2026-11-01 after operator and
-internal-import migration evidence is complete. This is a configuration and
-code-ownership rename only: it does not change SQL, persisted states, retry
-semantics, or retention eligibility.
+The former `ARTIFACT_OBJECT_DELETE_*` environment and Python aliases, and the
+artifact-retention fallback for the shared claim batch, are no longer
+accepted. This remains a configuration and code-ownership rename only: it does
+not change SQL, persisted states, retry semantics, or retention eligibility.
+The logic-free `app.artifact_lifecycle_repository` import facade remains under
+the base architecture policy and only re-exports canonical `app.persistence`
+symbols. It owns no SQL or lifecycle behavior; removing it requires a prior
+authority-only policy change.
 
 Cleanup runs in small worker batches and is retryable:
 
@@ -198,6 +236,10 @@ Cleanup runs in small worker batches and is retryable:
   implemented, `0` is reported as `disabled_fail_safe`; a non-zero value is
   reported as `unsupported_not_implemented` and maintenance performs no delete.
   Production settings reject those non-zero values during startup.
+- Private Run diagnostics follow the owning Run's approved lifecycle. The table
+  has no implicit cascade delete and no independent TTL setting; a future physical
+  Run delete must remove its diagnostic record explicitly in the same authorized
+  lifecycle transaction and audit that outcome.
 
 Owner-requested file deletion does not make non-zero `file_retention_days`
 supported. It also begins only after a `files` row exists. Object bytes written
@@ -224,12 +266,14 @@ cannot bypass the bound. Oversized values fail before their write with a stable
 | Value | Maximum |
 | --- | ---: |
 | Run input or result | 256 KiB |
+| Private diagnostics across all Attempts of one Run | 128 KiB |
 | Run-event payload | 64 KiB |
 | Accumulated run-step payload | 64 KiB |
 | Run-event message | 16 KiB |
 | Context snapshot payload | 256 KiB |
 | Artifact manifest | 64 KiB |
 | Audit payload | 32 KiB |
+| User profile metadata | 16 KiB |
 | Message content | 256 KiB |
 | Message metadata | 64 KiB |
 

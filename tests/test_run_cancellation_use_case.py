@@ -87,10 +87,16 @@ class _Progressor:
         return RunTerminalizationProgress(True, "cancelled", True, True)
 
 
-def _authority(*, role: str = "owner", newly: bool = True, prior_status: str = "queued"):
+def _authority(
+    *,
+    role: str = "owner",
+    newly: bool = True,
+    prior_status: str = "queued",
+    attempt_id: str | None = "attempt-a",
+):
     return CancelRequestAuthority(
         run_id="run-a",
-        attempt_id="attempt-a",
+        attempt_id=attempt_id,
         prior_status=prior_status,
         trace_ref="trace-a",
         target_user_id="owner-a",
@@ -214,3 +220,33 @@ async def test_unauthorized_cancel_commits_no_events_or_audit():
     assert event_writer.sources == []
     assert progressor.calls == 0
     assert order == ["transaction.begin", "legacy.cancel_requested", "transaction.commit"]
+
+
+@pytest.mark.asyncio
+async def test_queued_legacy_cancel_without_attempt_skips_attempt_stream_admission():
+    order: list[str] = []
+    event_writer = _EventWriter(order)
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority(attempt_id=None)),
+        event_writer=event_writer,
+        progress_terminalization=_Progressor(order),
+    )
+
+    result = await use_case.request_owner_cancel(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        owner_user_id="owner-a",
+    )
+
+    assert result is not None and result.status == "cancelled"
+    assert result.attempt_id is None
+    assert order == [
+        "transaction.begin",
+        "legacy.cancel_requested",
+        "v4.run.cancel_requested",
+        "v4.run.cancelled",
+        "v4.run.terminal",
+        "audit",
+        "transaction.commit",
+    ]

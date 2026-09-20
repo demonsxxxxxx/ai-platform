@@ -8,10 +8,8 @@ import { resolveSkillCatalogSelection } from "../SkillsPanel/skillCatalogEntries
 
 test("keeps Skill visibility administration server-governed and ordinary catalog projections safe", () => {
   const adminState = resolveSkillsHubGovernance({
-    requestedTab: "skills",
     isAuthenticated: true,
     canReadSkills: false,
-    canReadMarketplace: false,
     effectivePermissions: ["skill:admin"],
     effectivePermissionsKnown: true,
     catalogReadResolved: true,
@@ -21,10 +19,8 @@ test("keeps Skill visibility administration server-governed and ordinary catalog
   assert.equal(adminState.effectivePermissionsSource, "catalog");
 
   const ordinaryState = resolveSkillsHubGovernance({
-    requestedTab: "skills",
     isAuthenticated: true,
     canReadSkills: false,
-    canReadMarketplace: false,
     effectivePermissions: ["skill:read"],
     effectivePermissionsKnown: true,
     catalogReadResolved: true,
@@ -150,28 +146,23 @@ test("Skill selection synchronization copy exists in Chinese", () => {
   }
 });
 
-test("Skill management enabled metric uses Chinese enabled-state wording", () => {
+test("Skill management header and tenant state use precise Chinese wording", () => {
   const catalog = JSON.parse(
     readFileSync(new URL("../../../i18n/locales/zh.json", import.meta.url), "utf8"),
   ) as {
     skills?: {
+      managementDescription?: string;
       managementTable?: { enabled?: string };
-      metrics?: { enabled?: string };
     };
   };
-  const metricsEnabled = catalog.skills?.metrics?.enabled;
   const managementEnabled = catalog.skills?.managementTable?.enabled;
-  assert.equal(typeof metricsEnabled, "string", "zh.skills.metrics.enabled");
+  assert.match(catalog.skills?.managementDescription ?? "", /上传.*发布.*更新/);
   assert.equal(
     typeof managementEnabled,
     "string",
     "zh.skills.managementTable.enabled",
   );
-  assert.equal(
-    metricsEnabled,
-    managementEnabled,
-    "zh.skills.metrics.enabled",
-  );
+  assert.equal(managementEnabled, "已启用");
 });
 
 test("Skill catalog refreshes fail pending and hidden batch selections are cleared", () => {

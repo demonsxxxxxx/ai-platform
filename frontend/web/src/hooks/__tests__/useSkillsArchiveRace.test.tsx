@@ -3,9 +3,39 @@ import test from "node:test";
 
 import type { SkillsResponse, UserSkill } from "../../types/skill.ts";
 import { skillApi } from "../../services/api/skill.ts";
+import { ApiRequestError } from "../../services/api/fetch.ts";
 import { installTestDom } from "../useAgent/__tests__/testDom.ts";
 
 const dom = installTestDom();
+
+test("admin lifecycle contract errors render a user-facing catalog message", async () => {
+  const { resolveSkillOperationError } = await import("../useSkills.ts");
+
+  assert.equal(
+    resolveSkillOperationError(
+      new Error("admin_skill_lifecycle_invalid"),
+      "skills.loadFailed",
+    ),
+    "Skill 管理目录与当前服务版本不一致，请刷新页面；问题持续时请检查前后端部署版本。",
+  );
+});
+
+test("Skill ZIP preview keeps safe backend reasons and translates unknown failures", async () => {
+  const { resolveSkillPreviewError } = await import("../useSkills.ts");
+
+  assert.equal(
+    resolveSkillPreviewError(new ApiRequestError("ZIP 中未找到 SKILL.md。", 400)),
+    "ZIP 中未找到 SKILL.md。",
+  );
+  assert.equal(
+    resolveSkillPreviewError(new ApiRequestError("private-details", 403)),
+    "您没有权限访问此页面",
+  );
+  assert.equal(
+    resolveSkillPreviewError(new Error("private-details")),
+    "无法读取 Skill ZIP，请检查文件后重试。",
+  );
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -166,5 +196,40 @@ test("archive mutations reject stale catalog reads for single and batch results"
     skillApi.listAllAuthorized = originalListAllAuthorized;
     skillApi.delete = originalDelete;
     skillApi.batchDelete = originalBatchDelete;
+  }
+});
+
+test("full authorized catalog does not reload for local list parameters", async () => {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { useSkills } = await import("../useSkills.ts");
+  const originalListAllAuthorized = skillApi.listAllAuthorized;
+  let catalogRequests = 0;
+
+  skillApi.listAllAuthorized = async () => {
+    catalogRequests += 1;
+    return catalogResponse(["skill-a"]);
+  };
+
+  const container = dom.document.createElement("div");
+  const root = createRoot(container as never);
+  function Probe({ query }: { query: string }) {
+    useSkills({ allAuthorizedCatalog: true, listParams: { q: query } });
+    return null;
+  }
+
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(Probe, { query: "first" }));
+    });
+    assert.equal(catalogRequests, 1);
+
+    await React.act(async () => {
+      root.render(React.createElement(Probe, { query: "second" }));
+    });
+    assert.equal(catalogRequests, 1);
+  } finally {
+    await React.act(async () => root.unmount());
+    skillApi.listAllAuthorized = originalListAllAuthorized;
   }
 });

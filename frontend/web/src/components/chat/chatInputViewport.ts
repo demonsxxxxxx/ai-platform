@@ -1,4 +1,5 @@
 const DEFAULT_TEXTAREA_MAX_HEIGHT_PX = 150;
+const EMPTY_TEXTAREA_HEIGHT_PX = 34;
 const MOBILE_TEXTAREA_VIEWPORT_RATIO = 0.22;
 const MOBILE_TEXTAREA_MIN_HEIGHT_PX = 120;
 
@@ -13,7 +14,14 @@ interface TextareaLike {
 export function resizeTextareaForContent(
   textarea: TextareaLike,
   maxHeightPx = DEFAULT_TEXTAREA_MAX_HEIGHT_PX,
+  hasContent = true,
 ): void {
+  if (!hasContent) {
+    textarea.style.height = `${EMPTY_TEXTAREA_HEIGHT_PX}px`;
+    textarea.scrollTop = 0;
+    return;
+  }
+
   textarea.style.height = "auto";
   textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeightPx)}px`;
   textarea.scrollTop = textarea.scrollHeight;

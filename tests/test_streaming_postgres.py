@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app.streaming import postgres
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -70,6 +71,11 @@ async def _temporary_ledger_schema() -> AsyncIterator[tuple[str, str]]:
               payload_json jsonb not null,
               created_at timestamptz not null default now(),
               unique (tenant_id, run_id, sequence)
+            );
+            create table run_attempts (
+              id text primary key,
+              tenant_id text not null,
+              run_id text not null
             );
             create table run_event_cursors (
               tenant_id text not null,

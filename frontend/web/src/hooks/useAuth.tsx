@@ -40,7 +40,7 @@ import {
 } from "../components/governance/permissionProjection";
 import { THEME_STORAGE_KEY } from "../utils/themeDom";
 import { Permission } from "../types";
-import type { User, UserCreate, LoginRequest, AuthState } from "../types";
+import type { User, LoginRequest, AuthState } from "../types";
 
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
 
@@ -122,10 +122,9 @@ interface AuthContextType extends AuthState {
     credentials: LoginRequest,
     turnstileToken?: string,
   ) => Promise<AuthOperationOutcome<string | null>>;
-  register: (
-    userData: UserCreate,
-    turnstileToken?: string,
-  ) => Promise<{ requiresVerification: boolean; email: string }>;
+  loginWithAD: (
+    loginUrl: string,
+  ) => Promise<AuthOperationOutcome<string | null>>;
   loginWithOAuth: (provider: string) => Promise<void>;
   handleOAuthCallback: (
     provider: string,
@@ -141,6 +140,28 @@ interface AuthContextType extends AuthState {
 
 // 创建认证上下文
 const AuthContext = createContext<AuthContextType | null>(null);
+
+const DEV_AUTH_PREVIEW_USER: User = {
+  id: "dev-preview-user",
+  tenant_id: "dev-preview-tenant",
+  username: "ZX2834",
+  email: "dev-preview@localhost",
+  roles: ["admin"],
+  permissions: Object.values(Permission),
+  is_admin: true,
+  is_active: true,
+  metadata: { display_name: "ZX2834", source: "dev-preview" },
+  created_at: "",
+  updated_at: "",
+};
+
+function isDevAuthPreviewRequested(): boolean {
+  return (
+    import.meta.env?.DEV === true &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("dev-auth") === "1"
+  );
+}
 
 interface AuthOperationOwner {
   generation: number;
@@ -375,6 +396,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 初始化：检查现有 token 并获取用户信息
   useEffect(() => {
     mountedRef.current = true;
+    if (isDevAuthPreviewRequested()) {
+      clearTokens();
+      setToken("dev-auth-preview");
+      setUser(DEV_AUTH_PREVIEW_USER);
+      setDynamicPermissions(Object.values(Permission));
+      setIsLoading(false);
+      return () => {
+        mountedRef.current = false;
+        invalidateAuthOperation();
+      };
+    }
+
     const owner = beginAuthOperation();
     if (isCurrentAuthOperation(owner)) {
       migrateLegacyBearerStorage();
@@ -505,24 +538,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  // 注册
-  const register = useCallback(
-    async (
-      userData: UserCreate,
-      turnstileToken?: string,
-    ): Promise<{ requiresVerification: boolean; email: string }> => {
-      setIsLoading(true);
+  // AD 登录：先取得 Windows 身份签发的公司 JWT，再建立并提交平台 session。
+  const loginWithAD = useCallback(
+    async (loginUrl: string): Promise<AuthOperationOutcome<string | null>> => {
+      const owner = beginAuthOperation();
+      if (isCurrentAuthOperation(owner)) setIsLoading(true);
+      let sessionEstablished = false;
       try {
-        const response = await authApi.register(userData, turnstileToken);
-        return {
-          requiresVerification: response.requires_verification,
-          email: userData.email,
-        };
+        const companyJwt = await authApi.fetchCompanyADLogin(
+          loginUrl,
+          owner.abortController.signal,
+        );
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+        await ensureBrowserAuthContextBeforeLogin(owner.abortController.signal);
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+        await authApi.loginWithAD(companyJwt, owner.abortController.signal);
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+        sessionEstablished = true;
+        if (!establishLocalSession(owner)) return cancelledAuthOperation();
+        const currentUser = await getCurrentUserWithOneStaleRepair(owner);
+        if (!applyAuthenticatedUser(currentUser, owner)) {
+          return cancelledAuthOperation();
+        }
+        const redirectPath = getRedirectPath();
+        if (redirectPath) clearRedirectPath();
+        return completedAuthOperation(redirectPath ?? null);
+      } catch (error) {
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+        if (sessionEstablished) {
+          const converged = await rollbackOwnedSession(owner);
+          if (!converged) return cancelledAuthOperation();
+        }
+        throw error;
       } finally {
-        setIsLoading(false);
+        if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }
     },
-    [],
+    [
+      applyAuthenticatedUser,
+      beginAuthOperation,
+      establishLocalSession,
+      getCurrentUserWithOneStaleRepair,
+      isCurrentAuthOperation,
+      rollbackOwnedSession,
+    ],
   );
 
   // OAuth 登录由服务端 state 绑定同一个 browser auth context。
@@ -640,7 +699,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading,
     permissions,
     login,
-    register,
+    loginWithAD,
     loginWithOAuth,
     handleOAuthCallback,
     logout,

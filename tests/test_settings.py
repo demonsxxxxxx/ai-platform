@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.settings import OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL, Settings
+from app.settings import Settings
 
 
 def test_claude_agent_sdk_timeout_defaults_to_unbounded(monkeypatch):
@@ -17,6 +17,12 @@ def test_claude_agent_sdk_timeout_defaults_to_unbounded(monkeypatch):
         ).claude_agent_sdk_timeout_seconds
         == 120.0
     )
+
+
+def test_claude_agent_sdk_max_turns_defaults_to_256(monkeypatch):
+    monkeypatch.delenv("CLAUDE_AGENT_SDK_MAX_TURNS", raising=False)
+
+    assert Settings(_env_file=None).claude_agent_sdk_max_turns == 256
 
 
 def test_browser_authentication_windows_default_to_twenty_four_hours():
@@ -154,45 +160,30 @@ def test_internal_test_opensandbox_profile_requires_explicit_test_bridge_selecti
     )
 
     assert settings.sandbox_security_profile == "internal-test"
-    assert settings.opensandbox_internal_test_forward_model_credentials is False
 
 
-def test_model_credential_forwarding_is_forbidden_for_opensandbox():
-    with pytest.raises(ValidationError, match="opensandbox_model_credential_forwarding_disabled"):
-        Settings(
-            _env_file=None,
-            deployment_environment="test",
-            sandbox_container_provider="opensandbox",
-            sandbox_security_profile="internal-test",
-            opensandbox_expected_network_mode="bridge",
-            opensandbox_internal_test_forward_model_credentials=True,
-            openai_api_key="test-openai-key",
-            anthropic_auth_token="test-anthropic-token",
-        )
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"deployment_environment": "development"},
-        {"sandbox_container_provider": "docker"},
-        {"sandbox_security_profile": "governed"},
-        {"opensandbox_expected_network_mode": "none"},
-    ],
-)
-def test_internal_test_model_credential_forwarding_rejects_other_profiles(overrides):
+def test_production_opensandbox_requires_the_isolated_network():
     values = {
-        "deployment_environment": "test",
+        "deployment_environment": "production",
+        "trusted_principal_secret": "gateway-secret",
+        "existing_auth_base_url": "https://auth.internal.example",
+        "existing_user_info_base_url": "https://directory.internal.example",
         "sandbox_container_provider": "opensandbox",
-        "sandbox_security_profile": "internal-test",
-        "opensandbox_expected_network_mode": "bridge",
-        "opensandbox_internal_test_forward_model_credentials": True,
-        "openai_api_key": "test-openai-key",
-        "anthropic_auth_token": "test-anthropic-token",
-        **overrides,
+        "sandbox_security_profile": "governed",
+        "opensandbox_expected_network_mode": "ai-platform-opensandbox-egress-internal-v1",
+        "opensandbox_use_server_proxy": True,
+        "sandbox_egress_policy_enabled": True,
+        "opensandbox_api_key": "opensandbox-secret",
+        "opensandbox_base_url": "http://10.56.1.75:8080",
+        "opensandbox_egress_proxy_url": "http://egress.opensandbox.internal:8080",
     }
 
-    with pytest.raises(ValidationError):
+    assert Settings(_env_file=None, **values).opensandbox_expected_network_mode == (
+        "ai-platform-opensandbox-egress-internal-v1"
+    )
+
+    values["opensandbox_expected_network_mode"] = "bridge"
+    with pytest.raises(ValidationError, match="production_opensandbox_network_mode_invalid"):
         Settings(_env_file=None, **values)
 
 
@@ -234,7 +225,7 @@ def test_retired_security_profile_is_rejected_for_every_provider(provider):
         )
 
 
-def test_retired_runtime_authority_settings_are_not_configurable():
+def test_retired_runtime_authority_settings_are_not_configurable(monkeypatch, tmp_path):
     retired_fields = {
         "multi_agent_dispatch_worker_enabled",
         "multi_agent_dispatch_worker_interval_seconds",
@@ -248,9 +239,40 @@ def test_retired_runtime_authority_settings_are_not_configurable():
         "ragflow_timeout_seconds",
         "ragflow_top_k",
         "ragflow_similarity_threshold",
+        "sandbox_executor_browser_image",
+        "sandbox_egress_network_name",
+        "opensandbox_workspace_mount_enabled",
+        "opensandbox_startup_io_probe_enabled",
+        "opensandbox_allowed_egress_hosts",
+        "run_event_stream_max_heartbeats",
+        "default_workspace_id",
+        "ai_session_cookie_name",
+        "artifact_default_retention_days",
+        "model_gateway_request_concurrency_limit",
     }
 
     assert retired_fields.isdisjoint(Settings.model_fields)
+
+    # Old deployment files remain readable while active settings still apply.
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "".join(f"{name.upper()}=obsolete\n" for name in sorted(retired_fields))
+        + "WORKER_CONCURRENCY=7\n",
+        encoding="utf-8",
+    )
+    for name in retired_fields:
+        monkeypatch.setenv(name.upper(), "obsolete")
+    monkeypatch.delenv("WORKER_CONCURRENCY", raising=False)
+    settings = Settings(_env_file=env_file)
+    assert settings.worker_concurrency == 7
+    assert retired_fields.isdisjoint(settings.model_dump())
+
+    for path in (
+        "deploy/ai-platform/.env.example",
+        "deploy/ai-platform/docker-compose.yml",
+    ):
+        text = Path(path).read_text(encoding="utf-8")
+        assert all(name.upper() not in text for name in retired_fields)
 
 
 def test_capacity_and_redis_pool_defaults_are_bounded_independently():
@@ -266,6 +288,11 @@ def test_capacity_and_redis_pool_defaults_are_bounded_independently():
 def test_redis_max_connections_rejects_non_positive_values():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, redis_max_connections=0)
+
+
+def test_queue_lease_visibility_timeout_rejects_non_positive_values():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, queue_lease_visibility_timeout_seconds=0)
 
 
 def test_production_identity_boundary_requires_gateway_secret_and_forbids_poc():
@@ -307,28 +334,19 @@ def test_default_tenant_is_fixed_deployment_scope():
         Settings(_env_file=None, default_tenant_id="customer-a")
 
 
-def test_object_delete_settings_use_generic_names_and_keep_python_aliases():
+def test_object_delete_settings_use_only_generic_names():
     settings = Settings(_env_file=None)
 
     assert settings.object_delete_batch_limit == 50
     assert settings.object_delete_max_attempts == 5
     assert settings.object_delete_retry_base_seconds == 60
     assert settings.object_delete_retry_cap_seconds == 3600
-    assert settings.artifact_object_delete_max_attempts == 5
-    assert settings.artifact_object_delete_retry_base_seconds == 60
-    assert settings.artifact_object_delete_retry_cap_seconds == 3600
-    assert OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL == "2026-10-31"
-
-    settings.artifact_object_delete_max_attempts = 8
-    settings.artifact_object_delete_retry_base_seconds = 80
-    settings.artifact_object_delete_retry_cap_seconds = 800
-
-    assert settings.object_delete_max_attempts == 8
-    assert settings.object_delete_retry_base_seconds == 80
-    assert settings.object_delete_retry_cap_seconds == 800
+    assert not hasattr(settings, "artifact_object_delete_max_attempts")
+    assert not hasattr(settings, "artifact_object_delete_retry_base_seconds")
+    assert not hasattr(settings, "artifact_object_delete_retry_cap_seconds")
 
 
-def test_legacy_object_delete_environment_names_remain_fallbacks(monkeypatch):
+def test_legacy_object_delete_environment_names_are_ignored(monkeypatch):
     monkeypatch.setenv("ARTIFACT_RETENTION_CLEANUP_LIMIT", "17")
     monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS", "7")
     monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS", "90")
@@ -337,49 +355,44 @@ def test_legacy_object_delete_environment_names_remain_fallbacks(monkeypatch):
     settings = Settings(_env_file=None)
 
     assert settings.artifact_retention_cleanup_limit == 17
-    assert settings.object_delete_batch_limit == 17
-    assert settings.object_delete_max_attempts == 7
-    assert settings.object_delete_retry_base_seconds == 90
-    assert settings.object_delete_retry_cap_seconds == 900
+    assert settings.object_delete_batch_limit == 50
+    assert settings.object_delete_max_attempts == 5
+    assert settings.object_delete_retry_base_seconds == 60
+    assert settings.object_delete_retry_cap_seconds == 3600
 
 
-def test_canonical_object_delete_environment_names_win_over_legacy(monkeypatch):
-    monkeypatch.setenv("ARTIFACT_RETENTION_CLEANUP_LIMIT", "17")
+def test_canonical_object_delete_environment_names_are_loaded(monkeypatch):
     monkeypatch.setenv("OBJECT_DELETE_BATCH_LIMIT", "23")
-    monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS", "7")
     monkeypatch.setenv("OBJECT_DELETE_MAX_ATTEMPTS", "9")
-    monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS", "90")
     monkeypatch.setenv("OBJECT_DELETE_RETRY_BASE_SECONDS", "120")
-    monkeypatch.setenv("ARTIFACT_OBJECT_DELETE_RETRY_CAP_SECONDS", "900")
     monkeypatch.setenv("OBJECT_DELETE_RETRY_CAP_SECONDS", "1200")
 
     settings = Settings(_env_file=None)
 
-    assert settings.artifact_retention_cleanup_limit == 17
     assert settings.object_delete_batch_limit == 23
     assert settings.object_delete_max_attempts == 9
     assert settings.object_delete_retry_base_seconds == 120
     assert settings.object_delete_retry_cap_seconds == 1200
 
 
-def test_compose_projects_canonical_object_delete_settings_with_legacy_fallbacks():
+def test_compose_projects_only_canonical_object_delete_settings():
     compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     expected = (
-        'OBJECT_DELETE_BATCH_LIMIT: "${OBJECT_DELETE_BATCH_LIMIT:-${ARTIFACT_RETENTION_CLEANUP_LIMIT:-50}}"',
-        'OBJECT_DELETE_MAX_ATTEMPTS: "${OBJECT_DELETE_MAX_ATTEMPTS:-${ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS:-5}}"',
-        'OBJECT_DELETE_RETRY_BASE_SECONDS: "${OBJECT_DELETE_RETRY_BASE_SECONDS:-${ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS:-60}}"',
-        'OBJECT_DELETE_RETRY_CAP_SECONDS: "${OBJECT_DELETE_RETRY_CAP_SECONDS:-${ARTIFACT_OBJECT_DELETE_RETRY_CAP_SECONDS:-3600}}"',
+        "OBJECT_DELETE_BATCH_LIMIT: ${OBJECT_DELETE_BATCH_LIMIT:-50}",
+        "OBJECT_DELETE_MAX_ATTEMPTS: ${OBJECT_DELETE_MAX_ATTEMPTS:-5}",
+        "OBJECT_DELETE_RETRY_BASE_SECONDS: ${OBJECT_DELETE_RETRY_BASE_SECONDS:-60}",
+        "OBJECT_DELETE_RETRY_CAP_SECONDS: ${OBJECT_DELETE_RETRY_CAP_SECONDS:-3600}",
     )
 
     for mapping in expected:
         assert compose.count(mapping) == 2
+    assert "ARTIFACT_OBJECT_DELETE_" not in compose
+    assert "OBJECT_DELETE_BATCH_LIMIT:-${ARTIFACT_RETENTION_CLEANUP_LIMIT" not in compose
 
 
-def test_environment_example_prefers_canonical_object_delete_names():
-    lines = (
-        Path("deploy/ai-platform/.env.example").read_text(encoding="utf-8").splitlines()
-    )
-    active = {line for line in lines if line and not line.startswith("#")}
+def test_environment_example_uses_only_canonical_object_delete_names():
+    source = Path("deploy/ai-platform/.env.example").read_text(encoding="utf-8")
+    active = {line for line in source.splitlines() if line and not line.startswith("#")}
 
     assert {
         "OBJECT_DELETE_BATCH_LIMIT=50",
@@ -387,28 +400,15 @@ def test_environment_example_prefers_canonical_object_delete_names():
         "OBJECT_DELETE_RETRY_BASE_SECONDS=60",
         "OBJECT_DELETE_RETRY_CAP_SECONDS=3600",
     }.issubset(active)
-    assert not any(line.startswith("ARTIFACT_OBJECT_DELETE_") for line in active)
-    assert "# Deprecated migration aliases remain accepted through 2026-10-31." in lines
+    assert "ARTIFACT_OBJECT_DELETE_" not in source
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {
-            "object_delete_retry_base_seconds": 120,
-            "object_delete_retry_cap_seconds": 60,
-        },
-        {
-            "artifact_object_delete_retry_base_seconds": 120,
-            "artifact_object_delete_retry_cap_seconds": 60,
-        },
-    ],
-)
-def test_object_delete_retry_cap_cannot_be_lower_than_base(overrides):
+def test_object_delete_retry_cap_cannot_be_lower_than_base():
     with pytest.raises(ValidationError, match="object_delete_retry_cap_below_base"):
         Settings(
             _env_file=None,
-            **overrides,
+            object_delete_retry_base_seconds=120,
+            object_delete_retry_cap_seconds=60,
         )
 
 

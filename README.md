@@ -10,12 +10,31 @@ Thin platform service for the enterprise AI Agent platform.
 - Enqueues AI runs for worker execution.
 - Delegates execution through the configured sandbox and Engine adapters.
 
-## Local compose
+## Deployment quick start
 
-```powershell
-Copy-Item deploy/ai-platform/.env.example deploy/ai-platform/.env
-docker compose -f deploy/ai-platform/docker-compose.yml --env-file deploy/ai-platform/.env up -d --build
+Download the desired immutable Deployment Release's
+`ai-platform-internal-test.tar.gz` or `ai-platform-production.tar.gz` and extract
+it into a new directory. The package fixes the application version and image
+digests; no Git checkout, Actions query or host build is needed.
+
+After the one-time Docker/Compose and OpenSandbox host preparation, configure
+an owner-held `0600` environment file (reuse the existing file when upgrading):
+
+```bash
+python3 deploy.py --env-file /absolute/path/to/.env
 ```
+
+The entry pulls and verifies images, fences application admission, checks for
+active work, preserves persistent services, runs migration/init, and verifies
+the new runtime. With already-loaded digest-verified images, add `--offline`.
+Database migrations are not automatically reversed and there is no speculative
+image rollback after a migration has begun.
+
+See the [deployment package guide](deploy/ai-platform/README.md) for first-use
+configuration, upgrade, offline images and failure handling. Production host
+provisioning and changes to OpenSandbox credentials/network policy remain
+separate controlled maintenance operations; see
+[production host preparation](docs/operations/production-bootstrap.md).
 
 ## Health check
 
@@ -25,15 +44,38 @@ curl http://127.0.0.1:8020/api/ai/health
 
 ## Company Login
 
-The frontend shell should call the platform login endpoint and let the platform
-validate credentials through the existing account service. Use real credentials
-only in local curl/runtime input; do not commit them.
+The frontend shell first establishes the V2 browser auth context, then submits
+company credentials with the same HttpOnly context cookie. Use real credentials
+only in local curl/runtime input; do not commit them. This PowerShell example
+uses a temporary cookie jar because `ai_platform_auth_context` is server-owned:
 
 ```powershell
-curl -i -X POST http://127.0.0.1:8020/api/ai/auth/login `
-  -H "Content-Type: application/json" `
-  -d "{\"user_name\":\"<work-id>\",\"password\":\"<password>\"}"
-curl -b "ai_platform_session=<cookie>" http://127.0.0.1:8020/api/ai/auth/me
+$cookieJar = Join-Path $env:TEMP "ai-platform-auth-cookies.txt"
+Remove-Item $cookieJar -ErrorAction SilentlyContinue
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+function New-AuthContextToken {
+  $bytes = New-Object byte[] 32
+  $rng.GetBytes($bytes)
+  [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
+}
+$bootstrap = @{
+  nonce = New-AuthContextToken
+  protocol_version = 2
+  browser_incarnation = New-AuthContextToken
+  generation = 1
+} | ConvertTo-Json -Compress
+$rng.Dispose()
+$login = @{
+  user_name = "<work-id>"
+  password = "<password>"
+} | ConvertTo-Json -Compress
+
+curl.exe -i -c $cookieJar -b $cookieJar -X POST http://127.0.0.1:8020/api/ai/auth/bootstrap `
+  -H "Content-Type: application/json" --data-raw $bootstrap
+curl.exe -i -c $cookieJar -b $cookieJar -X POST http://127.0.0.1:8020/api/ai/auth/login `
+  -H "Content-Type: application/json" --data-raw $login
+curl.exe -b $cookieJar http://127.0.0.1:8020/api/ai/auth/me
+Remove-Item $cookieJar -ErrorAction SilentlyContinue
 ```
 
 ## Smoke test
@@ -45,10 +87,8 @@ curl http://127.0.0.1:8020/api/ai/ready
 ```
 
 Compose runs the same migration command as a one-shot dependency before the API
-or worker starts. The authenticated `/admin/apply-schema` route remains only as
-an emergency-compatible wrapper around the versioned migration runner. See
-`docs/architecture/single-enterprise-data-lifecycle.md` for the identity,
-schema, retention, and rollback contract.
+or worker starts. See `docs/architecture/single-enterprise-data-lifecycle.md`
+for the identity, schema, retention, and rollback contract.
 
 ## Worker
 
@@ -58,11 +98,7 @@ Run one leased job and exit:
 python -m app.worker_main --once --timeout 1
 ```
 
-Run the worker loop in compose:
-
-```powershell
-docker compose -f deploy/ai-platform/docker-compose.yml --env-file deploy/ai-platform/.env --profile worker up -d --build
-```
+The deployment package starts the Worker as a required service alongside the API.
 
 The worker consumes the platform queue, updates run events/status, and calls the configured executor adapter. The adapter is not the platform source of truth.
 
@@ -73,9 +109,9 @@ same-origin `/api/*` requests from that entry. The
 frontend reverse proxy routes those requests to the platform API. Do not point
 the frontend at a non-platform backend or a temporary API proxy.
 
-The platform exposes frontend-compatible `/api/auth/login`, `/api/auth/me`,
-`/api/auth/refresh`, `/api/chat/stream`, `/api/sessions/*`, and `/api/upload/*`
-routes. The documented login flow is company-account login.
+The platform exposes the V2 context-bound auth routes under `/api/ai/auth/*`,
+current chat/session routes, and canonical `/api/ai/files*` upload routes. The
+documented login flow is company-account login.
 
 Frontend source lives under `frontend/web` for source ownership and
 backend/worker/frontend same-commit review. This does not create a new runtime

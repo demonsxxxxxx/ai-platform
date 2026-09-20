@@ -55,7 +55,7 @@ This product contract composes with, and does not replace:
 - [`../../acceptance/agent-app/ordinary-user-matrix.md`](../../acceptance/agent-app/ordinary-user-matrix.md)
   for the source/runtime evidence boundary.
 
-[ADR 0013](../../adr/0013-external-knowledge-authority.md) establishes
+[ADR 0014](../../adr/0014-external-knowledge-authority.md) establishes
 `knowledge` as the single product authority for external knowledge. `mcp`
 continues to own the generic MCP server/tool catalog and may act only as an
 optional execution adapter behind the Knowledge application boundary.

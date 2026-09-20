@@ -20,7 +20,8 @@ def test_public_skill_display_label_accepts_catalog_names_and_rejects_private_sh
 def test_public_agent_projection_maps_known_internal_agent_ids():
     assert public_agent_id_for_projection("qa-word-review", "qa-file-reviewer") == "document-review"
     assert public_agent_id_for_projection("sop-assistant", "ragflow-knowledge-search") == "knowledge-answer"
-    assert public_agent_id_for_projection("baoyu-translate", "baoyu-translate") == "document-translation"
+    assert public_agent_id_for_projection("baoyu-translate", "baoyu-translate") is None
+    assert public_agent_id_for_projection("translate") is None
     assert public_agent_id_for_projection("general-agent", "general-chat") == "general-agent"
 
 
@@ -60,6 +61,7 @@ def test_redact_raw_skill_references_sanitizes_nested_agent_ids():
 def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_metadata():
     payload = {
         "message": "run",
+        "_thinking_effort": "max",
         "_required_capability_declaration": {"canonical_identity": "Bash"},
         "required_capability_evidence": {"canonical_identity": "Bash"},
         "resume": {"copied_from_run_id": "run-forged"},
@@ -80,6 +82,7 @@ def test_sanitize_user_control_input_removes_server_owned_multi_agent_dispatch_m
     sanitized = sanitize_user_control_input(payload)
 
     assert sanitized["message"] == "run"
+    assert "_thinking_effort" not in sanitized
     assert "_required_capability_declaration" not in sanitized
     assert "required_capability_evidence" not in sanitized
     assert "resume" not in sanitized

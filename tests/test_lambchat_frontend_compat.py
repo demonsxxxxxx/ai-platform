@@ -2,14 +2,13 @@ from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 import re
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.models import ChatStreamRequest
+from app.models import AgentAppRunRequest, ChatStreamRequest
 from app.repositories import append_message as real_append_message
 from app.repositories import (
     list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs,
@@ -23,7 +22,11 @@ from app.routes.files import MAX_UPLOAD_BYTES
 
 
 def auth_settings():
-    return type("S", (), {"trusted_principal_secret": "test-secret", "frontend_poc_auth_enabled": False})()
+    return type(
+        "S",
+        (),
+        {"trusted_principal_secret": "test-secret", "frontend_poc_auth_enabled": False},
+    )()
 
 
 @asynccontextmanager
@@ -73,7 +76,9 @@ def empty_authorized_history_messages(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_delete(monkeypatch):
+async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_delete(
+    monkeypatch,
+):
     from app import session_actions
     from app.auth import AuthPrincipal
 
@@ -111,7 +116,9 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
     async def get_session_for_action(_conn, *, tenant_id, session_id):
         return records.get((tenant_id, session_id))
 
-    async def update_session_title(_conn, *, tenant_id, session_id, title, title_source):
+    async def update_session_title(
+        _conn, *, tenant_id, session_id, title, title_source
+    ):
         writes.append(("rename", tenant_id, session_id, title, title_source))
         record = records[(tenant_id, session_id)]
         record["title"] = title
@@ -124,47 +131,87 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
         record["status"] = "deleted"
         return record
 
-    monkeypatch.setattr(session_actions.repositories, "get_session_for_action", get_session_for_action)
-    monkeypatch.setattr(session_actions.repositories, "update_session_title", update_session_title)
-    monkeypatch.setattr(session_actions.repositories, "mark_session_deleted", mark_session_deleted)
+    monkeypatch.setattr(
+        session_actions.repositories, "get_session_for_action", get_session_for_action
+    )
+    monkeypatch.setattr(
+        session_actions.repositories, "update_session_title", update_session_title
+    )
+    monkeypatch.setattr(
+        session_actions.repositories, "mark_session_deleted", mark_session_deleted
+    )
 
-    owner = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="default", roles=["user"])
-    admin = AuthPrincipal(user_id="admin-a", display_name="Admin", tenant_id="default", roles=["admin"])
-    other_tenant = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="other", roles=["admin"])
+    owner = AuthPrincipal(
+        user_id="user-a", display_name="A", tenant_id="default", roles=["user"]
+    )
+    admin = AuthPrincipal(
+        user_id="admin-a", display_name="Admin", tenant_id="default", roles=["admin"]
+    )
+    other_tenant = AuthPrincipal(
+        user_id="user-a", display_name="A", tenant_id="other", roles=["admin"]
+    )
 
-    renamed = await session_actions.rename_session(object(), principal=owner, session_id="ses-owner", title=" Renamed ")
+    renamed = await session_actions.rename_session(
+        object(), principal=owner, session_id="ses-owner", title=" Renamed "
+    )
     assert renamed["title"] == "Renamed"
     assert writes == [("rename", "default", "ses-owner", "Renamed", "user")]
 
-    await session_actions.rename_session(object(), principal=admin, session_id="ses-other", title="Admin rename")
+    await session_actions.rename_session(
+        object(), principal=admin, session_id="ses-other", title="Admin rename"
+    )
     assert writes[-1] == ("rename", "default", "ses-other", "Admin rename", "user")
 
     with pytest.raises(session_actions.SessionActionValidationError):
-        await session_actions.rename_session(object(), principal=owner, session_id="ses-owner", title="   ")
+        await session_actions.rename_session(
+            object(), principal=owner, session_id="ses-owner", title="   "
+        )
     with pytest.raises(session_actions.SessionActionNotFoundError):
-        await session_actions.rename_session(object(), principal=owner, session_id="ses-other", title="Denied")
+        await session_actions.rename_session(
+            object(), principal=owner, session_id="ses-other", title="Denied"
+        )
     with pytest.raises(session_actions.SessionActionNotFoundError):
-        await session_actions.rename_session(object(), principal=other_tenant, session_id="ses-owner", title="Denied")
-    assert all(entry[2] != "ses-other" or entry[3] != "Denied" for entry in writes if entry[0] == "rename")
+        await session_actions.rename_session(
+            object(), principal=other_tenant, session_id="ses-owner", title="Denied"
+        )
+    assert all(
+        entry[2] != "ses-other" or entry[3] != "Denied"
+        for entry in writes
+        if entry[0] == "rename"
+    )
 
-    deleted = await session_actions.delete_session(object(), principal=owner, session_id="ses-owner")
+    deleted = await session_actions.delete_session(
+        object(), principal=owner, session_id="ses-owner"
+    )
     assert deleted["already_deleted"] is False
-    repeated = await session_actions.delete_session(object(), principal=owner, session_id="ses-owner")
+    repeated = await session_actions.delete_session(
+        object(), principal=owner, session_id="ses-owner"
+    )
     assert repeated["already_deleted"] is True
-    assert [entry for entry in writes if entry[0] == "delete"] == [("delete", "default", "ses-owner")]
+    assert [entry for entry in writes if entry[0] == "delete"] == [
+        ("delete", "default", "ses-owner")
+    ]
 
-    admin_deleted = await session_actions.delete_session(object(), principal=admin, session_id="ses-other")
+    admin_deleted = await session_actions.delete_session(
+        object(), principal=admin, session_id="ses-other"
+    )
     assert admin_deleted["already_deleted"] is False
     assert ("delete", "default", "ses-other") in writes
 
     with pytest.raises(session_actions.SessionActionNotFoundError):
-        await session_actions.delete_session(object(), principal=owner, session_id="missing")
+        await session_actions.delete_session(
+            object(), principal=owner, session_id="missing"
+        )
     with pytest.raises(session_actions.SessionActionNotFoundError):
-        await session_actions.delete_session(object(), principal=owner, session_id="ses-other")
+        await session_actions.delete_session(
+            object(), principal=owner, session_id="ses-other"
+        )
 
 
 @pytest.mark.asyncio
-async def test_session_action_initializes_first_task_title_once_without_overwriting_rename(monkeypatch):
+async def test_session_action_initializes_first_task_title_once_without_overwriting_rename(
+    monkeypatch,
+):
     from app import session_actions
     from app.auth import AuthPrincipal
 
@@ -192,14 +239,22 @@ async def test_session_action_initializes_first_task_title_once_without_overwrit
         title_source,
         expected_title_source=None,
     ):
-        writes.append((tenant_id, session_id, title, title_source, expected_title_source))
+        writes.append(
+            (tenant_id, session_id, title, title_source, expected_title_source)
+        )
         record["title"] = title
         record["title_source"] = title_source
         return record
 
-    monkeypatch.setattr(session_actions.repositories, "get_session_for_action", get_session_for_action)
-    monkeypatch.setattr(session_actions.repositories, "update_session_title", update_session_title)
-    owner = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="default", roles=["user"])
+    monkeypatch.setattr(
+        session_actions.repositories, "get_session_for_action", get_session_for_action
+    )
+    monkeypatch.setattr(
+        session_actions.repositories, "update_session_title", update_session_title
+    )
+    owner = AuthPrincipal(
+        user_id="user-a", display_name="A", tenant_id="default", roles=["user"]
+    )
 
     initialized = await session_actions.initialize_session_title(
         object(),
@@ -208,7 +263,9 @@ async def test_session_action_initializes_first_task_title_once_without_overwrit
         title="Investigate batch variance",
     )
     assert initialized["title"] == "Investigate batch variance"
-    assert writes == [("default", "ses-owner", "Investigate batch variance", "generated", "initial")]
+    assert writes == [
+        ("default", "ses-owner", "Investigate batch variance", "generated", "initial")
+    ]
 
     replay = await session_actions.initialize_session_title(
         object(),
@@ -236,14 +293,18 @@ async def test_generate_title_route_persists_only_authorized_initial_title(monke
     from app.auth import AuthPrincipal
     from app.routes import lambchat_compat
 
-    principal = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="default", roles=["user"])
+    principal = AuthPrincipal(
+        user_id="user-a", display_name="A", tenant_id="default", roles=["user"]
+    )
     captured = {}
 
     @asynccontextmanager
     async def fake_transaction():
         yield object()
 
-    async def get_authorized_session_projection(_conn, *, tenant_id, user_id, session_id):
+    async def get_authorized_session_projection(
+        _conn, *, tenant_id, user_id, session_id
+    ):
         captured["projection"] = (tenant_id, user_id, session_id)
         return {"agent_profile_name": "RCA Expert"}
 
@@ -257,7 +318,11 @@ async def test_generate_title_route_persists_only_authorized_initial_title(monke
         "get_authorized_session_projection",
         get_authorized_session_projection,
     )
-    monkeypatch.setattr(lambchat_compat.session_actions, "initialize_session_title", initialize_session_title)
+    monkeypatch.setattr(
+        lambchat_compat.session_actions,
+        "initialize_session_title",
+        initialize_session_title,
+    )
 
     response = await lambchat_compat.generate_title(
         "ses-owner",
@@ -265,7 +330,10 @@ async def test_generate_title_route_persists_only_authorized_initial_title(monke
         principal=principal,
     )
 
-    assert response == {"session_id": "ses-owner", "title": "Investigate batch variance"}
+    assert response == {
+        "session_id": "ses-owner",
+        "title": "Investigate batch variance",
+    }
     assert captured["projection"] == ("default", "user-a", "ses-owner")
     assert captured["initialize"] == {
         "principal": principal,
@@ -275,7 +343,9 @@ async def test_generate_title_route_persists_only_authorized_initial_title(monke
 
 
 @pytest.mark.asyncio
-async def test_session_action_fork_copies_only_authorized_message_prefix_without_oracles(monkeypatch):
+async def test_session_action_fork_copies_only_authorized_message_prefix_without_oracles(
+    monkeypatch,
+):
     from app import session_actions
     from app.auth import AuthPrincipal
 
@@ -300,8 +370,20 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
     async def list_session_messages_for_fork(_conn, *, tenant_id, session_id):
         assert (tenant_id, session_id) == ("default", "ses-source")
         return [
-            {"id": "msg-1", "run_id": "run-source", "role": "user", "content": "one", "metadata_json": {}},
-            {"id": "msg-2", "run_id": "run-source", "role": "assistant", "content": "two", "metadata_json": {}},
+            {
+                "id": "msg-1",
+                "run_id": "run-source",
+                "role": "user",
+                "content": "one",
+                "metadata_json": {},
+            },
+            {
+                "id": "msg-2",
+                "run_id": "run-source",
+                "role": "assistant",
+                "content": "two",
+                "metadata_json": {},
+            },
         ]
 
     async def create_session(_conn, **kwargs):
@@ -315,25 +397,61 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
         copied.append(kwargs)
         return f"msg-copy-{len(copied)}"
 
-    monkeypatch.setattr(session_actions.repositories, "get_session_for_action", get_session_for_action)
-    monkeypatch.setattr(session_actions.repositories, "list_session_messages_for_fork", list_session_messages_for_fork)
+    monkeypatch.setattr(
+        session_actions.repositories, "get_session_for_action", get_session_for_action
+    )
+    monkeypatch.setattr(
+        session_actions.repositories,
+        "list_session_messages_for_fork",
+        list_session_messages_for_fork,
+    )
     monkeypatch.setattr(session_actions.repositories, "ensure_user", ensure_user)
     monkeypatch.setattr(session_actions.repositories, "create_session", create_session)
     monkeypatch.setattr(session_actions.repositories, "append_message", append_message)
 
-    owner = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="default", roles=["user"])
-    admin = AuthPrincipal(user_id="admin-a", display_name="Admin", tenant_id="default", roles=["admin"])
-    other_user = AuthPrincipal(user_id="user-b", display_name="B", tenant_id="default", roles=["user"])
-    other_tenant = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="other", roles=["admin"])
+    owner = AuthPrincipal(
+        user_id="user-a", display_name="A", tenant_id="default", roles=["user"]
+    )
+    admin = AuthPrincipal(
+        user_id="admin-a", display_name="Admin", tenant_id="default", roles=["admin"]
+    )
+    other_user = AuthPrincipal(
+        user_id="user-b", display_name="B", tenant_id="default", roles=["user"]
+    )
+    other_tenant = AuthPrincipal(
+        user_id="user-a", display_name="A", tenant_id="other", roles=["admin"]
+    )
 
-    result = await session_actions.fork_session_message(object(), principal=owner, session_id="ses-source", message_id="msg-1")
+    result = await session_actions.fork_session_message(
+        object(), principal=owner, session_id="ses-source", message_id="msg-1"
+    )
     assert result["source_session_id"] == "ses-source"
     assert result["session"]["id"] == "ses-fork"
-    assert created == [{"tenant_id": "default", "workspace_id": "workspace-a", "user_id": "user-a", "agent_id": "general-agent", "title": "Source (fork)", "title_source": "user"}]
-    assert copied == [{"tenant_id": "default", "session_id": "ses-fork", "run_id": None, "role": "user", "content": "one", "metadata_json": {}}]
+    assert created == [
+        {
+            "tenant_id": "default",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "agent_id": "general-agent",
+            "title": "Source (fork)",
+            "title_source": "user",
+        }
+    ]
+    assert copied == [
+        {
+            "tenant_id": "default",
+            "session_id": "ses-fork",
+            "run_id": None,
+            "role": "user",
+            "content": "one",
+            "metadata_json": {},
+        }
+    ]
     assert ensured_users == [("default", "user-a", "A")]
 
-    await session_actions.fork_session_message(object(), principal=admin, session_id="ses-source", message_id="msg-2")
+    await session_actions.fork_session_message(
+        object(), principal=admin, session_id="ses-source", message_id="msg-2"
+    )
     assert created[-1]["user_id"] == "admin-a"
     assert [item["content"] for item in copied[-2:]] == ["one", "two"]
     assert ensured_users[-1] == ("default", "admin-a", "Admin")
@@ -345,7 +463,12 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
         (owner, "ses-missing", "msg-1"),
     ):
         with pytest.raises(session_actions.SessionActionNotFoundError):
-            await session_actions.fork_session_message(object(), principal=principal, session_id=session_id, message_id=message_id)
+            await session_actions.fork_session_message(
+                object(),
+                principal=principal,
+                session_id=session_id,
+                message_id=message_id,
+            )
     assert len(created) == 2
     assert len(copied) == 3
 
@@ -357,15 +480,39 @@ def test_lambchat_session_action_routes_are_thin_service_adapters(monkeypatch):
 
     async def rename(_conn, *, principal, session_id, title):
         calls.append(("rename", principal.user_id, session_id, title))
-        return {"id": session_id, "workspace_id": "default", "agent_id": "general-agent", "title": title, "status": "active"}
+        return {
+            "id": session_id,
+            "workspace_id": "default",
+            "agent_id": "general-agent",
+            "title": title,
+            "status": "active",
+        }
 
     async def delete(_conn, *, principal, session_id):
         calls.append(("delete", principal.user_id, session_id))
-        return {"session": {"id": session_id, "workspace_id": "default", "agent_id": "general-agent", "title": "Deleted", "status": "deleted"}, "already_deleted": False}
+        return {
+            "session": {
+                "id": session_id,
+                "workspace_id": "default",
+                "agent_id": "general-agent",
+                "title": "Deleted",
+                "status": "deleted",
+            },
+            "already_deleted": False,
+        }
 
     async def fork(_conn, *, principal, session_id, message_id):
         calls.append(("fork", principal.user_id, session_id, message_id))
-        return {"source_session_id": session_id, "session": {"id": "ses-fork", "workspace_id": "default", "agent_id": "general-agent", "title": "Fork", "status": "active"}}
+        return {
+            "source_session_id": session_id,
+            "session": {
+                "id": "ses-fork",
+                "workspace_id": "default",
+                "agent_id": "general-agent",
+                "title": "Fork",
+                "status": "active",
+            },
+        }
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
@@ -374,10 +521,27 @@ def test_lambchat_session_action_routes_are_thin_service_adapters(monkeypatch):
     monkeypatch.setattr(session_actions, "fork_session_message", fork)
     client = TestClient(create_app())
 
-    assert client.patch("/api/sessions/ses-a", headers=action_headers(), json={"name": "Renamed"}).status_code == 200
-    assert client.delete("/api/sessions/ses-a", headers=action_headers()).status_code == 200
-    assert client.post("/api/sessions/ses-a/messages/msg-a/fork", headers=action_headers()).status_code == 200
-    assert calls == [("rename", "user-a", "ses-a", "Renamed"), ("delete", "user-a", "ses-a"), ("fork", "user-a", "ses-a", "msg-a")]
+    assert (
+        client.patch(
+            "/api/sessions/ses-a", headers=action_headers(), json={"name": "Renamed"}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.delete("/api/sessions/ses-a", headers=action_headers()).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/sessions/ses-a/messages/msg-a/fork", headers=action_headers()
+        ).status_code
+        == 200
+    )
+    assert calls == [
+        ("rename", "user-a", "ses-a", "Renamed"),
+        ("delete", "user-a", "ses-a"),
+        ("fork", "user-a", "ses-a", "msg-a"),
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -388,8 +552,13 @@ def default_lambchat_stream_projection(monkeypatch):
     async def empty_run_artifacts(conn, *, tenant_id, run_id):
         return []
 
-    monkeypatch.setattr("app.routes.lambchat_compat.repositories.list_run_events", empty_run_events)
-    monkeypatch.setattr("app.routes.lambchat_compat.repositories.list_run_artifacts", empty_run_artifacts)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events", empty_run_events
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        empty_run_artifacts,
+    )
 
 
 def test_chat_stream_request_accepts_lambchat_body_shape():
@@ -411,6 +580,47 @@ def test_chat_stream_request_accepts_lambchat_body_shape():
     assert request.enabled_skills == ["general-chat"]
 
 
+@pytest.mark.parametrize(
+    ("effort", "expected"),
+    [
+        ("auto", "auto"),
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("off", "auto"),
+    ],
+)
+def test_chat_stream_request_normalizes_supported_thinking_effort(effort, expected):
+    request = ChatStreamRequest.model_validate(
+        {"message": "hello", "agent_options": {"enable_thinking": effort}}
+    )
+
+    assert request.agent_options == {"enable_thinking": expected}
+
+
+def test_agent_app_run_request_defaults_to_auto_and_normalizes_legacy_off():
+    base = {
+        "message": "hello",
+        "submission_id": "12345678-1234-4678-9234-567812345678",
+    }
+
+    assert AgentAppRunRequest.model_validate(base).thinking_effort == "auto"
+    assert (
+        AgentAppRunRequest.model_validate(
+            {**base, "thinking_effort": "off"}
+        ).thinking_effort
+        == "auto"
+    )
+
+
+@pytest.mark.parametrize("effort", ["max", "extreme"])
+def test_chat_stream_request_rejects_unsupported_thinking_effort(effort):
+    with pytest.raises(ValueError, match="thinking_effort_invalid"):
+        ChatStreamRequest.model_validate(
+            {"message": "hello", "agent_options": {"enable_thinking": effort}}
+        )
+
+
 def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
     async def fake_list_authorized_sessions(conn, *, tenant_id, user_id):
         assert (tenant_id, user_id) == ("default", "user-a")
@@ -426,9 +636,20 @@ def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
             },
             {
                 "id": "ses_translate",
-                "agent_id": "baoyu-translate",
+                "agent_id": "translate",
                 "workspace_id": "default",
-                "title": "翻译",
+                "title": "旧翻译",
+                "status": "active",
+                "created_at": None,
+                "updated_at": None,
+            },
+            {
+                "id": "ses_custom_translate",
+                "agent_id": "custom-translate",
+                "agent_default_skill_id": "baoyu-translate",
+                "agent_profile_skill_id": "baoyu-translate",
+                "workspace_id": "default",
+                "title": "旧自定义翻译",
                 "status": "active",
                 "created_at": None,
                 "updated_at": None,
@@ -449,14 +670,21 @@ def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
     sessions = response.json()["sessions"]
     assert sessions[0]["agent_id"] == "document-review"
     assert sessions[0]["metadata"]["agent_id"] == "document-review"
-    assert sessions[1]["agent_id"] == "document-translation"
-    assert sessions[1]["metadata"]["agent_id"] == "document-translation"
+    assert sessions[1]["agent_id"] == "retired-agent"
+    assert sessions[1]["metadata"]["agent_id"] == "retired-agent"
+    assert sessions[1]["name"] == "已停用 Agent 会话"
+    assert sessions[2]["agent_id"] == "retired-agent"
+    assert sessions[2]["metadata"]["agent_id"] == "retired-agent"
+    assert sessions[2]["name"] == "已停用 Agent 会话"
     assert "qa-word-review" not in str(response.json())
     assert "baoyu-translate" not in str(response.json())
+    assert "旧自定义翻译" not in str(response.json())
 
 
 def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_review")
         return {
             "id": session_id,
@@ -485,37 +713,38 @@ def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
     assert "qa-word-review" not in str(payload)
 
 
-async def test_lambchat_agent_repository_exposes_only_canonical_agents():
-    from app.repositories import list_lambchat_agents
+def test_lambchat_session_detail_redacts_custom_retired_agent(monkeypatch):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
+        return {
+            "id": session_id,
+            "agent_id": "custom-translate",
+            "agent_default_skill_id": "baoyu-translate",
+            "workspace_id": "default",
+            "title": "旧自定义翻译",
+            "status": "active",
+            "created_at": None,
+            "updated_at": None,
+        }
 
-    class FakeCursor:
-        async def fetchall(self):
-            return []
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    client = TestClient(create_app())
 
-    class RecordingConnection:
-        def __init__(self):
-            self.executed = []
+    response = client.get("/api/sessions/ses_custom_translate", headers=auth_headers())
 
-        async def execute(self, sql, params):
-            self.executed.append((" ".join(sql.split()), params))
-            return FakeCursor()
-
-    conn = RecordingConnection()
-
-    rows = await list_lambchat_agents(conn, tenant_id="default")
-
-    assert rows == []
-    sql, params = conn.executed[-1]
-    assert "agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')" in sql
-    assert "sop-assistant" not in sql
-    assert "agents.status = 'active'" in sql
-    assert "skills.status = 'active'" in sql
-    assert "skill_release_policies.current_version" in sql
-    assert "coalesce(skill_versions.status, 'active') as skill_version_status" in sql
-    assert "skill_release_policies.previous_version as release_policy_previous_version" in sql
-    assert "previous_skill_versions.status as release_policy_previous_version_status" in sql
-    assert params == ("default",)
-
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_id"] == "retired-agent"
+    assert payload["metadata"]["agent_id"] == "retired-agent"
+    assert payload["name"] == "已停用 Agent 会话"
+    assert "baoyu-translate" not in str(payload)
+    assert "旧自定义翻译" not in str(payload)
 
 def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
     model_catalog = AsyncMock(
@@ -535,23 +764,26 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
     )
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.lambchat_compat.list_public_models", model_catalog)
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
     client = TestClient(create_app())
 
     expectations = {
         "/api/auth/oauth/providers": {"registration_enabled": False},
         "/api/auth/permissions": {"groups": list, "all_permissions": list},
-        "/api/agent/models/": {"enabled_count": 1},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
-        "/api/settings/": {"settings": {}},
-        "/api/version": {"version": "ai-platform-poc"},
-        "/api/projects": [],
         "/api/notifications/active": {"notifications": []},
-        "/api/upload/config": {"categories": ["document"], "enabled": True, "uploadLimits": dict},
-        "/api/tools": {"tools": []},
+        "/api/upload/config": {
+            "categories": ["document"],
+            "enabled": True,
+            "uploadLimits": dict,
+        },
     }
 
     anonymous_models = client.get("/api/agent/models/available")
     assert anonymous_models.status_code == 401
+    models = client.get("/api/agent/models/available", headers=auth_headers())
+    assert models.status_code == 200
+    assert models.json()["enabled_count"] == 1
 
     for path, expected in expectations.items():
         response = client.get(path)
@@ -577,7 +809,7 @@ def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
     response = client.get("/api/upload/config")
 
     assert response.status_code == 200
-    assert MAX_UPLOAD_BYTES == 50 * 1024 * 1024
+    assert MAX_UPLOAD_BYTES == 512 * 1024 * 1024
     payload = response.json()
     expected_limits_bytes = {
         "image": MAX_UPLOAD_BYTES,
@@ -586,13 +818,14 @@ def test_upload_config_exposes_canonical_byte_contract_with_legacy_aliases():
         "document": MAX_UPLOAD_BYTES,
     }
     assert payload["uploadLimitsBytes"] == expected_limits_bytes
-    assert payload["maxFiles"] == 10
+    assert payload["maxFiles"] == 32
+    assert payload["maxActiveUploadSessions"] == 3
     assert payload["max_file_size_bytes"] == MAX_UPLOAD_BYTES
-    assert payload["uploadLimits"] == {**expected_limits_bytes, "maxFiles": 10}
+    assert payload["uploadLimits"] == {**expected_limits_bytes, "maxFiles": 32}
     assert payload["max_file_size"] == MAX_UPLOAD_BYTES
 
 
-def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
+def test_notifications_have_one_workbench_route_owner(monkeypatch):
     from app.routes.lambchat_compat import router as lambchat_router
     from app.routes.workbench_projections import router as workbench_router
     from tests.test_workbench_projection_routes import (
@@ -601,7 +834,7 @@ def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
     )
 
     install_workbench_route_fakes(monkeypatch)
-    for path in ("/settings/", "/notifications/active"):
+    for path in ("/notifications/active",):
         workbench_owners = [
             route.endpoint.__module__
             for route in workbench_router.routes
@@ -619,65 +852,34 @@ def test_settings_and_notifications_have_one_workbench_route_owner(monkeypatch):
 
     client = TestClient(create_app())
 
-    anonymous_settings = client.get("/api/settings/")
-    authenticated_settings = client.get("/api/settings/", headers=user_headers())
     anonymous_notifications = client.get("/api/notifications/active")
-    authenticated_notifications = client.get("/api/notifications/active", headers=user_headers())
+    authenticated_notifications = client.get(
+        "/api/notifications/active", headers=user_headers()
+    )
 
-    assert anonymous_settings.status_code == 200
-    assert anonymous_settings.json() == {"settings": {}}
-    assert authenticated_settings.status_code == 200
-    assert set(authenticated_settings.json()["settings"]) == {"personal_preferences", "system_runtime"}
     assert anonymous_notifications.status_code == 200
     assert anonymous_notifications.json() == {"notifications": []}
     assert authenticated_notifications.status_code == 200
     assert authenticated_notifications.json()[0]["id"] == "platform-announcement"
 
 
-def test_lambchat_model_catalog_comes_from_settings(monkeypatch):
-    current_settings = type(
-        "S",
-        (),
-        {
-            "openai_model": "deepseek-v4-flash",
-            "anthropic_model": "deepseek-v4-flash",
-            "claude_agent_model": "deepseek-v4-pro",
-            "default_model_id": "deepseek-v4-pro",
-            "model_catalog_json": (
-                '[{"id":"deepseek-v4-flash","label":"DeepSeek V4 Flash","provider":"new-api","max_input_tokens":128000},'
-                '{"id":"deepseek-v4-pro","label":"DeepSeek V4 Pro","provider":"new-api","max_input_tokens":128000}]'
-            ),
-        },
-    )()
-    monkeypatch.setattr(
-        "app.bootstrap.model_services.get_settings",
-        lambda: current_settings,
-    )
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
-        AsyncMock(return_value=[]),
-    )
+def test_lambchat_model_catalog_is_empty_without_governed_connection(monkeypatch):
     monkeypatch.setattr(
         "app.execution.infrastructure.model_management.list_public_models",
         AsyncMock(return_value=None),
     )
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    client = TestClient(create_app())
-
-    response = client.get("/api/agent/models/available", headers=auth_headers())
-
+    response = TestClient(create_app()).get(
+        "/api/agent/models/available", headers=auth_headers(),
+    )
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["default_model_id"] == "deepseek-v4-pro"
-    assert payload["count"] == 2
-    assert payload["enabled_count"] == 2
-    assert [model["id"] for model in payload["models"]] == ["deepseek-v4-flash", "deepseek-v4-pro"]
-    assert payload["models"][1]["label"] == "DeepSeek V4 Pro"
-    assert payload["models"][1]["profile"]["max_input_tokens"] == 128000
+    assert response.json() == {
+        "models": [], "count": 0, "enabled_count": 0, "default_model_id": None,
+    }
 
 
-def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids(
+def test_lambchat_governed_model_catalog_preserves_raw_ids(
     monkeypatch,
 ):
     governed = {
@@ -694,20 +896,10 @@ def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_
         "default_model_id": "mdl_public",
     }
 
-    forbidden_legacy_fetch = AsyncMock(
-        side_effect=AssertionError(
-            "legacy discovery must not run after control-plane activation"
-        )
-    )
-
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
         "app.execution.infrastructure.model_management.list_public_models",
         AsyncMock(return_value=governed),
-    )
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
-        forbidden_legacy_fetch,
     )
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     response = TestClient(create_app()).get(
@@ -716,43 +908,26 @@ def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_
     )
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
     assert response.json() == governed
 
 
-def test_lambchat_upload_file_endpoint_matches_frontend_contract(monkeypatch, tmp_path):
-    async def fake_upload_platform_file(file, workspace_id, session_id, principal):
-        assert workspace_id == "default"
-        assert session_id is None
-        assert principal.user_id == "user-a"
-        return SimpleNamespace(
-            file_id="file_uploaded",
-            name="sample.docx",
-            storage_key="tenants/default/files/file_uploaded/sample.docx",
-            sha256="abc123",
-            size_bytes=12,
-        )
-
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.lambchat_compat.upload_platform_file", fake_upload_platform_file)
+def test_retired_lambchat_subroutes_are_absent():
     client = TestClient(create_app())
-    sample = tmp_path / "sample.docx"
-    sample.write_bytes(b"fake-docx")
 
-    with sample.open("rb") as handle:
-        response = client.post(
-            "/api/upload/file?folder=uploads",
-            headers=auth_headers(),
-            files={"file": ("sample.docx", handle, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
-        )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["key"] == "file_uploaded"
-    assert payload["file_id"] == "file_uploaded"
-    assert payload["name"] == "sample.docx"
-    assert payload["type"] == "uploads"
-    assert payload["mimeType"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    assert payload["size"] == 12
+    for method, path in (
+        ("post", "/api/auth/login"),
+        ("get", "/api/auth/me"),
+        ("post", "/api/auth/refresh"),
+        ("get", "/api/agent/models/"),
+        ("get", "/api/projects"),
+        ("get", "/api/projects/"),
+        ("get", "/api/tools"),
+        ("post", "/api/upload/file"),
+        ("get", "/api/version"),
+        ("post", "/api/chat/sessions/session-a/cancel"),
+    ):
+        assert getattr(client, method)(path).status_code == 404, path
 
 
 def test_lambchat_upload_check_route_is_retired():
@@ -783,7 +958,15 @@ def test_lambchat_permissions_include_user_and_admin_capabilities():
 
 
 def test_lambchat_profile_endpoint_returns_principal_and_metadata(monkeypatch):
+    class FakeProfileMetadataService:
+        async def merge(self, *, patch, **_scope):
+            return dict(patch)
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(
+        "app.bootstrap.identity.ProfileMetadataService",
+        lambda _store: FakeProfileMetadataService(),
+    )
     client = TestClient(create_app())
 
     response = client.put(
@@ -801,18 +984,24 @@ def test_lambchat_profile_endpoint_returns_principal_and_metadata(monkeypatch):
 
 
 def test_lambchat_profile_keeps_empty_principal_permissions(monkeypatch):
+    class FakeProfileMetadataService:
+        async def get(self, **_scope):
+            return {}
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr(
+        "app.bootstrap.identity.ProfileMetadataService",
+        lambda _store: FakeProfileMetadataService(),
+    )
     client = TestClient(create_app())
 
-    me_response = client.get("/api/auth/me", headers=auth_headers())
+    me_response = client.get("/api/ai/auth/me", headers=auth_headers())
     profile_response = client.get("/api/auth/profile", headers=auth_headers())
 
     assert me_response.status_code == 200
     assert profile_response.status_code == 200
     assert me_response.json()["permissions"] == []
     assert profile_response.json()["permissions"] == []
-
-
 
 
 @pytest.mark.parametrize(
@@ -1002,20 +1191,22 @@ def test_lambchat_terminal_answer_requires_consistent_identifier_capabilities(
 
 
 @pytest.mark.parametrize(
-    ("agent_id", "skill_id", "message", "private_marker", "expected_detail_code"),
+    ("agent_id", "skill_id", "message", "private_marker", "expected_content", "expected_detail_code"),
     [
         (
             "general-agent",
             "general-chat",
             "general-chat 拒绝读取 /var/lib/private/answer.txt",
-            "/var/",
-            "result_unavailable",
+            "",
+            "general-agent 拒绝读取 /var/lib/private/answer.txt",
+            None,
         ),
         (
             "executor_native",
             "custom-skill",
             "custom-skill 拒绝暴露运行时详情",
             "executor_native",
+            "拒绝暴露运行时详情",
             None,
         ),
     ],
@@ -1025,6 +1216,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
     skill_id,
     message,
     private_marker,
+    expected_content,
     expected_detail_code,
 ):
     from app.routes.lambchat_compat import _terminal_final_payload
@@ -1041,7 +1233,7 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
 
     assert final_payload is not None
     event_type, payload, _ = final_payload
-    assert private_marker not in str(payload)
+    assert private_marker not in str(payload) if private_marker else True
     assert skill_id not in str(payload)
     if expected_detail_code is not None:
         assert event_type == "final_detail"
@@ -1049,16 +1241,18 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
         assert "content" not in payload
     else:
         assert event_type == "message:chunk"
-        assert payload["content"] == "拒绝暴露运行时详情"
-
-
+        assert payload["content"] == expected_content
 
 
 def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_a",
@@ -1106,7 +1300,7 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
                     "severity": "info",
                 },
                 "created_at": None,
-            }
+            },
         ]
 
     async def empty_artifacts(conn, *, tenant_id, run_id):
@@ -1132,7 +1326,10 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
     )
     client = TestClient(create_app())
 
-    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+    response = client.get(
+        "/api/sessions/ses_a/events?compact_message_chunks=true",
+        headers=auth_headers(),
+    )
 
     assert response.status_code == 200
     events = response.json()["events"]
@@ -1142,20 +1339,42 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
     assert [event["payload"]["content"] for event in events] == ["partial "]
 
 
-
-
 @pytest.mark.parametrize(
-    ("status", "error_code", "detail_kind", "detail_code"),
+    (
+        "status",
+        "error_code",
+        "result_json",
+        "detail_kind",
+        "detail_code",
+        "expected_reason",
+    ),
     [
-        ("failed", "claude_agent_sdk_runtime_error", "failed", "model_service_unavailable"),
-        ("canceled", None, "cancelled", "run_cancelled"),
+        (
+            "failed",
+            "claude_agent_sdk_runtime_error",
+            {},
+            "failed",
+            "execution_service_unavailable",
+            None,
+        ),
+        (
+            "failed",
+            "run_failed",
+            {},
+            "failed",
+            "run_failed",
+            None,
+        ),
+        ("canceled", None, {}, "cancelled", "run_cancelled", None),
     ],
 )
 def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     status,
     error_code,
+    result_json,
     detail_kind,
     detail_code,
+    expected_reason,
 ):
     from app.auth import AuthPrincipal
     from app.routes.lambchat_compat import _compatibility_events_for_run
@@ -1172,7 +1391,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         "agent_id": "general-agent",
         "skill_id": "general-chat",
         "status": status,
-        "result_json": {},
+        "result_json": result_json,
         "error_code": error_code,
         "error_message": "private token at /home/private/runtime.log",
         "finished_at": "2026-07-22T01:02:03Z",
@@ -1229,7 +1448,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
             "stage": "answer",
             "message": "",
             "payload_json": {
-                "delta": "secret token at /home/private/result.txt",
+                "delta": "api_key=actual-secret-value at /home/private/result.txt",
                 "source": "worker_answer_delta_v1",
                 "visible_to_user": True,
                 "severity": "info",
@@ -1253,12 +1472,14 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         "run_started",
         "agent_step_started",
         "message:chunk",
+        "message:chunk",
         "final_detail",
         "done",
     ]
     assert history[2]["data"]["content"] == "已完成公开部分；"
-    assert history[3]["data"]["detail_kind"] == detail_kind
-    assert history[3]["data"]["detail_code"] == detail_code
+    assert history[4]["data"]["detail_kind"] == detail_kind
+    assert history[4]["data"]["detail_code"] == detail_code
+    assert "projection_failure_reason" not in history[4]["data"]
     assert history[-1]["data"]["status"] == (
         "cancelled" if status == "canceled" else status
     )
@@ -1266,10 +1487,430 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     assert "已完成请求准备，正在进入受控执行阶段" in serialized
     assert "受控处理步骤仍在进行" in serialized
     assert "private chain of thought" not in serialized
-    assert "secret token" not in serialized
-    assert "/home/private" not in serialized
+    assert "actual-secret-value" not in serialized
+    assert "/home/private/result.txt" in serialized
     assert "worker-private" not in serialized
     assert "current_step" not in serialized
+
+
+def test_lambchat_typed_tool_denied_projects_as_permission_blocked() -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _public_run_event_envelope
+
+    projected = _public_run_event_envelope(
+        {"id": "run-denied", "tenant_id": "default"},
+        {
+            "id": "evt-denied",
+            "tenant_id": "default",
+            "run_id": "run-denied",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 7,
+            "event_type": "tool.denied",
+            "stage": "agent_kernel",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "payload_json": {
+                "operation_id": "op-denied",
+                "category": "write",
+                "display_name": "Write",
+                "denial_code": "policy_denied",
+            },
+            "created_at": "2026-08-01T00:00:01Z",
+        },
+        AuthPrincipal(
+            user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
+        ),
+    )
+
+    assert projected is not None
+    assert projected["event_type"] == "public_tool_activity"
+    assert projected["stage"] == "tool"
+    assert projected["progress_kind"] == "blocked"
+    assert projected["wait_reason"] == "permission"
+    assert projected["severity"] == "warning"
+    assert projected["payload"] == {
+        "operation_id": "op-denied",
+        "category": "write",
+        "display_name": "Write",
+        "denial_code": "policy_denied",
+        "status": "denied",
+    }
+
+
+def test_lambchat_failed_history_reconstructs_authorized_v4_body() -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
+
+    run = {
+        "id": "run-v4-failed",
+        "tenant_id": "default",
+        "trace_id": "trace-v4-failed",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "result_json": {},
+        "error_code": "claude_agent_sdk_runtime_error",
+        "error_message": "private failure",
+        "finished_at": "2026-08-01T00:00:03Z",
+    }
+    v4_delta = {
+        "id": "evt4_failed_delta",
+        "tenant_id": "default",
+        "run_id": run["id"],
+        "trace_id": run["trace_id"],
+        "schema_version": "ai-platform.event-envelope.v1",
+        "sequence": 3,
+        "event_type": "message.delta",
+        "stage": "agent_kernel",
+        "message": "",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "payload_json": {
+            "delta": "失败前已公开的正文。",
+            "__stream_v4": {
+                "attempt_id": "attempt-v4-failed",
+                "version": 1,
+                "stream_incarnation": 2,
+                "authorization_epoch": 4,
+                "message_id": opaque_message_id("default", run["id"]),
+                "publication_state": "published",
+            },
+        },
+        "stream_publication_state": "published",
+        "v4_attempt_authorized": True,
+        "created_at": "2026-08-01T00:00:01Z",
+    }
+
+    records = _compatibility_events_for_run(
+        run,
+        [v4_delta],
+        [],
+        AuthPrincipal(
+            user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
+        ),
+    )
+    history = [record.history_event for record in records]
+    chunks = [event for event in history if event["event_type"] == "message:chunk"]
+
+    assert [chunk["data"]["content"] for chunk in chunks] == ["失败前已公开的正文。"]
+    assert chunks[0]["id"] == "evt4_failed_delta"
+    serialized = str(history)
+    assert "__stream_v4" not in serialized
+    assert "attempt-v4-failed" not in serialized
+    assert "authorization_epoch" not in serialized
+
+
+def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
+
+    run = {
+        "id": "run-v4-commentary",
+        "tenant_id": "default",
+        "trace_id": "trace-v4-commentary",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+        "finished_at": None,
+    }
+    base = {
+        "tenant_id": "default",
+        "run_id": run["id"],
+        "trace_id": run["trace_id"],
+        "schema_version": "ai-platform.event-envelope.v1",
+        "stage": "agent_kernel",
+        "message": "",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "stream_publication_state": "published",
+        "v4_attempt_authorized": True,
+        "created_at": "2026-08-01T00:00:01Z",
+    }
+    stream_receipt = {
+        "attempt_id": "attempt-v4-commentary",
+        "version": 1,
+        "stream_incarnation": 2,
+        "authorization_epoch": 4,
+        "message_id": opaque_message_id("default", run["id"]),
+        "publication_state": "published",
+    }
+    events = [
+        {
+            **base,
+            "id": "evt4-commentary",
+            "sequence": 1,
+            "event_type": "commentary.delta",
+            "payload_json": {
+                "summary_id": "summary-public-1",
+                "delta": "正在检查授权输入。",
+                "__stream_v4": stream_receipt,
+            },
+        },
+        {
+            **base,
+            "id": "evt4-commentary-forged",
+            "sequence": 2,
+            "event_type": "commentary.delta",
+            "payload_json": {
+                "summary_id": "summary-public-2",
+                "delta": "unsafe",
+                "tool_input": "private",
+                "__stream_v4": stream_receipt,
+            },
+        },
+    ]
+
+    history = [
+        record.history_event
+        for record in _compatibility_events_for_run(
+            run,
+            events,
+            [],
+            AuthPrincipal(
+                user_id="user-a",
+                display_name="User A",
+                tenant_id="default",
+                roles=["user"],
+            ),
+        )
+    ]
+
+    summaries = [event for event in history if event["event_type"] == "summary"]
+    assert len(summaries) == 1
+    assert summaries[0]["data"]["summary_id"] == "summary-public-1"
+    assert summaries[0]["data"]["content"] == "正在检查授权输入。"
+    assert summaries[0]["data"]["payload"] == {
+        "summary_id": "summary-public-1",
+        "delta": "正在检查授权输入。",
+    }
+    assert "__stream_v4" not in str(history)
+    assert "tool_input" not in str(history)
+
+
+def test_lambchat_history_compacts_v4_answer_deltas_without_crossing_public_events() -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
+
+    run = {
+        "id": "run-v4-compact",
+        "tenant_id": "default",
+        "trace_id": "trace-v4-compact",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "result_json": {},
+        "error_code": "run_failed",
+        "finished_at": "2026-08-01T00:00:07Z",
+    }
+    message_id = opaque_message_id("default", run["id"])
+
+    def delta(
+        sequence: int,
+        content: str,
+        *,
+        owner: str = message_id,
+        incarnation: int = 2,
+    ) -> dict[str, object]:
+        return {
+            "id": f"evt4_delta_{sequence}",
+            "tenant_id": "default",
+            "run_id": run["id"],
+            "trace_id": run["trace_id"],
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": sequence,
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "payload_json": {
+                "delta": content,
+                "__stream_v4": {
+                    "attempt_id": "attempt-v4-compact",
+                    "version": 1,
+                    "stream_incarnation": incarnation,
+                    "authorization_epoch": 4,
+                    "message_id": owner,
+                    "publication_state": "published",
+                },
+            },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
+            "created_at": f"2026-08-01T00:00:0{sequence}Z",
+        }
+
+    events = [
+        delta(1, "第一段"),
+        {
+            "id": "evt-private",
+            "sequence": 2,
+            "event_type": "executor_private_event",
+            "visible_to_user": False,
+            "payload_json": {"private_payload": "never project"},
+        },
+        delta(3, "第二段"),
+        delta(4, "独立消息", owner="msg4_foreign"),
+        delta(5, "新流实例", incarnation=3),
+        {
+            "id": "evt-worker",
+            "trace_id": run["trace_id"],
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 6,
+            "event_type": "worker_started",
+            "stage": "worker",
+            "message": "private worker identity",
+            "severity": "info",
+            "visible_to_user": True,
+            "payload_json": {"visible_to_user": True},
+            "created_at": "2026-08-01T00:00:06Z",
+        },
+        delta(7, "已开始，general-"),
+        delta(8, "chat 完成。"),
+    ]
+    principal = AuthPrincipal(
+        user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
+    )
+
+    uncompressed = _compatibility_events_for_run(run, events, [], principal)
+    compacted = _compatibility_events_for_run(
+        run, events, [], principal, compact_answer_deltas=True
+    )
+    uncompressed_chunks = [
+        record.history_event
+        for record in uncompressed
+        if record.history_event["event_type"] == "message:chunk"
+    ]
+    compacted_history = [record.history_event for record in compacted]
+    compacted_chunks = [
+        event for event in compacted_history if event["event_type"] == "message:chunk"
+    ]
+
+    assert [event["data"]["content"] for event in uncompressed_chunks] == [
+        "第一段",
+        "第二段",
+        "独立消息",
+        "新流实例",
+        "已开始，general-agent 完成。",
+    ]
+    assert [event["event_type"] for event in compacted_history] == [
+        "message:chunk",
+        "message:chunk",
+        "message:chunk",
+        "run_started",
+        "message:chunk",
+        "final_detail",
+        "done",
+    ]
+    assert [event["data"]["content"] for event in compacted_chunks] == [
+        "第一段第二段",
+        "独立消息",
+        "新流实例",
+        "已开始，general-agent 完成。",
+    ]
+    assert [event["id"] for event in compacted_chunks] == [
+        "evt4_delta_3",
+        "evt4_delta_4",
+        "evt4_delta_5",
+        "evt4_delta_8",
+    ]
+    assert [event["sequence"] for event in compacted_chunks] == [3, 4, 5, 8]
+    assert "never project" not in str(compacted_history)
+
+
+@pytest.mark.parametrize(
+    ("v4_attempt_authorized", "expected_event_id"),
+    [(True, "evt4_mixed_delta"), (False, None)],
+)
+def test_lambchat_history_selects_one_authorized_body_source(
+    v4_attempt_authorized,
+    expected_event_id,
+) -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
+
+    run = {
+        "id": "run-mixed-body",
+        "tenant_id": "default",
+        "trace_id": "trace-mixed-body",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "result_json": {},
+        "error_code": "claude_agent_sdk_runtime_error",
+        "finished_at": "2026-08-01T00:00:03Z",
+    }
+    common = {
+        "tenant_id": "default",
+        "run_id": run["id"],
+        "trace_id": run["trace_id"],
+        "schema_version": "ai-platform.event-envelope.v1",
+        "stage": "answer",
+        "message": "",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "created_at": "2026-08-01T00:00:01Z",
+    }
+    legacy = {
+        **common,
+        "id": "evt-legacy-mixed",
+        "sequence": 2,
+        "event_type": "assistant_delta",
+        "payload_json": {
+            "delta": "同一份公开正文。",
+            "source": "worker_answer_delta_v1",
+            "visible_to_user": True,
+        },
+    }
+    v4 = {
+        **common,
+        "id": "evt4_mixed_delta",
+        "sequence": 3,
+        "event_type": "message.delta",
+        "stream_publication_state": "published",
+        "v4_attempt_authorized": v4_attempt_authorized,
+        "payload_json": {
+            "delta": "同一份公开正文。",
+            "__stream_v4": {
+                "attempt_id": "attempt-mixed-body",
+                "version": 1,
+                "stream_incarnation": 3,
+                "authorization_epoch": 5,
+                "message_id": opaque_message_id("default", run["id"]),
+                "publication_state": "published",
+            },
+        },
+    }
+
+    records = _compatibility_events_for_run(
+        run,
+        [legacy, v4],
+        [],
+        AuthPrincipal(
+            user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
+        ),
+    )
+    chunks = [
+        record.history_event
+        for record in records
+        if record.history_event["event_type"] == "message:chunk"
+    ]
+
+    if expected_event_id is None:
+        assert chunks == []
+    else:
+        assert len(chunks) == 1
+        assert chunks[0]["id"] == expected_event_id
+        assert chunks[0]["data"]["content"] == "同一份公开正文。"
 
 
 def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer():
@@ -1416,13 +2057,10 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
         for payload in answer_payloads
         if payload["projection_kind"] == "assistant_delta"
     ]
-    final = next(
-        payload
-        for payload in answer_payloads
-        if payload["projection_kind"] == "assistant_final"
-    )
 
-    assert "".join(deltas) == final["content"] == "已开始，general-agent 完成。"
+    assert len(answer_payloads) == 1
+    assert [payload["event_id"] for payload in answer_payloads] == ["evt-split-b"]
+    assert "".join(deltas) == "已开始，general-agent 完成。"
     assert "general-chat" not in str(answer_payloads)
     assert "qa-word-review" not in str(answer_payloads)
 
@@ -1475,7 +2113,7 @@ def test_lambchat_history_fold_preserves_split_identifier_across_pages():
         [delta_event("evt-page-a", 1, "已开始，general-")],
         [],
         principal,
-        fold_state=_CompatibilityFoldState(False, frozenset()),
+        fold_state=_CompatibilityFoldState(False, frozenset(), "legacy"),
         include_terminal=False,
     )
     second_page, _ = _compatibility_events_for_run_page(
@@ -1501,19 +2139,113 @@ def test_lambchat_history_fold_preserves_split_identifier_across_pages():
         for payload in answer_payloads
         if payload["projection_kind"] == "assistant_delta"
     ]
-    final = next(
-        payload
-        for payload in answer_payloads
-        if payload["projection_kind"] == "assistant_final"
-    )
 
-    assert "".join(deltas) == final["content"] == "已开始，general-agent 完成。"
+    assert len(answer_payloads) == 1
+    assert [payload["event_id"] for payload in answer_payloads] == ["evt-page-b"]
+    assert "".join(deltas) == "已开始，general-agent 完成。"
     assert "general-chat" not in str(answer_payloads)
     assert "qa-word-review" not in str(answer_payloads)
 
 
+def test_lambchat_history_fold_keeps_run_wide_v4_source_across_pages() -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
+    from app.streaming.api import opaque_message_id
+
+    principal = AuthPrincipal(
+        user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
+    )
+    run = {
+        "id": "run-paged-v4",
+        "tenant_id": "default",
+        "trace_id": "trace-paged-v4",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+    }
+    legacy = {
+        "id": "evt-paged-legacy",
+        "tenant_id": "default",
+        "run_id": run["id"],
+        "trace_id": run["trace_id"],
+        "schema_version": "ai-platform.event-envelope.v1",
+        "sequence": 1,
+        "event_type": "assistant_delta",
+        "stage": "answer",
+        "message": "",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "payload_json": {
+            "delta": "分页正文。",
+            "source": "worker_answer_delta_v1",
+            "visible_to_user": True,
+        },
+        "created_at": "2026-08-01T00:00:01Z",
+    }
+    v4 = {
+        **legacy,
+        "id": "evt4_paged_delta",
+        "sequence": 2,
+        "event_type": "message.delta",
+        "stream_publication_state": "published",
+        "v4_attempt_authorized": True,
+        "payload_json": {
+            "delta": "分页正文。",
+            "__stream_v4": {
+                "attempt_id": "attempt-paged-v4",
+                "version": 1,
+                "stream_incarnation": 2,
+                "authorization_epoch": 3,
+                "message_id": opaque_message_id("default", run["id"]),
+                "publication_state": "published",
+            },
+        },
+        "created_at": "2026-08-01T00:00:02Z",
+    }
+
+    first_page, state = _compatibility_events_for_run_page(
+        run,
+        [legacy],
+        [],
+        principal,
+        fold_state=_CompatibilityFoldState(False, frozenset(), "v4"),
+        include_terminal=False,
+    )
+    second_page, final_state = _compatibility_events_for_run_page(
+        {
+            **run,
+            "status": "failed",
+            "error_code": "claude_agent_sdk_runtime_error",
+            "finished_at": "2026-08-01T00:00:03Z",
+        },
+        [v4],
+        [],
+        principal,
+        fold_state=state,
+        include_terminal=True,
+    )
+    chunks = [
+        record
+        for record in [*first_page, *second_page]
+        if record.stream_event_type == "message:chunk"
+        and record.stream_data["projection_kind"] == "assistant_delta"
+    ]
+
+    assert first_page == []
+    assert [chunk.id for chunk in chunks] == ["evt4_paged_delta"]
+    assert chunks[0].stream_data["content"] == "分页正文。"
+    assert final_state.answer_source == "v4"
+
+
 def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         assert user_id == "user-a"
         return {"id": session_id}
 
@@ -1539,9 +2271,15 @@ def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
     )
     client = TestClient(create_app())
 
-    succeeded = client.get("/api/chat/sessions/ses_a/status?run_id=run_succeeded", headers=auth_headers())
-    failed = client.get("/api/chat/sessions/ses_a/status?run_id=run_failed", headers=auth_headers())
-    cancelled = client.get("/api/chat/sessions/ses_a/status?run_id=run_cancelled", headers=auth_headers())
+    succeeded = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run_succeeded", headers=auth_headers()
+    )
+    failed = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run_failed", headers=auth_headers()
+    )
+    cancelled = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run_cancelled", headers=auth_headers()
+    )
 
     assert succeeded.status_code == 200
     assert succeeded.json()["status"] == "completed"
@@ -1554,8 +2292,12 @@ def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
     assert cancelled.json()["raw_status"] == "cancelled"
 
 
-def test_lambchat_status_rejects_an_absent_explicit_run_without_falling_back(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+def test_lambchat_status_rejects_an_absent_explicit_run_without_falling_back(
+    monkeypatch,
+):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
         return {"id": session_id}
 
@@ -1583,12 +2325,20 @@ def test_lambchat_status_rejects_an_absent_explicit_run_without_falling_back(mon
     assert response.json()["detail"] == "run_not_found"
 
 
-def test_lambchat_status_uses_exact_authorized_run_beyond_latest_list_and_rejects_scope_mismatch(monkeypatch):
+def test_lambchat_status_uses_exact_authorized_run_beyond_latest_list_and_rejects_scope_mismatch(
+    monkeypatch,
+):
     calls = []
 
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         calls.append(("session", tenant_id, user_id, session_id))
-        return {"id": session_id} if (tenant_id, user_id) == ("default", "user-a") else None
+        return (
+            {"id": session_id}
+            if (tenant_id, user_id) == ("default", "user-a")
+            else None
+        )
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         calls.append(("run", tenant_id, user_id, run_id))
@@ -1617,7 +2367,9 @@ def test_lambchat_status_uses_exact_authorized_run_beyond_latest_list_and_reject
     )
     client = TestClient(create_app())
 
-    old = client.get("/api/chat/sessions/ses_a/status?run_id=run-old", headers=auth_headers())
+    old = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run-old", headers=auth_headers()
+    )
     wrong_session = client.get(
         "/api/chat/sessions/ses_a/status?run_id=run-other-session",
         headers=auth_headers(),
@@ -1654,11 +2406,19 @@ def test_lambchat_status_uses_exact_authorized_run_beyond_latest_list_and_reject
 def test_lambchat_status_keeps_latest_selection_scoped_to_tenant_and_user(monkeypatch):
     calls = []
 
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         calls.append(("session", tenant_id, user_id, session_id))
-        return {"id": session_id} if (tenant_id, user_id) == ("default", "user-a") else None
+        return (
+            {"id": session_id}
+            if (tenant_id, user_id) == ("default", "user-a")
+            else None
+        )
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         calls.append(("runs", tenant_id, user_id, session_id, limit))
         return [{"id": "run-latest", "status": "running", "session_generation": 1}]
 
@@ -1698,11 +2458,15 @@ def test_lambchat_status_keeps_latest_selection_scoped_to_tenant_and_user(monkey
 
 
 def test_lambchat_session_runs_normalizes_legacy_canceled_status(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         assert user_id == "user-a"
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_cancelled",
@@ -1735,12 +2499,18 @@ def test_lambchat_session_runs_normalizes_legacy_canceled_status(monkeypatch):
     assert "skill_id" not in response.json()["runs"][0]
 
 
-def test_lambchat_session_runs_redacts_raw_skill_agent_id_for_ordinary_user(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+def test_lambchat_session_runs_redacts_raw_skill_agent_id_for_ordinary_user(
+    monkeypatch,
+):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         assert user_id == "user-a"
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_translate",
@@ -1770,17 +2540,21 @@ def test_lambchat_session_runs_redacts_raw_skill_agent_id_for_ordinary_user(monk
 
     assert response.status_code == 200
     run = response.json()["runs"][0]
-    assert run["capability_id"] == "document_translation"
+    assert run["capability_id"] is None
     assert "skill_id" not in run
     assert "baoyu-translate" not in str(run)
 
 
 def test_lambchat_session_runs_include_latest_frontend_run_aliases(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         assert user_id == "user-a"
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_a",
@@ -1807,7 +2581,9 @@ def test_lambchat_session_runs_include_latest_frontend_run_aliases(monkeypatch):
     )
     client = TestClient(create_app())
 
-    response = client.get("/api/sessions/ses_a/runs?trace_id=trace_run_a", headers=auth_headers())
+    response = client.get(
+        "/api/sessions/ses_a/runs?trace_id=trace_run_a", headers=auth_headers()
+    )
 
     assert response.status_code == 200
     payload = response.json()["runs"][0]
@@ -1817,11 +2593,15 @@ def test_lambchat_session_runs_include_latest_frontend_run_aliases(monkeypatch):
 
 
 def test_lambchat_session_runs_redacts_runtime_private_error(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         assert user_id == "user-a"
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_failed",
@@ -1858,10 +2638,14 @@ def test_lambchat_session_runs_redacts_runtime_private_error(monkeypatch):
 
 
 def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_a",
@@ -1923,7 +2707,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
                     "storage_key": "tenants/default/hidden.docx",
                 },
                 "created_at": None,
-            }
+            },
         ]
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
@@ -1955,7 +2739,9 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     assert event["event_type"] == "capability_selected"
     assert event["sequence"] == 37
     assert "sequence" not in event["data"]
-    assert event["payload"] == {"activity": {"category": "capability", "status": "completed"}}
+    assert event["payload"] == {
+        "activity": {"category": "capability", "status": "completed"}
+    }
     assert event["data"] == {
         "projection_version": "ai-platform.chat-public-projection.v1",
         "event_id": "evt_a",
@@ -1967,6 +2753,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
         "progress_kind": "completed",
         "wait_reason": None,
         "payload": {"activity": {"category": "capability", "status": "completed"}},
+        "activity": {"category": "capability", "status": "completed"},
         "created_at": None,
         "content": "已加载授权处理能力，下一步将按所选流程分析请求",
         "status": "planning",
@@ -1977,13 +2764,19 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     assert "/tmp/" not in str(event)
 
 
-def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(monkeypatch):
+def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(
+    monkeypatch,
+):
     message_calls = []
 
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run-new",
@@ -2051,9 +2844,7 @@ def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(mon
     response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
 
     assert response.status_code == 200
-    assert message_calls == [
-        ("default", "user-a", "ses_a", ["run-new", "run-old"])
-    ]
+    assert message_calls == [("default", "user-a", "ses_a", ["run-new", "run-old"])]
     events = response.json()["events"]
     assert [event["event_type"] for event in events] == [
         "user:message",
@@ -2064,12 +2855,22 @@ def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(mon
         "done",
     ]
     user_events = [event for event in events if event["event_type"] == "user:message"]
-    assert [event["data"]["content"] for event in user_events] == ["第一轮问题", "第二轮问题"]
+    assert [event["data"]["content"] for event in user_events] == [
+        "第一轮问题",
+        "第二轮问题",
+    ]
     assert [event["data"]["message_id"] for event in user_events] == [
         "msg-old-user",
         "msg-new-user",
     ]
-    assert set(user_events[0]) == {"id", "type", "event_type", "timestamp", "run_id", "data"}
+    assert set(user_events[0]) == {
+        "id",
+        "type",
+        "event_type",
+        "timestamp",
+        "run_id",
+        "data",
+    }
     assert set(user_events[0]["data"]) == {
         "message_id",
         "run_id",
@@ -2085,10 +2886,14 @@ def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(mon
 
 
 def test_lambchat_failed_run_projects_only_safe_native_skill_sandbox_stage(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run-native-failed",
@@ -2129,7 +2934,9 @@ def test_lambchat_failed_run_projects_only_safe_native_skill_sandbox_stage(monke
 
     assert response.status_code == 200
     final_detail = next(
-        event for event in response.json()["events"] if event["event_type"] == "final_detail"
+        event
+        for event in response.json()["events"]
+        if event["event_type"] == "final_detail"
     )
     assert final_detail["data"] == {
         "run_id": "run-native-failed",
@@ -2143,7 +2950,9 @@ def test_lambchat_failed_run_projects_only_safe_native_skill_sandbox_stage(monke
     assert "private token" not in response.text
 
 
-def test_lambchat_default_history_queries_user_messages_for_only_latest_fifty_runs(monkeypatch):
+def test_lambchat_default_history_queries_user_messages_for_only_latest_fifty_runs(
+    monkeypatch,
+):
     target_runs = [
         {
             "id": f"run-{index:02d}",
@@ -2156,10 +2965,14 @@ def test_lambchat_default_history_queries_user_messages_for_only_latest_fifty_ru
     ]
     message_queries = []
 
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         assert limit == 50
         return target_runs
 
@@ -2195,7 +3008,9 @@ def test_lambchat_default_history_queries_user_messages_for_only_latest_fifty_ru
 
 
 @pytest.mark.asyncio
-async def test_lambchat_session_events_use_persisted_message_repository_contract(monkeypatch):
+async def test_lambchat_session_events_use_persisted_message_repository_contract(
+    monkeypatch,
+):
     class MessageCursor:
         def __init__(self, rows=None):
             self.rows = rows or []
@@ -2210,7 +3025,15 @@ async def test_lambchat_session_events_use_persisted_message_repository_contract
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
             if normalized.startswith("insert into messages"):
-                message_id, tenant_id, session_id, run_id, role, content, metadata_json = params
+                (
+                    message_id,
+                    tenant_id,
+                    session_id,
+                    run_id,
+                    role,
+                    content,
+                    metadata_json,
+                ) = params
                 self.messages.append(
                     {
                         "id": message_id,
@@ -2289,10 +3112,14 @@ async def test_lambchat_session_events_use_persisted_message_repository_contract
     async def message_transaction():
         yield conn
 
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run-new",
@@ -2332,7 +3159,9 @@ async def test_lambchat_session_events_use_persisted_message_repository_contract
 
     assert response.status_code == 200
     user_events = [
-        event for event in response.json()["events"] if event["event_type"] == "user:message"
+        event
+        for event in response.json()["events"]
+        if event["event_type"] == "user:message"
     ]
     assert [event["id"] for event in user_events] == [old_message_id, new_message_id]
     assert [event["data"]["content"] for event in user_events] == [
@@ -2345,11 +3174,17 @@ async def test_lambchat_session_events_use_persisted_message_repository_contract
     assert "不得跨 tenant 投影" not in response.text
 
 
-def test_lambchat_routes_keep_running_latest_run_stable_with_legacy_queued_at_ties(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+def test_lambchat_routes_keep_running_latest_run_stable_with_legacy_queued_at_ties(
+    monkeypatch,
+):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         assert limit in (10, 50)
         return [
             {
@@ -2395,23 +3230,35 @@ def test_lambchat_routes_keep_running_latest_run_stable_with_legacy_queued_at_ti
     first_events = client.get("/api/sessions/ses_a/events", headers=auth_headers())
     second_events = client.get("/api/sessions/ses_a/events", headers=auth_headers())
     first_status = client.get("/api/chat/sessions/ses_a/status", headers=auth_headers())
-    second_status = client.get("/api/chat/sessions/ses_a/status", headers=auth_headers())
+    second_status = client.get(
+        "/api/chat/sessions/ses_a/status", headers=auth_headers()
+    )
 
-    assert [response.status_code for response in (first_events, second_events, first_status, second_status)] == [
+    assert [
+        response.status_code
+        for response in (first_events, second_events, first_status, second_status)
+    ] == [
         200,
         200,
         200,
         200,
     ]
-    assert [first_events.json()["current_run_id"], second_events.json()["current_run_id"]] == [None, None]
+    assert [
+        first_events.json()["current_run_id"],
+        second_events.json()["current_run_id"],
+    ] == [None, None]
     assert [first_status.json()["raw_status"], second_status.json()["raw_status"]] == [
         "idle",
         "idle",
     ]
 
 
-def test_lambchat_exact_session_events_restore_an_authorized_run_beyond_the_latest_fifty(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+def test_lambchat_exact_session_events_restore_an_authorized_run_beyond_the_latest_fifty(
+    monkeypatch,
+):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
@@ -2478,12 +3325,18 @@ def test_lambchat_exact_session_events_restore_an_authorized_run_beyond_the_late
         "done",
     ]
     assert response.json()["events"][0]["data"]["content"] == "恢复旧问题"
-    assert response.json()["events"][1]["data"]["content"] == "restored exact old answer"
+    assert (
+        response.json()["events"][1]["data"]["content"] == "restored exact old answer"
+    )
     assert "metadata_json" not in response.text
 
 
-def test_lambchat_session_events_reject_cross_tenant_before_listing_messages(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+def test_lambchat_session_events_reject_cross_tenant_before_listing_messages(
+    monkeypatch,
+):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         assert (tenant_id, user_id, session_id) == ("tenant-b", "user-b", "ses_a")
 
     async def fail_list_authorized_user_messages_for_runs(*args, **kwargs):
@@ -2511,8 +3364,12 @@ def test_lambchat_session_events_reject_cross_tenant_before_listing_messages(mon
 
 
 @pytest.mark.parametrize("target", [None, {"id": "run-51", "session_id": "ses_other"}])
-def test_lambchat_exact_session_events_hide_missing_or_wrong_session_runs(monkeypatch, target):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+def test_lambchat_exact_session_events_hide_missing_or_wrong_session_runs(
+    monkeypatch, target
+):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
@@ -2541,10 +3398,14 @@ def test_lambchat_exact_session_events_hide_missing_or_wrong_session_runs(monkey
 
 
 def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_a",
@@ -2589,7 +3450,10 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
     assert event["payload"] == {
         "run_id": "run_a",
         "projection_version": "ai-platform.chat-public-projection.v1",
-        "projection_kind": "assistant_final",
+        "projection_kind": "assistant_delta",
+        "event_id": "run_a:final",
+        "message_id": "run_a:assistant",
+        "source": "worker_answer_delta_v1",
         "content": "hello",
     }
     assert event["data"] == event["payload"]
@@ -2597,10 +3461,14 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
 
 
 def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_a",
@@ -2608,7 +3476,9 @@ def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch)
                 "agent_id": "general-agent",
                 "skill_id": "general-chat",
                 "status": "failed",
-                "result_json": {"message": "failed in /home/xinlin.jiang/qa-review-queue-runtime/out.log"},
+                "result_json": {
+                    "message": "failed in /home/xinlin.jiang/qa-review-queue-runtime/out.log"
+                },
                 "error_code": "runtime211_stream_error",
                 "error_message": "failed in /var/lib/ai-platform/private.log",
                 "created_at": None,
@@ -2652,11 +3522,17 @@ def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch)
     assert "runtime211" not in str(event)
 
 
-def test_lambchat_history_places_artifact_and_safe_failure_detail_before_terminal(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+def test_lambchat_history_places_artifact_and_safe_failure_detail_before_terminal(
+    monkeypatch,
+):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_a",
@@ -2750,7 +3626,12 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
     assert response.status_code == 200
     events = response.json()["events"]
     event_types = [event["event_type"] for event in events]
-    assert event_types.index("artifact_ready") < event_types.index("artifact_card") < event_types.index("final_detail") < event_types.index("done")
+    assert (
+        event_types.index("artifact_ready")
+        < event_types.index("artifact_card")
+        < event_types.index("final_detail")
+        < event_types.index("done")
+    )
     final = events[event_types.index("final_detail")]
     assert final["payload"] == {
         "run_id": "run_a",
@@ -2771,11 +3652,17 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
     assert all(event["event_type"] != "run_failed" for event in events)
 
 
-def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
+    monkeypatch,
+):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_a",
@@ -2885,7 +3772,10 @@ def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
     assert event_types.index("artifact_ready") < event_types.index("artifact_card")
     assert event_types.index("artifact_card") < event_types.index("final_detail")
     assert event_types.index("final_detail") < event_types.index("done")
-    assert events[event_types.index("message:chunk")]["data"]["content"] == "已完成并保留的公开部分。"
+    assert (
+        events[event_types.index("message:chunk")]["data"]["content"]
+        == "已完成并保留的公开部分。"
+    )
     final = events[event_types.index("final_detail")]
     assert final["payload"] == {
         "run_id": "run_a",
@@ -2898,15 +3788,22 @@ def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
     artifact = events[event_types.index("artifact_card")]
     assert artifact["data"]["download_url"] == "/api/ai/artifacts/artifact-a/download"
     assert "storage_key" not in str(artifact)
-    assert events[event_types.index("done")]["data"] == {"run_id": "run_a", "status": "failed"}
+    assert events[event_types.index("done")]["data"] == {
+        "run_id": "run_a",
+        "status": "failed",
+    }
     assert all(event["event_type"] != "run_failed" for event in events)
 
 
 def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch):
-    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_lambchat_session(
+        conn, *, tenant_id, user_id, session_id
+    ):
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+    async def fake_list_authorized_session_runs(
+        conn, *, tenant_id, user_id, session_id, limit
+    ):
         return [
             {
                 "id": "run_a",
@@ -2933,7 +3830,10 @@ def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch
                 "severity": "error",
                 "visible_to_user": True,
                 "error_code": "runtime211_stream_error",
-                "payload_json": {"visible_to_user": True, "workerPath": "/var/lib/ai-platform/run-a"},
+                "payload_json": {
+                    "visible_to_user": True,
+                    "workerPath": "/var/lib/ai-platform/run-a",
+                },
                 "created_at": None,
             }
         ]
@@ -2959,7 +3859,9 @@ def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch
     assert response.status_code == 200
     event = response.json()["events"][0]
     assert event["payload"] == {"detail_code": "run_failed"}
-    assert event["data"]["error"] == "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
+    assert (
+        event["data"]["error"] == "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
+    )
     assert "runtime211" not in str(event)
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)
     assert "/var/lib/ai-platform" not in str(event)

@@ -300,16 +300,16 @@ def test_build_skill_manifest_pins_keeps_ragflow_skill_as_single_zero_dependency
 
 def test_build_skill_manifest_pins_keeps_explicit_peer_skills_independent(tmp_path):
     write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
-    write_skill(tmp_path, "baoyu-translate", "Translate documents.")
+    write_skill(tmp_path, "peer-skill", "Peer documents.")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
 
     pins = build_skill_manifest_pins(
         skill_id="qa-file-reviewer",
-        input_payload={"skill_ids": ["baoyu-translate"]},
+        input_payload={"skill_ids": ["peer-skill"]},
         builtin_skills=skills,
     )
 
-    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer", "baoyu-translate"]
+    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer", "peer-skill"]
     assert [pin["dependency_ids"] for pin in pins] == [[], []]
 
 
@@ -363,6 +363,37 @@ def test_build_uploaded_skill_manifest_pin_uses_source_snapshot_files():
         "command_isolation": "sibling-tool-sandbox-v1",
     }
     assert pin["builtin_tool_identities"] == pin["execution_profile"]["builtin_tool_identities"]
+
+
+def test_build_uploaded_skill_manifest_pin_rejects_overlong_utf8_path_component():
+    files = [
+        {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5},
+        {
+            "relative_path": f"references/{'测' * 85}.md",
+            "content_base64": "Z3VpZGU=",
+            "size_bytes": 5,
+        },
+    ]
+
+    with pytest.raises(
+        SkillVersionMaterializationError,
+        match="skill_version_not_materializable",
+    ):
+        build_uploaded_skill_manifest_pin(
+            {
+                "skill_id": "qa-file-reviewer",
+                "version": "hash-uploaded",
+                "content_hash": "hash-uploaded",
+                "description": "Review Word documents.",
+                "source": {
+                    "kind": "uploaded",
+                    "storage_key": "package.zip",
+                    "files": files,
+                },
+                "dependency_ids": [],
+                "status": "reviewed",
+            }
+        )
 
 
 def test_build_skill_version_manifest_pin_uses_builtin_snapshot_files():

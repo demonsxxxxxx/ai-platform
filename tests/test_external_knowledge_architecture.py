@@ -10,7 +10,7 @@ def _read(relative_path: str) -> str:
 
 
 def test_kadr_01_establishes_one_knowledge_authority_and_provider_boundary():
-    adr = _read("docs/adr/0013-external-knowledge-authority.md")
+    adr = _read("docs/adr/0014-external-knowledge-authority.md")
     flat = " ".join(adr.split())
 
     assert "status: accepted" in adr
@@ -50,7 +50,7 @@ def test_external_knowledge_readme_points_to_the_accepted_authority_decision():
     readme = _read("docs/product/external-knowledge/README.md")
     flat = " ".join(readme.split())
 
-    assert "[ADR 0013](../../adr/0013-external-knowledge-authority.md)" in readme
+    assert "[ADR 0014](../../adr/0014-external-knowledge-authority.md)" in readme
     assert "`knowledge` as the single product authority" in flat
     assert "`mcp` continues to own the generic MCP server/tool catalog" in flat
     assert "requires an accepted ADR" not in flat

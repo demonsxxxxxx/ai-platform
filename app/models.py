@@ -1,8 +1,8 @@
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import (
-    AliasChoices,
+    AfterValidator, AliasChoices, BeforeValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -17,21 +17,21 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
-    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
+    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, normalize_thinking_effort, validate_thinking_agent_options,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
-from app.agent_apps.api import discard_legacy_agent_profile_model_id
+from app.agent_apps.api import AgentProfileAvatarRef
 from app.agent_apps.api import (
-    normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
+    AgentProfileSkillReference, normalize_agent_avatar_seed, normalize_agent_profile_display_items, normalize_agent_skill_set,
 )
 from app.skills.release_policy import (
     validate_release_decision_lock,
     validate_release_decision_payload,
 )
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
-
+from app.mcp.api import assert_mcp_tool_reference
 from app.validation import (
-    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
+    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS, assert_safe_department_authority_id,
     assert_safe_id,
     assert_safe_principal_user_id,
     assert_upstream_model_id,
@@ -41,7 +41,7 @@ from app.validation import (
 def _normalize_capability_department_ids(values: list[str], field_name: str) -> list[str]:
     normalized: list[str] = []
     for value in values:
-        candidate = assert_safe_id(value.strip(), field_name)
+        candidate = assert_safe_department_authority_id(value, field_name)
         if candidate not in normalized:
             normalized.append(candidate)
     return normalized
@@ -65,12 +65,6 @@ def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> lis
         if candidate not in normalized:
             normalized.append(candidate)
     return normalized
-
-
-def _require_universal_agent_input_types(values: list[str]) -> list[str]:
-    if values != ["text", "file"]:
-        raise ValueError("supported_input_types must be the universal text/file capability")
-    return values
 
 
 class CapabilityDistributionResponse(BaseModel):
@@ -222,48 +216,28 @@ class SelectedAgentProfileRequest(BaseModel):
 
 
 class AgentProfileDraftRequest(BaseModel):
-    """Admin definition whose field presence governs create-versus-update defaults."""
-
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=160)
-    description: str = Field(default="", max_length=2_000)
-    welcome_message: str = Field(default="", max_length=4_000)
+    description: str = Field(default="", max_length=4_000)
     starter_prompts: list[str] = Field(default_factory=list, max_length=8)
-    capability_summary: str = Field(default="", max_length=4_000)
-    recommended_tasks: list[str] = Field(default_factory=list, max_length=12)
-    supported_input_types: list[Literal["text", "file"]] = Field(
-        default_factory=lambda: ["text", "file"],
-        min_length=1,
-        max_length=2,
-    )
-    expected_outputs: list[str] = Field(default_factory=list, max_length=16)
-    permissions_and_data_access_notice: str = Field(default="", max_length=4_000)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
-    _legacy_model_id: str = PrivateAttr(default="platform-selected")
-    skill_set: list[SelectedSkillRequest] = Field(default_factory=list, max_length=32)
-    selected_skill: SelectedSkillRequest | None = None
+    skill_set: list[AgentProfileSkillReference] = Field(min_length=1, max_length=32)
     mcp_tool_ids: list[str] = Field(default_factory=list)
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
-    avatar_asset_id: str | None = None
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = Field(default="", max_length=128)
-    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    market_tags: list[str] = Field(default_factory=list, max_length=16)
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
     allowed_user_ids: list[str] = Field(default_factory=list)
     expected_draft_revision: int = Field(ge=0)
 
-    @model_validator(mode="before")
+    @field_validator("description")
     @classmethod
-    def discard_legacy_model_id(cls, value):
-        return discard_legacy_agent_profile_model_id(value)
-
-    @field_validator("welcome_message", "capability_summary", "permissions_and_data_access_notice")
-    @classmethod
-    def normalize_profile_display_text(cls, value: str):
+    def normalize_description(cls, value: str):
         if "\x00" in value:
-            raise ValueError("profile display text contains a NUL character")
+            raise ValueError("description contains a NUL character")
         return value.strip()
 
     @field_validator("starter_prompts")
@@ -271,21 +245,10 @@ class AgentProfileDraftRequest(BaseModel):
     def normalize_starter_prompts(cls, value: list[str], info):
         return normalize_agent_profile_display_items(value, info.field_name, item_limit=500)
 
-    @field_validator("recommended_tasks", "expected_outputs")
+    @field_validator("market_tags")
     @classmethod
-    def normalize_profile_display_lists(cls, value: list[str], info):
-        return normalize_agent_profile_display_items(value, info.field_name, item_limit=240)
-
-    @field_validator("supported_input_types")
-    @classmethod
-    def normalize_supported_input_types(cls, value: list[str]):
-        del value
-        return ["text", "file"]
-
-    @field_validator("avatar_asset_id")
-    @classmethod
-    def validate_avatar_asset_id(cls, value: str | None):
-        return assert_safe_id(value, "avatar_asset_id") if value else None
+    def normalize_market_tags(cls, value: list[str], info):
+        return normalize_agent_profile_display_items(value, info.field_name, item_limit=80)
 
     @field_validator("avatar_seed")
     @classmethod
@@ -293,8 +256,8 @@ class AgentProfileDraftRequest(BaseModel):
         return normalize_agent_avatar_seed(value)
 
     @model_validator(mode="after")
-    def normalize_skill_set(self):
-        self.skill_set, self.selected_skill = normalize_agent_skill_set(self.skill_set, self.selected_skill)
+    def normalize_skills(self):
+        self.skill_set = normalize_agent_skill_set(self.skill_set)
         return self
 
     @field_validator("mcp_tool_ids")
@@ -302,7 +265,7 @@ class AgentProfileDraftRequest(BaseModel):
     def validate_mcp_tool_ids(cls, value: list[str]):
         normalized: list[str] = []
         for item in value:
-            tool_id = assert_safe_id(item.strip(), "mcp_tool_ids")
+            tool_id = assert_mcp_tool_reference(item.strip(), "mcp_tool_ids")
             if tool_id in normalized:
                 raise ValueError("mcp_tool_ids contains duplicates")
             normalized.append(tool_id)
@@ -381,14 +344,13 @@ class AgentProfileTrialRunRequest(BaseModel):
 
 
 class AgentAppRunRequest(BaseModel):
-    """Strict dedicated submission surface without client-owned capability selectors."""
-
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, max_length=100_000)
     submission_id: UUID
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     user_timezone: str | None = Field(default=None, max_length=128)
+    thinking_effort: Annotated[ThinkingEffort, BeforeValidator(normalize_thinking_effort)] = "auto"
 
     @field_validator("file_ids")
     @classmethod
@@ -408,21 +370,11 @@ class AgentProfilePublicProjection(BaseModel):
     expected_revision: int
     name: str
     description: str = ""
-    welcome_message: str = ""
     starter_prompts: list[str] = Field(default_factory=list)
-    capability_summary: str = ""
-    recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
-    expected_outputs: list[str] = Field(default_factory=list)
-    permissions_and_data_access_notice: str = ""
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
-    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    market_tags: list[str] = Field(default_factory=list)
     published_at: Any | None = None
-
-    _validate_supported_input_types = field_validator("supported_input_types")(
-        _require_universal_agent_input_types
-    )
 
 
 class AgentProfileCatalogResponse(BaseModel):
@@ -434,8 +386,6 @@ class AgentProfileCatalogResponse(BaseModel):
 
 
 class AgentProfileAdminProjection(BaseModel):
-    """Admin-only revision projection, including server-owned instructions."""
-
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str
@@ -444,21 +394,13 @@ class AgentProfileAdminProjection(BaseModel):
     status: Literal["draft", "published", "withdrawn"]
     name: str
     description: str = ""
-    welcome_message: str = ""
     starter_prompts: list[str] = Field(default_factory=list)
-    capability_summary: str = ""
-    recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
-    expected_outputs: list[str] = Field(default_factory=list)
-    permissions_and_data_access_notice: str = ""
     instructions: str
-    skill_set: list[SelectedSkillRequest] = Field(default_factory=list)
-    selected_skill: SelectedSkillRequest
+    skill_set: list[AgentProfileSkillReference] = Field(default_factory=list)
     mcp_tool_ids: list[str] = Field(default_factory=list)
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
-    avatar_asset_id: str | None = None
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
-    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    market_tags: list[str] = Field(default_factory=list)
     visibility: Literal["tenant", "restricted"] = "tenant"
     allowed_department_ids: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
@@ -466,10 +408,6 @@ class AgentProfileAdminProjection(BaseModel):
     content_hash: str
     created_at: Any | None = None
     published_at: Any | None = None
-
-    _validate_supported_input_types = field_validator("supported_input_types")(
-        _require_universal_agent_input_types
-    )
 
 
 class AgentProfileAdminListResponse(BaseModel):
@@ -538,21 +476,10 @@ class AgentConversationIdentity(BaseModel):
     revision: int = Field(ge=1)
     name: str
     description: str = ""
-    welcome_message: str = ""
     starter_prompts: list[str] = Field(default_factory=list)
-    capability_summary: str = ""
-    recommended_tasks: list[str] = Field(default_factory=list)
-    supported_input_types: list[Literal["text", "file"]] = Field(default_factory=lambda: ["text", "file"])
-    expected_outputs: list[str] = Field(default_factory=list)
-    permissions_and_data_access_notice: str = ""
-    avatar_ref: Literal["builtin:agent", "builtin:assistant", "builtin:document", "builtin:research"] = "builtin:agent"
+    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
-    category: Literal["general", "support", "writing", "research", "operations"] = "general"
     published_at: Any | None = None
-
-    _validate_supported_input_types = field_validator("supported_input_types")(
-        _require_universal_agent_input_types
-    )
 
 
 class CreateRunRequest(BaseModel):
@@ -1038,19 +965,18 @@ class LoginRequest(BaseModel):
 
 
 class AuthContextBootstrapRequest(BaseModel):
-    """Browser-generated non-credential nonce used to derive a stable context."""
+    """Browser-generated V2 identity used to derive a stable auth context."""
 
     model_config = ConfigDict(extra="forbid")
 
     nonce: str = Field(min_length=43, max_length=512, pattern=r"^[A-Za-z0-9_-]+$")
-    protocol_version: Literal[1, 2] = 1
-    browser_incarnation: str | None = Field(
-        default=None,
+    protocol_version: Literal[2]
+    browser_incarnation: str = Field(
         min_length=43,
         max_length=43,
         pattern=r"^[A-Za-z0-9_-]+$",
     )
-    generation: int | None = Field(default=None, ge=1, le=(2**53) - 1)
+    generation: int = Field(ge=1, le=(2**53) - 1)
     rotation_ticket: str | None = Field(
         default=None,
         min_length=43,
@@ -1058,25 +984,6 @@ class AuthContextBootstrapRequest(BaseModel):
         pattern=r"^[A-Za-z0-9_-]+$",
     )
     recovery_only: bool = False
-
-    @model_validator(mode="after")
-    def validate_protocol_fields(self):
-        """Keep V1 wire compatibility while requiring the complete V2 identity."""
-
-        if self.protocol_version == 1:
-            if any(
-                value is not None
-                for value in (
-                    self.browser_incarnation,
-                    self.generation,
-                    self.rotation_ticket,
-                )
-            ) or self.recovery_only:
-                raise ValueError("V1 bootstrap cannot carry V2 identity fields")
-            return self
-        if self.browser_incarnation is None or self.generation is None:
-            raise ValueError("V2 bootstrap requires incarnation and generation")
-        return self
 
 
 class OAuthCallbackRequest(BaseModel):
@@ -1246,7 +1153,7 @@ class ChatStreamRequest(BaseModel):
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     input: dict[str, Any] = Field(default_factory=dict)
     title: str = ""
-    agent_options: dict[str, bool | str | int | float] | None = None
+    agent_options: Annotated[dict[str, bool | str | int | float] | None, AfterValidator(validate_thinking_agent_options)] = None
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
     disabled_skills: list[str] = Field(default_factory=list)
     enabled_skills: list[str] | None = None
@@ -1381,7 +1288,7 @@ class ChatStreamRequest(BaseModel):
             return None
         normalized: list[str] = []
         for item in value:
-            tool_id = assert_safe_id(item.strip(), "selected_mcp_tool_ids")
+            tool_id = assert_mcp_tool_reference(item.strip(), "selected_mcp_tool_ids")
             if tool_id in normalized:
                 raise ValueError("selected_mcp_tool_ids contains duplicates")
             normalized.append(tool_id)
@@ -1421,7 +1328,7 @@ class ChatSubmissionResponse(BaseModel):
     submission_disposition: Literal["rejected_before_persist"] | None = None
     rejection_code: str | None = None
     outcome: ChatStreamResponse | None = None
-
+    run_status: Literal["queued", "running", "succeeded", "failed", "cancelled"] | None = None
 
 class ChatSubmissionPreLedgerAbsenceResponse(BaseModel):
     """Versioned proof that this principal has no durable submission ledger row."""
@@ -1429,48 +1336,6 @@ class ChatSubmissionPreLedgerAbsenceResponse(BaseModel):
     protocol_version: Literal["chat_submission_resolution.v2"] = "chat_submission_resolution.v2"
     submission_id: str
     state: Literal["absent_before_ledger"] = "absent_before_ledger"
-
-
-class AdminRunSummaryResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    session_id: str
-    user_id: str | None = None
-    workspace_id: str
-    status: str
-    agent_id: str
-    execution_kind: Literal["harness_chat", "skill"] = RUN_EXECUTION_KIND_SKILL
-    skill_id: str | None = None
-    created_at: Any | None = None
-    queued_at: Any | None = None
-    started_at: Any | None = None
-    finished_at: Any | None = None
-    cancel_requested_at: Any | None = None
-    cancel_requested_by: str | None = None
-    error_code: str | None = None
-    error_message: str | None = None
-    queue_position: int | None = None
-    queue_insight: dict[str, Any] | None = None
-
-
-class AdminRunListResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    runs: list[AdminRunSummaryResponse] = Field(default_factory=list)
-    limit: int
-
-
-class AdminRunDetailResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run: dict[str, Any]
-    events: list[dict[str, Any]] = Field(default_factory=list)
-    steps: list[dict[str, Any]] = Field(default_factory=list)
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
-    sandbox_leases: list[dict[str, Any]] = Field(default_factory=list)
-    skill_snapshots: list[dict[str, Any]] = Field(default_factory=list)
-    audit: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PublicSkillResponse(BaseModel):
@@ -2003,73 +1868,6 @@ class WorkbenchUserWriteRequest(BaseModel):
     is_active: bool | None = None
 
 
-class WorkbenchSettingItemResponse(BaseModel):
-    """Safe settings projection item."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    key: str
-    value: Any
-    type: str
-    category: str
-    label: str
-    description: str = ""
-    is_public: bool = True
-    is_secret: bool = False
-    audit_required: bool = False
-    rollback_available: bool = False
-    updated_at: Any | None = None
-
-
-class WorkbenchSettingGroupResponse(BaseModel):
-    """Grouped settings projection."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    category: str
-    items: list[WorkbenchSettingItemResponse] = Field(default_factory=list)
-
-
-class WorkbenchSettingsResponse(BaseModel):
-    """Safe personal/system settings split."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    settings: dict[str, WorkbenchSettingGroupResponse]
-    governance: WorkbenchGovernanceResponse
-
-
-class WorkbenchSettingUpdateRequest(BaseModel):
-    """Admin settings update request."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    value: Any
-    rollback_id: str | None = None
-
-
-class WorkbenchSettingWriteResponse(BaseModel):
-    """Masked settings write response."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    key: str
-    value: Any
-    status: str = "queued"
-    audit: WorkbenchAuditResponse
-
-
-class WorkbenchSettingResetResponse(BaseModel):
-    """Settings reset operation response."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    key: str | None = None
-    status: str = "queued"
-    reset_count: int = 1
-    audit_id: str
-
-
 class WorkbenchFeedbackItemResponse(BaseModel):
     """Safe aggregate feedback desk item."""
 
@@ -2233,8 +2031,8 @@ class AdminSkillSummaryResponse(BaseModel):
     skill_id: str
     name: str
     description: str = ""
-    lifecycle_status: str
-    distribution_status: str
+    lifecycle_status: Literal["active"]
+    distribution_status: Literal["active", "disabled"]
     visible_to_user: bool = False
     latest_version: str | None = None
     latest_version_status: str | None = None

@@ -15,7 +15,7 @@ CancelEventSource = Literal["user", "system"]
 @dataclass(frozen=True, slots=True)
 class CancelRequestAuthority:
     run_id: str
-    attempt_id: str
+    attempt_id: str | None
     prior_status: str
     trace_ref: str | None
     target_user_id: str
@@ -175,11 +175,12 @@ class RunCancellationUseCase:
     ) -> CancelRequestResult | None:
         if authority is None:
             return None
-        await self._event_writer.prepare_pending_authority(
-            conn,
-            tenant_id=tenant_id,
-            authority=authority,
-        )
+        if authority.attempt_id is not None:
+            await self._event_writer.prepare_pending_authority(
+                conn,
+                tenant_id=tenant_id,
+                authority=authority,
+            )
         if authority.newly_requested:
             await self._event_writer.append_cancel_requested(
                 conn,

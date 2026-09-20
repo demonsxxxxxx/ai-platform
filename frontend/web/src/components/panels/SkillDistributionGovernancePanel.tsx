@@ -225,16 +225,16 @@ export function SkillDistributionGovernancePanel({
                   <div>
                     <span>{t("skills.governance.release.title")}</span>
                     <strong>
-                      {selectedSkill.currentVersion
+                      {selectedSkill.currentDisplayVersion
                         ? t("skills.governance.release.current", {
-                            version: selectedSkill.currentVersion,
+                            version: selectedSkill.currentDisplayVersion,
                           })
                         : t("skills.governance.release.none")}
                     </strong>
                     <small>
-                      {selectedSkill.latestVersion
+                      {selectedSkill.latestDisplayVersion
                         ? t("skills.governance.release.latest", {
-                            version: selectedSkill.latestVersion,
+                            version: selectedSkill.latestDisplayVersion,
                           })
                         : t("skills.governance.release.noPackage")}
                     </small>

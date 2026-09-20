@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {
-  SessionArtifactFile,
-  SessionArtifactFilesResponse,
   SessionInputFile,
   SessionInputFilesResponse,
 } from "../../../../services/api/session.ts";
+import type { ArtifactPart, Message } from "../../../../types/message.ts";
 import {
+  projectAssistantResponseFiles,
   projectSessionWorkspaceFiles,
   sessionWorkspaceFileToAttachment,
   sessionWorkspaceProjectionForRender,
@@ -28,19 +28,28 @@ function artifact(
   id: string,
   name: string,
   createdAt: string,
-): SessionArtifactFile {
+): ArtifactPart {
   return {
-    id,
-    file_name: name,
-    file_type: "document",
-    mime_type:
+    type: "artifact",
+    artifact_id: id,
+    artifact_type: "result_docx",
+    label: name,
+    content_type:
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    file_size: 256,
+    size_bytes: 256,
     preview_url: `/api/ai/artifacts/${id}/preview`,
     download_url: `/api/ai/artifacts/${id}/download`,
-    session_id: "session-a",
-    source: "reveal_file",
     created_at: createdAt,
+  };
+}
+
+function assistantMessage(...parts: NonNullable<Message["parts"]>): Message {
+  return {
+    id: "assistant-a",
+    role: "assistant",
+    content: "done",
+    timestamp: new Date("2026-08-02T10:00:00Z"),
+    parts,
   };
 }
 
@@ -51,24 +60,19 @@ function fulfilledInputs(
   return { status: "fulfilled", value: { session_id: sessionId, files } };
 }
 
-function fulfilledArtifacts(
-  sessionId: string,
-  files: SessionArtifactFile[],
-): PromiseFulfilledResult<SessionArtifactFilesResponse> {
-  return { status: "fulfilled", value: { session_id: sessionId, files } };
-}
-
 const rejected = (reason: string): PromiseRejectedResult => ({
   status: "rejected",
   reason: new Error(reason),
 });
 
-test("merges session inputs and artifacts without collapsing same-name files", () => {
+test("merges session inputs and structured assistant response files", () => {
   const report = artifact("artifact-report", "source.xlsx", "2026-08-02T10:00:00Z");
-  const projection = projectSessionWorkspaceFiles(
-    "session-a",
-    fulfilledInputs("session-a", [inputFile]),
-    fulfilledArtifacts("session-a", [report, report]),
+  const projection = projectAssistantResponseFiles(
+    projectSessionWorkspaceFiles(
+      "session-a",
+      fulfilledInputs("session-a", [inputFile]),
+    ),
+    [assistantMessage(report, report)],
   );
 
   assert.equal(projection.session_id, "session-a");
@@ -82,44 +86,63 @@ test("merges session inputs and artifacts without collapsing same-name files", (
   assert.equal(projection.files[1].download_url, inputFile.download_url);
 });
 
-test("keeps the successful source and marks partial projection failures", () => {
-  const report = artifact("artifact-report", "report.docx", "2026-08-02T10:00:00Z");
+test("supports zero or many response files, including subagent results", () => {
+  const base = projectSessionWorkspaceFiles(
+    "session-a",
+    fulfilledInputs("session-a", []),
+  );
+  assert.deepEqual(
+    projectAssistantResponseFiles(base, [assistantMessage()]).files,
+    [],
+  );
+
+  const first = artifact("artifact-first", "first.docx", "2026-08-02T10:00:00Z");
+  const second = artifact("artifact-second", "second.docx", "2026-08-02T11:00:00Z");
+  const projection = projectAssistantResponseFiles(base, [
+    assistantMessage(
+      first,
+      {
+        type: "subagent",
+        agent_id: "agent-child",
+        agent_name: "Child",
+        input: "",
+        depth: 1,
+        status: "complete",
+        parts: [second],
+      },
+    ),
+  ]);
+
+  assert.deepEqual(
+    projection.files.map((file) => file.key),
+    ["artifact:artifact-second", "artifact:artifact-first"],
+  );
+});
+
+test("does not recover response files from a failed session-wide source", () => {
   const projection = projectSessionWorkspaceFiles(
     "session-a",
     rejected("inputs unavailable"),
-    fulfilledArtifacts("session-a", [report]),
   );
 
-  assert.equal(projection.status, "partial");
+  assert.equal(projection.status, "error");
   assert.deepEqual(projection.inputFiles, []);
-  assert.deepEqual(projection.files.map((file) => file.id), ["artifact-report"]);
+  assert.deepEqual(projection.files, []);
 });
 
-test("rejects another session's fulfilled projection and distinguishes total failure", () => {
-  const partial = projectSessionWorkspaceFiles(
+test("rejects another session's fulfilled input projection", () => {
+  const projection = projectSessionWorkspaceFiles(
     "session-a",
     fulfilledInputs("session-b", [inputFile]),
-    fulfilledArtifacts("session-a", []),
   );
-  assert.equal(partial.status, "partial");
-  assert.deepEqual(partial.files, []);
-
-  const failed = projectSessionWorkspaceFiles(
-    "session-a",
-    rejected("inputs unavailable"),
-    rejected("artifacts unavailable"),
-  );
-  assert.equal(failed.status, "error");
-  assert.deepEqual(failed.files, []);
+  assert.equal(projection.status, "error");
+  assert.deepEqual(projection.files, []);
 });
 
 test("hides the previous session projection during the first navigation render", () => {
   const projection = projectSessionWorkspaceFiles(
     "session-a",
     fulfilledInputs("session-a", [inputFile]),
-    fulfilledArtifacts("session-a", [
-      artifact("artifact-report", "report.docx", "2026-08-02T10:00:00Z"),
-    ]),
   );
 
   assert.equal(
@@ -137,13 +160,17 @@ test("hides the previous session projection during the first navigation render",
   );
 });
 
-test("maps artifact preview and download URLs into the existing attachment viewer", () => {
-  const [file] = projectSessionWorkspaceFiles(
-    "session-a",
-    fulfilledInputs("session-a", []),
-    fulfilledArtifacts("session-a", [
-      artifact("artifact-report", "report.docx", "2026-08-02T10:00:00Z"),
-    ]),
+test("maps assistant response artifact URLs into the existing attachment viewer", () => {
+  const [file] = projectAssistantResponseFiles(
+    projectSessionWorkspaceFiles(
+      "session-a",
+      fulfilledInputs("session-a", []),
+    ),
+    [
+      assistantMessage(
+        artifact("artifact-report", "report.docx", "2026-08-02T10:00:00Z"),
+      ),
+    ],
   ).files;
 
   assert.deepEqual(sessionWorkspaceFileToAttachment(file), {

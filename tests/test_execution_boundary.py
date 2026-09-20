@@ -124,7 +124,10 @@ def test_invalid_mcp_requirement_fails_closed_without_local_execution():
     assert decision.reason == "invalid_mcp_sandbox_requirement"
 
 
-def test_governed_egress_native_tool_scope_hashes_authorized_large_policy_and_rejects_invalid_input():
+@pytest.mark.parametrize("provider", ["docker", "opensandbox"])
+def test_governed_egress_native_tool_scope_hashes_authorized_large_policy_and_rejects_invalid_input(
+    provider,
+):
     module = _module()
     authorized_policy = [
         {
@@ -150,7 +153,7 @@ def test_governed_egress_native_tool_scope_hashes_authorized_large_policy_and_re
     assert changed_scope != scope
     proof = module.build_governed_egress_proof(
         signing_key=PROOF_KEY,
-        provider="docker",
+        provider=provider,
         runtime_subject="docker-internal-bridge",
         policy_subject="network-id:network-name:internal",
         callback_subject="http://api.sandbox.internal:8020",
@@ -174,13 +177,13 @@ def test_governed_egress_native_tool_scope_hashes_authorized_large_policy_and_re
     )
     assert module.is_governed_egress_proof(
         proof,
-        provider="docker",
+        provider=provider,
         signing_key=PROOF_KEY,
         expected_binding={"authorized_native_tool_scope": scope},
     ) is True
     assert module.is_governed_egress_proof(
         proof,
-        provider="docker",
+        provider=provider,
         signing_key=PROOF_KEY,
         expected_binding={"authorized_native_tool_scope": changed_scope},
     ) is False

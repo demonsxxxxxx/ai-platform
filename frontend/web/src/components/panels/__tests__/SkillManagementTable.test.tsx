@@ -8,7 +8,7 @@ import { buildSkillCatalogEntries } from "../SkillsPanel/skillCatalogEntries.ts"
 
 const dom = installTestDom();
 
-test("Skill workbench separates runtime and catalog visibility without a public writer", () => {
+test("Skill workbench prioritizes governed ZIP upload and catalog status", () => {
   const table = readFileSync(
     join(process.cwd(), "src/components/panels/SkillsPanel/SkillManagementTable.tsx"),
     "utf8",
@@ -33,14 +33,15 @@ test("Skill workbench separates runtime and catalog visibility without a public 
   assert.match(list, /setPageSize\(Number\(event\.target\.value\)\)/);
   assert.match(list, /skills\.paginationPageSize/);
   assert.match(list, /skill-catalog-view-switcher/);
-  assert.match(list, /data-skill-management-metrics/);
+  assert.match(list, /skill-management-header/);
+  assert.doesNotMatch(list, /data-skill-management-metrics/);
   assert.match(panel, /catalogView/);
   assert.match(panel, /setPage=\{setCatalogPage\}/);
   assert.match(panel, /setPageSize=\{actions\.setPageSize\}/);
   assert.match(list, /<SkillManagementTable/);
   assert.match(list, /adminRelease \? "btn-primary" : "btn-secondary"/);
-  assert.match(list, /skills\.adminReleaseZipTitle/);
-  assert.match(list, /aria-label=\{t\("skills\.importFromGitHub"\)\}/);
+  assert.match(list, /skills\.zipUploadAction/);
+  assert.doesNotMatch(list, /GitHub|importFromGitHub/);
   assert.match(list, /resolveSkillCatalogMetrics\(metricsCatalogEntries\)/);
   assert.match(list, /canExport=\{canExport && !governedUnavailable\}/);
   assert.match(panel, /const canExportSkills = canEditSkills;/);
@@ -52,21 +53,36 @@ test("Skill workbench separates runtime and catalog visibility without a public 
   assert.doesNotMatch(list, /<SkillCard/);
 });
 
-test("management rows expose stable icon actions and a read-only state", () => {
+test("master list lets the overflow menu escape and opens the final row upwards", () => {
+  const css = readFileSync(
+    join(process.cwd(), "src/styles/skill-management-table.css"),
+    "utf8",
+  );
+  assert.match(css, /\.skill-management-table--master\s*\{\s*overflow: visible;/);
+  assert.match(css, /\.skill-management-table__row:last-child:not\(:first-child\) \.skill-management-table__action-menu-panel\s*\{\s*top: auto;\s*bottom:/);
+});
+
+test("management rows expose a focused update action, governed overflow actions, and a read-only state", () => {
   const source = readFileSync(
     join(process.cwd(), "src/components/panels/SkillsPanel/SkillManagementTable.tsx"),
     "utf8",
   );
 
-  assert.match(source, /skills\.managementTable\.disableSkill/);
-  assert.match(source, /skills\.managementTable\.enableSkill/);
-  assert.match(source, /skills\.managementTable\.editSkill/);
-  assert.match(source, /skills\.managementTable\.exportSkill/);
-  assert.match(source, /skills\.managementTable\.deleteSkill/);
+  assert.match(source, /skills\.managementTable\.updateVersionSkill/);
+  assert.match(source, /MoreHorizontal/);
+  assert.match(source, /role="menu"/);
+  assert.match(source, /role="menuitem"/);
+  assert.match(source, /setOpenActionName/);
+  assert.match(source, /onToggle\(actionName\)/);
+  assert.match(source, /onEdit\(entry\.runtimeSkill!\)/);
+  assert.match(source, /onExportZip\(actionName\)/);
+  assert.match(source, /onDelete\(actionName\)/);
   assert.match(source, /!hasActions/);
   assert.match(source, /data-catalog-status=\{entry\.catalogStatus\}/);
   assert.match(source, /skills\.managementTable\.internalRuntime/);
   assert.match(source, /skills\.managementTable\.internalDependency/);
+  assert.match(source, /className="block truncate font-mono/);
+  assert.match(source, /title=\{entry\.version \?\? undefined\}/);
   assert.match(source, /CatalogStatusIcon/);
   assert.match(source, /skills\.managementTable\.readOnly/);
   assert.match(
@@ -109,6 +125,8 @@ test("Chinese management table translations stay complete", () => {
     "tags",
     "catalogStatus",
     "updatedAt",
+    "updateVersion",
+    "updateVersionSkill",
   ];
 
   const locale = "zh";
@@ -122,7 +140,7 @@ test("Chinese management table translations stay complete", () => {
   );
 });
 
-test("archive action keyboard activation does not select its containing row", async () => {
+test("archive menu action keyboard activation does not select its containing row", async () => {
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
   const { SkillManagementTable } = await import(
@@ -161,6 +179,7 @@ test("archive action keyboard activation does not select its containing row", as
           canDelete: true,
           canEdit: false,
           canExport: false,
+          canPublish: false,
           canToggle: false,
           entries: [entry!],
           onDelete: () => {
@@ -171,24 +190,32 @@ test("archive action keyboard activation does not select its containing row", as
           onSelectDetail: () => {
             detailSelectionCalls += 1;
           },
+          onSelectAll: () => {},
           onSelectSkill: () => {},
           onToggle: () => {},
+          onUploadVersion: () => {},
           selectedNames: new Set<string>(),
           selectedSkillId: null,
         }),
       );
     });
 
-    const archiveButton = container
-      .querySelectorAll("button")
-      .find((button) =>
-        `${button.className} ${button.getAttribute("class") ?? ""}`.includes(
-          "skill-management-table__archive-action",
-        ),
-      );
-    assert.ok(archiveButton, "archive action must render");
-
     for (const key of ["Enter", " "]) {
+      const menuButton = container
+        .querySelectorAll("button")
+        .find((button) => button.getAttribute("aria-haspopup") === "menu");
+      assert.ok(menuButton, "row action menu must render");
+      await React.act(async () => {
+        menuButton.dispatchEvent({ type: "click", bubbles: true });
+      });
+      const archiveButton = container
+        .querySelectorAll("button")
+        .find((button) =>
+          `${button.className} ${button.getAttribute("class") ?? ""}`.includes(
+            "skill-management-table__archive-action",
+          ),
+        );
+      assert.ok(archiveButton, "archive action must render in the open menu");
       const keydown: {
         type: string;
         key: string;
