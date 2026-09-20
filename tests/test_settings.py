@@ -390,6 +390,19 @@ def test_compose_projects_only_canonical_object_delete_settings():
     assert "OBJECT_DELETE_BATCH_LIMIT:-${ARTIFACT_RETENTION_CLEANUP_LIMIT" not in compose
 
 
+def test_compose_projects_knowledge_runtime_settings_to_api_and_worker():
+    compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
+    expected = (
+        "PLATFORM_CREDENTIALS_ENCRYPTION_KEY: ${PLATFORM_CREDENTIALS_ENCRYPTION_KEY:-}",
+        "KNOWLEDGE_CONNECTION_ALLOWED_HOSTS: ${KNOWLEDGE_CONNECTION_ALLOWED_HOSTS:-}",
+        "KNOWLEDGE_PROVIDER_TIMEOUT_SECONDS: ${KNOWLEDGE_PROVIDER_TIMEOUT_SECONDS:-15}",
+        "KNOWLEDGE_PROVIDER_MAX_CONCURRENCY_PER_CONNECTION: ${KNOWLEDGE_PROVIDER_MAX_CONCURRENCY_PER_CONNECTION:-4}",
+    )
+
+    for mapping in expected:
+        assert compose.count(mapping) == 2
+
+
 def test_environment_example_uses_only_canonical_object_delete_names():
     source = Path("deploy/ai-platform/.env.example").read_text(encoding="utf-8")
     active = {line for line in source.splitlines() if line and not line.startswith("#")}

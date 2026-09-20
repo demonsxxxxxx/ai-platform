@@ -1,0 +1,18 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KENG-40",
+  "issue_number": 1311,
+  "summary": "Strict provider-private-free Claude evidence rendering",
+  "atomic_case_ids": [
+    "KAC-FR-KRET-036",
+    "KAC-FR-KRET-037",
+    "KAC-FR-KRET-038"
+  ],
+  "changed_paths": [
+    "app/executors/base.py",
+    "app/executors/claude/prompts.py",
+    "app/executors/claude_agent_worker.py",
+    "docs/product/external-knowledge/manifests/KENG-40.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

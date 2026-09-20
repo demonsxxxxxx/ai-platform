@@ -14,6 +14,11 @@ test("AgentBuilderRoute supplies admin authority and capability catalogs without
   assert.match(source, /mapAuthorizedBuilderSkills/);
   assert.match(source, /mapSafeBuilderMcpTools/);
   assert.match(source, /BUILDER_CATALOG_LOAD_ERROR/);
+  assert.match(source, /const \[knowledgeLoaded, setKnowledgeLoaded\] = useState\(false\)/);
+  assert.doesNotMatch(source, /void loadKnowledgeCatalog\(\{ replace: true \}\);\s*return \(\) =>/);
+  assert.match(source, /knowledgeBlockingGeneration/);
+  assert.match(source, /knowledgeSourceGenerations/);
+  assert.doesNotMatch(source, /generation !== knowledgeLoadGeneration\.current/);
   assert.doesNotMatch(source, /modelPublicApi|modelsResolved|modelsLoading/);
   assert.match(source, /canManageProfiles=\{user\?\.is_admin === true\}/);
   assert.match(source, /AgentBuilderShell/);

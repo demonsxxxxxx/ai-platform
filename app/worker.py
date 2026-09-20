@@ -75,6 +75,7 @@ from app.executors.base import (
 )
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.knowledge import api as knowledge_api
 from app.mcp import api as mcp_api
 from app.persistence_limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
 from app.persistence.artifacts import promote_provisional_artifact_cleanup, reserve_provisional_artifact_cleanup
@@ -2467,6 +2468,47 @@ async def process_run_payload(
             return
 
     try:
+        if (
+            reconciliation is None
+            and run_payload.agent_profile.get("knowledge_enabled") is True
+        ):
+
+            async def knowledge_cancel_requested() -> bool:
+                async with transaction_factory() as conn:
+                    return await repositories.is_cancel_requested(
+                        conn,
+                        tenant_id=run_payload.tenant_id,
+                        run_id=run_payload.run_id,
+                    )
+
+            try:
+                knowledge_result = await knowledge_api.retrieve_run_knowledge(
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                    attempt_id=run_payload.attempt_id,
+                    actor_id=run_payload.user_id,
+                    question=str(
+                        run_payload.input.get("message")
+                        or run_payload.input.get("prompt")
+                        or ""
+                    ),
+                    cancel_requested=knowledge_cancel_requested,
+                )
+            except knowledge_api.KnowledgeRuntimeFailure:
+                raise
+            except Exception as exc:
+                raise knowledge_api.KnowledgeRuntimeFailure(
+                    "knowledge_connection_unavailable"
+                ) from exc
+            if knowledge_result.status != "succeeded":
+                raise knowledge_api.KnowledgeRuntimeFailure(
+                    knowledge_result.error_code or "knowledge_binding_invalid"
+                )
+            run_payload = replace(
+                run_payload,
+                knowledge_evidence=[dict(item) for item in knowledge_result.evidence],
+            )
+
         if adapter is None:
             raise RuntimeError("executor_adapter_not_resolved")
 
@@ -2601,7 +2643,15 @@ async def process_run_payload(
         return cancelled_outcome
     except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
         reconciled_parent = None
-        failure_code, failure_message, failure_result = _executor_exception_failure(exc)
+        if isinstance(exc, knowledge_api.KnowledgeRuntimeFailure):
+            failure_code = exc.code
+            failure_message = exc.public_message
+            failure_result = {
+                "error_code": failure_code,
+                "message": failure_message,
+            }
+        else:
+            failure_code, failure_message, failure_result = _executor_exception_failure(exc)
         outcome_after_exception = WorkerOutcome(
             "failed", payload.run_id, failure_code, failure_message
         )
@@ -2660,12 +2710,22 @@ async def process_run_payload(
                         tenant_id=payload.tenant_id,
                         run_id=payload.run_id,
                         event_type="error",
-                        stage="executor",
-                        message="Executor failed",
+                        stage=(
+                            "knowledge"
+                            if isinstance(exc, knowledge_api.KnowledgeRuntimeFailure)
+                            else "executor"
+                        ),
+                        message=(
+                            "Knowledge retrieval failed"
+                            if isinstance(exc, knowledge_api.KnowledgeRuntimeFailure)
+                            else "Executor failed"
+                        ),
                         payload={
                             "error": failure_message,
                             "executor_type": payload.executor_type,
-                            "visible_to_user": False,
+                            "visible_to_user": isinstance(
+                                exc, knowledge_api.KnowledgeRuntimeFailure
+                            ),
                         },
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_failed")
@@ -2755,6 +2815,7 @@ async def process_run_payload(
         result_payload["capability_state"] = agent_capability_state.public_projection()
     assistant_message_for_persistence: str | None = None
     assistant_message_metadata: dict[str, Any] = {}
+    knowledge_citation_answer: str | None = None
     reconciled_parent = None
     try:
         async with transaction_factory() as conn:
@@ -2828,6 +2889,45 @@ async def process_run_payload(
                 artifact_records = materialized.artifact_records
                 assistant_message_for_persistence = materialized.assistant_message_for_persistence
                 assistant_message_metadata = materialized.assistant_message_metadata
+            if (
+                result.status == "succeeded"
+                and run_payload.agent_profile.get("knowledge_enabled") is True
+            ):
+                candidate_answer = (
+                    assistant_message_for_persistence
+                    if assistant_message_for_persistence is not None
+                    else str(result_payload.get("message") or "")
+                )
+                try:
+                    await knowledge_api.resolve_run_citation_evidence_ids(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        attempt_id=attempt_id,
+                        answer=candidate_answer,
+                    )
+                except knowledge_api.KnowledgeError:
+                    error_code = "knowledge_citation_invalid"
+                    error_message = "Knowledge citations are invalid."
+                    result = replace(
+                        result,
+                        status="failed",
+                        artifacts=[],
+                        result={
+                            **result.result,
+                            "message": error_message,
+                            "error_code": error_code,
+                        },
+                    )
+                    artifact_records = []
+                    result_payload = {
+                        **result_payload,
+                        "message": error_message,
+                        "error_code": error_code,
+                        "artifacts": [],
+                    }
+                else:
+                    knowledge_citation_answer = candidate_answer
             cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if result.status == "succeeded" and cancel_requested:
                 result_payload = {
@@ -2966,7 +3066,7 @@ async def process_run_payload(
                     result_capabilities=result.capabilities,
                     result_payload=result_payload,
                 )
-                await persist_assistant_with_provider_coverage(
+                assistant_message_id = await persist_assistant_with_provider_coverage(
                     conn, append_message=repositories.append_message,
                     tenant_id=payload.tenant_id, session_id=payload.session_id,
                     run_id=payload.run_id, attempt_id=attempt_id,
@@ -2987,6 +3087,16 @@ async def process_run_payload(
                     },
                     provider_final_sequence=result.executor_payload.get("provider_session_final_sequence"),
                 )
+                if knowledge_citation_answer is not None:
+                    await knowledge_api.finalize_run_citations(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        attempt_id=attempt_id,
+                        message_id=assistant_message_id,
+                        answer=knowledge_citation_answer,
+                        operation_id=f"knowledge-citations:{payload.run_id}:{attempt_id}",
+                    )
 
                 await append_user_event(
                     conn,

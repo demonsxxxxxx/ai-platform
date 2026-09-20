@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
+  BookOpen,
   Grid2X2,
   List as ListIcon,
   MessageCircle,
@@ -27,6 +28,7 @@ import {
 } from "./agentMarketSelection";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
 import { Pagination } from "../../components/common/Pagination";
+import { formatDateTimeShort } from "../../utils/datetime";
 
 type LoadPhase = "loading" | "ready" | "error" | "unavailable";
 interface LoadState<T> {
@@ -46,6 +48,10 @@ const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的专家，请稍
 const MARKET_PAGE_SIZE = 9;
 type MarketView = "grid" | "list";
 type MarketSort = "default" | "tasks" | "recent";
+
+function knowledgeFreshnessLabel(value: string | null): string {
+  return value ? `更新于 ${formatDateTimeShort(value)}` : "尚无完整同步";
+}
 
 /** Reuse the production shell and session sidebar for the ordinary-user market. */
 function AgentMarketShell({ children }: { children: ReactNode }) {
@@ -285,6 +291,26 @@ function ExpertMarketCard({
             </strong>
           </div>
         </div>
+        {profile.recommended_tasks.length > 0 ? (
+          <div className="mt-4 flex flex-wrap gap-1.5" aria-label="推荐任务">
+            {profile.recommended_tasks.slice(0, 3).map((task) => (
+              <span
+                className="max-w-full truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs text-[var(--theme-text-secondary)]"
+                key={task}
+                title={task}
+              >
+                {task}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {profile.knowledge_capability?.enabled ? (
+          <p className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-[var(--theme-primary)]">
+            <BookOpen aria-hidden="true" size={14} />
+            企业知识 · {profile.knowledge_capability.source_count} 个知识源 ·{" "}
+            {knowledgeFreshnessLabel(profile.knowledge_capability.freshness_at)}
+          </p>
+        ) : null}
       </div>
       <div
         className={`grid gap-2 border-t border-[var(--theme-border)] p-3 ${
@@ -776,6 +802,15 @@ function AgentMarketDetail({
                 <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
                   企业已发布
                 </span>
+                <span className="rounded-full bg-[var(--theme-bg-sidebar)] px-2.5 py-1 text-xs text-[var(--theme-text-secondary)]">
+                  版本 {profile.expected_revision}
+                </span>
+                {profile.knowledge_capability?.enabled ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[var(--theme-primary-light)] px-2.5 py-1 text-xs text-[var(--theme-primary)]">
+                    <BookOpen aria-hidden="true" size={13} />
+                    企业知识 {profile.knowledge_capability.source_count} 项
+                  </span>
+                ) : null}
               </div>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
@@ -803,7 +838,45 @@ function AgentMarketDetail({
             </ul>
           </section>
         ) : null}
-
+        <section className="grid border-b border-[var(--theme-border)] py-7 sm:grid-cols-2 sm:gap-x-10">
+          {profile.recommended_tasks.length ? (
+            <div className="pb-6 sm:pb-7">
+              <h2 className="text-sm font-semibold">适合处理</h2>
+              <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                {profile.recommended_tasks.map((task) => (
+                  <li className="border-l-2 border-emerald-500 pl-3" key={task}>
+                    {task}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <div className="border-t border-[var(--theme-border)] py-6">
+            <h2 className="text-sm font-semibold">输入与输出</h2>
+            <dl className="mt-3 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 text-sm leading-6">
+              <dt className="text-[var(--theme-text-secondary)]">输入</dt>
+              <dd>文本，可按任务附加文件</dd>
+              <dt className="text-[var(--theme-text-secondary)]">文件</dt>
+              <dd>附件可选，不由专家限定格式</dd>
+              <dt className="text-[var(--theme-text-secondary)]">输出</dt>
+              <dd>{profile.expected_outputs.join("、") || "对话答复"}</dd>
+            </dl>
+          </div>
+          <div className="border-t border-[var(--theme-border)] py-6">
+            <h2 className="text-sm font-semibold">权限与数据访问</h2>
+            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[var(--theme-text-secondary)]">
+              {profile.permissions_and_data_access_notice || "遵循企业当前授权策略。"}
+            </p>
+            {profile.knowledge_capability?.enabled ? (
+              <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+                已接入 {profile.knowledge_capability.source_count} 个企业知识源；进入任务时会按当前账号权限重新校验。
+                <span className="mt-1 block">
+                  知识目录{knowledgeFreshnessLabel(profile.knowledge_capability.freshness_at)}。
+                </span>
+              </p>
+            ) : null}
+          </div>
+        </section>
         <div className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center sm:justify-end">
           <button
             data-agent-market-start-chat

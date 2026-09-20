@@ -1,0 +1,20 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KREXEC-36",
+  "issue_number": 1311,
+  "summary": "Attempt-bound multi-source provider fan-out with bounded cancellation",
+  "atomic_case_ids": [
+    "KAC-FR-KRET-001",
+    "KAC-FR-KRET-002",
+    "KAC-FR-KRET-014",
+    "KAC-FR-KRET-015",
+    "KAC-FR-KRET-049"
+  ],
+  "changed_paths": [
+    "app/knowledge/application/runtime.py",
+    "app/worker.py",
+    "docs/product/external-knowledge/manifests/KREXEC-36.json",
+    "tests/test_worker.py"
+  ],
+  "evidence_layers": ["source", "unit", "integration"]
+}

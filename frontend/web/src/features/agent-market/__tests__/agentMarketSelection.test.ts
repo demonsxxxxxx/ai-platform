@@ -21,6 +21,16 @@ const profile: AgentProfilePublicProjection = {
   avatar_seed: "agt-support",
   market_tags: ["客户支持", "写作"],
   is_favorite: false,
+  category: "support",
+  knowledge_capability: {
+    enabled: false,
+    source_count: 0,
+    freshness_at: null,
+  },
+  capability_summary: "",
+  recommended_tasks: [],
+  expected_outputs: [],
+  permissions_and_data_access_notice: "",
   published_at: "2026-08-04T01:00:00Z",
 };
 

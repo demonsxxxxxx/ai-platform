@@ -27,9 +27,12 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.conversations.api import (
+    ConversationRunAdmissionError,
+    create_admitted_run,
     resolve_chat_submission,
     submission_resolution_projection,
 )
+
 from app.context_builder import record_initial_context_snapshot
 from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.control_plane_contracts import (
@@ -2222,7 +2225,7 @@ async def chat_stream(
                         "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
                     }
                 )
-            run_id = await repositories.create_run(conn, **run_create_kwargs)
+            run_id = await create_admitted_run(conn, repositories.create_run, run_create_kwargs, agent_profile_execution_input)
             if selected_model is not None:
                 await bind_selected_run_model(
                     conn, tenant_id=principal.tenant_id, run_id=run_id, selected_model=selected_model,
@@ -2441,7 +2444,7 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
-    except RepositoryConflictError as exc:
+    except (RepositoryConflictError, ConversationRunAdmissionError) as exc:
         code = str(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,

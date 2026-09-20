@@ -47,4 +47,5 @@ export {
 export { skillApi } from "./api/skill";
 export { workbenchApi } from "./api/workbench";
 export { mcpApi } from "./api/mcp";
+export { knowledgeApi } from "./api/knowledge";
 export { uploadApi } from "./api/upload";

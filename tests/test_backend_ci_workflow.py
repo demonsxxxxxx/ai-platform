@@ -40,8 +40,21 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_authority.py",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",
+    "tests/test_agent_profiles.py",
     "tests/test_agent_profiles_postgres.py",
+    "tests/test_agent_profile_knowledge.py",
+    "tests/test_conversation_run_admission.py",
+    "tests/test_run_control_routes.py",
+    "tests/test_run_knowledge_admission.py",
     "tests/test_model_management_postgres.py",
+    "tests/test_knowledge_acl.py",
+    "tests/test_knowledge_application.py",
+    "tests/test_knowledge_control_plane.py",
+    "tests/test_knowledge_normalization.py",
+    "tests/test_knowledge_postgres.py",
+    "tests/test_knowledge_ragflow_retrieval.py",
+    "tests/test_knowledge_runtime.py",
+    "tests/test_knowledge_runtime_application.py",
     "tests/test_authorized_skill_catalog.py",
     "tests/test_skill_dependencies.py",
     "tests/test_skill_lifecycle.py",
@@ -144,6 +157,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_packaging_publish_workflow.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
+        "tests/test_external_knowledge_slice_manifest.py",
+        "tests/test_external_knowledge_architecture.py",
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
@@ -270,7 +285,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 84
+    assert len(all_selectors) == len(set(all_selectors)) == 86
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

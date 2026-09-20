@@ -513,7 +513,7 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
                 return SingleRowCursor({"current_revision": 7})
             if "insert into agent_profile_revisions" in normalized:
                 return SingleRowCursor(
-                    {"published_at": None if params[20] is None else "database-timestamp"}
+                    {"published_at": None if params[24] is None else "database-timestamp"}
                 )
             return SingleRowCursor(None)
 
@@ -561,15 +561,18 @@ async def test_create_agent_profile_revision_preserves_typed_publication_binding
         " market_tag,",
     ):
         assert retired_column not in insert_sql
-    assert len(params) == insert_sql.count("%s") == 23
+    assert len(params) == insert_sql.count("%s") == 27
     assert params[0:6] == (
         "tenant-a", "agt_support", 8, status, "Support assistant", "Approved support helper."
     )
     assert params[7] == "Private instruction"
     assert params[8] == '[{"skill_id": "general-chat"}]'
     assert params[9] == '["mcp-a", "mcp-b"]'
-    assert params[11:15] == ("builtin:agent", "support-assistant", '["support"]', "tenant")
-    assert params[19:23] == (published_by, published_by, published_from_revision, None)
+    assert params[10:14] == (False, "[]", None, "[]")
+    assert params[14] == "a" * 64
+    assert params[15:19] == ("builtin:agent", "support-assistant", '["support"]', "tenant")
+    assert params[22:26] == ("creator-a", published_by, published_by, published_from_revision)
+    assert params[26] is None
     assert saved["published_at"] == expected_published_at
 
 

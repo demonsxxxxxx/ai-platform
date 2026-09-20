@@ -15,6 +15,8 @@ The Harness SDK owns the private model/tool loop within its admitted scope.
 | Principal and authentication lifetime | Identity and the existing company authority | Browser/API authentication; ADR 0007 owns the fixed authentication day |
 | Profile revision, publication and ACL | Agent Apps | Admin/public projections and exact-bound admission |
 | Skill version, release, distribution | Skills | Governed catalog and materialization; archive preserves history |
+| External Knowledge | Governed connection revisions, source ACL, retrieval profiles, Run snapshots, evidence and citations | Knowledge owns the facts; RAGFlow provider adapter; Agent Apps, Runs, Conversations and Engine consume Knowledge APIs and safe projections |
+| MCP | Governed MCP server and tool catalog | MCP owns generic server/tool registration and authorization adapters; Agent Apps consume only safe tool projections |
 | Conversation text and session ownership | Conversations | Context selection and authorized history projections |
 | Context selection and exact executor input | Context | Engine receives the materialized snapshot; SDK session memory is not authority |
 | Run admission, attempt and business terminal outcome | Runs | API, Worker and reconciler request transitions through the same owner |

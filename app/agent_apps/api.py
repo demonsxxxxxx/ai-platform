@@ -111,6 +111,8 @@ class AgentProfilePublicProjection(TypedDict):
     avatar_ref: AgentProfileAvatarRef
     avatar_seed: str
     market_tags: list[str]
+    category: str
+    knowledge_capability: dict[str, Any]
     published_at: Any | None
     completed_tasks: int
     is_favorite: bool

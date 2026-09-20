@@ -1,0 +1,17 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KOUTCOME-39",
+  "issue_number": 1311,
+  "summary": "Fail-closed required-source and no-evidence Run terminal outcomes",
+  "atomic_case_ids": [
+    "KAC-FR-KRET-039",
+    "KAC-FR-KRET-040",
+    "KAC-FR-KRET-041",
+    "KAC-FR-KRET-042",
+    "KAC-FR-KRET-043"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KOUTCOME-39.json"
+  ],
+  "evidence_layers": ["source", "unit", "integration"]
+}

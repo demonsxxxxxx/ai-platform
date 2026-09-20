@@ -20,10 +20,28 @@ agent_profile_revisions.revision, agent_profile_revisions.revision_status as sta
 agent_profile_revisions.name, agent_profile_revisions.description,
 agent_profile_revisions.starter_prompts, agent_profile_revisions.instructions,
 agent_profile_revisions.skill_set, agent_profile_revisions.mcp_tool_ids,
+agent_profile_revisions.knowledge_enabled, agent_profile_revisions.knowledge_source_ids,
+agent_profile_revisions.retrieval_profile_id, agent_profile_revisions.knowledge_bindings,
 agent_profile_revisions.content_hash, agent_profile_revisions.avatar_ref,
 agent_profile_revisions.avatar_seed, agent_profile_revisions.market_tags,
 agent_profile_revisions.visibility, agent_profile_revisions.allowed_department_ids,
 agent_profile_revisions.allowed_roles, agent_profile_revisions.allowed_user_ids,
+case when agent_profile_revisions.knowledge_enabled then (
+  select case
+           when bool_and(connections.last_complete_sync_at is not null)
+             then min(connections.last_complete_sync_at)
+           else null
+         end
+  from jsonb_array_elements_text(agent_profile_revisions.knowledge_source_ids) as bound_source(source_id)
+  join knowledge_sources sources
+    on sources.tenant_id = agent_profile_revisions.tenant_id
+   and sources.id = bound_source.source_id
+   and sources.status = 'active'
+  join knowledge_connections connections
+    on connections.tenant_id = sources.tenant_id
+   and connections.id = sources.connection_id
+   and connections.status = 'active'
+) else null end as knowledge_freshness_at,
 agent_profile_revisions.created_at, agent_profile_revisions.published_at
 """.strip()
 
@@ -104,6 +122,10 @@ async def create_agent_profile_revision(
     allowed_roles: list[str] | None = None,
     allowed_user_ids: list[str] | None = None,
     withdrawn_from_revision: int | None = None,
+    knowledge_enabled: bool = False,
+    knowledge_source_ids: list[str] | None = None,
+    retrieval_profile_id: str | None = None,
+    knowledge_bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Append one revision under an optimistic fence and transaction advisory lock."""
 
@@ -129,23 +151,27 @@ async def create_agent_profile_revision(
         """
         insert into agent_profile_revisions(
           tenant_id, agent_id, revision, revision_status, name, description,
-          starter_prompts, instructions, skill_set, mcp_tool_ids, content_hash,
-          avatar_ref, avatar_seed, market_tags, visibility,
+          starter_prompts, instructions, skill_set, mcp_tool_ids,
+          knowledge_enabled, knowledge_source_ids, retrieval_profile_id, knowledge_bindings,
+          content_hash, avatar_ref, avatar_seed, market_tags, visibility,
           allowed_department_ids, allowed_roles, allowed_user_ids,
           created_by, published_by, published_at,
           published_from_revision, withdrawn_from_revision
         )
         values (
           %s, %s, %s, %s, %s, %s,
-          %s::jsonb, %s, %s::jsonb, %s::jsonb, %s,
-          %s, %s, %s::jsonb, %s,
+          %s::jsonb, %s, %s::jsonb, %s::jsonb,
+          %s, %s::jsonb, %s, %s::jsonb,
+          %s, %s, %s, %s::jsonb, %s,
           %s::jsonb, %s::jsonb, %s::jsonb,
           %s, %s, case when %s::text is null then null else now() end,
           %s, %s
         )
         returning tenant_id, agent_id, revision, revision_status as status,
                   name, description, starter_prompts, instructions, skill_set,
-                  mcp_tool_ids, content_hash, avatar_ref, avatar_seed, market_tags,
+                  mcp_tool_ids, knowledge_enabled, knowledge_source_ids,
+                  retrieval_profile_id, knowledge_bindings, content_hash,
+                  avatar_ref, avatar_seed, market_tags,
                   visibility, allowed_department_ids, allowed_roles, allowed_user_ids,
                   created_at, published_at
         """,
@@ -160,6 +186,10 @@ async def create_agent_profile_revision(
             instructions,
             _dumps_json(skill_set),
             _dumps_json(mcp_tool_ids),
+            knowledge_enabled,
+            _dumps_json(knowledge_source_ids or []),
+            retrieval_profile_id,
+            _dumps_json(knowledge_bindings or []),
             content_hash,
             avatar_ref,
             avatar_seed,

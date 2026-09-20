@@ -1,0 +1,20 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDBSYNC-10",
+  "issue_number": 1311,
+  "summary": "Lease-fenced catalog synchronization persistence candidate; PostgreSQL acceptance remains pending",
+  "atomic_case_ids": [
+    "KAC-FR-KSRC-003",
+    "KAC-FR-KSRC-004",
+    "KAC-FR-KSRC-005",
+    "KAC-FR-KSRC-017",
+    "KAC-FR-KSRC-018",
+    "KAC-FR-KSRC-019",
+    "KAC-FR-KSRC-020",
+    "KAC-FR-KSRC-042"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KDBSYNC-10.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

@@ -475,17 +475,39 @@ async def test_successor_activation_ledger_advances_to_current_schema():
     )
 
 
+@pytest.mark.asyncio
+async def test_external_knowledge_schema_advances_sandbox_provider_ledger():
+    state = SharedMigrationState()
+    state.ledger[schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION] = (
+        "legacy-checksum"
+    )
+
+    result = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert result["status"] == "applied"
+    assert state.ledger[schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION] == (
+        "legacy-checksum"
+    )
+    assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
+        schema_migrations.schema_checksum()
+    )
+
+
 def test_stream_only_schema_change_advances_schema_version():
     assert schema_migrations.STREAM_ONLY_SCHEMA_VERSION == "2026.09.12.1"
     assert schema_migrations.RUN_DIAGNOSTICS_SCHEMA_VERSION == "2026.09.13.1"
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.16.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.19.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION
+        == schema_migrations.EXTERNAL_KNOWLEDGE_SCHEMA_VERSION
     )
+    assert schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION == "2026.09.16.1"
     assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
     assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
@@ -498,6 +520,24 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "schema_migrations",
         "schema_index_migrations",
         "users",
+        "platform_secret_records",
+        "knowledge_connections",
+        "knowledge_connection_revisions",
+        "knowledge_catalog_syncs",
+        "knowledge_connection_check_receipts",
+        "knowledge_catalog_sync_observations",
+        "knowledge_sources",
+        "knowledge_source_acl_versions",
+        "knowledge_source_update_receipts",
+        "knowledge_source_acl_departments",
+        "knowledge_source_acl_roles",
+        "knowledge_source_acl_users",
+        "knowledge_connection_lifecycle_receipts",
+        "knowledge_retrieval_profiles",
+        "run_knowledge_snapshots",
+        "knowledge_retrieval_attempts",
+        "knowledge_evidence",
+        "knowledge_citations",
         "runs",
         "run_diagnostics",
         "model_gateway_revisions",
@@ -773,6 +813,42 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "ai_platform_guard_run_attempt_transition",
             23,
         ),
+        (
+            "knowledge_connection_lifecycle_receipts",
+            "trg_knowledge_connection_lifecycle_receipt_immutable",
+            "ai_platform_guard_knowledge_connection_lifecycle_receipt_immutable",
+            27,
+        ),
+        (
+            "knowledge_retrieval_profiles",
+            "trg_knowledge_retrieval_profile_immutable",
+            "ai_platform_guard_knowledge_retrieval_profile_immutable",
+            19,
+        ),
+        (
+            "run_knowledge_snapshots",
+            "trg_run_knowledge_snapshot_immutable",
+            "ai_platform_guard_run_knowledge_snapshot_immutable",
+            23,
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "trg_knowledge_retrieval_attempt_transition",
+            "ai_platform_guard_knowledge_retrieval_attempt_transition",
+            19,
+        ),
+        (
+            "knowledge_evidence",
+            "trg_knowledge_evidence_immutable",
+            "ai_platform_guard_knowledge_evidence_immutable",
+            19,
+        ),
+        (
+            "knowledge_citations",
+            "trg_knowledge_citation_immutable",
+            "ai_platform_guard_knowledge_citation_immutable",
+            27,
+        ),
     )
     trigger_contract = schema_migrations._critical_trigger_contract()
     assert [item[:4] for item in trigger_contract] == list(
@@ -931,6 +1007,129 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "run_attempts_tenant_id_run_id_queue_attempt_id_key",
             "u",
             "UNIQUE (tenant_id, run_id, queue_attempt_id)",
+        ),
+        (
+            "run_attempts",
+            "uq_run_attempts_tenant_run_id",
+            "u",
+            "UNIQUE (tenant_id, run_id, id)",
+        ),
+        (
+            "run_knowledge_snapshots",
+            "fk_run_knowledge_snapshot_run",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+        ),
+        (
+            "run_knowledge_snapshots",
+            "fk_run_knowledge_snapshot_agent_profile",
+            "f",
+            "FOREIGN KEY (tenant_id, agent_id, profile_revision) "
+            "REFERENCES agent_profile_revisions(tenant_id, agent_id, revision)",
+        ),
+        (
+            "run_knowledge_snapshots",
+            "fk_run_knowledge_snapshot_retrieval_profile",
+            "f",
+            "FOREIGN KEY (retrieval_profile_id, retrieval_profile_revision) "
+            "REFERENCES knowledge_retrieval_profiles(id, revision)",
+        ),
+        (
+            "run_knowledge_snapshots",
+            "uq_run_knowledge_snapshot_fence",
+            "u",
+            "UNIQUE (tenant_id, run_id, content_hash)",
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "fk_knowledge_retrieval_attempt_run_attempt",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, attempt_id) "
+            "REFERENCES run_attempts(tenant_id, run_id, id)",
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "fk_knowledge_retrieval_attempt_snapshot",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, snapshot_hash) "
+            "REFERENCES run_knowledge_snapshots(tenant_id, run_id, content_hash)",
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "uq_knowledge_retrieval_attempt_fence",
+            "u",
+            "UNIQUE (tenant_id, run_id, attempt_id, generation)",
+        ),
+        (
+            "knowledge_retrieval_attempts",
+            "uq_knowledge_retrieval_attempt_identity",
+            "u",
+            "UNIQUE (tenant_id, run_id, id)",
+        ),
+        (
+            "knowledge_evidence",
+            "fk_knowledge_evidence_attempt",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, retrieval_attempt_id) "
+            "REFERENCES knowledge_retrieval_attempts(tenant_id, run_id, id)",
+        ),
+        (
+            "knowledge_evidence",
+            "fk_knowledge_evidence_source",
+            "f",
+            "FOREIGN KEY (tenant_id, source_id) "
+            "REFERENCES knowledge_sources(tenant_id, id)",
+        ),
+        (
+            "knowledge_evidence",
+            "uq_knowledge_evidence_attempt_rank",
+            "u",
+            "UNIQUE (tenant_id, run_id, retrieval_attempt_id, fused_rank)",
+        ),
+        (
+            "messages",
+            "uq_messages_tenant_run_id",
+            "u",
+            "UNIQUE (tenant_id, run_id, id)",
+        ),
+        (
+            "knowledge_citations",
+            "fk_knowledge_citation_message",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, message_id) "
+            "REFERENCES messages(tenant_id, run_id, id)",
+        ),
+        (
+            "knowledge_citations",
+            "fk_knowledge_citation_attempt",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, retrieval_attempt_id) "
+            "REFERENCES knowledge_retrieval_attempts(tenant_id, run_id, id)",
+        ),
+        (
+            "knowledge_citations",
+            "fk_knowledge_citation_evidence",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, evidence_id) "
+            "REFERENCES knowledge_evidence(tenant_id, run_id, evidence_id)",
+        ),
+        (
+            "knowledge_citations",
+            "fk_knowledge_citation_source",
+            "f",
+            "FOREIGN KEY (tenant_id, source_id) REFERENCES knowledge_sources(tenant_id, id)",
+        ),
+        (
+            "knowledge_citations",
+            "uq_knowledge_citation_message_ordinal",
+            "u",
+            "UNIQUE (tenant_id, run_id, message_id, ordinal)",
+        ),
+        (
+            "knowledge_citations",
+            "uq_knowledge_citation_message_evidence",
+            "u",
+            "UNIQUE (tenant_id, run_id, message_id, evidence_id)",
         ),
         (
             "sse_stream_authorities",

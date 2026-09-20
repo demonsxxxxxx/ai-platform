@@ -16,6 +16,8 @@ from app.bootstrap.model_services import (
     configure_model_services,
 )
 from app.bootstrap.mcp import configure_mcp_runtime
+from app.bootstrap.knowledge import build_knowledge_router, configure_knowledge_services
+
 from app.bootstrap.run_lifecycle import build_run_cancellation_use_case
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
@@ -86,7 +88,9 @@ def create_app() -> FastAPI:
     configure_mcp_runtime()
     configure_model_services()
     configure_skill_services()
+    configure_knowledge_services()
     configure_agent_profile_routes(configure_agent_profile_favorites)
+
     app = FastAPI(title="AI Platform API", version="0.1.0", lifespan=lifespan)
     app.state.run_attempt_lifecycle = build_run_attempt_lifecycle_service()
     app.state.run_diagnostics_service = build_run_diagnostics_service()
@@ -114,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_skills_router, prefix="/api/ai")
     app.include_router(admin_tool_policies_router, prefix="/api/ai")
     app.include_router(build_model_management_router(), prefix="/api/ai")
+    app.include_router(build_knowledge_router(), prefix="/api/ai")
     app.include_router(capability_distributions_router, prefix="/api")
     app.include_router(skills_marketplace_router, prefix="/api")
     app.include_router(browser_runtime_config_router, prefix="/api")

@@ -2,6 +2,8 @@ import type {
   AgentProfileAdminProjection,
   AgentProfileDraftRequest,
   AgentProfileSkillReference,
+  KnowledgeBuilderSource,
+  KnowledgeRetrievalProfile,
   PublicSkillResponse,
   ToolState,
 } from "../../types";
@@ -15,8 +17,13 @@ export interface AgentBuilderSafeMcpTool {
 export interface AgentBuilderCurrentCatalog {
   skills: readonly PublicSkillResponse[];
   mcpTools: readonly AgentBuilderSafeMcpTool[];
+  knowledgeSources: readonly KnowledgeBuilderSource[];
+  retrievalProfiles: readonly KnowledgeRetrievalProfile[];
   skillsResolved: boolean;
   mcpToolsResolved: boolean;
+  knowledgeResolved: boolean;
+  knowledgeSelectionResolved?: boolean;
+  missingKnowledgeSourceIds?: readonly string[];
   effectivePermissionsKnown: boolean;
 }
 
@@ -43,6 +50,9 @@ export interface AgentBuilderEditor {
   instructions: string;
   selectedSkills: AgentProfileSkillReference[];
   selectedMcpToolIds: string[];
+  knowledgeEnabled: boolean;
+  knowledgeSourceIds: string[];
+  retrievalProfileId: string | null;
   avatarRef: AgentProfileDraftRequest["avatar_ref"];
   avatarSeed: string;
   marketTag: string;
@@ -76,6 +86,12 @@ export type AgentBuilderBlockCode =
   | "profile_revision_missing"
   | "catalog_unavailable"
   | "selected_skill_stale"
+  | "selected_mcp_tool_unavailable"
+  | "knowledge_selection_incomplete"
+  | "knowledge_source_limit_exceeded"
+  | "selected_knowledge_source_unavailable"
+  | "knowledge_scope_incompatible"
+  | "retrieval_profile_unavailable"
   | "no_changes"
   | "save_required"
   | "unsaved_changes"
@@ -83,6 +99,52 @@ export type AgentBuilderBlockCode =
 
 export interface AgentBuilderValidationIssue {
   code: AgentBuilderBlockCode;
+  unavailableMcpToolIds?: readonly string[];
+  unavailableKnowledgeSourceIds?: readonly string[];
+}
+
+function normalizedSet(values: readonly string[], caseInsensitive = false): Set<string> {
+  return new Set(
+    values
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => (caseInsensitive ? value.toLowerCase() : value)),
+  );
+}
+
+function isSubset(values: Set<string>, container: Set<string>): boolean {
+  return [...values].every((value) => container.has(value));
+}
+
+/** Mirror the server's source-contains-Agent ACL rule for early Builder feedback. */
+export function knowledgeSourceContainsEditorScope(
+  source: KnowledgeBuilderSource,
+  editor: AgentBuilderEditor,
+): boolean {
+  if (source.visibility === "enterprise") return true;
+  if (editor.visibility === "tenant") return false;
+
+  const sourceDepartments = normalizedSet(source.allowed_department_ids);
+  const sourceRoles = normalizedSet(source.allowed_roles, true);
+  const sourceUsers = normalizedSet(source.allowed_user_ids);
+  const agentDepartments = normalizedSet(editor.allowedDepartmentIds);
+  const agentRoles = normalizedSet(editor.allowedRoles, true);
+  const agentUsers = normalizedSet(editor.allowedUserIds);
+
+  if (!isSubset(agentUsers, sourceUsers)) return false;
+  if (
+    sourceDepartments.size > 0 &&
+    (agentDepartments.size === 0 || !isSubset(agentDepartments, sourceDepartments))
+  ) {
+    return false;
+  }
+  if (
+    sourceRoles.size > 0 &&
+    (agentRoles.size === 0 || !isSubset(agentRoles, sourceRoles))
+  ) {
+    return false;
+  }
+  return sourceDepartments.size > 0 || sourceRoles.size > 0 || sourceUsers.size > 0;
 }
 
 /**
@@ -138,6 +200,9 @@ export function createUnsavedAgentEditor(): AgentBuilderEditor {
     instructions: "",
     selectedSkills: [],
     selectedMcpToolIds: [],
+    knowledgeEnabled: false,
+    knowledgeSourceIds: [],
+    retrievalProfileId: null,
     avatarRef: "builtin:agent",
     avatarSeed: "",
     marketTag: "",
@@ -166,6 +231,10 @@ export function hydrateAgentProfileEditor(
     instructions: profile.instructions,
     selectedSkills: profile.skill_set.map((skill) => ({ skill_id: skill.skill_id })),
     selectedMcpToolIds: [...profile.mcp_tool_ids],
+    knowledgeEnabled:
+      profile.knowledge_enabled ?? Boolean(profile.knowledge_source_ids?.length),
+    knowledgeSourceIds: [...(profile.knowledge_source_ids ?? [])],
+    retrievalProfileId: profile.retrieval_profile_id ?? null,
     avatarRef: profile.avatar_ref,
     avatarSeed: profile.avatar_seed.trim() || profile.agent_id,
     marketTag: serializeMarketTags(profileMarketTags(profile)),
@@ -177,6 +246,10 @@ export function hydrateAgentProfileEditor(
       ...profile,
       skill_set: profile.skill_set.map((skill) => ({ skill_id: skill.skill_id })),
       mcp_tool_ids: [...profile.mcp_tool_ids],
+      knowledge_enabled:
+        profile.knowledge_enabled ?? Boolean(profile.knowledge_source_ids?.length),
+      knowledge_source_ids: [...(profile.knowledge_source_ids ?? [])],
+      retrieval_profile_id: profile.retrieval_profile_id ?? null,
       starter_prompts: [...profile.starter_prompts],
       market_tags: [...profile.market_tags],
       allowed_department_ids: [...profile.allowed_department_ids],
@@ -194,6 +267,9 @@ function editorDefinition(editor: AgentBuilderEditor) {
     instructions: editor.instructions,
     skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: editor.selectedMcpToolIds,
+    knowledge_enabled: editor.knowledgeEnabled,
+    knowledge_source_ids: editor.knowledgeSourceIds,
+    retrieval_profile_id: editor.retrievalProfileId,
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim(),
     market_tags: parseMarketTags(editor.marketTag),
@@ -212,6 +288,10 @@ function profileDefinition(profile: AgentProfileAdminProjection) {
     instructions: profile.instructions,
     skill_set: profile.skill_set.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: profile.mcp_tool_ids,
+    knowledge_enabled:
+      profile.knowledge_enabled ?? Boolean(profile.knowledge_source_ids?.length),
+    knowledge_source_ids: profile.knowledge_source_ids ?? [],
+    retrieval_profile_id: profile.retrieval_profile_id ?? null,
     avatar_ref: profile.avatar_ref,
     avatar_seed: profile.avatar_seed.trim() || profile.agent_id,
     market_tags: profileMarketTags(profile),
@@ -241,6 +321,9 @@ export function hasUnsavedAgentProfileEdits(editor: AgentBuilderEditor): boolean
     editor.instructions.trim() ||
     editor.selectedSkills.length > 0 ||
     editor.selectedMcpToolIds.length > 0 ||
+    editor.knowledgeEnabled ||
+    editor.knowledgeSourceIds.length > 0 ||
+    editor.retrievalProfileId !== null ||
     editor.avatarRef !== "builtin:agent" ||
     editor.avatarSeed !== "" ||
     editor.marketTag.trim() ||
@@ -278,6 +361,71 @@ export function validateAgentProfileEditor(
     );
   });
   if (!selectedSkillsAreCurrent) return { code: "selected_skill_stale" };
+
+  if (editor.selectedMcpToolIds.length > 0) {
+    if (!catalog.mcpToolsResolved) return { code: "catalog_unavailable" };
+    const currentIds = new Set(catalog.mcpTools.map((tool) => tool.id));
+    const unavailableMcpToolIds = editor.selectedMcpToolIds.filter(
+      (toolId, index, selectedIds) =>
+        !toolId.trim() ||
+        !currentIds.has(toolId) ||
+        selectedIds.indexOf(toolId) !== index,
+    );
+    if (unavailableMcpToolIds.length > 0) {
+      return { code: "selected_mcp_tool_unavailable", unavailableMcpToolIds };
+    }
+  }
+
+  if (
+    editor.knowledgeEnabled &&
+    (editor.knowledgeSourceIds.length === 0 || !editor.retrievalProfileId)
+  ) {
+    return { code: "knowledge_selection_incomplete" };
+  }
+  if (editor.knowledgeSourceIds.length > 8) {
+    return { code: "knowledge_source_limit_exceeded" };
+  }
+  if (editor.knowledgeEnabled) {
+    if (!catalog.knowledgeResolved) return { code: "catalog_unavailable" };
+    if (catalog.knowledgeSelectionResolved === false) {
+      return { code: "catalog_unavailable" };
+    }
+    const currentSources = new Map(
+      catalog.knowledgeSources.map((source) => [source.id, source]),
+    );
+    const verifiedMissing = new Set(catalog.missingKnowledgeSourceIds ?? []);
+    const unavailableKnowledgeSourceIds = editor.knowledgeSourceIds.filter(
+      (sourceId, index, selectedIds) =>
+        !sourceId.trim() ||
+        currentSources.get(sourceId)?.available === false ||
+        verifiedMissing.has(sourceId) ||
+        (!currentSources.has(sourceId) && catalog.knowledgeSelectionResolved !== true) ||
+        selectedIds.indexOf(sourceId) !== index,
+    );
+    if (unavailableKnowledgeSourceIds.length > 0) {
+      return {
+        code: "selected_knowledge_source_unavailable",
+        unavailableKnowledgeSourceIds,
+      };
+    }
+    const incompatibleKnowledgeSourceIds = editor.knowledgeSourceIds.filter((sourceId) => {
+      const source = currentSources.get(sourceId);
+      return source ? !knowledgeSourceContainsEditorScope(source, editor) : false;
+    });
+    if (incompatibleKnowledgeSourceIds.length > 0) {
+      return {
+        code: "knowledge_scope_incompatible",
+        unavailableKnowledgeSourceIds: incompatibleKnowledgeSourceIds,
+      };
+    }
+    if (
+      !catalog.retrievalProfiles.some(
+        (profile) => profile.id === editor.retrievalProfileId && profile.status === "active",
+      )
+    ) {
+      return { code: "retrieval_profile_unavailable" };
+    }
+  }
 
   return null;
 }
@@ -318,6 +466,9 @@ export function buildAgentProfileDraftRequest(
     instructions: editor.instructions,
     skill_set: editor.selectedSkills.map((skill) => ({ skill_id: skill.skill_id })),
     mcp_tool_ids: [...editor.selectedMcpToolIds],
+    knowledge_enabled: editor.knowledgeEnabled,
+    knowledge_source_ids: [...editor.knowledgeSourceIds],
+    retrieval_profile_id: editor.retrievalProfileId,
     avatar_ref: editor.avatarRef,
     avatar_seed: editor.avatarSeed.trim() || editor.name.trim(),
     market_tags: parseMarketTags(editor.marketTag),
@@ -348,6 +499,18 @@ export function agentBuilderBlockReason(issue: AgentBuilderValidationIssue): str
       return "授权目录尚未完整加载，暂不能保存或发布。";
     case "selected_skill_stale":
       return "所选 Skill 或其固定版本已不可用，请重新选择。";
+    case "selected_mcp_tool_unavailable":
+      return `已选 MCP 工具中有 ${issue.unavailableMcpToolIds?.length ?? 1} 项不可用，请明确移除或重新选择。`;
+    case "knowledge_selection_incomplete":
+      return "知识库配置不完整，请同时选择知识源与检索策略。";
+    case "knowledge_source_limit_exceeded":
+      return "一位专家最多可选择 8 个知识源，请移除多余项。";
+    case "selected_knowledge_source_unavailable":
+      return `已选知识源中有 ${issue.unavailableKnowledgeSourceIds?.length ?? 1} 项已停用、无权访问或不再存在，请明确移除或重新选择。`;
+    case "knowledge_scope_incompatible":
+      return `专家的可见范围超出 ${issue.unavailableKnowledgeSourceIds?.length ?? 1} 项知识源的部门权限，请收窄专家范围或重新选择知识源。`;
+    case "retrieval_profile_unavailable":
+      return "所选检索策略已不可用，请重新选择。";
     case "no_changes":
       return "当前内容与服务端版本一致，无需再次保存。";
     case "save_required":

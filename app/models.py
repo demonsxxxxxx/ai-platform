@@ -2,7 +2,9 @@ from typing import Annotated, Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import (
-    AfterValidator, AliasChoices, BeforeValidator,
+    AfterValidator,
+    AliasChoices,
+    BeforeValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -11,14 +13,19 @@ from pydantic import (
     model_validator,
 )
 
+
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,
     RUN_EXECUTION_KIND_HARNESS_CHAT,
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
-    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, normalize_thinking_effort, validate_thinking_agent_options,
+    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
+    ThinkingEffort,
+    normalize_thinking_effort,
+    validate_thinking_agent_options,
 )
+
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import AgentProfileAvatarRef
 from app.agent_apps.api import (
@@ -35,6 +42,10 @@ from app.validation import (
     assert_safe_id,
     assert_safe_principal_user_id,
     assert_upstream_model_id,
+    normalize_agent_profile_user_ids,
+    normalize_capability_department_ids,
+    normalize_capability_roles,
+    require_universal_agent_input_types,
 )
 
 
@@ -65,7 +76,6 @@ def _normalize_agent_profile_user_ids(values: list[str], field_name: str) -> lis
         if candidate not in normalized:
             normalized.append(candidate)
     return normalized
-
 
 class CapabilityDistributionResponse(BaseModel):
     """Authoritative tenant capability distribution projection."""
@@ -102,12 +112,12 @@ class CapabilityDistributionUpdateRequest(BaseModel):
     @field_validator("department_ids")
     @classmethod
     def normalize_department_ids(cls, value: list[str], info):
-        return _normalize_capability_department_ids(value, info.field_name)
+        return normalize_capability_department_ids(value, info.field_name)
 
     @field_validator("allowed_roles")
     @classmethod
     def normalize_allowed_roles(cls, value: list[str], info):
-        return _normalize_capability_roles(value, info.field_name)
+        return normalize_capability_roles(value, info.field_name)
 
 
 class CapabilityDistributionAuthorityUpdateRequest(BaseModel):
@@ -125,7 +135,7 @@ class CapabilityDistributionAuthorityUpdateRequest(BaseModel):
     @field_validator("allowed_roles")
     @classmethod
     def normalize_allowed_roles(cls, value: list[str], info):
-        return _normalize_capability_roles(value, info.field_name)
+        return normalize_capability_roles(value, info.field_name)
 
 
 class CapabilityDistributionToggleRequest(BaseModel):
@@ -222,9 +232,15 @@ class AgentProfileDraftRequest(BaseModel):
     description: str = Field(default="", max_length=4_000)
     starter_prompts: list[str] = Field(default_factory=list, max_length=8)
     instructions: str = Field(min_length=1, max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+    _legacy_model_id: str = PrivateAttr(default="platform-selected")
+    _knowledge_bindings: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     skill_set: list[AgentProfileSkillReference] = Field(min_length=1, max_length=32)
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    knowledge_enabled: bool = False
+    knowledge_source_ids: list[str] = Field(default_factory=list, max_length=8)
+    retrieval_profile_id: str | None = None
     avatar_ref: AgentProfileAvatarRef = "builtin:agent"
+
     avatar_seed: str = Field(default="", max_length=128)
     market_tags: list[str] = Field(default_factory=list, max_length=16)
     visibility: Literal["tenant", "restricted"] = "tenant"
@@ -270,6 +286,27 @@ class AgentProfileDraftRequest(BaseModel):
                 raise ValueError("mcp_tool_ids contains duplicates")
             normalized.append(tool_id)
         return normalized
+
+    @field_validator("knowledge_source_ids")
+    @classmethod
+    def validate_knowledge_source_ids(cls, value: list[str]):
+        normalized = [assert_safe_id(item.strip(), "knowledge_source_ids") for item in value]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("knowledge_source_ids contains duplicates")
+        return normalized
+
+    @field_validator("retrieval_profile_id")
+    @classmethod
+    def validate_retrieval_profile_id(cls, value: str | None):
+        return assert_safe_id(value.strip(), "retrieval_profile_id") if value else None
+
+    @model_validator(mode="after")
+    def validate_knowledge_selection(self):
+        if bool(self.knowledge_source_ids) != bool(self.retrieval_profile_id):
+            raise ValueError("knowledge selection requires sources and a retrieval profile")
+        if self.knowledge_enabled and not self.knowledge_source_ids:
+            raise ValueError("knowledge selection requires sources and a retrieval profile")
+        return self
 
     @field_validator("allowed_department_ids")
     @classmethod
@@ -361,6 +398,16 @@ class AgentAppRunRequest(BaseModel):
         return normalized
 
 
+class AgentKnowledgeCapabilityProjection(BaseModel):
+    """Safe public knowledge capability without source or provider identities."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    source_count: int = Field(default=0, ge=0, le=8)
+    freshness_at: str | None = Field(default=None, max_length=64)
+
+
 class AgentProfilePublicProjection(BaseModel):
     """Ordinary-user market projection without executable configuration."""
 
@@ -374,8 +421,11 @@ class AgentProfilePublicProjection(BaseModel):
     avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
     market_tags: list[str] = Field(default_factory=list)
+    category: Literal["general", "support", "writing", "research", "operations"] = "general"
+    knowledge_capability: AgentKnowledgeCapabilityProjection = Field(
+        default_factory=AgentKnowledgeCapabilityProjection
+    )
     published_at: Any | None = None
-
 
 class AgentProfileCatalogResponse(BaseModel):
     """Ordinary-user catalog response containing only safe profile cards."""
@@ -398,7 +448,11 @@ class AgentProfileAdminProjection(BaseModel):
     instructions: str
     skill_set: list[AgentProfileSkillReference] = Field(default_factory=list)
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    knowledge_enabled: bool = False
+    knowledge_source_ids: list[str] = Field(default_factory=list, max_length=8)
+    retrieval_profile_id: str | None = None
     avatar_ref: AgentProfileAvatarRef = "builtin:agent"
+
     avatar_seed: str = ""
     market_tags: list[str] = Field(default_factory=list)
     visibility: Literal["tenant", "restricted"] = "tenant"
@@ -408,7 +462,6 @@ class AgentProfileAdminProjection(BaseModel):
     content_hash: str
     created_at: Any | None = None
     published_at: Any | None = None
-
 
 class AgentProfileAdminListResponse(BaseModel):
     """Administrator response containing same-tenant profile revisions."""
@@ -480,7 +533,6 @@ class AgentConversationIdentity(BaseModel):
     avatar_ref: AgentProfileAvatarRef = "builtin:agent"
     avatar_seed: str = ""
     published_at: Any | None = None
-
 
 class CreateRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")

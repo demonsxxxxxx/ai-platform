@@ -1165,6 +1165,7 @@ class ClaudeAgentWorkerAdapter:
             ),
             "file_names": file_names,
             "context_pack": prompt_context_pack,
+            "knowledge_evidence": payload.knowledge_evidence,
         }
         try:
             prompt = (

@@ -13,6 +13,15 @@ const enterpriseProfileFields = {
   avatar_seed: "enterprise-profile",
   market_tags: ["企业服务"] as string[],
   is_favorite: false,
+  knowledge_capability: {
+    enabled: false,
+    source_count: 0,
+    freshness_at: null,
+  },
+  capability_summary: "",
+  recommended_tasks: [] as string[],
+  expected_outputs: [] as string[],
+  permissions_and_data_access_notice: "",
   published_at: "2026-08-04T01:00:00Z",
 };
 
@@ -941,7 +950,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.ok(container.querySelector("[data-agent-market-detail]"));
     assert.match(container.textContent, /核对报销材料/);
     assert.match(container.textContent, /企业已发布/);
-    assert.doesNotMatch(container.textContent, /版本 2/);
+    assert.match(container.textContent, /版本 2/);
     assert.match(container.textContent, /已发布的 Skill Set/);
     assert.doesNotMatch(
       container.textContent,

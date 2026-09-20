@@ -12,6 +12,7 @@ export const APP_ROUTE_PATHS = {
   apps: "/apps",
   skills: "/skills",
   mcp: "/mcp",
+  knowledge: "/knowledge",
   users: "/users",
   roles: "/roles",
   settings: "/settings",

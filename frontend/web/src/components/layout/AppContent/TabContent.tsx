@@ -14,6 +14,11 @@ const RolesPanel = lazy(() =>
 const MCPPanel = lazy(() =>
   import("../../panels/MCPPanel").then((m) => ({ default: m.MCPPanel })),
 );
+const KnowledgePanel = lazy(() =>
+  import("../../panels/KnowledgePanel").then((m) => ({
+    default: m.KnowledgePanel,
+  })),
+);
 const ModelCatalogPanel = lazy(() =>
   import("../../panels/ModelCatalogPanel").then((m) => ({
     default: m.ModelCatalogPanel,
@@ -59,6 +64,7 @@ const panelMap: Record<
   users: WorkbenchUsersProjectionPanel,
   roles: RolesPanel,
   mcp: MCPPanel,
+  knowledge: KnowledgePanel,
   feedback: WorkbenchFeedbackProjectionPanel,
   models: ModelCatalogPanel,
   runs: RunMonitorPanel,

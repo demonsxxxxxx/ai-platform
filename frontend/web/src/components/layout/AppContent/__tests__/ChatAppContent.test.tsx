@@ -39,6 +39,19 @@ const safeIdentity: AgentConversationIdentity = {
   published_at: "2026-08-04T01:00:00Z",
 };
 
+const safePublicProfileFields = {
+  category: "support" as const,
+  knowledge_capability: {
+    enabled: false,
+    source_count: 0,
+    freshness_at: null,
+  },
+  capability_summary: "",
+  recommended_tasks: [] as string[],
+  expected_outputs: [] as string[],
+  permissions_and_data_access_notice: "",
+};
+
 const safeWorkspace = {
   agent_id: safeIdentity.agent_id,
   expected_revision: safeIdentity.revision,
@@ -102,6 +115,7 @@ test("recovers an exact current Agent Conversation and keeps ordinary sessions g
     detailCalls += 1;
     return {
       ...safeIdentity,
+      ...safePublicProfileFields,
       expected_revision: safeIdentity.revision,
       market_tags: ["支持"],
       is_favorite: false,
@@ -143,6 +157,7 @@ test("keeps immutable revision history while current access remains authorized",
   };
   agentProfileApi.getPublished = async () => ({
     ...safeIdentity,
+    ...safePublicProfileFields,
     expected_revision: safeIdentity.revision + 1,
     market_tags: ["支持"],
     is_favorite: false,

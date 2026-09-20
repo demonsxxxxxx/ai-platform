@@ -1,0 +1,29 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KADR-01",
+  "issue_number": 1311,
+  "summary": "Knowledge bounded-context authority, transaction ownership, and provider credential boundary",
+  "atomic_case_ids": [
+    "KAC-FR-KMIG-001",
+    "KAC-FR-KMIG-002",
+    "KAC-FR-KMIG-003",
+    "KAC-FR-KMIG-004",
+    "KAC-FR-KMIG-005",
+    "KAC-FR-KMIG-015"
+  ],
+  "changed_paths": [
+    "CONTEXT.md",
+    "architecture-policy.json",
+    "docs/README.md",
+    "docs/adr/0013-external-knowledge-authority.md",
+    "docs/architecture/runtime-authorities.md",
+    "docs/architecture/source-code-architecture.md",
+    "docs/product/external-knowledge/README.md",
+    "docs/product/external-knowledge/manifests/KADR-01.json",
+    "tests/test_external_knowledge_architecture.py"
+  ],
+  "evidence_layers": [
+    "source",
+    "unit"
+  ]
+}

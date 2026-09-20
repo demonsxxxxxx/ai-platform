@@ -8,6 +8,7 @@ export type WorkbenchAccessKey =
   | "apps"
   | "skills"
   | "mcp"
+  | "knowledge"
   | "notifications"
   | "memory"
   | "users"
@@ -24,6 +25,7 @@ const ADMIN_ONLY_ITEMS = new Set<WorkbenchAccessKey>([
   "models",
   "runs",
   "feedback",
+  "knowledge",
 ]);
 
 const PATH_ACCESS_KEYS: Array<[RegExp, WorkbenchAccessKey]> = [
@@ -34,6 +36,7 @@ const PATH_ACCESS_KEYS: Array<[RegExp, WorkbenchAccessKey]> = [
   [/^\/apps(?:\/|$)/, "apps"],
   [/^\/skills(?:\/|$)/, "skills"],
   [/^\/mcp(?:\/|$)/, "mcp"],
+  [/^\/knowledge(?:\/|$)/, "knowledge"],
   [/^\/notifications(?:\/|$)/, "notifications"],
   [/^\/memory(?:\/|$)/, "memory"],
   [/^\/users(?:\/|$)/, "users"],

@@ -1,0 +1,24 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KFUSE-38",
+  "issue_number": 1311,
+  "summary": "Deterministic evidence deduplication, RRF ordering and bounded commit",
+  "atomic_case_ids": [
+    "KAC-FR-KRET-024",
+    "KAC-FR-KRET-025",
+    "KAC-FR-KRET-026",
+    "KAC-FR-KRET-027",
+    "KAC-FR-KRET-028",
+    "KAC-FR-KRET-029",
+    "KAC-FR-KRET-030",
+    "KAC-FR-KRET-031",
+    "KAC-FR-KRET-032",
+    "KAC-FR-KRET-033",
+    "KAC-FR-KRET-034",
+    "KAC-FR-KRET-035"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KFUSE-38.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

@@ -57,6 +57,9 @@ function profile(
     instructions: "仅使用已授权资料。",
     skill_set: [{ skill_id: "document-review" }],
     mcp_tool_ids: ["gateway::knowledge.search"],
+    knowledge_enabled: false,
+    knowledge_source_ids: [],
+    retrieval_profile_id: null,
     content_hash: "a".repeat(64),
     created_at: "2026-08-01T00:00:00Z",
     published_at: null,
@@ -76,8 +79,11 @@ function catalog(
         description: "Search the authorized knowledge base.",
       },
     ],
+    knowledgeSources: [],
+    retrievalProfiles: [],
     skillsResolved: true,
     mcpToolsResolved: true,
+    knowledgeResolved: true,
     effectivePermissionsKnown: true,
     ...overrides,
   };
@@ -219,8 +225,8 @@ test("successful create materializes server identity and enables publish", async
     allowedDepartmentIds: ["药品注册"],
   }));
 
-  const unavailableMcpCatalog = catalog({ mcpTools: [], mcpToolsResolved: false });
-  await controller.saveActiveProfile(unavailableMcpCatalog);
+  const currentCatalog = catalog();
+  await controller.saveActiveProfile(currentCatalog);
 
   assert.equal(saveCalls.length, 1);
   assert.equal(saveCalls[0].agentId, undefined);
@@ -230,7 +236,7 @@ test("successful create materializes server identity and enables publish", async
   assert.equal(controller.state.activeEditor?.revision, 1);
   assert.equal(controller.state.localEditor, null);
   assert.equal(
-    getAgentProfilePublishBlock(controller.state.activeEditor, unavailableMcpCatalog),
+    getAgentProfilePublishBlock(controller.state.activeEditor, currentCatalog),
     null,
   );
 });
@@ -282,6 +288,9 @@ test("edit disables publish, save fences the exact revision, then publish adopts
         skill_id: "document-review",
       }],
       mcp_tool_ids: ["gateway::knowledge.search"],
+      knowledge_enabled: false,
+      knowledge_source_ids: [],
+      retrieval_profile_id: null,
       avatar_ref: "builtin:document",
       avatar_seed: "agt-document-review",
       market_tags: ["文档"],
@@ -305,7 +314,7 @@ test("edit disables publish, save fences the exact revision, then publish adopts
   );
 });
 
-test("Skill catalog drift fails closed while MCP discovery drift still permits publish", async () => {
+test("Skill and MCP catalog drift fail closed", async () => {
   let saves = 0;
   let publishes = 0;
   const controller = new AgentBuilderController(fakeApi({
@@ -335,7 +344,13 @@ test("Skill catalog drift fails closed while MCP discovery drift still permits p
     mcpTools: [],
     mcpToolsResolved: false,
   }));
-  assert.equal(publishes, 1);
+  assert.equal(publishes, 0);
+  assert.match(
+    controller.state.mutation.phase === "error"
+      ? controller.state.mutation.error.message
+      : "",
+    /授权目录/,
+  );
 });
 
 test("safe save errors expose typed status and code but never raw messages", async () => {
