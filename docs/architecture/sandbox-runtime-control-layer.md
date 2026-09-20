@@ -187,6 +187,14 @@ capability evidence. `ResultMessage.structured_output` and the delivery manifest
 remain the sole terminal-answer and deliverable authority; a lookalike call is
 still denied when structured output is unavailable or its input shape is invalid.
 
+A policy-only denial of an optional tool is not an executor failure when the SDK has
+already produced a structured answer: the executor returns the answer with
+`tool_outcome=denied` and `tool_outcome_code=tool_permission_denied`. A required
+capability declaration, lifecycle/receipt mismatch, missing structured terminal,
+or executor control-plane error remains fail-closed and terminally failed. This
+keeps recoverable tool outcomes separate from the Run outcome without adding a
+second Run status vocabulary.
+
 ## Delivery slices
 
 The first slice closes immediately unsafe competing-writer paths:

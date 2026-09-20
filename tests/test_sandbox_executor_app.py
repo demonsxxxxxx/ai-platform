@@ -1497,6 +1497,53 @@ async def test_executor_preserves_sdk_error_when_required_bash_completed(
 
 
 @pytest.mark.asyncio
+async def test_executor_keeps_optional_tool_admission_failure_with_structured_answer(
+    monkeypatch,
+    tmp_path,
+):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**_kwargs):
+        return sdk_result(
+            message="I could not use that optional tool, so here is the available answer.",
+            error="claude_agent_sdk_tool_admission_failed",
+            runtime_diagnostics={
+                "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                "error_code": "claude_agent_sdk_tool_admission_failed",
+                "failure_source": "sdk_result_error",
+                "failure_stage": "model_wait",
+                "sdk": {"errors": ["optional tool denied"]},
+                "tool_policy_denials": [
+                    {
+                        "tool_name": "Read",
+                        "invocation_id": "read-call-1",
+                        "reason": "tool_parameters_not_authorized",
+                        "tool_input": {"file_path": "outside"},
+                    }
+                ],
+                "tool_calls": [],
+                "tool_lifecycles": [],
+            },
+        )
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    request = ExecutorTaskRequest.model_validate(task_payload())
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    assert result["message"].startswith("I could not use that optional tool")
+    assert result["tool_outcome"] == "denied"
+    assert result["tool_outcome_code"] == "tool_permission_denied"
+    assert "error_code" not in result
+
+
+@pytest.mark.asyncio
 async def test_executor_rejects_missing_required_bash_even_when_sdk_errors(
     monkeypatch,
     tmp_path,
