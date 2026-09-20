@@ -13,6 +13,8 @@ export interface AdminRunTimelineItem {
   status: AdminRunTimelineStatus;
   label: string;
   detail: string | null;
+  stage: string | null;
+  duration_ms: number | null;
   created_at: string | null;
   count: number;
 }
@@ -46,7 +48,6 @@ const NOISY_EVENT_TYPES = new Set([
   "run_control_operation_committed",
 ]);
 const QUEUE_EVENT_TYPES = new Set(["queued", "run_queued"]);
-const MAX_RECENT_ACTIVITY = 12;
 const MODEL_OUTPUT_TYPES = new Set([
   "assistant_delta",
   "message.delta",
@@ -135,6 +136,16 @@ const EVENT_LABELS: Record<string, string> = {
   error: "发生错误",
 };
 
+const PHASE_LABELS: Record<string, string> = {
+  attachment_materialization: "正在准备附件",
+  skill_staging: "正在准备 Skill",
+  sandbox_preparation: "正在准备运行环境",
+  sandbox_submission: "正在提交执行任务",
+  model_wait: "正在等待模型响应",
+  artifact_validation: "正在检查产物",
+  artifact_recovery: "正在恢复产物",
+};
+
 function eventMessage(event: AdminRunEvent): string | null {
   const message = event.message?.trim();
   return message || null;
@@ -188,6 +199,22 @@ function eventType(event: AdminRunEvent): string {
 
 function diagnosticNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function eventDuration(event: AdminRunEvent): number | null {
+  return (
+    diagnosticNumber(event.payload?.duration_ms) ??
+    diagnosticNumber(event.latency_ms)
+  );
+}
+
+function eventStage(event: AdminRunEvent): string | null {
+  return event.stage?.trim() || payloadText(event, "phase");
+}
+
+function progressLabel(event: AdminRunEvent): string {
+  const phase = payloadText(event, "phase");
+  return (phase && PHASE_LABELS[phase]) || eventMessage(event) || "正在处理";
 }
 
 function diagnosticMetadata(event: AdminRunEvent): Record<string, unknown> | null {
@@ -298,6 +325,11 @@ function mergeProgress(
 ): AdminRunTimelineItem {
   return {
     ...item,
+    label: progressLabel(event),
+    detail:
+      eventMessage(event) === progressLabel(event) ? null : eventMessage(event),
+    stage: eventStage(event) ?? item.stage,
+    duration_ms: eventDuration(event) ?? item.duration_ms,
     created_at: event.created_at ?? item.created_at,
     count: item.count + 1,
   };
@@ -324,6 +356,8 @@ export function buildAdminRunMonitorView(
     ) {
       timeline[timeline.length - 1] = {
         ...previous,
+        stage: item.stage ?? previous.stage,
+        duration_ms: item.duration_ms ?? previous.duration_ms,
         created_at: item.created_at ?? previous.created_at,
         count: previous.count + item.count,
       };
@@ -343,6 +377,8 @@ export function buildAdminRunMonitorView(
         status: "info",
         label: EVENT_LABELS[type] ?? "已进入队列",
         detail: eventDetail(event),
+        stage: eventStage(event) ?? "queue",
+        duration_ms: eventDuration(event),
         created_at: event.created_at ?? null,
         count: 1,
       };
@@ -355,7 +391,23 @@ export function buildAdminRunMonitorView(
     }
 
     if (MODEL_OUTPUT_TYPES.has(type)) {
-      latestAction = "模型正在输出";
+      const key = "activity:model-output";
+      const existingIndex = timeline.findIndex((item) => item.id === key);
+      const completed = type === "message.completed";
+      const item: AdminRunTimelineItem = {
+        id: key,
+        kind: "activity",
+        status: completed ? "succeeded" : "running",
+        label: completed ? "模型生成完成" : "模型正在输出",
+        detail: null,
+        stage: eventStage(event) ?? "model",
+        duration_ms: eventDuration(event),
+        created_at: event.created_at ?? null,
+        count: existingIndex >= 0 ? timeline[existingIndex].count + 1 : 1,
+      };
+      if (existingIndex >= 0) timeline[existingIndex] = item;
+      else timeline.push(item);
+      latestAction = item.label;
       return;
     }
 
@@ -380,6 +432,8 @@ export function buildAdminRunMonitorView(
           status: toolStatus(type),
           label: displayName(event) ?? existing.label,
           detail: toolDetail(type),
+          stage: eventStage(event) ?? existing.stage,
+          duration_ms: eventDuration(event) ?? existing.duration_ms,
           created_at: event.created_at ?? existing.created_at,
           count: existing.count + 1,
         };
@@ -394,6 +448,8 @@ export function buildAdminRunMonitorView(
           status: toolStatus(type),
           label: toolLabel(event),
           detail: toolDetail(type),
+          stage: eventStage(event) ?? "tool",
+          duration_ms: eventDuration(event),
           created_at: event.created_at ?? null,
           count: 1,
         };
@@ -416,18 +472,21 @@ export function buildAdminRunMonitorView(
     }
 
     if (PROGRESS_TYPES.has(type)) {
-      const key = type;
+      const key = `${type}:${payloadText(event, "phase") ?? "generic"}`;
       const last = timeline.at(-1);
       if (last?.kind === "activity" && lastProgressKey === key) {
-        timeline[timeline.length - 1] = mergeProgress(last, event);
-        latestAction = last.label;
+        const merged = mergeProgress(last, event);
+        timeline[timeline.length - 1] = merged;
+        latestAction = merged.label;
       } else {
         const item: AdminRunTimelineItem = {
           id: `activity:${event.event_id ?? index}`,
           kind: "activity",
           status: "running",
-          label: EVENT_LABELS[type] ?? "正在处理",
-          detail: eventMessage(event),
+          label: progressLabel(event),
+          detail: eventMessage(event) === progressLabel(event) ? null : eventMessage(event),
+          stage: eventStage(event),
+          duration_ms: eventDuration(event),
           created_at: event.created_at ?? null,
           count: 1,
         };
@@ -453,6 +512,8 @@ export function buildAdminRunMonitorView(
           },
           diagnostics,
         ),
+        stage: eventStage(event) ?? "terminal",
+        duration_ms: eventDuration(event),
         created_at: event.created_at ?? null,
         count: 1,
       });
@@ -467,6 +528,8 @@ export function buildAdminRunMonitorView(
       status: event.severity === "error" ? "failed" : "info",
       label,
       detail: eventMessage(event) === label ? event.error_code ?? null : eventDetail(event),
+      stage: eventStage(event),
+      duration_ms: eventDuration(event),
       created_at: event.created_at ?? null,
       count: 1,
     });
@@ -477,7 +540,7 @@ export function buildAdminRunMonitorView(
   return {
     currentStatus: run.status,
     currentAction,
-    recentActivity: timeline.slice(-MAX_RECENT_ACTIVITY),
+    recentActivity: timeline,
     eventDiagnostics: buildAdminRunEventDiagnostics(events),
     modelOutput,
     rawEventCount: events.length,

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildAdminRunsUrl,
+  exportAdminRunDiagnostics,
   fetchAdminRunDiagnostics,
   fetchAdminRunDetail,
   fetchAdminRuns,
@@ -114,4 +115,32 @@ test("admin Run diagnostics rejects an empty response instead of rendering a bla
     fetchAdminRunDiagnostics("run-a", client),
     /admin_run_diagnostics_response_invalid/,
   );
+});
+
+test("admin Run diagnostic export uses an authenticated POST and returns a bounded filename", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ input, init });
+    return new Response(new Blob(["zip-body"]), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": "attachment; filename*=UTF-8''run-diagnostics-run_a.zip",
+        "X-Diagnostic-Export-Id": "rdiagexp-a",
+      },
+    });
+  };
+
+  try {
+    const result = await exportAdminRunDiagnostics("run/a");
+    assert.equal(result.filename, "run-diagnostics-run_a.zip");
+    assert.equal(result.exportId, "rdiagexp-a");
+    assert.equal(await result.blob.text(), "zip-body");
+    assert.equal(calls[0]?.input, "/api/ai/admin/runs/run%2Fa/diagnostic-exports");
+    assert.equal(calls[0]?.init?.method, "POST");
+    assert.equal(calls[0]?.init?.credentials, "include");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

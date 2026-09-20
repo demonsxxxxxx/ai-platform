@@ -38,12 +38,18 @@ const runs: AdminRunSummary[] = [
   {
     run_id: "run_running",
     session_id: "chat_2026_04",
+    session_title: "审核季度采购合同",
+    task_summary: "请检查采购合同中的付款条款",
     user_id: "user-a",
+    user_display_name: "王敏",
     workspace_id: "workspace-a",
+    workspace_name: "法务工作区",
     trace_id: "trace-a",
     status: "running",
     agent_id: "agent-review",
+    agent_name: "合同审阅助手",
     skill_id: "skill-docx",
+    skill_name: "文档审阅",
     created_at: "2026-04-01T09:00:00Z",
     started_at: "2026-04-01T09:00:02Z",
     queue_position: null,
@@ -57,11 +63,17 @@ const runs: AdminRunSummary[] = [
   {
     run_id: "run_failed",
     session_id: "chat_failed",
+    session_title: "排查支付接口故障",
+    task_summary: "定位支付接口失败原因",
     user_id: "user-b",
+    user_display_name: "李哲",
     workspace_id: "workspace-b",
+    workspace_name: "支付平台",
     status: "failed",
     agent_id: "agent-code",
+    agent_name: "代码排障助手",
     skill_id: "skill-python",
+    skill_name: "代码分析",
     created_at: "2026-04-01T08:00:00Z",
     started_at: "2026-04-01T08:00:01Z",
     finished_at: "2026-04-01T08:00:04Z",
@@ -131,12 +143,35 @@ test("Run Monitor keeps every message diagnostic for pagination", () => {
   assert.equal(diagnostics.at(-1)?.id, "delta-80");
 });
 
+test("Run Monitor keeps the full semantic phase history with measured duration", () => {
+  const events = Array.from({ length: 14 }, (_, index) => ({
+    event_id: `progress-${index}`,
+    type: "agent.progress",
+    stage: index === 0 ? "model_wait" : `stage-${index}`,
+    message: `阶段 ${index}`,
+    payload: {
+      phase: index === 0 ? "model_wait" : `phase-${index}`,
+      duration_ms: index === 0 ? 1_250 : undefined,
+    },
+  }));
+
+  const view = buildAdminRunMonitorView(runs[0], events);
+
+  assert.equal(view.recentActivity.length, 14);
+  assert.equal(view.recentActivity[0]?.label, "正在等待模型响应");
+  assert.equal(view.recentActivity[0]?.stage, "model_wait");
+  assert.equal(view.recentActivity[0]?.duration_ms, 1_250);
+});
+
 test("Run Monitor filters only the explicitly projected Run identities", () => {
   assert.deepEqual(filterAdminRuns(runs, "running", "chat_2026").map((run) => run.run_id), [
     "run_running",
   ]);
   assert.deepEqual(filterAdminRuns(runs, "failed", "worker_execution_failed").map((run) => run.run_id), [
     "run_failed",
+  ]);
+  assert.deepEqual(filterAdminRuns(runs, "running", "合同审阅助手").map((run) => run.run_id), [
+    "run_running",
   ]);
   assert.deepEqual(summarizeAdminRuns(runs), { queued: 0, running: 1, failed: 1 });
 });
@@ -181,16 +216,28 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
   const originalList = adminRunsApi.list;
   const originalDetail = adminRunsApi.detail;
   const originalDiagnostics = adminRunsApi.diagnostics;
+  const originalExportDiagnostics = adminRunsApi.exportDiagnostics;
   const calls: string[] = [];
 
   Object.defineProperty(dom.window.HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
     value: () => undefined,
   });
+  Object.defineProperty(dom.window.HTMLAnchorElement.prototype, "click", {
+    configurable: true,
+    value: () => calls.push("download-click"),
+  });
 
   const detail = {
     run: {
       ...runs[0],
+      latency_ms: 2_400,
+      input_token_count: 101,
+      output_token_count: 37,
+      total_token_count: 138,
+      estimated_cost_minor: 1,
+      model_value: "claude-sonnet",
+      trace_id_recorded: true,
       input: { prompt: "PRIVATE_PROMPT_MARKER" },
       result: {
         text: "PRIVATE_RESULT_MARKER",
@@ -263,12 +310,15 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         status: "active",
         provider: "opensandbox",
         sandbox_mode: "ephemeral",
-        release_reason: "PRIVATE_RELEASE_REASON_MARKER /runtime/secret",
-        lease_payload: { runtime_path: "PRIVATE_LEASE_PAYLOAD_MARKER" },
+        lease_payload: {
+          runtime_path: "PRIVATE_LEASE_PAYLOAD_MARKER",
+          release_reason: "PRIVATE_RELEASE_REASON_MARKER /runtime/secret",
+        },
       },
     ],
     audit: [{ payload: { credential: "PRIVATE_AUDIT_PAYLOAD_MARKER" } }],
-  } as unknown as AdminRunDetailResponse;
+    skill_snapshots: [],
+  } as AdminRunDetailResponse;
   const diagnostics: AdminRunDiagnosticsResponse = {
     schema_version: "ai-platform.run-diagnostics.v1",
     diagnostic_id: "rdiag-a",
@@ -313,6 +363,8 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         ordinal: 1,
         status: "failed",
         owner_kind: "queue_worker",
+        started_at: "2026-04-01T09:00:02Z",
+        finished_at: "2026-04-01T09:00:04Z",
         terminal_reason: "run_failed",
         error_code: "claude_agent_sdk_tool_admission_failed",
       },
@@ -424,6 +476,14 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     calls.push(`diagnostics:${runId}`);
     return diagnostics;
   };
+  adminRunsApi.exportDiagnostics = async (runId: string) => {
+    calls.push(`export:${runId}`);
+    return {
+      blob: new Blob(["zip"]),
+      filename: "run-diagnostics-run_running.zip",
+      exportId: "rdiagexp-a",
+    };
+  };
 
   const container = dom.window.document.getElementById("root");
   assert.ok(container);
@@ -433,7 +493,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     await act(async () => {
       root.render(React.createElement(RunMonitorPanel));
     });
-    await waitFor(() => container.textContent?.includes("chat_2026_04") === true);
+    await waitFor(() => container.textContent?.includes("审核季度采购合同") === true);
 
     assert.equal(calls[0], "list");
     const listCallCount = calls.filter((call) => call === "list").length;
@@ -441,9 +501,18 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
       dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange"));
     });
     assert.equal(calls.filter((call) => call === "list").length, listCallCount);
-    assert.equal(container.querySelector('button[aria-label="暂停自动刷新"]'), null);
-    assert.equal(container.querySelector('button[aria-label="开启自动刷新"]'), null);
+    const pauseAutoRefresh = container.querySelector(
+      'button[aria-label="暂停自动刷新"]',
+    ) as HTMLButtonElement | null;
+    assert.ok(pauseAutoRefresh);
+    await act(async () => {
+      pauseAutoRefresh.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    assert.ok(container.querySelector('button[aria-label="开启自动刷新"]'));
     assert.match(container.textContent ?? "", /Worker 在线/);
+    assert.match(container.textContent ?? "", /王敏/);
+    assert.match(container.textContent ?? "", /法务工作区/);
+    assert.match(container.textContent ?? "", /合同审阅助手/);
     assert.match(container.textContent ?? "", /run_failed/);
     assert.match(container.textContent ?? "", /worker_execution_failed/);
     assert.match(container.textContent ?? "", /显示 1-10 \/ 12 条/);
@@ -479,10 +548,28 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
 
     assert.ok(calls.includes("detail:run_running"));
     assert.ok(calls.includes("diagnostics:run_running"));
+    assert.match(container.textContent ?? "", /审核季度采购合同/);
+    assert.match(container.textContent ?? "", /技术信息/);
+    assert.match(container.textContent ?? "", /Run ID/);
     assert.match(container.textContent ?? "", /trace-a/);
     assert.match(container.textContent ?? "", /worker_setup/);
     assert.match(container.textContent ?? "", /lease-a/);
     assert.match(container.textContent ?? "", /Worker 执行内容/);
+    assert.match(container.textContent ?? "", /处理时间线/);
+    assert.match(container.textContent ?? "", /执行尝试/);
+    assert.match(container.textContent ?? "", /138/);
+    assert.match(container.textContent ?? "", /下载脱敏诊断包/);
+    const exportButton = (
+      Array.from(container.querySelectorAll("button")) as HTMLButtonElement[]
+    ).find(
+      (button) => button.textContent === "下载脱敏诊断包",
+    );
+    assert.ok(exportButton);
+    await act(async () => {
+      exportButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    await waitFor(() => calls.includes("download-click"));
+    assert.ok(calls.includes("export:run_running"));
     assert.match(container.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
     assert.match(container.textContent ?? "", /读取 3 个文件/);
     assert.match(container.textContent ?? "", /已识别 2 个问题/);
@@ -663,6 +750,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     adminRunsApi.list = originalList;
     adminRunsApi.detail = originalDetail;
     adminRunsApi.diagnostics = originalDiagnostics;
+    adminRunsApi.exportDiagnostics = originalExportDiagnostics;
     dom.window.close();
     for (const [key, descriptor] of previousDescriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);

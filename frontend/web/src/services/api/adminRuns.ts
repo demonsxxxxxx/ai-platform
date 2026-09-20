@@ -1,4 +1,8 @@
-import { authFetch } from "./fetch";
+import {
+  apiRequestErrorFromResponse,
+  authFetch,
+} from "./fetch";
+import { authenticatedRequest } from "./authenticatedRequest";
 
 export interface AdminRunsApiClient {
   request<T>(url: string, init?: RequestInit): Promise<T>;
@@ -31,13 +35,19 @@ export interface AdminQueueInsight {
 export interface AdminRunSummary {
   run_id: string;
   session_id: string | null;
+  session_title?: string | null;
+  task_summary?: string | null;
   user_id: string | null;
+  user_display_name?: string | null;
   workspace_id?: string | null;
+  workspace_name?: string | null;
   trace_id?: string | null;
   status: string;
   execution_kind?: string | null;
   agent_id?: string | null;
+  agent_name?: string | null;
   skill_id?: string | null;
+  skill_name?: string | null;
   created_at?: string | null;
   queued_at?: string | null;
   started_at?: string | null;
@@ -45,7 +55,19 @@ export interface AdminRunSummary {
   cancel_requested_at?: string | null;
   error_code?: string | null;
   error_message?: string | null;
+  latency_ms?: number | null;
+  input_token_count?: number | null;
+  output_token_count?: number | null;
+  total_token_count?: number | null;
+  estimated_cost_minor?: number | null;
+  model_value?: string | null;
+  copied_from_run_id?: string | null;
+  trace_id_recorded?: boolean;
   model_output?: string;
+  input?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  contract_version?: string;
+  executor_schema_version?: string;
   queue_position?: number | null;
   queue_insight?: AdminQueueInsight | null;
 }
@@ -209,13 +231,25 @@ export interface AdminRunDiagnosticsResponse {
 
 export interface AdminRunEvent {
   event_id?: string;
+  schema_version?: string;
   sequence?: number;
+  trace_id?: string | null;
   type?: string;
   stage?: string | null;
   status?: string | null;
   severity?: string | null;
+  visible_to_user?: boolean;
   message?: string | null;
   error_code?: string | null;
+  latency_ms?: number | null;
+  token_counts?: {
+    input: number;
+    output: number;
+    total: number;
+  };
+  cost?: {
+    estimated_cost_minor: number;
+  };
   payload?: Record<string, unknown>;
   created_at?: string | null;
 }
@@ -232,10 +266,12 @@ export interface AdminRunStep {
 
 export interface AdminRunArtifact {
   artifact_id: string;
+  trace_id?: string | null;
   artifact_type: string;
   label: string;
   content_type: string;
   size_bytes: number;
+  manifest?: Record<string, unknown>;
   created_at?: string | null;
 }
 
@@ -270,6 +306,8 @@ export interface AdminSandboxLease {
   created_at?: string | null;
   expires_at?: string | null;
   released_at?: string | null;
+  workspace?: Record<string, unknown>;
+  lease_payload?: Record<string, unknown>;
 }
 
 export interface AdminRunListResponse {
@@ -279,11 +317,19 @@ export interface AdminRunListResponse {
 
 export interface AdminRunDetailResponse {
   run: AdminRunSummary;
-  worker_execution?: AdminWorkerExecution;
+  worker_execution: AdminWorkerExecution;
   events: AdminRunEvent[];
   steps: AdminRunStep[];
-  artifacts?: AdminRunArtifact[];
+  artifacts: AdminRunArtifact[];
   sandbox_leases: AdminSandboxLease[];
+  skill_snapshots: Array<Record<string, unknown>>;
+  audit: Array<Record<string, unknown>>;
+}
+
+export interface AdminRunDiagnosticExport {
+  blob: Blob;
+  filename: string;
+  exportId: string | null;
 }
 
 export interface AdminRunListOptions {
@@ -354,8 +400,39 @@ export async function fetchAdminRunDiagnostics(
   return response;
 }
 
+function diagnosticExportFilename(response: Response, runId: string): string {
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      const decoded = decodeURIComponent(encoded);
+      if (/^[a-zA-Z0-9._-]+\.zip$/.test(decoded)) return decoded;
+    } catch {
+      // Use the safe fallback below.
+    }
+  }
+  const safeRunId = runId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return `run-diagnostics-${safeRunId}.zip`;
+}
+
+export async function exportAdminRunDiagnostics(
+  runId: string,
+): Promise<AdminRunDiagnosticExport> {
+  const response = await authenticatedRequest(
+    `/api/ai/admin/runs/${encodeURIComponent(runId)}/diagnostic-exports`,
+    { method: "POST" },
+  );
+  if (!response.ok) throw await apiRequestErrorFromResponse(response);
+  return {
+    blob: await response.blob(),
+    filename: diagnosticExportFilename(response, runId),
+    exportId: response.headers.get("X-Diagnostic-Export-Id"),
+  };
+}
+
 export const adminRunsApi = {
   list: fetchAdminRuns,
   detail: fetchAdminRunDetail,
   diagnostics: fetchAdminRunDiagnostics,
+  exportDiagnostics: exportAdminRunDiagnostics,
 };

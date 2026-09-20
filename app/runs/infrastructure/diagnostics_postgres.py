@@ -196,6 +196,66 @@ class PostgresRunDiagnosticsRepository:
             "attempts": attempts,
         }
 
+    async def get_admin_monitor_metadata(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        run_ids: tuple[str, ...],
+    ) -> dict[str, dict[str, Any]]:
+        cursor = await conn.execute(
+            """
+            select
+              runs.id as run_id,
+              sessions.title as session_title,
+              left(runs.input_json->>'message', 240) as task_summary,
+              users.display_name as user_display_name,
+              workspaces.name as workspace_name,
+              coalesce(nullif(admitted_profile.name, ''), nullif(agents.name, ''))
+                as agent_name,
+              skills.name as skill_name,
+              runs.latency_ms,
+              runs.input_token_count,
+              runs.output_token_count,
+              runs.total_token_count,
+              runs.estimated_cost_minor,
+              runs.model_value,
+              runs.copied_from_run_id,
+              runs.trace_id is not null as trace_id_recorded
+            from runs
+            left join sessions
+              on sessions.tenant_id = runs.tenant_id
+             and sessions.id = runs.session_id
+             and sessions.workspace_id = runs.workspace_id
+             and sessions.user_id is not distinct from runs.user_id
+             and sessions.agent_id = runs.agent_id
+            left join users
+              on users.tenant_id = runs.tenant_id
+             and users.id = runs.user_id
+            left join workspaces
+              on workspaces.tenant_id = runs.tenant_id
+             and workspaces.id = runs.workspace_id
+            left join agents
+              on agents.tenant_id = runs.tenant_id
+             and agents.id = runs.agent_id
+            left join agent_profile_revisions admitted_profile
+              on admitted_profile.tenant_id = runs.tenant_id
+             and admitted_profile.agent_id = runs.agent_id
+             and admitted_profile.revision = runs.admitted_agent_profile_revision
+            left join skills
+              on skills.id = runs.skill_id
+            where runs.tenant_id = %s and runs.id = any(%s::text[])
+            """,
+            (tenant_id, list(run_ids)),
+        )
+        rows = await cursor.fetchall()
+        return {
+            str(row["run_id"]): {
+                key: value for key, value in dict(row).items() if key != "run_id"
+            }
+            for row in rows
+        }
+
 
 def _diagnostic_id(*, tenant_id: str, run_id: str) -> str:
     digest = hashlib.sha256(f"{tenant_id}\0{run_id}".encode()).hexdigest()
