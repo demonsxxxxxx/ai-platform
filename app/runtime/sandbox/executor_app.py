@@ -1841,6 +1841,41 @@ def _context_retrieval_for_request(
     return retrieval, identity, None
 
 
+def _recoverable_sdk_tool_admission(
+    sdk_result: object,
+    *,
+    error_code: str | None,
+    required_capability_declared: bool,
+    capability_evidence_error: str,
+) -> bool:
+    """Keep a policy-only tool denial inside the model result boundary.
+
+    The SDK can report a denied optional tool alongside a structured answer. Do
+    not turn that answer into a failed Run; lifecycle and receipt violations do
+    not satisfy this predicate and remain fail-closed.
+    """
+
+    if (
+        error_code != "claude_agent_sdk_tool_admission_failed"
+        or required_capability_declared
+        or capability_evidence_error
+        or not bool(getattr(sdk_result, "received_structured_terminal", False))
+        or not str(getattr(sdk_result, "message", "") or "").strip()
+    ):
+        return False
+    diagnostics = getattr(sdk_result, "runtime_diagnostics", None)
+    if not isinstance(diagnostics, dict):
+        return False
+    if diagnostics.get("failure_source") != "sdk_result_error":
+        return False
+    policy_denials = diagnostics.get("tool_policy_denials")
+    if not isinstance(policy_denials, list) or not policy_denials:
+        return False
+    turn_diagnostics = getattr(sdk_result, "turn_diagnostics", None)
+    counters = turn_diagnostics.get("counters") if isinstance(turn_diagnostics, dict) else None
+    return not isinstance(counters, dict) or not counters.get("tool_lifecycle_denials")
+
+
 async def _default_executor_runner(
     request: ExecutorTaskRequest,
     workspace_root: Path,
@@ -2346,14 +2381,21 @@ async def _default_executor_runner(
         state == "started" for state in required_tool_invocation_states.values()
     ):
         reject_capability_evidence("tool_invocation_evidence_mismatch")
+    recoverable_tool_admission = _recoverable_sdk_tool_admission(
+        sdk_result,
+        error_code=str(error) if error else None,
+        required_capability_declared=required_capability_declaration is not None,
+        capability_evidence_error=capability_evidence_error["code"],
+    )
+    effective_error = None if recoverable_tool_admission else error
     await emit_event(
         _PlatformExecutionPhaseFact(
             "model_wait",
-            "completed" if used_sdk and not error else "failed",
+            "completed" if used_sdk and not effective_error else "failed",
         )
     )
     response = {
-        "status": "completed" if used_sdk and not error else "failed",
+        "status": "completed" if used_sdk and not effective_error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
         "answer_receipt": getattr(sdk_result, "answer_receipt", None),
         "response_files": list(getattr(sdk_result, "response_files", []) or []),
@@ -2378,10 +2420,13 @@ async def _default_executor_runner(
     }
     if required_capability_evidence is not None:
         response[REQUIRED_CAPABILITY_EVIDENCE_KEY] = required_capability_evidence
-    if error:
+    if error and not recoverable_tool_admission:
         raw_error = str(error)
         response["error_code"] = _canonical_sdk_failure_code(raw_error, used_sdk=used_sdk)
         response["error_message"] = _expand_sdk_error_message(raw_error, sdk_result)
+    elif recoverable_tool_admission:
+        response["tool_outcome"] = "denied"
+        response["tool_outcome_code"] = "tool_permission_denied"
     elif not used_sdk:
         response["error_code"] = "claude_agent_sdk_disabled"
         response["error_message"] = "Claude Agent SDK is disabled"
@@ -3339,6 +3384,8 @@ def create_executor_app(
             "sdk_turn_diagnostics",
             "runtime_diagnostics",
             "capability_evidence",
+            "tool_outcome",
+            "tool_outcome_code",
             REQUIRED_CAPABILITY_EVIDENCE_KEY,
             TOOL_INVOCATION_EVIDENCE_KEY,
         ):
