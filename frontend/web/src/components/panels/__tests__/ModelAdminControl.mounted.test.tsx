@@ -62,6 +62,14 @@ function inputByLabel(container: QueryContainer, label: string): InputElement {
   return input as unknown as InputElement;
 }
 
+function selectByLabel(container: QueryContainer, label: string): InputElement {
+  const select = container
+    .querySelectorAll("select")
+    .find((candidate) => candidate.getAttribute("aria-label") === label);
+  assert.ok(select, `expected select ${label}`);
+  return select as unknown as InputElement;
+}
+
 function changeMountedInput(input: InputElement, value: string): void {
   input.value = value;
   const propsKey = Object.keys(input).find((key) => key.startsWith("__reactProps$"));
@@ -216,6 +224,15 @@ test("Model admin discovery is a draft and only publication changes the active c
     ]);
     assert.equal(calls.publish.length, 0);
     assert.equal(inputByLabel(container, "模型 API Key").value, "super-secret-key");
+
+    const statusSelect = selectByLabel(container, "筛选模型状态");
+    await React.act(async () => {
+      changeMountedInput(statusSelect, "unavailable");
+    });
+    assert.match(nodeText(container), /没有匹配的模型/);
+    await React.act(async () => {
+      changeMountedInput(statusSelect, "all");
+    });
 
     const enabled = inputByLabel(container, "启用 GPT-5");
     enabled.checked = true;

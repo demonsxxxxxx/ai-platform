@@ -228,17 +228,16 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
                 value={query}
               />
             </label>
-            <button
+            <select
               aria-label="筛选模型状态"
-              className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-3 text-left text-sm outline-none focus:border-[var(--theme-primary)] sm:w-40"
-              onClick={() => {
-                const current = STATUS_FILTERS.findIndex(([value]) => value === statusFilter);
-                setStatusFilter(STATUS_FILTERS[(current + 1) % STATUS_FILTERS.length][0]);
-              }}
-              type="button"
+              className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] sm:w-40"
+              onChange={(event) => setStatusFilter(event.target.value)}
+              value={statusFilter}
             >
-              {STATUS_FILTERS.find(([value]) => value === statusFilter)?.[1]}
-            </button>
+              {STATUS_FILTERS.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
           </div>
           <button
             className="btn-primary inline-flex h-10 items-center justify-center gap-2"
