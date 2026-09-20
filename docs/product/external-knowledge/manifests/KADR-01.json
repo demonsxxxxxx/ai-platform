@@ -15,7 +15,7 @@
     "CONTEXT.md",
     "architecture-policy.json",
     "docs/README.md",
-    "docs/adr/0013-external-knowledge-authority.md",
+    "docs/adr/0014-external-knowledge-authority.md",
     "docs/architecture/runtime-authorities.md",
     "docs/architecture/source-code-architecture.md",
     "docs/product/external-knowledge/README.md",
