@@ -2144,6 +2144,25 @@ async def run_claude_agent_sdk(
                 {call_id: replacement}
             )
 
+    def project_public_commentary(value: str) -> tuple[str, ...]:
+        commentary_replacements = dict(private_replacements)
+        commentary_replacements.update(
+            {
+                path: private_replacement
+                for path in {str(cwd), cwd.as_posix()}
+                if 1 < len(path) <= 512
+            }
+        )
+        gate = PublicAnswerStreamGate(
+            private_replacements=commentary_replacements,
+            sanitizer=sanitize_public_answer_text,
+        )
+        chunks = gate.accept(value)
+        finished = gate.finish(final_text=value, release=True)
+        if gate.failed or gate.projection_omissions:
+            return ()
+        return chunks + finished.chunks
+
     sdk_prompt = prompt
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
@@ -3254,6 +3273,10 @@ async def run_claude_agent_sdk(
                     f"assistant_{diagnostic_counters['assistant_messages']}"
                 )
                 assistant_text_blocks = []
+                contains_tool_use = any(
+                    type(block).__name__ == "ToolUseBlock"
+                    for block in message.content
+                )
                 for block_index, block in enumerate(message.content):
                     if type(block).__name__ == "ToolUseBlock":
                         register_dynamic_tool_call_id(getattr(block, "id", None))
@@ -3267,17 +3290,34 @@ async def run_claude_agent_sdk(
                         )
                     if isinstance(block, TextBlock):
                         diagnostic_counters["text_blocks"] += 1
-                        if not sdk_structured_output_supported:
-                            last_public_stage = "message"
-                            text = getattr(block, "text", "")
-                            assistant_text_blocks.append(text)
+                        text = getattr(block, "text", "")
+                        assistant_text_blocks.append(text)
                 assistant_text = (
                     "".join(assistant_text_blocks)
                     if assistant_text_blocks
                     and all(isinstance(text, str) for text in assistant_text_blocks)
                     else None
                 )
-                if not sdk_structured_output_supported:
+                if (
+                    sdk_structured_output_supported
+                    and contains_tool_use
+                    and assistant_text
+                    and agent_event_adapter is not None
+                ):
+                    last_public_stage = "message"
+                    public_commentary = "".join(
+                        project_public_commentary(assistant_text)
+                    )
+                    if public_commentary:
+                        await publish_agent_candidates(
+                            agent_event_adapter.accept_commentary_text(
+                                public_commentary,
+                                commentary_identity=assistant_message_identity,
+                                already_gated=True,
+                            )
+                        )
+                elif not sdk_structured_output_supported:
+                    last_public_stage = "message"
                     for public_text in answer_stream_gate.accept(
                         answer_timeline.accept_assistant(assistant_text)
                     ):
@@ -3405,10 +3445,11 @@ async def run_claude_agent_sdk(
                         turn_diagnostics=turn_diagnostics(error_code),
                         capability_evidence=list(capability_evidence),
                     )
-                if sdk_structured_output_supported:
+                structured_output = getattr(message, "structured_output", None)
+                if sdk_structured_output_supported and structured_output is not None:
                     try:
                         final_answer, declared_files = _delivery_manifest(
-                            getattr(message, "structured_output", None),
+                            structured_output,
                             workspace=cwd,
                             allowed_skill_names=allowed_skill_names,
                         )

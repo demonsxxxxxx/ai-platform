@@ -440,6 +440,7 @@ class ClaudeSdkAgentEventAdapter:
         self._last_delta_identity: str | None = None
         self._last_delta_event_id: str | None = None
         self._answer_completed = False
+        self._commentary_delta_counts: dict[str, int] = {}
         self._public_projection_omissions = 0
         self._task_progress_seen: set[tuple[str, str]] = set()
         self._accepted_event_ids: dict[str, str] = {}
@@ -666,6 +667,71 @@ class ClaudeSdkAgentEventAdapter:
         self._answer_text_length = next_text_length
         self._last_delta_identity = pending[-1][0]
         self._last_delta_event_id = pending[-1][1].event_id
+        return tuple(candidate for _identity, candidate in pending)
+
+    def accept_commentary_text(
+        self,
+        value: object,
+        *,
+        commentary_identity: object,
+        already_gated: bool = False,
+    ) -> tuple[ClaudeAgentEventCandidate, ...]:
+        if self._sealed or not isinstance(value, str) or not value:
+            return ()
+        identity = _safe_private_identity(commentary_identity)
+        if identity is None:
+            return ()
+        if not already_gated:
+            try:
+                sanitized = self._sanitizer(value)
+                if (
+                    not isinstance(sanitized, str)
+                    or sanitized != value
+                    or _safe_text(
+                        value,
+                        maximum=len(value),
+                        sanitizer=self._sanitizer,
+                    )
+                    is None
+                ):
+                    self._omit_public_projection()
+                    return ()
+            except Exception:  # noqa: BLE001 - projection faults omit only this text.
+                self._omit_public_projection()
+                return ()
+
+        summary_id = _opaque(
+            "summary",
+            self.run_id,
+            "commentary",
+            f"{self.attempt_id}:{identity}",
+        )
+        next_delta_count = self._commentary_delta_counts.get(identity, 0)
+        pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
+        try:
+            for offset in range(0, len(value), _MAX_DELTA):
+                chunk = value[offset : offset + _MAX_DELTA]
+                next_delta_count += 1
+                event_identity = (
+                    f"commentary:{self.attempt_id}:{identity}:{next_delta_count}"
+                )
+                pending.append(
+                    (
+                        event_identity,
+                        self._candidate(
+                            "commentary.delta",
+                            {"summary_id": summary_id, "delta": chunk},
+                            identity=event_identity,
+                            commit=False,
+                        ),
+                    )
+                )
+        except Exception:  # noqa: BLE001 - no candidate state has been committed.
+            self._omit_public_projection()
+            return ()
+
+        self._commit_candidates(pending)
+        self._commentary_delta_counts[identity] = next_delta_count
         return tuple(candidate for _identity, candidate in pending)
 
     def complete_answer(

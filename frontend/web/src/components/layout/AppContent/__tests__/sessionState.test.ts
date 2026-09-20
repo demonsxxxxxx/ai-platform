@@ -9,8 +9,13 @@ import {
 
 test("treats loading or visible streaming messages as an active session", () => {
   assert.equal(isSessionRunning([], true), true);
+  assert.equal(isSessionRunning([], true, true), false);
   assert.equal(
     isSessionRunning([{ isStreaming: false }, { isStreaming: true }], false),
+    true,
+  );
+  assert.equal(
+    isSessionRunning([{ isStreaming: true }], true, true),
     true,
   );
   assert.equal(isSessionRunning([{ isStreaming: false }], false), false);

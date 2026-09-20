@@ -46,13 +46,15 @@ identity, Run identity, nullable-but-present message and causation references,
 committed business `seq`, stream incarnation, replayability, trace reference,
 commit time, and a strict event payload. Application `seq` is the committed
 Run-local business order and is separate from the Redis SSE cursor and semantic
-`event_id`. Message, thinking, model, tool, and subagent events require a
-non-null public `message_id`; Agent progress, artifact, policy, and Run events
-may use null.
+`event_id`. Message, commentary, thinking, model, tool, and subagent events
+require a non-null public `message_id`; Agent progress, artifact, policy, and Run
+events may use null.
 
 The closed Agent-kernel registry is:
 
 - `message.started`, `message.delta`, `message.completed`;
+- `commentary.delta` for disclosure-safe, tool-using Assistant progress that is
+  presented as work activity and never appended to the terminal answer;
 - `thinking.started`, `thinking.delta`, `thinking.completed`, `model.completed`;
 - `agent.progress` for fixed, server-owned execution-phase lifecycle;
 - `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;
@@ -63,9 +65,10 @@ The closed Agent-kernel registry is:
 - `run.cancel_requested`, `run.succeeded`, `run.cancelled`, `run.failed`.
 
 Every payload is bounded and closed. Public identifiers use disclosure-safe
-patterns; server-owned phase messages, fixed Tool start/result summaries, final
-content, durations, turns, progress, artifact metadata, and reference arrays
-have explicit size bounds. The Claude SDK is configured with
+patterns; server-owned phase messages, sanitized commentary, fixed Tool
+start/result summaries, final content, durations, turns, progress, artifact
+metadata, and reference arrays have explicit size bounds. The Claude SDK is
+configured with
 `thinking.display = omitted`; the Runner does not admit `ThinkingBlock` content
 into the answer or callback projection. Internal model reasoning, raw SDK fields,
 commands, paths, arguments, outputs, exceptions, and raw capability or task

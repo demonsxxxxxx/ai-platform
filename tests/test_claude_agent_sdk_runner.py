@@ -3908,7 +3908,120 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
 
 
 @pytest.mark.asyncio
-async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path):
+async def test_sdk_structured_tool_turn_publishes_safe_commentary_before_result(
+    monkeypatch, tmp_path
+):
+    captured, candidates, observed_before_result, deltas = {}, [], [], []
+    private_call_id = "call-private-1"
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class ToolUseBlock:
+        id = private_call_id
+        name = "Read"
+        input = {"file_path": "input.txt"}
+
+    class AssistantMessage:
+        content = [
+            TextBlock(
+                f"Checking {private_call_id} in {tmp_path} before the next step."
+            ),
+            ToolUseBlock(),
+        ]
+
+    class ResultMessage:
+        __annotations__ = {"structured_output": object}
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = '{"answer":"wire json","deliverables":[]}'
+        structured_output = {
+            "answer": "Final user answer",
+            "deliverables": [],
+        }
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        terminal_reason = "completed"
+        num_turns = 1
+        permission_denials = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    def acknowledge(batch):
+        candidates.extend(batch)
+        return True
+
+    async def query(*, prompt, options):
+        del prompt, options
+        yield AssistantMessage()
+        observed_before_result.extend(
+            candidate.event_type for candidate in candidates
+        )
+        yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=AssistantMessage,
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                ResultMessage=ResultMessage,
+                StreamEvent=type("StreamEvent", (), {}),
+                TextBlock=TextBlock,
+                query=query,
+            ),
+            captured,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        on_text=deltas.append,
+        on_agent_event=acknowledge,
+        run_id="run-commentary",
+        attempt_id="attempt-commentary",
+    )
+
+    commentary = [
+        candidate
+        for candidate in candidates
+        if candidate.event_type == "commentary.delta"
+    ]
+    assert observed_before_result
+    assert set(observed_before_result) == {"commentary.delta"}
+    assert len(commentary) == len(observed_before_result)
+    commentary_text = "".join(
+        str(candidate.payload["delta"]) for candidate in commentary
+    )
+    assert private_call_id not in commentary_text
+    assert str(tmp_path) not in commentary_text
+    assert commentary_text == "Checking \u2588 in \u2588 before the next step."
+    assert "Checking" not in "".join(deltas)
+    assert "".join(deltas) == "Final user answer"
+    assert result.error is None
+    assert result.message == "Final user answer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("structured_output", "expected_error"),
+    [
+        pytest.param(None, None, id="missing"),
+        pytest.param({}, "claude_agent_sdk_delivery_manifest_invalid", id="invalid"),
+    ],
+)
+async def test_sdk_structured_output_is_optional_but_present_manifest_is_validated(
+    monkeypatch, tmp_path, structured_output, expected_error
+):
     captured = {}
 
     class ResultMessage:
@@ -3917,13 +4030,14 @@ async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path)
         usage = None
         model_usage = None
         result = "done"
-        structured_output = None
         is_error = False
         errors = None
         stop_reason = "end_turn"
         terminal_reason = "completed"
         num_turns = 1
         permission_denials = None
+
+    ResultMessage.structured_output = structured_output
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -3956,9 +4070,11 @@ async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path)
         skill_id=None,
     )
 
-    assert result.error == "claude_agent_sdk_delivery_manifest_invalid"
-    assert result.received_structured_terminal is False
+    assert result.error == expected_error
+    assert result.received_structured_terminal is (expected_error is None)
+    assert result.message == ("done" if expected_error is None else "")
     assert result.response_files == []
+    assert result.response_file_descriptors == []
 
 
 @pytest.mark.asyncio
