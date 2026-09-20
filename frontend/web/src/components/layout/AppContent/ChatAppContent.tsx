@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { History } from "lucide-react";
-import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
@@ -332,31 +331,6 @@ export async function recoverAgentConversationIdentity(
   if (session.agent_id !== identity.agent_id)
     throw new Error("agent_conversation_identity_mismatch");
   return identity;
-}
-
-/** Project the public immutable Agent identity into the compact Chat header. */
-export function AgentConversationHeaderIdentity({
-  identity,
-}: {
-  identity: AgentConversationIdentity;
-}) {
-  return (
-    <>
-      <AgentIdentityAvatar
-        agentId={identity.agent_id}
-        avatarRef={identity.avatar_ref}
-        avatarSeed={identity.avatar_seed}
-        name={identity.name}
-        size="xs"
-      />
-      <strong
-        className="hidden max-w-64 truncate text-sm font-semibold text-[var(--theme-text)] sm:block"
-        title={identity.name}
-      >
-        {identity.name}
-      </strong>
-    </>
-  );
 }
 
 export interface ChatAppContentProps {
@@ -1302,26 +1276,13 @@ export function ChatAppContent({
   return (
     <AppShell
       activeTab="chat"
-      setMobileSidebarOpen={setMobileSidebarOpen}
       onNewSession={handleNewSessionWithReset}
       allowNewSessionAction={agentWorkspace !== undefined}
       newSessionActionLabel={agentWorkspace ? "开始新任务" : undefined}
-      availableModels={agentWorkspace ? null : filteredModels}
-      currentModelId={currentModelId}
-      onSelectModel={handleSelectModel}
-      sessionId={sessionId}
       currentRunId={visibleCurrentRunId}
       onOpenRunPlayback={handleOpenRunPlayback}
       showOutlineButton={shouldShowMessageOutline(visibleMessages)}
       onToggleOutline={handleToggleOutline}
-      chatIdentity={
-        agentConversationState.phase === "bound" &&
-        agentConversationState.identity ? (
-          <AgentConversationHeaderIdentity
-            identity={agentConversationState.identity}
-          />
-        ) : undefined
-      }
       contentSidebar={
         agentWorkspace && agentWorkspaceSessionSource ? (
           <AgentConversationPanel

@@ -46,7 +46,7 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
 
 test("post-login routes do not fall back to public landing or split backgrounds", () => {
   const tabContent = read("src/components/layout/AppContent/TabContent.tsx");
-  const header = read("src/components/layout/AppContent/Header.tsx");
+  const menuHost = read("src/components/layout/AppContent/WorkbenchMenuHost.tsx");
   const appShell = read("src/components/layout/AppContent/AppShell.tsx");
   const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
   const sidebar = read(
@@ -64,8 +64,9 @@ test("post-login routes do not fall back to public landing or split backgrounds"
   );
   assert.doesNotMatch(tabContent, /className="flex-1 overflow-hidden bg-\[var\(--theme-bg\)\]"/);
   assert.match(launchpad, /className=\{workbenchSurface\.page\}/);
-  assert.match(header, /bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.doesNotMatch(header, /bg-\[var\(--theme-bg\)\]/);
+  assert.doesNotMatch(appShell, /<Header|\.\/Header/);
+  assert.match(appShell, /<WorkbenchMenuHost/);
+  assert.doesNotMatch(menuHost, /bg-\[var\(--theme-workbench-canvas\)\]|data-workbench-header/);
   assert.doesNotMatch(launchpad, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(sidebar, /href=\{APP_HOME_URL\}/);
   assert.match(sidebar, /onClick=\{onNewSession\}/);
@@ -151,7 +152,7 @@ test("post-login shell removes legacy LambChat runtime identifiers", () => {
     read("src/components/panels/SidebarParts/SessionListContent.tsx"),
     read("src/components/panels/SidebarParts/SidebarRail.tsx"),
     read("src/components/layout/AppContent/TabContent.tsx"),
-    read("src/components/layout/AppContent/Header.tsx"),
+    read("src/components/layout/AppContent/WorkbenchMenuHost.tsx"),
   ].join("\n");
 
   assert.match(auth, /SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed"/);

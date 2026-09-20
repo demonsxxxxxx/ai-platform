@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from "react";
-import { Header } from "./Header";
+import { WorkbenchMenuHost } from "./WorkbenchMenuHost";
 import {
   getAppViewportState,
   isKeyboardViewport,
@@ -47,25 +47,10 @@ function isStandaloneDisplayMode(): boolean {
 
 export interface AppShellProps {
   activeTab: TabType;
-  setMobileSidebarOpen: (open: boolean) => void;
   onNewSession: () => void;
   sidebar?: ReactNode;
   contentSidebar?: ReactNode;
   children: ReactNode;
-  // Model selection
-  availableModels?:
-    | {
-        id: string;
-        value: string;
-        provider?: string;
-        label: string;
-        description?: string;
-      }[]
-    | null;
-  currentModelId?: string;
-  onSelectModel?: (modelId: string, modelValue: string) => void;
-  // Share
-  sessionId?: string | null;
   // Run playback
   currentRunId?: string | null;
   onOpenRunPlayback?: () => void;
@@ -74,29 +59,20 @@ export interface AppShellProps {
   onToggleOutline?: () => void;
   allowNewSessionAction?: boolean;
   newSessionActionLabel?: string;
-  chatIdentity?: ReactNode;
-  showHeaderUserMenu?: boolean;
 }
 
 export function AppShell({
   activeTab,
-  setMobileSidebarOpen,
   onNewSession,
   sidebar,
   contentSidebar,
   children,
-  availableModels,
-  currentModelId,
-  onSelectModel,
-  sessionId,
   currentRunId,
   onOpenRunPlayback,
   showOutlineButton,
   onToggleOutline,
   allowNewSessionAction = true,
   newSessionActionLabel,
-  chatIdentity,
-  showHeaderUserMenu = false,
 }: AppShellProps) {
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -289,22 +265,15 @@ export function AppShell({
         {contentSidebar}
 
         <div className="relative z-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <Header
+          <WorkbenchMenuHost
             activeTab={activeTab}
-            setMobileSidebarOpen={setMobileSidebarOpen}
             onNewSession={onNewSession}
-            availableModels={availableModels}
-            currentModelId={currentModelId}
-            onSelectModel={onSelectModel}
-            sessionId={sessionId}
             currentRunId={currentRunId}
             onOpenRunPlayback={onOpenRunPlayback}
             showOutlineButton={showOutlineButton}
             onToggleOutline={onToggleOutline}
             allowNewSessionAction={allowNewSessionAction}
             newSessionActionLabel={newSessionActionLabel}
-            chatIdentity={chatIdentity}
-            showUserMenu={showHeaderUserMenu}
           />
 
           {children}

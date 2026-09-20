@@ -43,7 +43,6 @@ export function NonChatAppContent({
   return (
     <AppShell
       activeTab={activeTab}
-      setMobileSidebarOpen={setMobileSidebarOpen}
       onNewSession={handleNewSession}
       sidebar={
         <SessionSidebar

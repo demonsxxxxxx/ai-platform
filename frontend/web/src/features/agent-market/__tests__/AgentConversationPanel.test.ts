@@ -15,7 +15,7 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   const shell = read("components/layout/AppContent/AppShell.tsx");
   const sidebar = read("components/panels/SidebarParts/SessionListContent.tsx");
   const rail = read("components/panels/SidebarParts/SidebarRail.tsx");
-  const header = read("components/layout/AppContent/Header.tsx");
+  const menuHost = read("components/layout/AppContent/WorkbenchMenuHost.tsx");
   const userMenu = read("components/layout/UserMenu.tsx");
 
   assert.match(panel, /data-agent-conversation-panel/);
@@ -27,12 +27,8 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   assert.match(sidebar, /mt-auto flex items-center justify-between[\s\S]*<UserMenu showLabel \/>[\s\S]*<Settings/);
   assert.match(rail, /<UserMenu \/>[\s\S]*workbench-menu-open/);
   assert.match(sidebar, /workbench-menu-open/);
-  assert.match(header, /data-workbench-menu-host/);
-  assert.doesNotMatch(header, /data-workbench-header/);
-  assert.match(header, /workbench-menu-open/);
-  assert.match(header, /showUserMenu \|\| mobileMenuOpen/);
-  assert.match(header, /showUserMenu \? "border-l border-\[var\(--theme-border\)\] pl-2 sm:pl-3"/);
-  assert.match(header, /showUserMenu \? <UserMenu \/> : null/);
+  assert.match(menuHost, /workbench-menu-open/);
+  assert.doesNotMatch(menuHost, /data-workbench-header|data-workbench-menu-host/);
   assert.match(userMenu, /showLabel \? rect\.top - \(menuRef\.current\?\.offsetHeight \|\| 120\) - 8/);
   assert.match(panel, /source\.sessions/);
   assert.match(panel, /source\.loadMore/);
@@ -41,8 +37,8 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   assert.match(chat, /contentSidebar=\{[\s\S]*?<AgentConversationPanel/);
   assert.match(chat, /profile=\{agentWorkspace\}/);
   assert.match(chat, /source=\{agentWorkspaceSessionSource\}/);
-  assert.match(shell, /showHeaderUserMenu = false/);
-  assert.doesNotMatch(chat, /showHeaderUserMenu=/);
+  assert.match(shell, /<WorkbenchMenuHost/);
+  assert.doesNotMatch(shell, /<Header|showHeaderUserMenu/);
   assert.match(shell, /contentSidebar\?: ReactNode/);
   assert.match(shell, /\{contentSidebar\}/);
 });
