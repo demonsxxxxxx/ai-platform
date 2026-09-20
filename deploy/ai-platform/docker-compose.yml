@@ -62,8 +62,8 @@ services:
     restart: "no"
     ulimits:
       nofile:
-        soft: 65536
-        hard: 65536
+        soft: 131072
+        hard: 131072
     network_mode: none
     read_only: true
     security_opt:
