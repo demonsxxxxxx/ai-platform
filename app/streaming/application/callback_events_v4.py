@@ -109,7 +109,7 @@ def callback_thinking_summary_to_v4(
     expected_event_type: str,
     sanitizer: Callable[[object], str],
 ) -> tuple[V4CallbackItem, ...]:
-    """Project one complete authenticated SDK summary after whole-block sanitization."""
+    """Project one authenticated legacy SDK summary after whole-block sanitization."""
 
     if (
         event.get("type") != expected_event_type

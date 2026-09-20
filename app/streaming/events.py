@@ -5,7 +5,10 @@ from app.streaming.domain.protocol_v4 import (
     PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES,
 )
 
-EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES - {
+# Pre-bridge AgentEvent names. This parser set is intentionally broader than the
+# durable callback publication subset: platform-owned candidates remain private
+# callback evidence and are projected only by their owning platform authority.
+AGENT_EVENT_PUBLIC_CANDIDATE_TYPES = PUBLIC_APPLICATION_EVENT_TYPES - {
     "agent.progress",
     "thinking.started",
     "thinking.delta",
@@ -13,7 +16,7 @@ EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES - {
 }
 
 __all__ = [
-    "EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES",
+    "AGENT_EVENT_PUBLIC_CANDIDATE_TYPES",
     "PUBLIC_APPLICATION_EVENT_TYPES",
     "PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES",
 ]

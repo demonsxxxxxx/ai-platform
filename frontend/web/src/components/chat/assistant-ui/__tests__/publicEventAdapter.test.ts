@@ -406,7 +406,7 @@ test("v4 sandbox preparation keeps start and ready timestamps for display", () =
   assert.equal(step.completed_at, "2026-01-01T00:00:01.250Z");
 });
 
-test("v4 thinking preserves model summary, upgrades legacy payloads, and rejects signatures", () => {
+test("v4 thinking compatibility preserves public summary, upgrades legacy payloads, and rejects signatures", () => {
   const legacyThinking = adaptPublicRunStreamEventV4(frame("thinking.started"), {
     runId: "run-1",
     streamIncarnation: 2,

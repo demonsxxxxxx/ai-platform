@@ -12,10 +12,11 @@ export interface AgentOption {
 }
 
 export const CHAT_AGENT_OPTION_DEFINITIONS = {
+  // Profile compatibility key; the value is an effort enum, never a visibility toggle.
   enable_thinking: {
     type: "string",
     default: "auto",
-    label: "Thinking",
+    label: "Thinking effort",
     label_key: "agentOptions.enableThinking.label",
   },
 } satisfies Record<string, AgentOption>;

@@ -1,4 +1,4 @@
-"""Run-scoped Thinking controls owned by Runs."""
+"""Run-scoped model-effort controls; these never govern reasoning disclosure."""
 
 from typing import Literal
 

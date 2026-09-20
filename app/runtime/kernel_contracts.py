@@ -2,9 +2,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.streaming.events import EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES
+from app.streaming.events import AGENT_EVENT_PUBLIC_CANDIDATE_TYPES
 from app.validation import assert_safe_id, assert_safe_principal_user_id
 
+# Authenticated legacy write compatibility only; the current runner never emits it.
 CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE = "claude_sdk_thinking_summary"
 
 SUPPORTED_AGENT_EVENT_TYPES = {
@@ -43,7 +44,7 @@ SUPPORTED_AGENT_EVENT_TYPES = {
     "run_completed",
     "run_cancelled",
     CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
-} | set(EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES)
+} | set(AGENT_EVENT_PUBLIC_CANDIDATE_TYPES)
 
 
 class RunContext(BaseModel):

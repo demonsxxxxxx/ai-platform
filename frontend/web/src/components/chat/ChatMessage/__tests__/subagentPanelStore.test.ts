@@ -13,7 +13,6 @@ function createData(agentId: string): SubagentPanelData {
   return {
     agentId,
     agentName: `agent-${agentId}`,
-    input: `input-${agentId}`,
     status: "running",
   };
 }

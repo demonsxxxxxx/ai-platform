@@ -199,7 +199,7 @@ export interface ThinkingPart {
   type: "thinking";
   content: string;
   thinking_id?: string;
-  /** True only for reasoning admitted by the strict public v4 projector. */
+  /** True only for legacy reasoning admitted by the strict public v4 projector. */
   public_reasoning?: boolean;
   depth?: number;
   agent_id?: string;
@@ -222,6 +222,8 @@ export interface ToolPart {
   agent_id?: string;
   /** Server-authorized, non-sensitive identity used by the v4 Render Contract. */
   public_operation_id?: string;
+  /** Sanitized v4 display name retained only for public Skill presentation. */
+  public_display_name?: string;
   public_category?: string;
   duration_ms?: number;
   evidence_refs?: string[];

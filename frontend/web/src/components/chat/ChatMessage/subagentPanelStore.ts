@@ -5,10 +5,6 @@ export interface SubagentPanelData {
   agentId: string;
   agentName: string;
   artifactDownloadScope?: ArtifactDownloadScope;
-  input: string;
-  result?: string;
-  success?: boolean;
-  error?: string;
   isPending?: boolean;
   parts?: MessagePart[];
   startedAt?: number;

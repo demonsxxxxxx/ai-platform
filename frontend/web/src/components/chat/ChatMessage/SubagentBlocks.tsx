@@ -13,14 +13,12 @@ import {
   Ban,
   ChevronRight,
   Users,
-  Box,
   Loader2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { LoadingSpinner, CollapsiblePill, CopyButton } from "../../common";
+import { LoadingSpinner } from "../../common";
 import type { CollapsibleStatus } from "../../common";
 import type { MessagePart } from "../../../types";
-import { MarkdownContent } from "./MarkdownContent";
 import {
   createMessagePartRenderKeys,
   MessagePartRenderer,
@@ -74,9 +72,7 @@ function formatSubagentName(agentName: string): string {
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function buildSubagentPanelState(data: SubagentPanelData) {
-  const effectiveStatus =
-    data.status ||
-    (data.isPending ? "running" : data.success ? "complete" : "error");
+  const effectiveStatus = data.status || (data.isPending ? "running" : "pending");
   const panelStatus: CollapsibleStatus =
     effectiveStatus === "running"
       ? "loading"
@@ -246,10 +242,6 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
     "panel",
   );
 
-  const effectiveStatus =
-    data.status ||
-    (data.isPending ? "running" : data.success ? "complete" : "error");
-
   return (
     <div
       ref={scrollRef}
@@ -257,19 +249,6 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
       className="max-h-full overflow-y-auto p-2 sm:p-4"
     >
       <div ref={contentRef} className="space-y-3">
-        {data.input && (
-          <div className="p-3 sm:p-4 rounded-lg sm:rounded-xl bg-stone-100 dark:bg-stone-700/50">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-xs uppercase tracking-wider text-stone-400 dark:text-stone-500 font-medium">
-                {t("chat.message.args")}
-              </div>
-              <CopyButton text={data.input} />
-            </div>
-            <div className="text-sm text-stone-600 dark:text-stone-300 leading-relaxed">
-              <MarkdownContent content={data.input} />
-            </div>
-          </div>
-        )}
         {panelPartEntries.length > 0 && (
           <div className="space-y-2 pl-3 border-l-2 border-stone-200 dark:border-stone-700">
             {panelPartEntries.map(({ part, index, key }, entryIndex) => (
@@ -283,32 +262,6 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
                 artifactDownloadScope={nestedArtifactDownloadScope}
               />
             ))}
-          </div>
-        )}
-        {data.error && effectiveStatus === "error" && (
-          <div className="p-3 sm:p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/50">
-            <div className="flex items-center justify-between mb-1">
-              <div className="text-xs text-red-600 dark:text-red-400 font-medium">
-                {t("chat.message.error")}
-              </div>
-              <CopyButton text={data.error} />
-            </div>
-            <div className="text-xs text-red-700 dark:text-red-300 leading-relaxed">
-              {data.error}
-            </div>
-          </div>
-        )}
-        {data.result && effectiveStatus === "complete" && (
-          <div className="p-3 sm:p-4 rounded-lg sm:rounded-xl bg-stone-100 dark:bg-stone-700/50">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-xs uppercase tracking-wider text-stone-400 dark:text-stone-500 font-medium">
-                {t("chat.message.result")}
-              </div>
-              <CopyButton text={data.result} />
-            </div>
-            <div className="text-sm text-stone-700 dark:text-stone-300 leading-relaxed">
-              <MarkdownContent content={data.result} />
-            </div>
           </div>
         )}
         {shouldShowSubagentPanelLoading(
@@ -334,15 +287,11 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
 export function SubagentBlock({
   agent_id,
   agent_name,
-  input,
-  result,
-  success,
   isPending,
   parts,
   startedAt,
   completedAt,
   status,
-  error,
   artifactDownloadScope,
   parent_agent_id,
   duration_ms,
@@ -351,15 +300,11 @@ export function SubagentBlock({
 }: {
   agent_id: string;
   agent_name: string;
-  input: string;
-  result?: string;
-  success?: boolean;
   isPending?: boolean;
   parts?: MessagePart[];
   startedAt?: number;
   completedAt?: number;
   status?: "pending" | "running" | "complete" | "error" | "cancelled";
-  error?: string;
   artifactDownloadScope?: ArtifactDownloadScope;
   parent_agent_id?: string;
   duration_ms?: number;
@@ -381,10 +326,6 @@ export function SubagentBlock({
     agentId: agent_id,
     agentName: agent_name,
     artifactDownloadScope,
-    input,
-    result,
-    success,
-    error,
     isPending,
     parts,
     startedAt,
@@ -410,10 +351,6 @@ export function SubagentBlock({
       agentId: agent_id,
       agentName: agent_name,
       artifactDownloadScope,
-      input,
-      result,
-      success,
-      error,
       isPending,
       parts,
       startedAt,
@@ -456,10 +393,6 @@ export function SubagentBlock({
   }, [
     agent_id,
     agent_name,
-    input,
-    result,
-    success,
-    error,
     artifactDownloadScope,
     isPending,
     parts,
@@ -586,11 +519,6 @@ export function SubagentBlock({
           >
             {formattedAgentName}
           </span>
-          {input && (
-            <p className="text-[11px] text-stone-400 dark:text-stone-500 truncate mt-px">
-              {input}
-            </p>
-          )}
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-stone-500 dark:text-stone-400">
             <span data-subagent-status>{statusLabel}</span>
             {parentAgentId && <span data-subagent-nested-label>Nested Agent</span>}
@@ -616,87 +544,5 @@ export function SubagentBlock({
         </div>
       )}
     </div>
-  );
-}
-
-// Sandbox status block component
-export function SandboxItem({
-  status,
-  sandboxId,
-  error,
-  readyDurationMs,
-}: {
-  status: "starting" | "ready" | "error" | "cancelled";
-  sandboxId?: string;
-  error?: string;
-  readyDurationMs?: number;
-}) {
-  const { t } = useTranslation();
-  const hasDetails =
-    (status === "ready" && sandboxId) ||
-    (status === "error" && error) ||
-    status === "cancelled";
-  const duration =
-    status === "ready" &&
-    typeof readyDurationMs === "number" &&
-    Number.isInteger(readyDurationMs) &&
-    readyDurationMs >= 0 &&
-    readyDurationMs <= 86_400_000
-      ? readyDurationMs < 1000
-        ? `${readyDurationMs}毫秒`
-        : `${(readyDurationMs / 1000).toFixed(2)}秒`
-      : null;
-
-  const pillStatus: CollapsibleStatus =
-    status === "starting"
-      ? "loading"
-      : status === "ready"
-        ? "success"
-        : status === "cancelled"
-          ? "cancelled"
-          : "error";
-
-  return (
-    <CollapsiblePill
-      status={pillStatus}
-      icon={<Box size={12} className="shrink-0 opacity-50" />}
-      label={
-        status === "starting"
-          ? t("chat.sandbox.initializing")
-          : status === "ready"
-            ? t("chat.sandbox.ready")
-            : t("chat.sandbox.name")
-      }
-      suffix={
-        duration ? (
-          <span data-sandbox-ready-duration className="text-[10px] font-medium">
-            {t("chat.sandbox.readyDuration", { duration })}
-          </span>
-        ) : undefined
-      }
-      expandable={!!hasDetails}
-      animatedDots={status === "starting"}
-      formatLabel={false}
-    >
-      {hasDetails && (
-        <div className="ml-4 mt-1 max-h-40 overflow-y-auto border-l-2 border-stone-300 pl-3 dark:border-stone-600">
-          {status === "ready" && sandboxId && (
-            <div className="py-1 pl-1 font-mono text-xs text-stone-600 dark:text-stone-300">
-              ID: {sandboxId}
-            </div>
-          )}
-          {status === "error" && error && (
-            <div className="py-1 pl-1 text-xs text-red-600 dark:text-red-400">
-              {error}
-            </div>
-          )}
-          {status === "cancelled" && (
-            <div className="py-1 pl-1 text-xs text-amber-600 dark:text-amber-400">
-              {t("chat.cancelled")}
-            </div>
-          )}
-        </div>
-      )}
-    </CollapsiblePill>
   );
 }

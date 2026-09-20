@@ -30,6 +30,31 @@ projection version, and strict source metadata required for trusted validation.
 The browser projection excludes tenant, Attempt, source, and every other
 infrastructure-only field.
 
+## Terminology and content boundaries
+
+These names describe different controls, provider objects, and public content;
+they are not interchangeable:
+
+| Term | Meaning | Explicit boundary |
+| --- | --- | --- |
+| `thinking_effort` | Canonical Run input control: `auto`, `low`, `medium`, or `high` | It changes provider effort, not SSE content visibility |
+| `agent_options.enable_thinking` | Legacy profile/Chat alias translated to `thinking_effort` at admission | Despite the name, it is not a boolean; legacy `off` means `auto` |
+| SDK `TextBlock` | Ordinary Assistant text from one complete provider message | In structured mode, text from a tool-using turn may become `commentary.delta`; it is not terminal-answer authority |
+| SDK `ThinkingBlock` | Provider model-reasoning content | The current runner discards it and `thinking.display` is `omitted` |
+| `ResultMessage.structured_output.answer` | Structured-mode terminal answer authority | It does not include commentary, tool data, or Thinking content |
+| `message.delta` | Public terminal-answer text chunk | It is rendered and copied as answer content |
+| `commentary.delta` | Disclosure-safe work-progress text from a complete tool-using Assistant turn | It is rendered as work activity and never appended to the answer or answer receipt |
+| `thinking.*` | Legacy public-reasoning compatibility events | The current runner does not emit them; retained readers do not make hidden model reasoning public |
+| `model.completed` | Model completion duration, turn-count, and stop-category metadata | It is neither answer content nor Run terminal authority |
+
+The Chat history API has a separate compatibility projection: strict persisted
+`message.delta` and `commentary.delta` rows leave that API as `message:chunk`
+and `summary`. This does not create another event authority; the frontend maps
+both live v4 and compatibility-history shapes into the same `text` and `summary`
+message parts. The ordinary-user display matrix and legacy raw-tool retirement
+are owned by
+[Chat Run lifecycle and public error projection](chat-run-lifecycle-and-public-error-projection.md#ordinary-user-execution-presentation).
+
 ## Executor callback boundary
 
 The authenticated callback protocol remains independently versioned at v2.1.
@@ -158,13 +183,15 @@ Provider-internal reasoning, raw SDK objects, commands, arguments, outputs,
 credentials, paths, storage keys, private trace values, and unclassified objects
 are prohibited. The Claude SDK is configured with
 `thinking.display = omitted`, and the Runner excludes `ThinkingBlock` content
-from both the answer and callback projections. Legacy `thinking.*` payloads
-remain replayable for compatibility, but current execution does not create them
-and current Chat renderers do not display them. Agent progress carries only fixed
-server-owned phase messages. Tool input and result summaries are fixed lifecycle
-text derived from the validated public display name; callback-supplied arbitrary
-summary text fails closed. The strict event-specific projector applies identity,
-byte, depth, and count bounds before a canonical public row can be committed.
+from both the answer and callback projections. The current Runner does not emit
+`thinking.*`; an authenticated `claude_sdk_thinking_summary` callback remains
+only as legacy write compatibility, and existing persisted `thinking.*` rows
+remain replayable. Current Chat renderers display neither source. Agent progress
+carries only fixed server-owned phase messages. Tool input and result summaries
+are fixed lifecycle text derived from the validated public display name;
+callback-supplied arbitrary summary text fails closed. The strict event-specific
+projector applies identity, byte, depth, and count bounds before a canonical
+public row can be committed.
 
 ## Key and stream incarnation
 

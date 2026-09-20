@@ -939,7 +939,7 @@ test("keeps a bounded public activity timeline and compacts repeated heartbeats"
   );
 });
 
-test("caps only routine info commentary and never evicts actionable status", () => {
+test("caps only routine info statuses and never evicts actionable status", () => {
   let parts: MessagePart[] = [];
   for (const event of [
     {
@@ -2443,6 +2443,18 @@ test("projects v4 tool lifecycle into stable typed statuses", () => {
   );
   assert.deepEqual(started.parts[0].args, {});
   assert.equal(started.parts[0].status, "started");
+  assert.equal(started.parts[0].public_display_name, undefined);
+
+  const skill = processMessageEvent(
+    "run_event",
+    { event_type: "public_tool_activity", operation_id: "op-skill-1", category: "skill", display_name: "QA Review", status: "started" },
+    [], "", [], 0, [], true, "message-1",
+  );
+  assert.equal(skill.parts[0]?.type, "tool");
+  assert.equal(
+    skill.parts[0]?.type === "tool" ? skill.parts[0].public_display_name : null,
+    "QA Review",
+  );
 
   const completed = processMessageEvent(
     "run_event",

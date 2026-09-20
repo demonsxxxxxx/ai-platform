@@ -125,7 +125,7 @@ test("discards deferred execution progress when the stream owner changes", () =>
   assert.deepEqual(commits, [1]);
 });
 
-test("model reasoning deltas accumulate under one thinking identity and complete", () => {
+test("legacy public reasoning deltas accumulate under one thinking identity and complete", () => {
   const thinkingId = "thinking:thinking-public-1";
   let parts = upsertPublicThinkingActivity([], {
     type: "thinking",
@@ -162,7 +162,7 @@ test("model reasoning deltas accumulate under one thinking identity and complete
   ]);
 });
 
-test("model reasoning matching a legacy label remains model content", () => {
+test("legacy public reasoning matching a fixed label remains content", () => {
   const activity = projectPublicThinkingActivity(
     {
       projection_version: CHAT_PUBLIC_PROJECTION_VERSION,

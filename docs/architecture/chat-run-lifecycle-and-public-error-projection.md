@@ -25,6 +25,51 @@ admission, active invocations, completion evidence and Run outcome. Tool lifecyc
 state MUST NOT suppress ordinary Assistant text. A failed or cancelled Run keeps
 its already accepted safe content; its outcome is presented separately.
 
+### Ordinary-user execution presentation
+
+Chat presents user-meaningful work state, not an executor transcript. The active
+Run keeps its disclosure-safe work details expanded; terminal convergence folds
+them into one summary that the user may reopen. The display contract is:
+
+| Surface | Ordinary-user presentation | Allowed content |
+| --- | --- | --- |
+| Assistant answer, artifacts, permission requests, failures, and cancellation | Visible outside the work-details fold | Accepted answer text, authorized artifact labels/actions, and fixed actionable status copy |
+| `commentary.delta` | Visible inside work details | Sanitized work-progress commentary from a complete tool-using Assistant turn |
+| Tool lifecycle | Visible inside work details | Fixed public category label and canonical name derived from the allowlisted category (`skill`, `mcp`, `read`, `write`, `edit`, `search`, or `execute`); `skill` alone may use its sanitized, authorized v4 `display_name`; lifecycle status; and bounded duration |
+| Execution, Sandbox, Todo, and subagent lifecycle | Visible inside work details | Fixed or allowlisted phase/category labels, status, bounded progress/duration, and an explicitly safe file basename when the public execution contract supplies one |
+| Routine queue, context, intent, heartbeat, and model-completion metadata | Hidden from the transcript unless separately actionable | No ordinary-user card |
+| Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, prompt, command, path, query, file content, diff, Tool/MCP/Skill arguments or results, private identifier, storage key, credential, trace, or executor payload |
+
+`Bash`/execute and Read therefore remain visible as coarse lifecycle activities,
+but their command, arguments, paths, read query, file body, stdout, stderr, and
+result do not render. The same raw-data prohibition applies to Write, Edit,
+Search, Skill, MCP, browser, and future tool categories; allowing every detail
+except Bash and Read would bypass the public projection boundary. Opaque operation
+identities may support reducer correlation but are not user-facing labels. A
+sanitized `skill` `display_name` sourced from current authorized Skill metadata
+is presentation authority and is retained in a dedicated public field. Other
+Tool `display_name` values and all subagent `display_name` values remain protocol
+facts but are not presentation authority in compatibility-shaped parts; ordinary
+chat derives their fixed labels from the allowlisted category and subagent kind.
+Unknown categories, malformed public identities, unknown lifecycle states, or
+activities without the required public identity fail closed. Current Sandbox
+readiness remains visible through the v4 public execution timeline; legacy
+`sandbox` parts, sandbox IDs, and raw sandbox errors are not display inputs.
+Subagent cards likewise use only the public operation identity and public
+lifecycle fields; raw subagent input, result, and error values never enter the
+panel store or markup. Conversation-wide derived views such as the image gallery
+index only accepted message content, authorized attachments, and recursively
+filtered public subagent children; they never scan raw Tool or subagent payloads.
+
+This presentation uses existing v4 public events and does not add an SSE event,
+second history shape, or new execution authority. The ordinary Chat renderer no
+longer renders legacy `Message.toolCalls`/`toolResults` or tool parts lacking v4
+public metadata. Those fields may still deserialize while old state is read, but
+they are ignored as display input; no authorized ordinary-user compatibility
+consumer was identified. Existing answer, artifact, permission, and strict public
+history projections remain unchanged. Regression checks inventory both legacy
+raw tool-frame rejection and renderer-level absence.
+
 Redaction replaces sensitive spans rather than dropping the containing paragraph
 or message. Skill accounts, passwords, tokens and private service endpoints must
 be identified from the authorized run-scoped Skill/configuration material before

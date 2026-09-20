@@ -67,17 +67,19 @@ The closed Agent-kernel registry is:
 Every payload is bounded and closed. Public identifiers use disclosure-safe
 patterns; server-owned phase messages, sanitized commentary, fixed Tool
 start/result summaries, final content, durations, turns, progress, artifact
-metadata, and reference arrays have explicit size bounds. The Claude SDK is
-configured with
-`thinking.display = omitted`; the Runner does not admit `ThinkingBlock` content
-into the answer or callback projection. Internal model reasoning, raw SDK fields,
-commands, paths, arguments, outputs, exceptions, and raw capability or task
-identifiers are not protocol fields. Legacy `thinking.*` rows remain readable for
-stream compatibility, but current execution does not create them and current
-Chat renderers do not display them. Render families are registry metadata only in
-this phase: `text`, `thinking_state`, `agent_progress`, `tool_activity`,
-`subagent_activity`, `artifact`, `policy_result`, `public_error`, `cancelled`,
-and `terminal`.
+metadata, and reference arrays have explicit size bounds. The canonical control,
+provider-object, and public-content terminology is defined by the active
+[wire contract](../architecture/redis-streams-sse-wire-protocol.md#terminology-and-content-boundaries).
+The Claude SDK is configured with `thinking.display = omitted`; the Runner does
+not admit `ThinkingBlock` content into the answer or callback projection.
+Internal model reasoning, raw SDK fields, commands, paths, arguments, outputs,
+exceptions, and raw capability or task identifiers are not protocol fields. The
+current Runner does not emit `thinking.*`; authenticated legacy
+`claude_sdk_thinking_summary` callbacks and persisted `thinking.*` rows remain
+readable for compatibility, while current Chat renderers do not display them.
+Render families are registry metadata only in this phase: `text`,
+`thinking_state`, `agent_progress`, `tool_activity`, `subagent_activity`,
+`artifact`, `policy_result`, `public_error`, `cancelled`, and `terminal`.
 
 Transport controls use the separate schema
 `ai-platform.public-run-stream-control.v4`. The closed controls are

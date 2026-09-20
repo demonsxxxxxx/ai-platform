@@ -91,7 +91,7 @@ export function projectPublicAgentProgress(
   };
 }
 
-/** Project schema-validated public model reasoning from live or strict history. */
+/** Project only schema-validated legacy public reasoning compatibility data. */
 export function projectPublicThinkingActivity(
   data: EventData,
   isStreaming: boolean,

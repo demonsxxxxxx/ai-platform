@@ -30,7 +30,7 @@ _MAX_CURRENT_PROMPT_BYTES = 16384
 _MAX_FILE_LIST_PROMPT_BYTES = 4096
 _MAX_CONTEXT_SUMMARY_PROMPT_BYTES = 2048
 _PUBLIC_LANGUAGE_INSTRUCTION = (
-    "Use Simplified Chinese for the final answer and all public summarized-thinking text. "
+    "Use Simplified Chinese for the final answer and public work-progress commentary. "
     "Keep code, commands, filenames, and other literal values unchanged when the task requires them. "
     "For tool-using tasks, put one concise user-facing progress update in ordinary assistant "
     "text in the same Assistant turn as the first tool call of each new work stage. Do not "

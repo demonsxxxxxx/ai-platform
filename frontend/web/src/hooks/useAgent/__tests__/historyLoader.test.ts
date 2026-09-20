@@ -186,6 +186,66 @@ test("production compatibility history reconstructs each persisted user turn bef
   );
 });
 
+test("reconstructs compact v4 compatibility history as commentary plus answer", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "commentary-row",
+        type: "summary",
+        event_type: "summary",
+        run_id: "run-v4-compact",
+        sequence: 1,
+        timestamp: "2026-09-20T00:00:00Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          event_id: "commentary-1",
+          run_id: "run-v4-compact",
+          event_type: "summary",
+          stage: "commentary",
+          summary_id: "summary-public-1",
+          content: "正在检查授权输入。",
+          payload: {
+            summary_id: "summary-public-1",
+            delta: "正在检查授权输入。",
+          },
+        },
+      },
+      {
+        id: "answer-row",
+        type: "message:chunk",
+        event_type: "message:chunk",
+        run_id: "run-v4-compact",
+        sequence: 3,
+        timestamp: "2026-09-20T00:00:01Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: "answer-3",
+          message_id: "protocol-message-1",
+          run_id: "run-v4-compact",
+          sequence: 3,
+          content: "最终回答。",
+        },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.content, "最终回答。");
+  assert.deepEqual(
+    getVisibleMessageParts(messages[0]?.parts || []).map((part) => [
+      part.type,
+      "content" in part ? part.content : undefined,
+    ]),
+    [
+      ["summary", "正在检查授权输入。"],
+      ["text", "最终回答。"],
+    ],
+  );
+});
+
 test("reconstructs a long multi-frame v4 answer once across replay and preserves interleaved parts", () => {
   const first = "a".repeat(9000);
   const second = "b".repeat(9000);
@@ -1131,6 +1191,39 @@ test("failed history retains canonical public execution activity through termina
   assert.equal(terminal?.type, "run_status");
   if (terminal?.type !== "run_status") throw new Error("expected failed terminal status");
   assert.match(terminal.event_type, /failed/);
+});
+
+test("history retains only the authorized Skill display name", () => {
+  const messages = reconstructMessagesFromEvents(
+    [{
+      id: "skill-history-completed",
+      sequence: 1,
+      event_type: "public_tool_activity",
+      run_id: "run-skill-history",
+      timestamp: "2026-08-20T01:13:44.000Z",
+      data: {
+        event_id: "skill-history-completed",
+        event_type: "public_tool_activity",
+        operation_id: "operation-skill-history",
+        category: "skill",
+        display_name: "QA Review",
+        status: "completed",
+        result_summary: "private result must not survive",
+      },
+    }] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const visibleParts = getVisibleMessageParts(messages[0]?.parts || []);
+  const tool = visibleParts[0];
+  assert.equal(tool?.type, "tool");
+  assert.equal(tool?.type === "tool" ? tool.name : null, "QA Review");
+  assert.equal(
+    tool?.type === "tool" ? tool.public_display_name : null,
+    "QA Review",
+  );
+  assert.doesNotMatch(JSON.stringify(visibleParts), /private result/);
 });
 
 test("reconstructMessagesFromEvents deduplicates repeated public thinking event ids", () => {

@@ -81,23 +81,13 @@ function renderProjection(
       });
     }
     if (part.type === "tool") {
-      return createElement(
-        "button",
-        {
-          key: part.public_operation_id || part.id,
-          type: "button",
-          "aria-label": `Open ${part.name}`,
-          "data-tool-operation": part.public_operation_id,
-          onClick: () => void actions.sendMessage(`inspect:${part.public_operation_id}`),
-          onKeyDown: (event: KeyboardEvent) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              void actions.sendMessage(`inspect:${part.public_operation_id}`);
-            }
-          },
-        },
-        part.name,
-      );
+      return createElement(MessagePartRenderer, {
+        key: `${message.id}:tool:${part.public_operation_id || part.id}`,
+        part,
+        messageId: message.id,
+        partIndex,
+        isLast: partIndex === (message.parts?.length ?? 1) - 1,
+      });
     }
     return null;
   };
@@ -145,11 +135,10 @@ function message(parts: MessagePart[]): Message {
   };
 }
 
-test("mounted projection delegates one tool action and remains keyboard accessible", async () => {
+test("mounted projection uses the production canonical tool lifecycle", () => {
   const dom = setupDom();
-  const calls: string[] = [];
   const actions = {
-    sendMessage: async (content: string) => { calls.push(content); },
+    sendMessage: async () => undefined,
     cancel: async () => undefined,
     reconnect: async () => undefined,
     loadHistory: async () => undefined,
@@ -157,15 +146,19 @@ test("mounted projection delegates one tool action and remains keyboard accessib
   try {
     renderProjection(dom.root, message([{
       type: "tool",
-      name: "Read file",
-      args: { category: "read" },
+      name: "Bash: cat /workspace/private --token secret",
+      args: { command: "cat /workspace/private --token secret" },
+      result: "private result",
+      status: "completed",
       public_operation_id: "operation-read-1",
       public_category: "read",
       isPending: false,
     }]), actions);
     const projection = dom.container.querySelector("[data-assistant-ui-projection]");
     const frame = dom.container.querySelector("[data-assistant-ui-message]");
-    const tool = dom.container.querySelector("[data-tool-operation=operation-read-1]") as HTMLButtonElement | null;
+    const tool = [...dom.container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("读取：Read"),
+    );
     assert.ok(projection);
     assert.ok(frame);
     assert.equal(projection?.getAttribute("role"), "log");
@@ -185,14 +178,12 @@ test("mounted projection delegates one tool action and remains keyboard accessib
     }
     assert.equal(frame?.getAttribute("role"), "group");
     assert.equal(frame?.getAttribute("tabindex"), "0");
-    assert.equal(tool?.getAttribute("aria-label"), "Open Read file");
     assert.ok(tool);
-    await act(async () => { tool.click(); });
-    assert.deepEqual(calls, ["inspect:operation-read-1"]);
-    await act(async () => {
-      tool.dispatchEvent(new dom.container.ownerDocument.defaultView!.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    });
-    assert.deepEqual(calls, ["inspect:operation-read-1", "inspect:operation-read-1"]);
+    assert.equal(tool.getAttribute("aria-expanded"), null);
+    assert.doesNotMatch(
+      dom.container.innerHTML,
+      /Bash:|workspace|private result|command/,
+    );
     tool.focus();
     assert.equal(dom.container.ownerDocument.activeElement, tool);
   } finally {
@@ -458,7 +449,7 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     assert.ok(lifecycle?.className.includes("border-l-2"));
     assert.ok(trigger);
     assert.equal(trigger?.tagName, "BUTTON");
-    assert.equal(trigger?.getAttribute("aria-label"), "Research worker: Running, Nested Agent");
+    assert.equal(trigger?.getAttribute("aria-label"), "Sub-agent: Running, Nested Agent");
     assert.match(lifecycle?.textContent || "", /Running/);
     assert.match(lifecycle?.textContent || "", /Nested Agent/);
     assert.doesNotMatch(lifecycle?.textContent || "", /parent-agent-1/);
@@ -501,7 +492,7 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     renderProjection(dom.root, message(completed.parts), actions);
     const updated = dom.container.querySelector("[data-subagent-id=subagent-1]");
     const updatedTrigger = dom.container.querySelector("[data-subagent-trigger=subagent-1]");
-    assert.equal(updatedTrigger?.getAttribute("aria-label"), "Research worker: Completed, Nested Agent");
+    assert.equal(updatedTrigger?.getAttribute("aria-label"), "Sub-agent: Completed, Nested Agent");
     assert.match(updated?.textContent || "", /Completed/);
     assert.match(updated?.textContent || "", /Progress: 100%/);
     assert.match(updated?.textContent || "", /Duration: 2\.5s/);

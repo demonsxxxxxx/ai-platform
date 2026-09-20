@@ -47,9 +47,9 @@ types used by this adapter.
 | `query` | Keyword `prompt`, `options`, and optional `transport` remain available | The async iterator stays inside the runner adapter |
 | `ClaudeAgentOptions` | Existing model, system prompt, tools, hooks, session, limits, and stream fields remain available | Constructed only after platform admission and Skill-name validation |
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
-| Messages | `AssistantMessage`, `TextBlock`, and `StreamEvent` retain the consumed shapes | Partial assistant text is progress only and cannot prove tool or Skill success |
+| Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` retain the consumed shapes | Structured mode ignores partial text, can project complete tool-using `TextBlock` content as commentary, and never projects `ThinkingBlock` content |
 | Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Structured `ResultMessage` is executor completion evidence; Runs owns the durable business terminal outcome; abnormal reasons fail closed |
-| Partial streaming | `include_partial_messages=True` remains supported | Public answer deltas continue through the existing safe projection callback |
+| Partial streaming | `include_partial_messages=True` remains supported | Partial events register Tool identities and feed only the non-structured answer fallback; structured answer publication waits for `ResultMessage` |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
@@ -139,22 +139,31 @@ response are unchanged.
 - **Owner and scope:** Execution maps the Run preference to SDK `effort` and
   `thinking.display`; Chat presentation does not expose model thinking.
   `auto/low/medium/high` are the canonical effort values; legacy `off` inputs
-  normalize to `auto`. Model selection remains unchanged.
+  normalize to `auto`. The executor prompt names user-visible progress as
+  work-progress commentary, never summarized Thinking. Model selection remains
+  unchanged.
 - **Behavior:** every level uses adaptive thinking with `display=omitted`, so the
   model may reason internally without returning Thinking text. The runner does
-  not publish returned `ThinkingBlock` text, and both frontend rendering paths
-  drop thinking parts entirely. Only ordinary answer `TextBlock` content enters
-  the answer projection.
-- **Compatibility and retirement:** no new wire or schema field is added.
-  Existing `claude_sdk_thinking_summary` and `thinking.*` readers remain only
-  for callbacks or persisted history produced before the release; the current
-  Chat UI does not display their body or status. Remove that compatibility
-  transport after deployed executors have crossed the release and retained old
-  events have expired under the owning lifecycle policy.
+  not publish returned `ThinkingBlock` text. In structured mode, a complete
+  tool-using Assistant `TextBlock` may become disclosure-safe
+  `commentary.delta`, while `ResultMessage.structured_output.answer` remains
+  terminal-answer authority. In the non-structured fallback only, ordinary
+  Assistant text feeds the answer projection. Both frontend rendering paths
+  exclude legacy thinking parts.
+- **Compatibility and retirement:** no new wire or schema field is added. The
+  misleading `public summarized-thinking text` prompt instruction is retired;
+  it has no persisted or client compatibility surface. `claude_sdk_thinking_summary`
+  remains an authenticated legacy callback write path, and `thinking.*` readers
+  remain for those callbacks and retained persisted history; the current Runner
+  does not produce either event family, and the current Chat UI displays neither
+  body nor status. Remove the legacy write path and readers together after
+  deployed executors have crossed the release and retained old events have
+  expired under the owning lifecycle policy.
 - **Acceptance:** tests prove every level uses adaptive thinking with omitted
-  display, `auto` sends no explicit effort, an unexpected Thinking block creates
-  no public answer event, and live plus historical frontend parts contain no
-  rendered thinking content.
+  display, `auto` sends no explicit effort, the prompt requests work-progress
+  commentary without summarized-Thinking language, an unexpected Thinking block
+  creates no public answer event, and live plus historical frontend parts contain
+  no rendered thinking content.
 - **Stop conditions:** any need to expose model Thinking text again, alter effort
   semantics, infer Thinking from ordinary answer text, or change SSE/Run terminal
   authority requires a revised contract.
