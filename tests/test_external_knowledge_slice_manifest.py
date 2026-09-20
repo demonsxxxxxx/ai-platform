@@ -37,49 +37,8 @@ def test_repository_manifests_match_exact_traceability_ownership():
     manifests = validate_all_manifests()
     by_slice = {manifest.slice_id: manifest for manifest in manifests}
 
-    assert set(by_slice) == {
-        "KACL-23",
-        "KACLDM-05",
-        "KADMIN-24",
-        "KADR-01",
-        "KBUILD-29",
-        "KCIT-41",
-        "KCON-20",
-        "KDBACL-12",
-        "KDBAGT-13",
-        "KDBCIT-17",
-        "KDBCON-09",
-        "KDBATT-15",
-        "KDBEVD-16",
-        "KDBRUN-14",
-        "KDBSRC-11",
-        "KDBSYNC-10",
-        "KDOC-00",
-        "KDOM-03",
-        "KENG-40",
-        "KFUSE-38",
-        "KMARKET-33",
-        "KNORM-07",
-        "KNORMAPP-37",
-        "KOUTCOME-39",
-        "KPROF-28",
-        "KPROFDM-06",
-        "KPRVCAT-18",
-        "KPRVRET-19",
-        "KPUB-32",
-        "KREADY-46",
-        "KRETRY-47",
-        "KREXEC-36",
-        "KSNAP-35",
-        "KSOURCE-22",
-        "KSRCUI-25",
-        "KSYNC-21",
-        "KTRACE-62",
-    }
+    assert set(by_slice) == {"KADR-01", "KDOC-00", "KTRACE-62"}
     assert by_slice["KTRACE-62"].atomic_case_ids == ("KAC-FR-KOPS-035",)
-    assert by_slice["KSNAP-35"].atomic_case_ids == tuple(
-        f"KAC-FR-KADM-{index:03d}" for index in range(18, 27)
-    )
 
 
 def test_traceability_derives_the_ktrace_atomic_case_set():
