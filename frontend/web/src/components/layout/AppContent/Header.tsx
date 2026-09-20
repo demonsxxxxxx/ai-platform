@@ -131,10 +131,9 @@ export function Header({
 
   return (
     <>
-      <header
-        data-workbench-header
-        className="relative z-50 flex min-h-[2.75rem] items-center border-b border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-3 pb-1.5 sm:px-5"
-        style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top))" }}
+      <div
+        data-workbench-menu-host
+        className="hidden"
       >
         {/* Left */}
         <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -327,7 +326,7 @@ export function Header({
             {showUserMenu ? <UserMenu /> : null}
           </div>
         ) : null}
-      </header>
+      </div>
 
       <NotificationDialog
         isOpen={notifDialogOpen}

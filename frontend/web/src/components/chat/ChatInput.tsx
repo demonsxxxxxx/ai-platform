@@ -977,7 +977,7 @@ export const ChatInput = memo(function ChatInput({
                 availableModels={availableModels}
                 currentModelId={currentModelId}
                 onSelectModel={onSelectModel}
-                showModelSelector={disableSlashCommands}
+                showModelSelector
                 agentOptions={agentOptions}
                 agentOptionValues={agentOptionValues}
                 onToggleAgentOption={onToggleAgentOption}

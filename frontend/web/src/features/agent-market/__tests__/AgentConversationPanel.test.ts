@@ -26,6 +26,8 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   assert.match(sidebar, /mt-auto flex items-center justify-between[\s\S]*<UserMenu showLabel \/>[\s\S]*<Settings/);
   assert.match(rail, /<UserMenu \/>[\s\S]*workbench-menu-open/);
   assert.match(sidebar, /workbench-menu-open/);
+  assert.match(header, /data-workbench-menu-host/);
+  assert.doesNotMatch(header, /data-workbench-header/);
   assert.match(header, /workbench-menu-open/);
   assert.match(header, /showUserMenu \|\| mobileMenuOpen/);
   assert.match(header, /showUserMenu \? "border-l border-\[var\(--theme-border\)\] pl-2 sm:pl-3"/);

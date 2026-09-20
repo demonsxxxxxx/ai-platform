@@ -69,7 +69,7 @@ test("chat input exposes the existing model panel from a visible composer contro
   assert.match(input, /models:\s*!!availableModels\?\.length && !!onSelectModel/);
   assert.match(input, /availableModels=\{availableModels\}/);
   assert.match(input, /onSelectModel=\{onSelectModel\}/);
-  assert.match(input, /showModelSelector=\{disableSlashCommands\}/);
+  assert.match(input, /\s+showModelSelector\s*\n/);
   assert.match(toolbar, /showModelSelector && onSelectModel/);
   assert.match(toolbar, /data-composer-model-trigger/);
   assert.match(
