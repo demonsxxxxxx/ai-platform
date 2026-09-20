@@ -94,6 +94,7 @@ the evidence schema may persist.
 | KAC-DOM-018 | Citation finalization rejects a duplicate evidence ID. |
 | KAC-DOM-019 | Citation finalization rejects more than 20 evidence IDs. |
 | KAC-DOM-020 | Citation snapshot projection omits every private provider field. |
+| KAC-DOM-021 | A new Agent revision defaults `knowledge_enabled` to false, persists the explicit flag in its immutable hash, and never derives it from retained source selections. |
 
 ### 3.3 Provider contract tests
 
@@ -185,6 +186,7 @@ These cases use the repository's real PostgreSQL integration stage.
 | KAC-AUTH-014 | Browser-submitted source IDs are ignored or rejected before persistence. |
 | KAC-AUTH-015 | Browser-submitted provider IDs are rejected before persistence. |
 | KAC-AUTH-016 | Browser-submitted department or role values never grant source access. |
+| KAC-AUTH-017 | Publish rejects an enabled revision with an incomplete source/profile selection, while a disabled revision performs no Knowledge authorization and persists no executable bindings. |
 
 ### 3.6 Execution and message integration tests
 
@@ -205,6 +207,7 @@ These cases use the repository's real PostgreSQL integration stage.
 | KAC-RUN-013 | A stale worker cannot complete a successor retrieval generation. |
 | KAC-RUN-014 | Concurrent user cancellation and deadline expiry release provider work first, then one fenced terminal compare-and-set chooses `cancelled` when the persisted cancellation is no later than the deadline and timeout failure otherwise; the loser is a no-op. |
 | KAC-RUN-015 | Retry fault injection proves only the centralized transient outcome consumes the exact retry budget, and cancellable permit wait/backoff cannot cross the fixed overall deadline or start another call. |
+| KAC-RUN-016 | A disabled Agent Run creates no Run Knowledge Snapshot or provider request and continues through the ordinary non-Knowledge Engine path. |
 
 ### 3.7 Public projection and streaming tests
 
@@ -220,6 +223,7 @@ These cases use the repository's real PostgreSQL integration stage.
 | KAC-PUB-008 | A replay gap followed by hydrate restores the same citation order. |
 | KAC-PUB-009 | Stream projections contain no raw query or chunk text before durable hydrate. |
 | KAC-PUB-010 | Legacy clients can ignore the additive citation field. |
+| KAC-PUB-011 | A disabled Agent projects `enabled=false`, `source_count=0` and null freshness even when administrative authoring selections are retained. |
 
 ### 3.8 Administrative authorization
 
@@ -318,6 +322,7 @@ These cases use the repository's real PostgreSQL integration stage.
 | KAC-UI-012 | No-evidence and unavailable outcomes have distinct recovery actions. |
 | KAC-UI-013 | Source-test states render bounded untrusted evidence and never create a history item. |
 | KAC-UI-014 | Builder test is visibly test-scoped and cannot be mistaken for an ordinary conversation. |
+| KAC-UI-015 | A new or disabled expert performs no Knowledge catalog request; enabling the accessible switch loads the catalog once and makes source/profile selection mandatory. |
 
 ### 4.2 Browser checks
 
@@ -337,6 +342,7 @@ These cases use the repository's real PostgreSQL integration stage.
 | KAC-BR-012 | No browser request is sent directly to the provider origin. |
 | KAC-BR-013 | Keyboard-only source testing can start, cancel and inspect bounded results. |
 | KAC-BR-014 | Builder test refresh remains isolated from ordinary conversation history. |
+| KAC-BR-015 | Keyboard-only Builder can toggle Enterprise Knowledge per expert and observes the same persisted state after refresh. |
 
 ## 5. CI and packaging gates
 

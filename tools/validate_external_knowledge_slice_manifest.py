@@ -33,16 +33,35 @@ TRACE_ROW_PATTERN = re.compile(
     re.MULTILINE,
 )
 KNOWLEDGE_PATH_PREFIXES = (
+    "app/agent_apps/api.py",
+    "app/bootstrap/knowledge.py",
+    "app/conversations/application/run_admission.py",
+    "app/executors/base.py",
+    "app/executors/claude/prompts.py",
+    "app/executors/claude_agent_worker.py",
     "app/knowledge/",
     "app/routes/admin_knowledge.py",
     "app/routes/knowledge.py",
+    "app/settings.py",
+    "app/worker.py",
+    "app/worker_main.py",
+    "deploy/ai-platform/.env.example",
+    "deploy/ai-platform/docker-compose.yml",
     "docs/product/external-knowledge/",
+    "frontend/web/src/features/agent-builder/",
+    "frontend/web/src/features/agent-market/",
     "frontend/web/src/features/knowledge/",
+    "frontend/web/src/components/layout/AppContent/__tests__/ChatAppContent.test.tsx",
     "frontend/web/src/services/api/knowledge.ts",
     "frontend/web/src/types/knowledge.ts",
     "schemas/external-knowledge-",
+    "tests/test_conversation_run_admission.py",
     "tests/test_external_knowledge",
     "tests/test_knowledge",
+    "tests/test_run_knowledge_admission.py",
+    "tests/test_schema_migrations.py",
+    "tests/test_settings.py",
+    "tests/test_worker.py",
     "tools/validate_external_knowledge_slice_manifest.py",
 )
 BOOTSTRAP_PATH_PREFIXES = {
@@ -255,14 +274,25 @@ def validate_changed_path_coverage(
     root: Path = ROOT,
 ) -> tuple[str, ...]:
     changed = tuple(dict.fromkeys(changed_paths))
-    knowledge_changed = tuple(path for path in changed if _is_knowledge_path(path))
-    if not knowledge_changed:
-        return ()
-
     manifest_prefix = manifest_dir.relative_to(root).as_posix().rstrip("/") + "/"
     changed_manifest_paths = {
         path for path in changed if path.startswith(manifest_prefix) and path.endswith(".json")
     }
+    manifest_claimed_paths = {
+        path for manifest in manifests for path in manifest.changed_paths
+    }
+    knowledge_changed = (
+        changed
+        if changed_manifest_paths
+        else tuple(
+            path
+            for path in changed
+            if _is_knowledge_path(path) or path in manifest_claimed_paths
+        )
+    )
+    if not knowledge_changed:
+        return ()
+
     selected = tuple(
         manifest
         for manifest in manifests

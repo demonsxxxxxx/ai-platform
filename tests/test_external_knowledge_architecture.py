@@ -17,7 +17,8 @@ def test_kadr_01_establishes_one_knowledge_authority_and_provider_boundary():
     assert "`knowledge` is a bounded context" in flat
     assert "RAGFlow is the first provider adapter" in flat
     assert "`mcp` continues to own the generic MCP server/tool catalog" in flat
-    assert "`agent_apps` owns the immutable selection" in flat
+    assert "`agent_apps` owns the immutable `knowledge_enabled` opt-in flag" in flat
+    assert "The flag defaults to false and is not derived from source count" in flat
     assert "`runs.AdmitRun` creates one Unit of Work" in flat
     assert "`conversations` owns assistant-message finalization" in flat
     assert "opaque `secret_ref`" in flat

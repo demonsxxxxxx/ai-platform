@@ -37,8 +37,49 @@ def test_repository_manifests_match_exact_traceability_ownership():
     manifests = validate_all_manifests()
     by_slice = {manifest.slice_id: manifest for manifest in manifests}
 
-    assert set(by_slice) == {"KADR-01", "KDOC-00", "KTRACE-62"}
+    assert set(by_slice) == {
+        "KACL-23",
+        "KACLDM-05",
+        "KADMIN-24",
+        "KADR-01",
+        "KBUILD-29",
+        "KCIT-41",
+        "KCON-20",
+        "KDBACL-12",
+        "KDBAGT-13",
+        "KDBCIT-17",
+        "KDBCON-09",
+        "KDBATT-15",
+        "KDBEVD-16",
+        "KDBRUN-14",
+        "KDBSRC-11",
+        "KDBSYNC-10",
+        "KDOC-00",
+        "KDOM-03",
+        "KENG-40",
+        "KFUSE-38",
+        "KMARKET-33",
+        "KNORM-07",
+        "KNORMAPP-37",
+        "KOUTCOME-39",
+        "KPROF-28",
+        "KPROFDM-06",
+        "KPRVCAT-18",
+        "KPRVRET-19",
+        "KPUB-32",
+        "KREADY-46",
+        "KRETRY-47",
+        "KREXEC-36",
+        "KSNAP-35",
+        "KSOURCE-22",
+        "KSRCUI-25",
+        "KSYNC-21",
+        "KTRACE-62",
+    }
     assert by_slice["KTRACE-62"].atomic_case_ids == ("KAC-FR-KOPS-035",)
+    assert by_slice["KSNAP-35"].atomic_case_ids == tuple(
+        f"KAC-FR-KADM-{index:03d}" for index in range(18, 27)
+    )
 
 
 def test_traceability_derives_the_ktrace_atomic_case_set():
@@ -124,23 +165,92 @@ def test_git_changed_paths_includes_deleted_files(monkeypatch: pytest.MonkeyPatc
 
     def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         observed.extend(command)
-        return subprocess.CompletedProcess(command, 0, stdout="app/knowledge/deleted.py\n")
+        return subprocess.CompletedProcess(
+            command, 0, stdout="app/knowledge/deleted.py\n"
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    assert git_changed_paths(ROOT, "a" * 40, "b" * 40) == (
-        "app/knowledge/deleted.py",
-    )
+    assert git_changed_paths(ROOT, "a" * 40, "b" * 40) == ("app/knowledge/deleted.py",)
     assert "--diff-filter=ACMRD" in observed
 
 
 def test_changed_path_gate_requires_a_changed_manifest():
     with pytest.raises(ManifestContractError) as error:
         validate_changed_path_coverage(
-            ("app/knowledge/models.py",), (), manifest_dir=DEFAULT_MANIFEST_DIR, root=ROOT
+            ("app/knowledge/models.py",),
+            (),
+            manifest_dir=DEFAULT_MANIFEST_DIR,
+            root=ROOT,
         )
 
     assert error.value.code == "changed_manifest_required"
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "app/agent_apps/api.py",
+        "app/bootstrap/knowledge.py",
+        "app/conversations/application/run_admission.py",
+        "app/executors/claude_agent_worker.py",
+        "app/settings.py",
+        "app/worker.py",
+        "deploy/ai-platform/docker-compose.yml",
+        "frontend/web/src/features/agent-builder/AgentBuilderRoute.tsx",
+        "frontend/web/src/features/agent-market/AgentMarketRoute.tsx",
+        "frontend/web/src/components/layout/AppContent/__tests__/ChatAppContent.test.tsx",
+        "tests/test_schema_migrations.py",
+        "tests/test_settings.py",
+    ),
+)
+def test_changed_path_gate_recognizes_cross_layer_knowledge_paths(path: str):
+    with pytest.raises(ManifestContractError) as error:
+        validate_changed_path_coverage(
+            (path,), (), manifest_dir=DEFAULT_MANIFEST_DIR, root=ROOT
+        )
+
+    assert error.value.code == "changed_manifest_required"
+
+
+def test_changed_path_gate_recognizes_manifest_claimed_shared_path():
+    manifest_path = DEFAULT_MANIFEST_DIR / "KMARKET-33.json"
+    shared_path = "frontend/web/src/shared/agentProfile.ts"
+    manifest = ValidatedManifest(
+        path=manifest_path,
+        slice_id="KMARKET-33",
+        atomic_case_ids=(),
+        changed_paths=(shared_path,),
+    )
+
+    with pytest.raises(ManifestContractError) as error:
+        validate_changed_path_coverage(
+            (shared_path,), (manifest,), manifest_dir=DEFAULT_MANIFEST_DIR, root=ROOT
+        )
+
+    assert error.value.code == "changed_manifest_required"
+
+
+def test_changed_manifest_requires_complete_supplied_path_coverage():
+    manifest_path = DEFAULT_MANIFEST_DIR / "KMARKET-33.json"
+    manifest_relative = manifest_path.relative_to(ROOT).as_posix()
+    manifest = ValidatedManifest(
+        path=manifest_path,
+        slice_id="KMARKET-33",
+        atomic_case_ids=(),
+        changed_paths=(manifest_relative,),
+    )
+
+    with pytest.raises(ManifestContractError) as error:
+        validate_changed_path_coverage(
+            (manifest_relative, "app/shared_candidate_path.py"),
+            (manifest,),
+            manifest_dir=DEFAULT_MANIFEST_DIR,
+            root=ROOT,
+        )
+
+    assert error.value.code == "knowledge_path_uncovered"
+    assert error.value.detail == "app/shared_candidate_path.py"
 
 
 def test_changed_path_gate_rejects_uncovered_knowledge_path():

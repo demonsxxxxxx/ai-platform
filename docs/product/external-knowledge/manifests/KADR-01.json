@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
   "slice_id": "KADR-01",
   "issue_number": 1311,
-  "summary": "Knowledge bounded-context authority, transaction ownership, and provider credential boundary",
+  "summary": "ADR 0014 Knowledge bounded-context authority, transaction ownership, provider credentials, and explicit Agent opt-in",
   "atomic_case_ids": [
     "KAC-FR-KMIG-001",
     "KAC-FR-KMIG-002",

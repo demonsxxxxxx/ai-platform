@@ -302,8 +302,13 @@ Changing any policy field creates another immutable revision.
 
 ### 4.8 Agent Profile knowledge bindings
 
-The Agent Apps owner persists one ordered binding per logical source in an
-Agent Profile Revision.
+The Agent Apps owner persists `knowledge_enabled` on every Agent Profile
+Revision. Its create default is `false`; enablement is never inferred from the
+source count. A disabled revision may retain source/profile authoring choices,
+but its executable `knowledge_bindings` are empty and every runtime ignores
+those retained choices. An enabled published revision persists one ordered
+binding per logical source and requires a non-empty source set plus one active
+retrieval profile.
 
 | Field | Contract |
 | --- | --- |
@@ -751,6 +756,7 @@ fields:
 
 ```json
 {
+  "knowledge_enabled": true,
   "knowledge_source_ids": ["ks_..."],
   "retrieval_profile_id": "krp_..."
 }
@@ -770,6 +776,11 @@ Public Agent projections expose only:
 
 They do not expose logical source IDs, provider identities, raw ACLs or
 retrieval policy internals.
+
+`knowledge_capability.enabled` projects the immutable revision flag rather
+than `source_count > 0`. A disabled revision reports `source_count: 0` and
+`freshness_at: null`, including when its administrative draft configuration
+retains selections for later re-enablement.
 
 An Agent Builder draft test is different from the administrative source test.
 It uses the existing Builder Test Conversation and the normal governed Run
@@ -797,20 +808,23 @@ Run admission performs these steps in order:
 
 1. restore the pinned Agent Profile Revision;
 2. reauthorize the principal against Agent publication and ACL;
-3. load the immutable source bindings from that revision;
-4. reauthorize each required source against current principal facts;
-5. begin the Run/snapshot transaction, lock every distinct source row by
+3. read the immutable `knowledge_enabled` flag; when it is `false`, skip every
+   Knowledge snapshot/provider operation and continue through the ordinary
+   non-Knowledge Engine path;
+4. for an enabled revision, load its immutable non-empty source bindings;
+5. reauthorize each required source against current principal facts;
+6. begin the Run/snapshot transaction, lock every distinct source row by
    ascending `source_id`, then every distinct connection row by ascending
    `connection_id`;
-6. under those locks, re-read and reauthorize source status/ACL and connection
+7. under those locks, re-read and reauthorize source status/ACL and connection
    status, active revision/catalog pair and lifecycle epoch;
-7. resolve the exact active connection revisions and verify the immutable
+8. resolve the exact active connection revisions and verify the immutable
    retrieval profile revision;
-8. persist the Run Knowledge Snapshot in that transaction; and
-9. dispatch only after the snapshot commit succeeds.
+9. persist the Run Knowledge Snapshot in that transaction; and
+10. dispatch only after the snapshot commit succeeds.
 
 The source-then-connection type order and ascending IDs are global. Callers may
-not lock in binding order. Any changed or uncertain fact before step 9 rolls
+not lock in binding order. Any changed or uncertain fact before step 10 rolls
 back the snapshot and produces zero provider and Engine calls.
 
 Every source-status or active-ACL-pointer mutation acquires its source row;
@@ -1129,6 +1143,10 @@ provider calls are not recovery procedures.
 ## 19. Rollback and compatibility
 
 - Schema changes are additive and use the canonical migration runner.
+- The initial single-server rollout is a drained upgrade: stop the prior API and
+  Worker binaries before applying the `knowledge_enabled` backfill and published
+  binding constraint, then start only the matching application version. Mixed
+  old/new writers are not a supported migration state for this schema step.
 - Application rollback may stop offering new Knowledge functionality while
   retaining connections, source bindings, Run snapshots and citations.
 - Rollback must not delete immutable Agent revisions or rewrite conversations.

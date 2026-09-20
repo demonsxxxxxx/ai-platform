@@ -164,6 +164,9 @@ acceptance; implementation status belongs in GitHub rather than this document.
 | KAGT-033 | P0 | Every Run, evidence item, message and citation created by a draft retrieval test must be marked `builder_test`. |
 | KAGT-034 | P0 | Builder test messages and citations must not appear in Agent Market or ordinary-user conversation history. |
 | KAGT-035 | P0 | Builder test evidence and citations must follow the same authorization and retention rules as their owning test Run and message. |
+| KAGT-036 | P0 | Every Agent Profile Revision must persist an explicit `knowledge_enabled` flag whose create default is `false`; enablement must not be inferred from the number of configured sources, and Builder must not load the Knowledge catalog until the current expert is enabled. |
+| KAGT-037 | P0 | Disabling Knowledge may retain draft source/profile selections for later editing, but a disabled published revision must persist no executable Knowledge authorization bindings. |
+| KAGT-038 | P0 | Enabling Knowledge must require at least one source and one active retrieval profile before save or publication, and publication must reauthorize the complete enabled selection. |
 
 ## 5. Market and conversation admission
 
@@ -194,6 +197,8 @@ acceptance; implementation status belongs in GitHub rather than this document.
 | KADM-023 | P0 | A Run knowledge snapshot must not contain a credential value. |
 | KADM-024 | P0 | A Run knowledge snapshot must remain within the platform context payload bound. |
 | KADM-025 | P0 | Run admission and every catalog or connection writer that locks both sources and connections must use the same source-then-connection ascending-ID lock order and re-read governed facts after locking. |
+| KADM-026 | P0 | A Run admitted from a revision with `knowledge_enabled=false` must create no Run Knowledge Snapshot, perform no provider request, and continue through the ordinary non-Knowledge Engine path. |
+| KADM-027 | P0 | The public Knowledge capability `enabled` value must project the immutable Agent revision flag; a disabled projection must report zero active sources and null freshness even when authoring selections are retained. |
 
 ## 6. Retrieval and evidence
 

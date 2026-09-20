@@ -40,12 +40,16 @@ compete for the same business facts.
    A later agent-directed `knowledge_search` tool may delegate to the Knowledge
    API; it does not become a second connection, source, retrieval, or citation
    authority.
-4. `agent_apps` owns the immutable selection of logical source IDs and one
-   retrieval-profile version on each Agent Profile Revision. It asks Knowledge
+4. `agent_apps` owns the immutable `knowledge_enabled` opt-in flag, selection of
+   logical source IDs and one retrieval-profile version on each Agent Profile
+   Revision. The flag defaults to false and is not derived from source count.
+   Disabled revisions produce no executable Knowledge bindings. It asks Knowledge
    to validate current source authorization and readiness when saving,
    publishing, and admitting that revision.
-5. `runs` owns the admission transaction. `runs.AdmitRun` creates one Unit of
-   Work and calls the Knowledge API with that transaction so the Run and its
+5. `runs` owns the admission transaction. A disabled Agent revision bypasses
+   Knowledge admission and creates no snapshot or provider work. For an enabled
+   revision, `runs.AdmitRun` creates one Unit of Work and calls the Knowledge API
+   with that transaction so the Run and its
    immutable Knowledge Snapshot commit or roll back together before dispatch.
 6. `conversations` owns assistant-message finalization. Its finalization Unit of
    Work calls the Knowledge API so the durable assistant message and bounded
