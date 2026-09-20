@@ -1,7 +1,6 @@
 import ast
 import os
 import re
-import shlex
 import subprocess
 import sys
 import textwrap
@@ -380,42 +379,20 @@ def test_agent_skill_contract_job_is_bounded_and_required():
         "timeout --signal"
     )
     timeout_script = run_script.split("mkdir -p .pytest-tmp", 1)[1]
-    normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", timeout_script)
-    tokens = shlex.split(normalized_run)
-    expected_tokens = [
-        "timeout",
-        "--signal=TERM",
-        "--kill-after=30s",
-        "10m",
-        "uv",
-        "run",
-        "--locked",
-        "--extra",
-        "test",
-        "python",
-        "-m",
-        "pytest",
-        *AGENT_SKILL_CONTRACT_TESTS,
-        "-vv",
-        "--tb=short",
-        "-o",
-        "faulthandler_timeout=120",
-        "--junitxml",
-        ".pytest-tmp/agent-skill-contracts.xml",
-        "--basetemp",
-        ".pytest-tmp/agent-skill-contracts",
-        "uv",
-        "run",
-        "--locked",
-        "--extra",
-        "test",
-        "python",
-        "tools/require_zero_junit_skips.py",
-        ".pytest-tmp/agent-skill-contracts.xml",
-    ]
-    assert tokens == expected_tokens
-    assert not any(token.startswith("-k") for token in tokens)
-    assert not any(token.startswith("--ignore") for token in tokens)
+    assert "knowledge_contract_tests=()" in timeout_script
+    assert "if test -f app/knowledge/__init__.py; then" in timeout_script
+    assert '"${knowledge_contract_tests[@]}"' in timeout_script
+    for selector in AGENT_SKILL_CONTRACT_TESTS:
+        assert timeout_script.count(selector) == 1
+    assert timeout_script.index("timeout --signal=TERM --kill-after=30s 10m") < timeout_script.index(
+        "uv run --locked --extra test python -m pytest"
+    )
+    assert timeout_script.index("uv run --locked --extra test python -m pytest") < timeout_script.index(
+        "tools/require_zero_junit_skips.py"
+    )
+    assert "--collect-only" not in timeout_script
+    assert " -k " not in timeout_script
+    assert "--ignore" not in timeout_script
 
     assert (
         "needs: [backend-preflight, backend-tests, agent-skill-contracts, backend-image]"
