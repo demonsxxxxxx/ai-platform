@@ -80,6 +80,28 @@ async def get_user(conn: AsyncConnection, *, tenant_id: str, user_id: str) -> di
     return dict(row) if row else None
 
 
+async def list_active_user_ids(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_ids: list[str],
+) -> tuple[str, ...]:
+    if not user_ids:
+        return ()
+    cursor = await conn.execute(
+        """
+        select id
+        from users
+        where tenant_id = %s
+          and id = any(%s)
+          and status = 'active'
+        order by id
+        """,
+        (tenant_id, user_ids),
+    )
+    return tuple(str(row["id"]) for row in await cursor.fetchall())
+
+
 async def _get_profile_metadata(
     conn: AsyncConnection,
     *,

@@ -1,0 +1,16 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KRETRY-47",
+  "issue_number": 1311,
+  "summary": "Per-connection permits and typed bounded retry policy",
+  "atomic_case_ids": [
+    "KAC-FR-KOPS-011",
+    "KAC-FR-KOPS-012",
+    "KAC-FR-KOPS-013",
+    "KAC-FR-KOPS-036"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KRETRY-47.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

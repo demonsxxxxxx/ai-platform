@@ -1,0 +1,13 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KNORM-07",
+  "issue_number": 1311,
+  "summary": "Pure bounded provider-result normalization prerequisite",
+  "atomic_case_ids": [],
+  "changed_paths": [
+    "app/knowledge/domain/normalization.py",
+    "docs/product/external-knowledge/manifests/KNORM-07.json",
+    "tests/test_knowledge_normalization.py"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

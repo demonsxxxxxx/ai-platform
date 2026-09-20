@@ -1,0 +1,1 @@
+"""External Knowledge bounded context."""

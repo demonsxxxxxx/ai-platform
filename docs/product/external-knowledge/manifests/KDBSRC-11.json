@@ -1,0 +1,23 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDBSRC-11",
+  "issue_number": 1311,
+  "summary": "Logical Knowledge Source persistence candidate; PostgreSQL acceptance remains pending",
+  "atomic_case_ids": [
+    "KAC-FR-KSRC-008",
+    "KAC-FR-KSRC-009",
+    "KAC-FR-KSRC-010",
+    "KAC-FR-KSRC-011",
+    "KAC-FR-KSRC-012",
+    "KAC-FR-KSRC-013",
+    "KAC-FR-KSRC-014",
+    "KAC-FR-KSRC-015",
+    "KAC-FR-KSRC-016",
+    "KAC-FR-KSRC-021",
+    "KAC-FR-KSRC-022"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KDBSRC-11.json"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

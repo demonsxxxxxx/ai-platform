@@ -158,6 +158,14 @@ class Settings(BaseSettings):
     model_connection_encryption_key: str = Field(default="")
     model_connection_allowed_internal_hosts: str = Field(default="")
     model_proxy_internal_token: str = Field(default="")
+    platform_credentials_encryption_key: str = Field(default="")
+    knowledge_connection_allowed_hosts: str = Field(default="")
+    knowledge_provider_timeout_seconds: float = Field(default=15.0, gt=0, le=60)
+    knowledge_provider_max_concurrency_per_connection: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+    )
     claude_agent_sdk_enabled: bool = Field(default=False)
     claude_agent_sdk_timeout_seconds: float = Field(default=0.0)
     claude_agent_sdk_max_turns: int = Field(default=256)

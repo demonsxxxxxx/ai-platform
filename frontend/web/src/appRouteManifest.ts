@@ -13,6 +13,7 @@ export const APP_ROUTE_PATHS = {
   skills: "/skills",
   pluginMarket: "/plugins",
   mcp: "/mcp",
+  knowledge: "/knowledge",
   users: "/users",
   roles: "/roles",
   settings: "/settings",

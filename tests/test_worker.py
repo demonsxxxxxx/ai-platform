@@ -35,6 +35,8 @@ from app.executors.base import (
 )
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
+from app.knowledge.application.runtime import KnowledgeRuntimeResult
+from app.knowledge.domain import KnowledgeError
 from app.models import QueueRunPayload
 from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
@@ -1892,6 +1894,7 @@ def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
                 "expected_version": "hash-qa-file-reviewer",
             }
         ],
+        "knowledge_enabled": False,
     }
     with pytest.raises(ValueError, match="agent_profile_agent_id_invalid"):
         parse_queue_payload(
@@ -1956,6 +1959,7 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
         "content_hash": "a" * 64,
         "instructions": "Use the fixed enterprise expert policy.",
         "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+        "knowledge_enabled": False,
     }
     with pytest.raises(ValueError, match="agent_profile_skill_set_invalid"):
         parse_queue_payload(
@@ -2023,6 +2027,7 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
                 "skill_set": [
                     {"skill_id": "general-chat", "expected_version": "version-a"}
                 ],
+                "knowledge_enabled": False,
             },
         ),
     ],
@@ -2117,6 +2122,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         "skill_set": [
             {"skill_id": "general-chat", "expected_version": "version-a"}
         ],
+        "knowledge_enabled": False,
     }
     persisted = base_payload(
         _leased=False,
@@ -2456,6 +2462,7 @@ def test_run_payload_accepts_only_complete_pinned_harness_profile():
         "content_hash": "a" * 64,
         "instructions": "Use the fixed enterprise expert policy.",
         "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+        "knowledge_enabled": False,
     }
     assert RunPayload(**{**harness, "agent_id": "general-agent"}).agent_profile == {}
     for hostile_profile in (
@@ -2892,6 +2899,7 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
             "content_hash": "a" * 64,
             "instructions": "Private profile instruction.",
             "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+            "knowledge_enabled": False,
         }
         public_calls = [call for call in calls if call[0] != "adapter"]
         assert profile["instructions"] not in repr(public_calls)
@@ -3992,6 +4000,245 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
 
     assert outcome.status == "succeeded"
     assert calls == [("model", "pro-tier", "deepseek-v4-pro", "qat-test-attempt")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("citations_valid", [True, False])
+async def test_worker_attaches_retrieved_knowledge_evidence_to_executor_payload(
+    monkeypatch,
+    citations_valid,
+):
+    captured = {}
+    profile = {
+        "agent_id": "general-agent",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use admitted evidence.",
+        "skill_set": [
+            {
+                "skill_id": "general-chat",
+                "expected_version": "hash-general-chat",
+            }
+        ],
+        "knowledge_enabled": True,
+        "knowledge_source_ids": ["ksrc-0"],
+        "retrieval_profile_id": "krp_default",
+        "knowledge_bindings": [
+            {
+                "source_id": "ksrc-0",
+                "source_authorization_version": 1,
+                "ordinal": 0,
+                "required": True,
+                "retrieval_profile_id": "krp_default",
+                "retrieval_profile_revision": 1,
+            }
+        ],
+    }
+    raw_payload = base_payload(
+        file_ids=[],
+        skill_id="general-chat",
+        agent_id="general-agent",
+        input={"message": "What is the policy?"},
+        agent_profile=profile,
+    )
+    locked_run = locked_run_from_payload(raw_payload)
+    evidence = {
+        "evidence_id": "kev_001",
+        "title": "Policy",
+        "content": "Approved policy evidence.",
+        "rank": 1,
+        "score": 0.9,
+    }
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            captured["payload"] = payload
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture/1",
+                executor_type="fake",
+                executor_version="capture",
+                capabilities={},
+                result={"message": "done [kev_001]"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return locked_run
+
+    async def retrieve_run_knowledge(**kwargs):
+        captured["retrieval"] = kwargs
+        return KnowledgeRuntimeResult(status="succeeded", evidence=(evidence,))
+
+    async def append_event(conn, **kwargs):
+        return "evt-knowledge-succeeded"
+
+    async def resolve_run_citation_evidence_ids(conn, **kwargs):
+        captured["citation_resolution"] = kwargs
+        if not citations_valid:
+            raise KnowledgeError("knowledge_citation_invalid")
+        return ("kev_001",)
+
+    async def finalize_run_citations(conn, **kwargs):
+        captured["citation_finalization"] = kwargs
+        return ({"id": "kct_001", "evidence_id": "kev_001"},)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.knowledge_api.retrieve_run_knowledge", retrieve_run_knowledge)
+    monkeypatch.setattr(
+        "app.worker.knowledge_api.resolve_run_citation_evidence_ids",
+        resolve_run_citation_evidence_ids,
+    )
+    monkeypatch.setattr(
+        "app.worker.knowledge_api.finalize_run_citations",
+        finalize_run_citations,
+    )
+
+    outcome = await process_run_payload(raw_payload, AdapterRegistry({"fake": CaptureAdapter()}))
+
+    assert outcome.status == ("succeeded" if citations_valid else "failed")
+    assert captured["retrieval"]["attempt_id"] == "qat-test-attempt"
+    assert captured["retrieval"]["question"] == "What is the policy?"
+    assert captured["payload"].knowledge_evidence == [evidence]
+    assert captured["citation_resolution"]["answer"] == "done [kev_001]"
+    if citations_valid:
+        assert captured["citation_finalization"]["message_id"] == "msg-a"
+        assert captured["citation_finalization"]["answer"] == "done [kev_001]"
+    else:
+        assert outcome.error_code == "knowledge_citation_invalid"
+        assert "citation_finalization" not in captured
+
+
+@pytest.mark.asyncio
+async def test_worker_knowledge_failure_terminalizes_attempt_and_releases_lease(monkeypatch):
+    calls = []
+    profile = {
+        "agent_id": "general-agent",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use admitted evidence.",
+        "skill_set": [
+            {
+                "skill_id": "general-chat",
+                "expected_version": "hash-general-chat",
+            }
+        ],
+        "knowledge_enabled": True,
+        "knowledge_source_ids": ["ksrc-0"],
+        "retrieval_profile_id": "krp_default",
+        "knowledge_bindings": [
+            {
+                "source_id": "ksrc-0",
+                "source_authorization_version": 1,
+                "ordinal": 0,
+                "required": True,
+                "retrieval_profile_id": "krp_default",
+                "retrieval_profile_revision": 1,
+            }
+        ],
+    }
+    raw_payload = base_payload(
+        file_ids=[],
+        skill_id="general-chat",
+        agent_id="general-agent",
+        input={"message": "Missing evidence"},
+        agent_profile=profile,
+    )
+    locked_run = locked_run_from_payload(raw_payload)
+
+    class ForbiddenAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise AssertionError("knowledge failure must stop before Engine dispatch")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return locked_run
+
+    async def retrieve_run_knowledge(**kwargs):
+        return KnowledgeRuntimeResult(
+            status="no_evidence",
+            error_code="knowledge_no_evidence",
+            error_message="private provider detail must not cross the boundary",
+        )
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-knowledge-failed"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", error_code, error_message))
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
+
+    async def terminalize_run_attempt(conn, **kwargs):
+        calls.append(("attempt_terminal", kwargs))
+        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
+
+    async def assert_worker_run_attempt_current(conn, **kwargs):
+        return {
+            "id": "qat-test-attempt",
+            "status": "running",
+            "owner_kind": "queue_worker",
+            "owner_id": kwargs["worker_id"],
+            "owner_generation": 4,
+            "queue_attempt_id": kwargs["queue_attempt_id"],
+        }
+
+    async def create_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_create", kwargs["run_id"]))
+        return {"id": "lease-knowledge-failed", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("lease_release", kwargs))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.knowledge_api.retrieve_run_knowledge", retrieve_run_knowledge)
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "assert_worker_run_attempt_current",
+        assert_worker_run_attempt_current,
+    )
+    monkeypatch.setattr(
+        _TEST_ATTEMPT_PERSISTENCE,
+        "terminalize_run_attempt",
+        terminalize_run_attempt,
+    )
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.create_sandbox_lease",
+        create_sandbox_lease,
+    )
+    monkeypatch.setattr(
+        "app.worker.sandbox_lease_repository.release_sandbox_lease",
+        release_sandbox_lease,
+    )
+
+    outcome = await process_run_payload(
+        raw_payload,
+        AdapterRegistry({"fake": ForbiddenAdapter()}),
+    )
+
+    assert outcome == WorkerOutcome(
+        "failed",
+        "run-a",
+        "knowledge_no_evidence",
+        "未在当前已授权知识库中找到可支持回答的内容。请补充关键词或换一种问法。",
+    )
+    assert (
+        "fail",
+        "knowledge_no_evidence",
+        "未在当前已授权知识库中找到可支持回答的内容。请补充关键词或换一种问法。",
+    ) in calls
+    terminal = next(item[1] for item in calls if item[0] == "attempt_terminal")
+    assert terminal["status"] == "failed"
+    assert terminal["terminal_reason"] == "run_failed"
+    release = next(item[1] for item in calls if item[0] == "lease_release")
+    assert release["lease_id"] == "lease-knowledge-failed"
+    assert release["reason"] == "run_failed"
+    assert ("event", "error", "knowledge") in calls
 
 
 @pytest.mark.asyncio

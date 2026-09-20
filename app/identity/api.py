@@ -1,3 +1,5 @@
+from app.identity.infrastructure.postgres import list_active_user_ids
+
 from app.identity.application.admin_user_diagnostics import (
     ADMIN_USER_DIAGNOSTICS_SCHEMA_VERSION,
     AdminUserDiagnosticsService,
@@ -26,4 +28,5 @@ __all__ = [
     "ProfileMetadataService",
     "ProfileMetadataStore",
     "ProfileMetadataValidationError",
+    "list_active_user_ids",
 ]

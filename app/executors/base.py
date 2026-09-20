@@ -11,6 +11,7 @@ from app.control_plane_contracts import (
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
+from app.knowledge.api import validate_engine_knowledge_evidence
 from app.skills.release_policy import validate_release_decision_lock
 from app.validation import assert_safe_id
 
@@ -228,10 +229,16 @@ class RunPayload:
     model_max_input_tokens: int | None = None
     model_max_output_tokens: int | None = None
     agent_profile: dict[str, Any] = field(default_factory=dict)
+    knowledge_evidence: list[dict[str, Any]] = field(default_factory=list)
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         assert_safe_id(self.attempt_id, "attempt_id")
+        object.__setattr__(
+            self,
+            "knowledge_evidence",
+            [dict(item) for item in validate_engine_knowledge_evidence(self.knowledge_evidence)],
+        )
         if self.schema_version not in SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS:
             raise ValueError("run_payload_schema_version_invalid")
         if self.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:

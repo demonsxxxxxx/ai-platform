@@ -1,0 +1,11 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KDBCIT-17",
+  "issue_number": 1311,
+  "summary": "Citation schema and message-binding transaction primitive",
+  "atomic_case_ids": [],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KDBCIT-17.json"
+  ],
+  "evidence_layers": ["source", "unit", "postgresql"]
+}

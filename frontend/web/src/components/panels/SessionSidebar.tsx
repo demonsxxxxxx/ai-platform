@@ -442,6 +442,7 @@ export const SessionSidebar = forwardRef<
               onOpenSkills={() => navigate("/skills")}
               onOpenPluginMarket={() => navigateWorkbenchItem("pluginMarket")}
               onOpenMcp={() => navigate("/mcp")}
+              onOpenKnowledge={() => navigateWorkbenchItem("knowledge")}
               onOpenModels={() => navigateWorkbenchItem("models")}
               onOpenRuns={() => navigateWorkbenchItem("runs")}
               hideSessionDiscovery={agentWorkspace !== undefined}
@@ -484,6 +485,7 @@ export const SessionSidebar = forwardRef<
           onOpenSkills={() => navigate("/skills")}
           onOpenPluginMarket={() => navigateWorkbenchItem("pluginMarket")}
           onOpenMcp={() => navigate("/mcp")}
+          onOpenKnowledge={() => navigateWorkbenchItem("knowledge")}
           onOpenModels={() => navigateWorkbenchItem("models")}
           onOpenRuns={() => navigateWorkbenchItem("runs")}
           hideSessionDiscovery={agentWorkspace !== undefined}

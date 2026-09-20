@@ -4932,6 +4932,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "private profile instructions",
+        "knowledge_enabled": False,
         "skill_set": [
             {
                 "skill_id": "profile-specialist",

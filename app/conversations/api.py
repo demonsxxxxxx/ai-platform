@@ -1,5 +1,14 @@
 """Conversations public in-process contracts."""
 
+from app.conversations.application.run_admission import (
+    ConversationRunAdmissionError as ConversationRunAdmissionError,
+)
+from app.conversations.application.run_admission import (
+    admit_created_run_knowledge as admit_created_run_knowledge,
+)
+from app.conversations.application.run_admission import (
+    create_admitted_run as create_admitted_run,
+)
 from app.conversations.application.submission_resolution import (
     normalize_submission_run_status as normalize_submission_run_status,
 )
@@ -9,3 +18,12 @@ from app.conversations.application.submission_resolution import (
 from app.conversations.application.submission_resolution import (
     submission_resolution_projection as submission_resolution_projection,
 )
+
+__all__ = [
+    "ConversationRunAdmissionError",
+    "admit_created_run_knowledge",
+    "create_admitted_run",
+    "normalize_submission_run_status",
+    "resolve_chat_submission",
+    "submission_resolution_projection",
+]

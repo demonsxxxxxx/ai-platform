@@ -88,6 +88,12 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_ref": "builtin:assistant",
         "avatar_seed": "agt_support",
         "market_tags": [],
+        "category": "general",
+        "knowledge_capability": {
+            "enabled": False,
+            "source_count": 0,
+            "freshness_at": None,
+        },
     }
     assert profile_public_projection({**row, "completed_tasks": 12})["completed_tasks"] == 12
     assert "completed_tasks" not in profile_public_projection(row)
@@ -253,6 +259,14 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
     monkeypatch.setattr(
         "app.agent_apps.authority.mcp_api.get_mcp_server_registry_entry",
         get_server,
+    )
+
+    async def authorize_mcp_tools(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.authorize_selected_chat_mcp_tools",
+        authorize_mcp_tools,
     )
 
     skills = await AgentProfileAuthority()._validate_definition(

@@ -1,0 +1,21 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KNORMAPP-37",
+  "issue_number": 1311,
+  "summary": "Typed provider response validation and safe application failure mapping",
+  "atomic_case_ids": [
+    "KAC-FR-KRET-016",
+    "KAC-FR-KRET-017",
+    "KAC-FR-KRET-018",
+    "KAC-FR-KRET-019",
+    "KAC-FR-KRET-020",
+    "KAC-FR-KRET-021",
+    "KAC-FR-KRET-022",
+    "KAC-FR-KRET-023"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KNORMAPP-37.json",
+    "tests/test_knowledge_runtime_application.py"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

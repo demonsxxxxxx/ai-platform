@@ -24,6 +24,8 @@ from app.bootstrap.agent_profiles import configure_agent_profile_runtime
 from app.bootstrap.files import configure_file_upload_services
 from app.bootstrap.context import configure_context_services
 from app.bootstrap.mcp import configure_mcp_runtime
+from app.bootstrap.knowledge import configure_knowledge_services
+
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
@@ -1345,6 +1347,7 @@ def main() -> None:
 
     configure_file_upload_services()
     configure_model_services()
+    configure_knowledge_services()
     if args.once:
         outcome = asyncio.run(run_once_and_close(timeout_seconds=args.timeout))
         print(outcome)

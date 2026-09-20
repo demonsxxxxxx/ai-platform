@@ -51,6 +51,16 @@ function historicalProfile(
     avatar_seed: identity.avatar_seed,
     market_tags: [],
     is_favorite: false,
+    category: "general",
+    knowledge_capability: {
+      enabled: false,
+      source_count: 0,
+      freshness_at: null,
+    },
+    capability_summary: "",
+    recommended_tasks: [],
+    expected_outputs: [],
+    permissions_and_data_access_notice: "",
     published_at: identity.published_at,
   };
 }

@@ -1,0 +1,26 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KCIT-41",
+  "issue_number": 1311,
+  "summary": "Same-Run citation validation and atomic assistant-message finalization",
+  "atomic_case_ids": [
+    "KAC-FR-KCIT-001",
+    "KAC-FR-KCIT-002",
+    "KAC-FR-KCIT-003",
+    "KAC-FR-KCIT-004",
+    "KAC-FR-KCIT-005",
+    "KAC-FR-KCIT-006",
+    "KAC-FR-KCIT-007",
+    "KAC-FR-KCIT-008",
+    "KAC-FR-KCIT-009",
+    "KAC-FR-KCIT-010",
+    "KAC-FR-KCIT-011",
+    "KAC-FR-KCIT-012",
+    "KAC-FR-KCIT-013",
+    "KAC-FR-KCIT-014"
+  ],
+  "changed_paths": [
+    "docs/product/external-knowledge/manifests/KCIT-41.json"
+  ],
+  "evidence_layers": ["source", "unit", "integration", "postgresql"]
+}

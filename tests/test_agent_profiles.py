@@ -204,6 +204,12 @@ def test_profile_public_projection_never_exposes_private_execution_definition():
         "avatar_ref": "builtin:agent",
         "avatar_seed": "agt_support",
         "market_tags": ["support"],
+        "category": "general",
+        "knowledge_capability": {
+            "enabled": False,
+            "source_count": 0,
+            "freshness_at": None,
+        },
         "starter_prompts": [],
         "published_at": None,
     }

@@ -21,6 +21,15 @@ export interface SelectedAgentProfileRequest {
   expected_revision: number;
 }
 
+export const AGENT_PROFILE_CATEGORIES = [
+  "general",
+  "support",
+  "writing",
+  "research",
+  "operations",
+] as const;
+export type AgentProfileCategory = (typeof AGENT_PROFILE_CATEGORIES)[number];
+
 /** Safe ordinary-user market card. Execution configuration stays server-owned. */
 export interface AgentProfilePublicProjection extends SelectedAgentProfileRequest {
   name: string;
@@ -31,7 +40,19 @@ export interface AgentProfilePublicProjection extends SelectedAgentProfileReques
   market_tags: string[];
   completed_tasks?: number;
   is_favorite: boolean;
+  category: AgentProfileCategory;
+  knowledge_capability: AgentKnowledgeCapabilityProjection;
+  capability_summary: string;
+  recommended_tasks: string[];
+  expected_outputs: string[];
+  permissions_and_data_access_notice: string;
   published_at: string | null;
+}
+
+export interface AgentKnowledgeCapabilityProjection {
+  enabled: boolean;
+  source_count: number;
+  freshness_at: string | null;
 }
 
 /** Safe immutable identity recovered from a server-owned Agent Conversation. */
@@ -81,6 +102,38 @@ function projectAvatarSeed(record: Record<string, unknown>, code: string): strin
   return seed;
 }
 
+function projectKnowledgeCapability(
+  value: unknown,
+  code: string,
+): AgentKnowledgeCapabilityProjection {
+  if (value === undefined) {
+    return { enabled: false, source_count: 0, freshness_at: null };
+  }
+  const record = requireRecord(value, code);
+  if (typeof record.enabled !== "boolean") throw new Error(code);
+  if (
+    !Number.isInteger(record.source_count) ||
+    (record.source_count as number) < 0 ||
+    (record.source_count as number) > 8
+  ) {
+    throw new Error(code);
+  }
+  if (record.freshness_at !== null && typeof record.freshness_at !== "string") {
+    throw new Error(code);
+  }
+  if (
+    (!record.enabled && (record.source_count !== 0 || record.freshness_at !== null)) ||
+    (record.enabled && record.source_count === 0)
+  ) {
+    throw new Error(code);
+  }
+  return {
+    enabled: record.enabled,
+    source_count: record.source_count as number,
+    freshness_at: record.freshness_at as string | null,
+  };
+}
+
 function requirePositiveRevision(value: unknown, code: string): number {
   if (!Number.isInteger(value) || (value as number) < 1) throw new Error(code);
   return value as number;
@@ -127,6 +180,22 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
       ? {}
       : { completed_tasks: requireNonNegativeInteger(record.completed_tasks, PROFILE_ERROR) }),
     is_favorite: record.is_favorite === true,
+    category: requireOneOf(record.category ?? "general", AGENT_PROFILE_CATEGORIES, PROFILE_ERROR),
+    knowledge_capability: projectKnowledgeCapability(
+      record.knowledge_capability,
+      PROFILE_ERROR,
+    ),
+    capability_summary: typeof record.capability_summary === "string" ? record.capability_summary : "",
+    recommended_tasks: record.recommended_tasks === undefined
+      ? []
+      : requireStringList(record.recommended_tasks, PROFILE_ERROR),
+    expected_outputs: record.expected_outputs === undefined
+      ? []
+      : requireStringList(record.expected_outputs, PROFILE_ERROR),
+    permissions_and_data_access_notice:
+      typeof record.permissions_and_data_access_notice === "string"
+        ? record.permissions_and_data_access_notice
+        : "",
     published_at: typeof record.published_at === "string" ? record.published_at : null,
   };
 }
@@ -174,6 +243,9 @@ export interface AgentProfileDraftRequest {
   instructions: string;
   skill_set: AgentProfileSkillReference[];
   mcp_tool_ids: string[];
+  knowledge_enabled: boolean;
+  knowledge_source_ids?: string[];
+  retrieval_profile_id?: string | null;
   avatar_ref: AgentProfileAvatarRef;
   avatar_seed: string;
   market_tags: string[];
@@ -186,7 +258,12 @@ export interface AgentProfileDraftRequest {
 }
 
 export interface AgentProfileAdminProjection
-  extends Omit<AgentProfileDraftRequest, "expected_draft_revision"> {
+  extends Omit<
+    AgentProfileDraftRequest,
+    "expected_draft_revision" | "knowledge_source_ids" | "retrieval_profile_id"
+  > {
+  knowledge_source_ids: string[];
+  retrieval_profile_id: string | null;
   agent_id: string;
   revision: number;
   published_revision: number | null;
@@ -208,6 +285,10 @@ export function validateAgentProfileAdminProjection(value: unknown): AgentProfil
   const publishedRevision = record.published_revision === null
     ? null
     : requirePositiveRevision(record.published_revision, code);
+  if (typeof record.knowledge_enabled !== "boolean") throw new Error(code);
+  const retrievalProfileId = record.retrieval_profile_id === null
+    ? null
+    : requireString(record.retrieval_profile_id, code);
   return {
     agent_id: requireString(record.agent_id, code),
     revision: requirePositiveRevision(record.revision, code),
@@ -219,6 +300,9 @@ export function validateAgentProfileAdminProjection(value: unknown): AgentProfil
     instructions: requireString(record.instructions, code),
     skill_set: skillSet,
     mcp_tool_ids: requireStringList(record.mcp_tool_ids, code),
+    knowledge_enabled: record.knowledge_enabled,
+    knowledge_source_ids: requireStringList(record.knowledge_source_ids, code),
+    retrieval_profile_id: retrievalProfileId,
     avatar_ref: requireOneOf(record.avatar_ref, AGENT_PROFILE_AVATAR_REFS, code),
     avatar_seed: projectAvatarSeed(record, code),
     market_tags: requireStringList(record.market_tags, code),

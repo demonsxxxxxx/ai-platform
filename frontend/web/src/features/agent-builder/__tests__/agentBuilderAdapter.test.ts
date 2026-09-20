@@ -18,6 +18,7 @@ import {
   listPublishedAgentProfileVersions,
   mapAuthorizedBuilderSkills,
   mapSafeBuilderMcpTools,
+  knowledgeSourceContainsEditorScope,
   validateAgentProfileEditor,
   type AgentBuilderCurrentCatalog,
 } from "../agentBuilderAdapter";
@@ -25,6 +26,7 @@ import {
 test("a pristine unsaved editor does not trigger a discard warning", () => {
   const editor = createUnsavedAgentEditor();
   assert.equal(editor.avatarSeed, "");
+  assert.equal(editor.knowledgeEnabled, false);
   assert.equal(hasUnsavedAgentProfileEdits(editor), false);
   assert.equal(hasUnsavedAgentProfileEdits({ ...editor, marketTag: "客户服务" }), true);
 });
@@ -82,6 +84,9 @@ function profile(
     instructions: "仅使用已授权资料。",
     skill_set: [{ skill_id: "document-review" }],
     mcp_tool_ids: ["gateway::knowledge.search"],
+    knowledge_enabled: false,
+    knowledge_source_ids: [],
+    retrieval_profile_id: null,
     content_hash: "a".repeat(64),
     created_at: "2026-08-01T00:00:00Z",
     published_at: null,
@@ -101,8 +106,37 @@ function catalog(
         description: "Search the authorized knowledge base.",
       },
     ],
+    knowledgeSources: [
+      {
+        id: "ks_finance",
+        name: "财务制度",
+        description: "已治理的财务制度知识源。",
+        authorization_version: 3,
+        connection_name: "公司 RAGFlow",
+        last_seen_at: "2026-08-30T01:00:00Z",
+        available: true,
+        source_status: "active",
+        connection_status: "active",
+        visibility: "enterprise",
+        allowed_department_count: 0,
+        allowed_department_ids: [],
+        allowed_roles: [],
+        allowed_user_ids: [],
+      },
+    ],
+    retrievalProfiles: [
+      {
+        id: "krp_default",
+        revision: 1,
+        name: "标准检索",
+        description: "平台默认确定性检索策略。",
+        status: "active",
+        content_hash: "b".repeat(64),
+      },
+    ],
     skillsResolved: true,
     mcpToolsResolved: true,
+    knowledgeResolved: true,
     effectivePermissionsKnown: true,
     ...overrides,
   };
@@ -183,6 +217,9 @@ test("materializes create and update requests with the exact optimistic revision
       skill_id: "document-review",
     }],
     mcp_tool_ids: ["gateway::knowledge.search"],
+    knowledge_enabled: false,
+    knowledge_source_ids: [],
+    retrieval_profile_id: null,
     avatar_ref: "builtin:agent",
     avatar_seed: "新智能体",
     market_tags: ["客户服务", "人力资源"],
@@ -236,21 +273,23 @@ test("reports precise missing data and revision reasons", () => {
   );
 });
 
-test("blocks stale Skill versions but preserves stable MCP references outside the live catalog", () => {
+test("requires selected MCP references to remain in the resolved catalog", () => {
   const editor = hydrateAgentProfileEditor(profile({
     mcp_tool_ids: ["gateway::previously-authorized"],
   }));
-  assert.equal(
-    validateAgentProfileEditor(editor, catalog({ skills: [skill({ expected_version: "new" })] })),
-    null,
+  assert.deepEqual(
+    validateAgentProfileEditor(editor, catalog()),
+    {
+      code: "selected_mcp_tool_unavailable",
+      unavailableMcpToolIds: ["gateway::previously-authorized"],
+    },
   );
-  assert.equal(validateAgentProfileEditor(editor, catalog({ mcpTools: [] })), null);
   assert.equal(
     validateAgentProfileEditor(
       editor,
       catalog({ mcpTools: [], mcpToolsResolved: false }),
-    ),
-    null,
+    )?.code,
+    "catalog_unavailable",
   );
   assert.deepEqual(editor.selectedMcpToolIds, ["gateway::previously-authorized"]);
   assert.deepEqual(editor.selectedSkills, [{ skill_id: "document-review" }]);
@@ -307,6 +346,131 @@ test("fails closed while the selected Skill catalog is unresolved", () => {
     validateAgentProfileEditor(editor, catalog({ skillsResolved: false }))?.code,
     "catalog_unavailable",
   );
+});
+
+test("supports zero or up to eight governed knowledge sources and retains stale pins", () => {
+  const base = hydrateAgentProfileEditor(profile());
+  assert.equal(
+    validateAgentProfileEditor(base, catalog({ knowledgeResolved: false })),
+    null,
+    "knowledge-free drafts do not depend on the optional Knowledge catalog",
+  );
+
+  const eightSources = Array.from({ length: 8 }, (_, index) => ({
+    id: `ks_${index}`,
+    name: `知识源 ${index}`,
+    description: "",
+    authorization_version: 1,
+    connection_name: "公司 RAGFlow",
+    last_seen_at: null,
+    available: true,
+    source_status: "active" as const,
+    connection_status: "active" as const,
+    visibility: "enterprise" as const,
+    allowed_department_count: 0,
+    allowed_department_ids: [],
+    allowed_roles: [],
+    allowed_user_ids: [],
+  }));
+  const selected = {
+    ...base,
+    knowledgeEnabled: true,
+    knowledgeSourceIds: eightSources.map((source) => source.id),
+    retrievalProfileId: "krp_default",
+  };
+  assert.equal(
+    validateAgentProfileEditor(selected, catalog({ knowledgeSources: eightSources })),
+    null,
+  );
+  assert.equal(
+    validateAgentProfileEditor(
+      { ...selected, knowledgeSourceIds: [...selected.knowledgeSourceIds, "ks_8"] },
+      catalog({ knowledgeSources: eightSources }),
+    )?.code,
+    "knowledge_source_limit_exceeded",
+  );
+
+  const stale = {
+    ...base,
+    knowledgeEnabled: true,
+    knowledgeSourceIds: ["ks_removed"],
+    retrievalProfileId: "krp_default",
+  };
+  const issue = validateAgentProfileEditor(stale, catalog());
+  assert.equal(issue?.code, "selected_knowledge_source_unavailable");
+  assert.deepEqual(issue?.unavailableKnowledgeSourceIds, ["ks_removed"]);
+  assert.deepEqual(stale.knowledgeSourceIds, ["ks_removed"]);
+});
+
+test("blocks a Knowledge source whose department scope cannot contain the Agent", () => {
+  const base = hydrateAgentProfileEditor(
+    profile({
+      visibility: "restricted",
+      allowed_department_ids: ["finance", "legal"],
+      knowledge_enabled: true,
+      knowledge_source_ids: ["ks_finance"],
+      retrieval_profile_id: "krp_default",
+    }),
+  );
+  const restrictedSource = {
+    ...catalog().knowledgeSources[0]!,
+    visibility: "restricted" as const,
+    allowed_department_count: 1,
+    allowed_department_ids: ["finance"],
+  };
+
+  assert.equal(knowledgeSourceContainsEditorScope(restrictedSource, base), false);
+  const issue = validateAgentProfileEditor(
+    base,
+    catalog({ knowledgeSources: [restrictedSource] }),
+  );
+  assert.equal(issue?.code, "knowledge_scope_incompatible");
+  assert.deepEqual(issue?.unavailableKnowledgeSourceIds, ["ks_finance"]);
+
+  const narrowed = { ...base, allowedDepartmentIds: ["finance"] };
+  assert.equal(knowledgeSourceContainsEditorScope(restrictedSource, narrowed), true);
+  assert.equal(
+    validateAgentProfileEditor(
+      narrowed,
+      catalog({ knowledgeSources: [restrictedSource] }),
+    ),
+    null,
+  );
+});
+
+test("requires a server-listed retrieval profile for a Knowledge binding", () => {
+  const editor = {
+    ...hydrateAgentProfileEditor(profile()),
+    knowledgeEnabled: true,
+    knowledgeSourceIds: ["ks_finance"],
+    retrievalProfileId: "krp_removed",
+  };
+  assert.equal(
+    validateAgentProfileEditor(editor, catalog())?.code,
+    "retrieval_profile_unavailable",
+  );
+  const request = buildAgentProfileDraftRequest({
+    ...editor,
+    retrievalProfileId: "krp_default",
+  });
+  assert.equal(request.knowledge_enabled, true);
+  assert.deepEqual(request.knowledge_source_ids, ["ks_finance"]);
+});
+
+test("disabled enterprise Knowledge retains configuration without requiring its catalog", () => {
+  const editor = hydrateAgentProfileEditor(profile({
+    knowledge_enabled: false,
+    knowledge_source_ids: ["ks_retained"],
+    retrieval_profile_id: "krp_default",
+  }));
+
+  assert.equal(editor.knowledgeEnabled, false);
+  assert.equal(
+    validateAgentProfileEditor(editor, catalog({ knowledgeResolved: false })),
+    null,
+  );
+  assert.equal(buildAgentProfileDraftRequest(editor).knowledge_enabled, false);
+  assert.deepEqual(buildAgentProfileDraftRequest(editor).knowledge_source_ids, ["ks_retained"]);
 });
 
 test("publish requires one clean successfully saved draft", () => {

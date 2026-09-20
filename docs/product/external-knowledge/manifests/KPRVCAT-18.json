@@ -1,0 +1,23 @@
+{
+  "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
+  "slice_id": "KPRVCAT-18",
+  "issue_number": 1311,
+  "summary": "Bounded RAGFlow authenticated check and paginated catalog adapter; source and unit evidence only",
+  "atomic_case_ids": [
+    "KAC-FR-KCON-012",
+    "KAC-FR-KCON-013",
+    "KAC-FR-KCON-014",
+    "KAC-FR-KCON-015",
+    "KAC-FR-KCON-016",
+    "KAC-FR-KSRC-006",
+    "KAC-FR-KSRC-007"
+  ],
+  "changed_paths": [
+    "app/knowledge/infrastructure/__init__.py",
+    "app/knowledge/infrastructure/providers/__init__.py",
+    "app/knowledge/infrastructure/providers/ragflow.py",
+    "docs/product/external-knowledge/manifests/KPRVCAT-18.json",
+    "tests/test_knowledge_control_plane.py"
+  ],
+  "evidence_layers": ["source", "unit"]
+}

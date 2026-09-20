@@ -10,6 +10,7 @@ export type WorkbenchNavItem =
   | "skills"
   | "pluginMarket"
   | "mcp"
+  | "knowledge"
   | "models"
   | "runs";
 
@@ -20,6 +21,7 @@ const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/plugins(?:\/|$)/, "pluginMarket"],
   [/^\/skills(?:\/|$)/, "skills"],
   [/^\/mcp(?:\/|$)/, "mcp"],
+  [/^\/knowledge(?:\/|$)/, "knowledge"],
   [/^\/models(?:\/|$)/, "models"],
   [/^\/runs(?:\/|$)/, "runs"],
 ];
@@ -31,6 +33,7 @@ const navItemToPath: Record<WorkbenchNavItem, string> = {
   skills: "/skills",
   pluginMarket: "/plugins",
   mcp: "/mcp",
+  knowledge: "/knowledge",
   models: "/models",
   runs: "/runs",
 };
