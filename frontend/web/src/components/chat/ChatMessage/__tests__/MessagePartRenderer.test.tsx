@@ -8,7 +8,6 @@ import {
   createMessagePartRenderKeys,
   MessagePartRenderer,
 } from "../MessagePartRenderer.tsx";
-import { ToolCallItem } from "../ToolCallItem.tsx";
 
 test("keeps streaming text object identity stable without using mutable content as a key", () => {
   const streamingText = {
@@ -25,27 +24,76 @@ test("keeps streaming text object identity stable without using mutable content 
 });
 
 test("renders public tool metadata without raw arguments or results", () => {
-  for (const [category, label] of [
-    ["skill", "使用 Skill"],
-    ["execute", "执行"],
-    ["mcp", "调用 MCP 工具"],
+  for (const [category, label, canonicalName] of [
+    ["skill", "使用 Skill", "QA Review"],
+    ["mcp", "调用 MCP 工具", "MCP"],
+    ["read", "读取", "Read"],
+    ["write", "写入", "Write"],
+    ["edit", "编辑", "Edit"],
+    ["search", "搜索", "Search"],
+    ["execute", "执行", "Execute"],
   ] as const) {
     const markup = renderToStaticMarkup(
-      createElement(ToolCallItem, {
-        name: "Run authorized operation",
-        args: { command: "cat private-token", timeout: 60 },
-        result: "private command output",
-        publicCategory: category,
-        publicOperationId: `operation-${category}`,
-        status: "completed",
-        durationMs: category === "skill" ? 0 : 1200,
+      createElement(MessagePartRenderer, {
+        isLast: true,
+        part: {
+          type: "tool",
+          name: `raw-label-${category} /workspace/private`,
+          args: { command: "cat private-token", timeout: 60 },
+          result: "private command output",
+          public_category: category,
+          public_display_name:
+            category === "skill"
+              ? "QA Review"
+              : "ignored label /workspace/private",
+          public_operation_id: `operation-${category}`,
+          status: "completed",
+          duration_ms: category === "skill" ? 0 : 1200,
+        } satisfies MessagePart,
       }),
     );
-    assert.match(markup, new RegExp(`${label}：Run authorized operation`));
+    assert.match(markup, new RegExp(`>${label}：${canonicalName}<`));
     assert.match(markup, category === "skill" ? /0毫秒/ : /1\.20秒/);
-    assert.doesNotMatch(markup, /private-token|private command output|command/);
+    assert.doesNotMatch(
+      markup,
+      /raw-label|workspace|private-token|private command output|command/,
+    );
+  }
+
+  for (const part of [
+    {
+      type: "tool",
+      name: "Unknown operation",
+      args: {},
+      public_category: "future-private-category",
+      public_operation_id: "operation-unknown",
+      status: "completed",
+    },
+    {
+      type: "tool",
+      name: "Malformed identity",
+      args: {},
+      public_category: "read",
+      public_operation_id: "../../private-operation",
+      status: "completed",
+    },
+    {
+      type: "tool",
+      name: "Missing lifecycle",
+      args: {},
+      public_category: "read",
+      public_operation_id: "operation-missing-status",
+    },
+  ] as MessagePart[]) {
+    assert.equal(
+      renderToStaticMarkup(
+        createElement(MessagePartRenderer, { part, isLast: true }),
+      ),
+      "",
+    );
   }
 });
+
 test("renders public execution kind and status from the Chinese catalog instead of backend copy", async () => {
   const step: Extract<MessagePart, { type: "execution_step" }> = {
     type: "execution_step",
@@ -110,20 +158,68 @@ test("renders sandbox readiness duration from v4 execution timestamps", () => {
   assert.doesNotMatch(markup, /<details/);
 });
 
-test("renders historical sandbox readiness duration without requiring details", () => {
+test("hides legacy sandbox identifiers while v4 execution keeps readiness visible", () => {
   const markup = renderToStaticMarkup(
     createElement(MessagePartRenderer, {
       isLast: true,
       part: {
         type: "sandbox",
         status: "ready",
+        sandbox_id: "private-sandbox-id",
+        error: "private sandbox error",
         ready_duration_ms: 850,
       } satisfies Extract<MessagePart, { type: "sandbox" }>,
     }),
   );
 
-  assert.match(markup, /沙箱已就绪/);
-  assert.match(markup, /用时 850毫秒/);
+  assert.equal(markup, "");
+});
+
+test("renders only public subagent lifecycle fields", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      part: {
+        type: "subagent",
+        agent_id: "subagent-public-1",
+        public_operation_id: "subagent-public-1",
+        agent_name: "cat /workspace/private --token secret",
+        input: "cat /workspace/private --token secret",
+        result: "private worker result",
+        error: "private worker error",
+        status: "complete",
+        depth: 1,
+        duration_ms: 1_200,
+        progress_percent: 100,
+        current_category: "read",
+      } satisfies Extract<MessagePart, { type: "subagent" }>,
+    }),
+  );
+
+  assert.match(markup, /Sub-agent/);
+  assert.match(markup, /Completed/);
+  assert.match(markup, /Category: read/);
+  assert.match(markup, /Progress: 100%/);
+  assert.match(markup, /Duration: 1\.2s/);
+  assert.doesNotMatch(
+    markup,
+    /workspace|private|secret|worker result|worker error/,
+  );
+
+  const legacy = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      part: {
+        type: "subagent",
+        agent_id: "private-agent-id",
+        agent_name: "private_worker",
+        input: "private prompt",
+        status: "running",
+        depth: 1,
+      } satisfies Extract<MessagePart, { type: "subagent" }>,
+    }),
+  );
+  assert.equal(legacy, "");
 });
 
 test("does not render thinking parts", () => {
@@ -155,21 +251,34 @@ test("does not render thinking parts", () => {
   assert.equal(streaming, "");
 });
 
-test("does not render legacy reveal tool payloads", () => {
-  for (const name of ["reveal_file", "reveal_project"]) {
+test("does not render tool parts without authorized public metadata", () => {
+  for (const name of [
+    "Bash",
+    "read_file",
+    "edit_file",
+    "write_file",
+    "grep",
+    "glob",
+    "mcp__private__tool",
+    "reveal_file",
+    "reveal_project",
+  ]) {
     const markup = renderToStaticMarkup(
       createElement(MessagePartRenderer, {
         isLast: true,
         part: {
           type: "tool",
           name,
-          args: { path: "/workspace/private" },
-          result: { url: "/api/ai/artifacts/legacy/download" },
+          args: {
+            command: "cat /workspace/private --token secret",
+            path: "/workspace/private",
+          },
+          result: { output: "private command output" },
           success: true,
         } satisfies Extract<MessagePart, { type: "tool" }>,
       }),
     );
-    assert.equal(markup, "");
+    assert.equal(markup, "", name);
   }
 });
 

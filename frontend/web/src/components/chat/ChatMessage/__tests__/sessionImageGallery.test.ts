@@ -127,6 +127,54 @@ test("ignores legacy reveal tool payloads in the session gallery", () => {
   assert.deepEqual(collectSessionImageGalleryItems(messages), []);
 });
 
+test("ignores raw subagent payload images and keeps public child content", () => {
+  const messages: Message[] = [
+    createMessage({
+      id: "assistant-subagent",
+      role: "assistant",
+      parts: [
+        {
+          type: "subagent",
+          agent_id: "subagent-public-1",
+          public_operation_id: "subagent-public-1",
+          agent_name: "Verification worker",
+          input: "![private input](/api/ai/artifacts/private-input/download)",
+          result: "![private result](/api/ai/artifacts/private-result/download)",
+          status: "complete",
+          depth: 1,
+          parts: [
+            {
+              type: "summary",
+              summary_id: "summary-public-1",
+              content: "![public child](/api/ai/artifacts/public-child/download)",
+            },
+          ],
+        },
+        {
+          type: "subagent",
+          agent_id: "legacy-private-agent",
+          agent_name: "private_worker",
+          input: "private prompt",
+          status: "complete",
+          depth: 1,
+          parts: [
+            {
+              type: "text",
+              content: "![legacy child](/api/ai/artifacts/legacy-child/download)",
+            },
+          ],
+        },
+      ],
+    }),
+  ];
+
+  const items = collectSessionImageGalleryItems(messages);
+  assert.deepEqual(items.map((item) => item.src), [
+    "/api/ai/artifacts/public-child/download",
+  ]);
+  assert.doesNotMatch(JSON.stringify(items), /private-input|private-result|legacy-child/);
+});
+
 test("filters unsafe markdown, html, and attachment image urls from the session gallery", () => {
   const encodedSettingsUrl = encodeRepeated(".claude/settings.png", 5);
   const messages: Message[] = [

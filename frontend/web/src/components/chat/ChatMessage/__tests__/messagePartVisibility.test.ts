@@ -9,7 +9,6 @@ import {
 
 test("classifies every work activity without hiding answers, artifacts, or actionable status", () => {
   for (const type of [
-    "sandbox",
     "tool",
     "subagent",
     "execution_step",
@@ -22,12 +21,171 @@ test("classifies every work activity without hiding answers, artifacts, or actio
   for (const type of [
     "text",
     "thinking",
+    "sandbox",
     "artifact",
     "run_status",
     "tool_permission",
   ] as const) {
     assert.equal(isWorkActivityPart({ type } as MessagePart), false, type);
   }
+});
+
+test("keeps only schema-shaped public tool lifecycle visible", () => {
+  const rawTool: MessagePart = {
+    type: "tool",
+    name: "Bash",
+    args: { command: "cat /workspace/private --token secret" },
+    result: "private command output",
+  };
+  const publicTool: MessagePart = {
+    type: "tool",
+    id: "operation-read-1",
+    name: "Bash: cat /workspace/private",
+    args: {},
+    status: "completed",
+    public_operation_id: "operation-read-1",
+    public_category: "read",
+  };
+
+  const unknownTool: MessagePart = {
+    ...publicTool,
+    id: "operation-unknown-1",
+    public_operation_id: "operation-unknown-1",
+    public_category: "future-private-category",
+  };
+  const malformedId: MessagePart = {
+    ...publicTool,
+    public_operation_id: "../../private-operation",
+  };
+  const missingStatus: MessagePart = {
+    ...publicTool,
+    status: undefined,
+  };
+  const unknownStatus = {
+    ...publicTool,
+    status: "waiting-for-private-result",
+  } as unknown as MessagePart;
+
+  const visible = getVisibleMessageParts([
+    rawTool,
+    unknownTool,
+    malformedId,
+    missingStatus,
+    unknownStatus,
+    publicTool,
+  ]);
+  assert.equal(visible.length, 1);
+  assert.deepEqual(visible[0], {
+    type: "tool",
+    name: "Read",
+    args: {},
+    status: "completed",
+    isPending: false,
+    depth: undefined,
+    public_operation_id: "operation-read-1",
+    public_category: "read",
+    duration_ms: undefined,
+  });
+  assert.doesNotMatch(JSON.stringify(visible), /command|result|private/);
+});
+
+test("shows only the bounded v4 Skill display name", () => {
+  const visible = getVisibleMessageParts([
+    {
+      type: "tool",
+      name: "raw-skill-name /workspace/private",
+      args: { command: "cat private-token" },
+      status: "completed",
+      public_operation_id: "operation-skill-1",
+      public_display_name: "QA Review",
+      public_category: "skill",
+    },
+    {
+      type: "tool",
+      name: "raw-read-name",
+      args: {},
+      status: "completed",
+      public_operation_id: "operation-read-2",
+      public_display_name: "ignored /workspace/private",
+      public_category: "read",
+    },
+    {
+      type: "tool",
+      name: "raw-invalid-skill-name",
+      args: {},
+      status: "completed",
+      public_operation_id: "operation-skill-2",
+      public_display_name: "invalid\nname",
+      public_category: "skill",
+    },
+  ]);
+
+  assert.equal(visible[0]?.type, "tool");
+  assert.equal(visible[0]?.type === "tool" ? visible[0].name : null, "QA Review");
+  assert.equal(
+    visible[0]?.type === "tool" ? visible[0].public_display_name : null,
+    "QA Review",
+  );
+  assert.equal(visible[1]?.type === "tool" ? visible[1].name : null, "Read");
+  assert.equal(
+    visible[1]?.type === "tool" ? visible[1].public_display_name : undefined,
+    undefined,
+  );
+  assert.equal(visible[2]?.type === "tool" ? visible[2].name : null, "Skill");
+  assert.doesNotMatch(JSON.stringify(visible), /workspace|private-token|raw-/);
+});
+
+test("keeps only public subagent lifecycle and drops legacy sandbox state", () => {
+  const publicSubagent: MessagePart = {
+    type: "subagent",
+    agent_id: "subagent-public-1",
+    public_operation_id: "subagent-public-1",
+    agent_name: "cat /workspace/private --token secret",
+    input: "private prompt",
+    result: "private result",
+    error: "private error",
+    status: "complete",
+    depth: 1,
+  };
+  const legacySubagent: MessagePart = {
+    ...publicSubagent,
+    agent_id: "legacy-private-id",
+    public_operation_id: undefined,
+  };
+  const unknownStatus = {
+    ...publicSubagent,
+    status: "waiting-for-private-result",
+  } as unknown as MessagePart;
+  const sandbox: MessagePart = {
+    type: "sandbox",
+    status: "ready",
+    sandbox_id: "private-sandbox-id",
+  };
+
+  const visible = getVisibleMessageParts([
+    legacySubagent,
+    unknownStatus,
+    sandbox,
+    publicSubagent,
+  ]);
+  assert.deepEqual(visible, [{
+    type: "subagent",
+    agent_id: "subagent-public-1",
+    public_operation_id: "subagent-public-1",
+    agent_name: "Sub-agent",
+    input: "",
+    isPending: false,
+    depth: 1,
+    parts: [],
+    startedAt: undefined,
+    completedAt: undefined,
+    status: "complete",
+    parent_agent_id: undefined,
+    duration_ms: undefined,
+    progress_percent: undefined,
+    current_category: undefined,
+  }]);
+  assert.doesNotMatch(JSON.stringify(visible), /prompt|result|error|private/);
 });
 
 test("hides routine intent, context, queue, and run-start transcript cards", () => {

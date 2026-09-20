@@ -63,13 +63,36 @@ test("chat work disclosure collapses on completion and keeps answer content outs
   const workTool: Extract<MessagePart, { type: "tool" }> = {
     type: "tool",
     id: "tool-public-0",
-    name: "读取已授权文件",
+    name: "Bash: cat /workspace/private --token secret",
     args: {},
     status: "started",
     isPending: true,
     public_operation_id: "operation-public-0",
     public_category: "read",
   };
+  const privateLifecycleParts: MessagePart[] = [
+    {
+      type: "tool",
+      name: "Bash",
+      args: { command: "cat /workspace/private --token secret" },
+      result: "private command output",
+    },
+    {
+      type: "subagent",
+      agent_id: "private-agent-id",
+      agent_name: "private_worker",
+      input: "private subagent prompt",
+      result: "private subagent result",
+      status: "complete",
+      depth: 1,
+    },
+    {
+      type: "sandbox",
+      status: "error",
+      sandbox_id: "private-sandbox-id",
+      error: "private sandbox error",
+    },
+  ];
   const renderMessage = (isStreaming: boolean, parts: MessagePart[]) =>
     createElement(MessageWorkActivity, {
       messageId: "message-work-details",
@@ -99,8 +122,17 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     assert.doesNotMatch(container.textContent || "", /工作中|公开思考摘要/);
 
     act(() => {
-      root.render(renderMessage(true, [workTool]));
+      root.render(
+        renderMessage(
+          true,
+          getVisibleMessageParts([...privateLifecycleParts, workTool]),
+        ),
+      );
     });
+    assert.doesNotMatch(
+      container.innerHTML,
+      /workspace|secret|private command|private subagent|private-sandbox/,
+    );
     let toggle = container.querySelector(
       "[data-message-work-details-toggle]",
     ) as HTMLButtonElement;
@@ -116,7 +148,7 @@ test("chat work disclosure collapses on completion and keeps answer content outs
           {
             type: "tool",
             id: "tool-public-1",
-            name: "读取已授权文件",
+            name: "Read /workspace/private --token secret",
             args: {},
             status: "completed",
             success: true,
@@ -127,6 +159,7 @@ test("chat work disclosure collapses on completion and keeps answer content outs
         ]),
       );
     });
+    assert.doesNotMatch(container.innerHTML, /workspace|secret|Bash:/);
     toggle = container.querySelector(
       "[data-message-work-details-toggle]",
     ) as HTMLButtonElement;
@@ -193,6 +226,7 @@ test("generic public tools expose distinct safe failed and denied states", () =>
       isPending: false,
       error: "private-failure-token",
       public_operation_id: "operation-failed",
+      public_category: "read",
     },
     {
       type: "tool",
@@ -204,6 +238,7 @@ test("generic public tools expose distinct safe failed and denied states", () =>
       isPending: false,
       error: "private-denial-token",
       public_operation_id: "operation-denied",
+      public_category: "execute",
     },
   ];
 
@@ -230,8 +265,8 @@ test("generic public tools expose distinct safe failed and denied states", () =>
     assert.equal(buttons.length, 2);
     assert.equal(buttons[0]?.tagName, "BUTTON");
     assert.equal(buttons[1]?.tagName, "BUTTON");
-    assert.equal(buttons[0]?.getAttribute("aria-expanded"), "false");
-    assert.equal(buttons[1]?.getAttribute("aria-expanded"), "false");
+    assert.equal(buttons[0]?.getAttribute("aria-expanded"), null);
+    assert.equal(buttons[1]?.getAttribute("aria-expanded"), null);
     assert.ok(buttons[0]?.querySelector(".lucide-circle-x"));
     assert.ok(buttons[1]?.querySelector(".lucide-ban"));
 
@@ -251,11 +286,8 @@ test("generic public tools expose distinct safe failed and denied states", () =>
     );
 
     activateNativeButton(buttons[0] as HTMLButtonElement, "Enter");
-    assert.ok(getPersistentToolPanelState());
-    closePersistentToolPanel();
     activateNativeButton(buttons[1] as HTMLButtonElement, " ");
-    assert.ok(getPersistentToolPanelState());
-    closePersistentToolPanel();
+    assert.equal(getPersistentToolPanelState(), null);
   } finally {
     closePersistentToolPanel();
     act(() => root.unmount());

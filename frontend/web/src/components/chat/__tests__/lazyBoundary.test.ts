@@ -7,7 +7,7 @@ function readSource(relativePath: string): string {
 }
 
 test("chat markdown rendering does not statically import CodeMirrorViewer", () => {
-  const source = readSource("./ChatMessage/MarkdownContent.tsx");
+  const source = readSource("../ChatMessage/MarkdownContent.tsx");
 
   assert.doesNotMatch(
     source,
@@ -16,31 +16,8 @@ test("chat markdown rendering does not statically import CodeMirrorViewer", () =
   assert.match(source, /DeferredCodeMirrorViewer/);
 });
 
-test("chat tool result items keep CodeMirrorViewer behind a lazy wrapper", () => {
-  const files = [
-    "./ChatMessage/items/ReadFileItem.tsx",
-    "./ChatMessage/items/GrepItem.tsx",
-    "./ChatMessage/items/WriteFileItem.tsx",
-    "./ChatMessage/items/EditFileItem.tsx",
-  ];
-
-  for (const file of files) {
-    const source = readSource(file);
-    assert.doesNotMatch(
-      source,
-      /import\s+\{?\s*CodeMirrorViewer\s*\}?\s+from\s+"..\/..\/..\/common\/CodeMirrorViewer";/,
-      `${file} should not statically import CodeMirrorViewer`,
-    );
-    assert.match(
-      source,
-      /DeferredCodeMirrorViewer/,
-      `${file} should render the deferred wrapper instead`,
-    );
-  }
-});
-
 test("chat preview hosts do not statically import heavy preview panels", () => {
-  const attachmentPreviewHost = readSource("./AttachmentPreviewHost.tsx");
+  const attachmentPreviewHost = readSource("../AttachmentPreviewHost.tsx");
   assert.doesNotMatch(
     attachmentPreviewHost,
     /import\s+DocumentPreview\s+from\s+"..\/documents\/DocumentPreview";/,
@@ -48,7 +25,7 @@ test("chat preview hosts do not statically import heavy preview panels", () => {
   assert.match(attachmentPreviewHost, /LazyDocumentPreview/);
 
   const revealPreviewHost = readSource(
-    "./ChatMessage/items/RevealPreviewHost.tsx",
+    "../ChatMessage/items/RevealPreviewHost.tsx",
   );
   assert.doesNotMatch(
     revealPreviewHost,

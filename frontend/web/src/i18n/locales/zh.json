@@ -39,7 +39,7 @@
   "agentOptions": {
     "enableThinking": {
       "description": "控制思考强度（仅支持的模型生效）",
-      "label": "思考",
+      "label": "思考强度",
       "options": {
         "auto": "自动",
         "high": "高",

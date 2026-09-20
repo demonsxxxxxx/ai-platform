@@ -14,7 +14,6 @@ test("subagent panel subtitle shows only the start time", () => {
   const state = buildSubagentPanelState({
     agentId: "agent-a",
     agentName: "worker_agent",
-    input: "Do work",
     status: "complete",
     startedAt,
     completedAt,

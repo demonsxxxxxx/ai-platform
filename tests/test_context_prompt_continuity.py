@@ -58,9 +58,11 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
     assert "private_payload" not in prompt
     assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
     assert (
-        "Use Simplified Chinese for the final answer and all public summarized-thinking text. "
+        "Use Simplified Chinese for the final answer and public work-progress commentary. "
         "Keep code, commands, filenames, and other literal values unchanged when the task requires them."
     ) in prompt
+    assert "summarized-thinking" not in prompt
+    assert "hidden reasoning" in prompt
     assert (
         "put one concise user-facing progress update in ordinary assistant text in the same "
         "Assistant turn as the first tool call of each new work stage"

@@ -19,16 +19,15 @@ import {
 import { useTranslation } from "react-i18next";
 import { MarkdownContent } from "./MarkdownContent";
 import { formatFileSize, getFileTypeInfo } from "../../documents/utils";
+import { ToolCallItem } from "./ToolCallItem";
+import { SubagentBlock } from "./SubagentBlocks";
 import {
-  ToolCallItem,
-  ReadFileItem,
-  EditFileItem,
-  WriteFileItem,
-  GrepItem,
-  LsItem,
-  GlobItem,
-} from "./ToolCallItem";
-import { SubagentBlock, SandboxItem } from "./SubagentBlocks";
+  getPublicToolDisplayName,
+  getVisibleMessageParts,
+  isPublicSubagentPart,
+  isPublicToolPresentation,
+  PUBLIC_SUBAGENT_DISPLAY_NAME,
+} from "./messagePartVisibility";
 import { TodoBlock } from "./TodoBlock";
 import { SummaryItem } from "./SummaryItem";
 import { PublicExecutionProcess } from "./PublicExecutionProcess";
@@ -89,107 +88,28 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "tool") {
-    if (part.public_operation_id && part.public_category) {
-      return (
-        <ToolCallItem
-          name={part.name}
-          args={part.args}
-          result={part.result}
-          success={part.success}
-          status={part.status}
-          isPending={part.isPending}
-          cancelled={part.cancelled}
-          publicCategory={part.public_category}
-          publicOperationId={part.public_operation_id}
-          durationMs={part.duration_ms}
-        />
-      );
-    }
-
-    // Detect Read tool, use dedicated component (strips line numbers, shows file path)
-    if (part.name === "read_file") {
-      return (
-        <ReadFileItem
-          args={part.args}
-          result={part.result}
-          success={part.success}
-          isPending={part.isPending}
-          cancelled={part.cancelled}
-        />
-      );
-    }
-    if (part.name === "reveal_file" || part.name === "reveal_project") {
+    const publicDisplayName = getPublicToolDisplayName(
+      part.public_category,
+      part.public_display_name,
+    );
+    if (
+      !publicDisplayName ||
+      !isPublicToolPresentation(
+        part.public_operation_id,
+        part.public_category,
+        part.status,
+        part.duration_ms,
+      )
+    ) {
       return null;
-    }
-    // Detect edit_file tool, use dedicated component
-    if (part.name === "edit_file") {
-      return (
-        <EditFileItem
-          args={part.args}
-          result={part.result}
-          success={part.success}
-          isPending={part.isPending}
-          cancelled={part.cancelled}
-        />
-      );
-    }
-    // Detect write_file tool, use dedicated component
-    if (part.name === "write_file") {
-      return (
-        <WriteFileItem
-          args={part.args}
-          result={part.result}
-          success={part.success}
-          isPending={part.isPending}
-          cancelled={part.cancelled}
-        />
-      );
-    }
-    // Detect grep tool, use dedicated component
-    if (part.name === "grep") {
-      return (
-        <GrepItem
-          args={part.args}
-          result={part.result}
-          success={part.success}
-          isPending={part.isPending}
-          cancelled={part.cancelled}
-        />
-      );
-    }
-    // Detect ls tool, use dedicated component
-    if (part.name === "ls") {
-      return (
-        <LsItem
-          args={part.args}
-          result={part.result}
-          success={part.success}
-          isPending={part.isPending}
-          cancelled={part.cancelled}
-        />
-      );
-    }
-    // Detect glob tool, use dedicated component
-    if (part.name === "glob") {
-      return (
-        <GlobItem
-          args={part.args}
-          result={part.result}
-          success={part.success}
-          isPending={part.isPending}
-          cancelled={part.cancelled}
-        />
-      );
     }
     return (
       <ToolCallItem
-        name={part.name}
-        args={part.args}
-        result={part.result}
-        success={part.success}
         status={part.status}
-        isPending={part.isPending}
-        cancelled={part.cancelled}
+        publicCategory={part.public_category}
+        publicDisplayName={publicDisplayName}
+        publicOperationId={part.public_operation_id}
+        durationMs={part.duration_ms}
       />
     );
   }
@@ -199,19 +119,18 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "subagent") {
+    if (!part.public_operation_id || !isPublicSubagentPart(part)) {
+      return null;
+    }
     return (
       <SubagentBlock
-        agent_id={part.agent_id}
-        agent_name={part.agent_name}
-        input={part.input}
-        result={part.result}
-        success={part.success}
+        agent_id={part.public_operation_id}
+        agent_name={PUBLIC_SUBAGENT_DISPLAY_NAME}
         isPending={part.isPending}
-        parts={part.parts}
+        parts={part.parts ? getVisibleMessageParts(part.parts) : undefined}
         startedAt={part.startedAt}
         completedAt={part.completedAt}
         status={part.status}
-        error={part.error}
         parent_agent_id={part.parent_agent_id}
         duration_ms={part.duration_ms}
         progress_percent={part.progress_percent}
@@ -221,16 +140,8 @@ export function MessagePartRenderer({
     );
   }
 
-  // Sandbox status block
   if (part.type === "sandbox") {
-    return (
-      <SandboxItem
-        status={part.status}
-        sandboxId={part.sandbox_id}
-        error={part.error}
-        readyDurationMs={part.ready_duration_ms}
-      />
-    );
+    return null;
   }
 
   // Todo task list block

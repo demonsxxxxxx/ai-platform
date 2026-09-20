@@ -6,6 +6,12 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import type { Message, MessagePart } from "../../../types";
+import {
+  getPublicToolDisplayName,
+  isPublicSubagentPart,
+  isPublicToolPresentation,
+  PUBLIC_SUBAGENT_DISPLAY_NAME,
+} from "../ChatMessage/messagePartVisibility";
 
 export interface AssistantUiRuntimeActions {
   sendMessage: (content: string) => Promise<unknown>;
@@ -29,46 +35,55 @@ function definedData(values: Record<string, unknown>): Record<string, unknown> |
 
 type AssistantUiContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
-function convertPart(part: MessagePart, index: number): AssistantUiContentPart | null {
+function convertPart(part: MessagePart): AssistantUiContentPart | null {
   switch (part.type) {
     case "text":
       return { type: "text", text: part.content };
     case "thinking":
       return null;
     case "tool": {
+      const toolName = getPublicToolDisplayName(
+        part.public_category,
+        part.public_display_name,
+      );
+      if (
+        !toolName ||
+        !isPublicToolPresentation(
+          part.public_operation_id,
+          part.public_category,
+          part.status,
+          part.duration_ms,
+        )
+      ) {
+        return null;
+      }
       const data = definedData({
-        category: part.public_operation_id ? part.public_category : undefined,
+        category: part.public_category,
         durationMs: part.duration_ms,
-        evidenceRefs: part.evidence_refs,
-        artifactRefs: part.artifact_refs,
-        eventId: part.event_id,
-        causationEventId: part.causation_event_id,
       });
       return {
         type: "tool-call",
-        toolCallId: part.public_operation_id || `tool-${index}`,
-        toolName: part.public_operation_id ? part.name : "Tool",
+        toolCallId: part.public_operation_id,
+        toolName,
         args: {},
         argsText: "",
-        isError: part.success === false,
+        isError: part.status === "failed" || part.status === "denied",
         ...(data ? { data } : {}),
       } as AssistantUiContentPart;
     }
     case "subagent": {
+      if (!isPublicSubagentPart(part)) {
+        return null;
+      }
       const data = definedData({
-        id: part.agent_id,
-        operationId: part.public_operation_id && part.public_operation_id !== part.agent_id
-          ? part.public_operation_id
-          : undefined,
-        name: part.agent_name,
+        id: part.public_operation_id,
+        name: PUBLIC_SUBAGENT_DISPLAY_NAME,
         parentId: part.parent_agent_id,
-        causationEventId: part.causation_event_id,
         status: part.status,
         depth: part.depth,
         durationMs: part.duration_ms,
         progressPercent: part.progress_percent,
         currentCategory: part.current_category,
-        eventId: part.event_id,
       });
       return { type: "data-subagent", data } as AssistantUiContentPart;
     }
@@ -82,7 +97,7 @@ function convertPart(part: MessagePart, index: number): AssistantUiContentPart |
 
 export function toAssistantUiMessage(message: Message): ThreadMessageLike {
   const content = (message.parts || [])
-    .map((part, index) => convertPart(part, index))
+    .map((part) => convertPart(part))
     .filter((part): part is AssistantUiContentPart => part !== null);
   return {
     id: message.id,

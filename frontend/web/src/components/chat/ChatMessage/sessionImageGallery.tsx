@@ -10,6 +10,10 @@ import type { Message, MessagePart } from "../../../types";
 import { ImageViewer } from "../../common";
 import { useSafeAttachmentImageSrc } from "../../common/attachmentImageSafety";
 import { resolveSafeSessionImageSrc } from "./sessionImageSafety";
+import {
+  getVisibleMessageParts,
+  isPublicSubagentPart,
+} from "./messagePartVisibility";
 
 export interface SessionImageGalleryItem {
   id: string;
@@ -72,14 +76,10 @@ function collectPartImages(
     return collectMarkdownImages(part.content, idPrefix);
   }
 
-  if (part.type === "subagent") {
-    return [
-      ...collectMarkdownImages(part.input, `${idPrefix}:input`),
-      ...collectMarkdownImages(part.result, `${idPrefix}:result`),
-      ...(part.parts || []).flatMap((child, index) =>
-        collectPartImages(child, `${idPrefix}:part:${index}`),
-      ),
-    ];
+  if (part.type === "subagent" && isPublicSubagentPart(part)) {
+    return getVisibleMessageParts(part.parts || []).flatMap((child, index) =>
+      collectPartImages(child, `${idPrefix}:part:${index}`),
+    );
   }
 
   return [];

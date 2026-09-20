@@ -5,13 +5,10 @@ import { Copy, Info, Sparkles } from "lucide-react";
 import type {
   Message,
   MessagePart,
-  ToolCall,
-  ToolResult,
   TokenUsagePart,
 } from "../../../types";
 import { useTranslation } from "react-i18next";
 import { MarkdownContent } from "./MarkdownContent";
-import { ToolCallItem } from "./ToolCallItem";
 import { UserMessageBubble } from "./UserMessageBubble";
 import { createMessagePartRenderKeys, MessagePartRenderer } from "./MessagePartRenderer";
 import { AssistantAvatar } from "./AssistantAvatar";
@@ -32,8 +29,8 @@ import {
   type ArtifactDownloadScopeContext,
 } from "./items/artifactDownloadRegistry";
 
-// Skeleton-style loading animation component - refined thin lines
-function ThinkingIndicator() {
+// Skeleton shown before the stream yields its first visible part.
+function StreamingPlaceholder() {
   return (
     <div className="space-y-2.5 py-1 px-1">
       {/* First line - long bar */}
@@ -325,8 +322,8 @@ export const ChatMessage = memo(function ChatMessage({
             )}
           </div>
 
-          {/* Streaming/Thinking indicator */}
-          {isStreaming && !hasParts && <ThinkingIndicator />}
+          {/* Empty stream placeholder */}
+          {isStreaming && !hasParts && <StreamingPlaceholder />}
 
           {hasParts ? (
             <div className="my-1.5 space-y-2">
@@ -357,31 +354,6 @@ export const ChatMessage = memo(function ChatMessage({
                   isStreaming={message.isStreaming}
                   headingAnchorContext={{ messageId: message.id, partIndex: 0 }}
                 />
-              )}
-              {message.toolCalls && message.toolCalls.length > 0 && (
-                <div className="mt-4 space-y-2">
-                  <div
-                    className="text-xs font-medium uppercase tracking-wide mb-2"
-                    style={{ color: "var(--theme-text-secondary)" }}
-                  >
-                    {t("chat.message.toolCalls")} ({message.toolCalls.length})
-                  </div>
-                  {message.toolCalls.map((call: ToolCall, index: number) => {
-                    const result = message.toolResults?.find(
-                      (r: ToolResult) => r.name === call.name,
-                    );
-                    return (
-                      <ToolCallItem
-                        key={index}
-                        name={call.name}
-                        args={call.args || {}}
-                        result={result?.result}
-                        success={result?.success}
-                        isPending={!result && message.isStreaming}
-                      />
-                    );
-                  })}
-                </div>
               )}
             </>
           )}

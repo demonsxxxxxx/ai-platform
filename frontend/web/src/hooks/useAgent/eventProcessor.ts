@@ -263,7 +263,7 @@ function safeEventError(error: unknown): string | undefined {
   return translateBackendError(error, i18n.t.bind(i18n));
 }
 
-const CHAT_PUBLIC_COMMENTARY_EVENT_TYPES: ReadonlySet<string> = new Set(
+const CHAT_PUBLIC_INFORMATIONAL_STATUS_EVENT_TYPES: ReadonlySet<string> = new Set(
   [...CHAT_PUBLIC_PROGRESS_EVENT_TYPES].filter(
     (eventType) =>
       eventType !== "tool_call_started" &&
@@ -272,7 +272,7 @@ const CHAT_PUBLIC_COMMENTARY_EVENT_TYPES: ReadonlySet<string> = new Set(
   ),
 );
 const CHAT_PUBLIC_STATUS_EVENT_TYPES: ReadonlySet<string> = new Set([
-  ...CHAT_PUBLIC_COMMENTARY_EVENT_TYPES,
+  ...CHAT_PUBLIC_INFORMATIONAL_STATUS_EVENT_TYPES,
   "public_activity",
   "error",
 ]);
@@ -867,6 +867,7 @@ function createPublicToolPart(data: EventData): Extract<MessagePart, { type: "to
     depth: typeof data.depth === "number" ? data.depth : 0,
     agent_id: typeof data.agent_id === "string" ? data.agent_id : undefined,
     public_operation_id: operationId,
+    public_display_name: category === "skill" ? displayName : undefined,
     public_category: category,
     duration_ms: typeof data.duration_ms === "number" ? data.duration_ms : undefined,
     evidence_refs: Array.isArray(data.evidence_refs) ? data.evidence_refs : undefined,
@@ -1104,14 +1105,14 @@ function upsertTodoPart(
     : [...parts, todoPart];
 }
 
-/** Only routine informational commentary may be compacted or evicted. */
-function isReplaceableInformationalCommentaryPart(
+/** Only routine informational statuses may be compacted or evicted. */
+function isReplaceableInformationalStatusPart(
   part: MessagePart,
 ): part is RunStatusPart {
   return (
     part.type === "run_status" &&
     part.severity === "info" &&
-    CHAT_PUBLIC_COMMENTARY_EVENT_TYPES.has(part.event_type) &&
+    CHAT_PUBLIC_INFORMATIONAL_STATUS_EVENT_TYPES.has(part.event_type) &&
     !ACTIONABLE_PUBLIC_STATUS_PATTERN.test(part.event_type)
   );
 }
@@ -1139,7 +1140,7 @@ function upsertRunStatusPart(
     let lastReplaceableIndex = -1;
     for (let index = parts.length - 1; index >= 0; index -= 1) {
       const part = parts[index];
-      if (isReplaceableInformationalCommentaryPart(part)) {
+      if (isReplaceableInformationalStatusPart(part)) {
         lastReplaceableIndex = index;
         break;
       }
@@ -1148,7 +1149,7 @@ function upsertRunStatusPart(
       lastReplaceableIndex >= 0 ? parts[lastReplaceableIndex] : undefined;
     let nextParts = [...parts, runStatusPart];
     if (
-      isReplaceableInformationalCommentaryPart(runStatusPart) &&
+      isReplaceableInformationalStatusPart(runStatusPart) &&
       lastReplaceable?.type === "run_status" &&
       lastReplaceable.event_type === runStatusPart.event_type &&
       lastReplaceable.stage === runStatusPart.stage &&
@@ -1159,7 +1160,7 @@ function upsertRunStatusPart(
       );
     }
     const replaceableIndexes = nextParts.flatMap((part, index) =>
-      isReplaceableInformationalCommentaryPart(part) ? [index] : [],
+      isReplaceableInformationalStatusPart(part) ? [index] : [],
     );
     const overflow =
       replaceableIndexes.length - MAX_PUBLIC_ACTIVITY_TIMELINE_PARTS;

@@ -62,7 +62,7 @@ export function normalizeAgentOptions(
           ...option,
           type: "string",
           default: normalizeThinkingOptionValue(option.default),
-          label: option.label || "Thinking",
+          label: option.label || "Thinking effort",
           label_key: option.label_key || "agentOptions.enableThinking.label",
           description:
             option.description ||

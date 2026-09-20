@@ -1,17 +1,11 @@
-import { Ban, CircleX, FileText, Globe, Pencil, Search, Sparkles, Terminal, Wrench } from "lucide-react";
+import { FileText, Globe, Pencil, Search, Sparkles, Terminal, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { CollapsiblePill, LoadingSpinner } from "../../common";
+import { CollapsiblePill } from "../../common";
 import type { CollapsibleStatus } from "../../common";
-import { ToolResultContent } from "./items/McpBlockPreview";
-import { openPersistentToolPanel } from "./items/persistentToolPanelState";
-
-// Re-export all sub-components
-export { ReadFileItem } from "./items/ReadFileItem";
-export { EditFileItem } from "./items/EditFileItem";
-export { WriteFileItem } from "./items/WriteFileItem";
-export { GrepItem } from "./items/GrepItem";
-export { LsItem } from "./items/LsItem";
-export { GlobItem } from "./items/GlobItem";
+import {
+  getPublicToolDisplayName,
+  isPublicToolPresentation,
+} from "./messagePartVisibility";
 
 const PUBLIC_CATEGORY_LABELS: Readonly<Record<string, string>> = {
   skill: "使用 Skill",
@@ -58,61 +52,38 @@ function publicCategoryIcon(category: string) {
 
 // Collapsible Tool Call Item (compact design)
 export function ToolCallItem({
-  name,
-  args,
-  result,
-  success,
-  status: toolStatus,
-  isPending,
-  cancelled,
+  status: lifecycleStatus,
   publicCategory,
+  publicDisplayName,
   publicOperationId,
   durationMs,
 }: {
-  name: string;
-  args: Record<string, unknown>;
-  result?: string | Record<string, unknown>;
-  success?: boolean;
   status?: "started" | "completed" | "failed" | "denied";
-  isPending?: boolean;
-  cancelled?: boolean;
   publicCategory?: string;
+  publicDisplayName?: string;
   publicOperationId?: string;
   durationMs?: number;
 }) {
   const { t } = useTranslation();
-  const isPublicTool = Boolean(publicOperationId && publicCategory);
-  const hasResult = !isPublicTool && result !== undefined;
-
-  // Legacy history may still contain the old server:tool naming convention.
-  const colonIdx = isPublicTool ? -1 : name.indexOf(":");
-  const isMcpTool = colonIdx > 0;
-  const serverName = isMcpTool ? name.substring(0, colonIdx) : null;
-  const toolName = isMcpTool ? name.substring(colonIdx + 1) : name;
-  const formattedToolName = toolName
-    .split("_")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(" ");
-
-  const displayArgs = isPublicTool
-    ? {}
-    : (() => {
-        if (args.partial !== undefined) {
-          try {
-            return JSON.parse(args.partial as string);
-          } catch {
-            return { partial: args.partial };
-          }
-        }
-        return args;
-      })();
-
-  const hasArgs = !isPublicTool && Object.keys(displayArgs).length > 0;
+  const canonicalDisplayName = getPublicToolDisplayName(
+    publicCategory,
+    publicDisplayName,
+  );
+  if (
+    !publicCategory ||
+    !canonicalDisplayName ||
+    publicDisplayName !== canonicalDisplayName ||
+    !isPublicToolPresentation(
+      publicOperationId,
+      publicCategory,
+      lifecycleStatus,
+      durationMs,
+    )
+  ) {
+    return null;
+  }
 
   let status: CollapsibleStatus = "idle";
-  const lifecycleStatus =
-    toolStatus ||
-    (isPending ? "started" : cancelled ? "denied" : success ? "completed" : hasResult ? "failed" : undefined);
   if (lifecycleStatus === "started") {
     status = "loading";
   } else if (lifecycleStatus === "denied") {
@@ -131,125 +102,32 @@ export function ToolCallItem({
         : lifecycleStatus === "failed"
           ? t("chat.runStatus.status.failed", { defaultValue: "失败" })
           : null;
-  const durationLabel = isPublicTool ? formatDurationMs(durationMs) : null;
-  const ToolIcon = isPublicTool
-    ? publicCategoryIcon(publicCategory!)
-    : lifecycleStatus === "denied"
-      ? Ban
-      : lifecycleStatus === "failed"
-        ? CircleX
-        : isMcpTool
-          ? Globe
-          : Wrench;
-
-  const publicCategoryLabel = publicCategory
-    ? PUBLIC_CATEGORY_LABELS[publicCategory] || "工具"
-    : null;
-  const canExpand = !isPublicTool && (hasArgs || hasResult);
-
-  const panelContent = canExpand && (
-    <div className="space-y-3 max-h-full overflow-y-auto p-2 sm:p-4 [&_pre]:!text-sm">
-      {hasArgs && (
-        <div className="p-3 sm:p-4 rounded-lg sm:rounded-xl bg-stone-100 dark:bg-stone-700/50">
-          <div className="text-xs uppercase tracking-wider text-stone-400 dark:text-stone-500 mb-2 font-medium">
-            {t("chat.message.args")}
-          </div>
-          <pre className="text-sm text-stone-600 dark:text-stone-300 overflow-x-auto overflow-y-auto min-w-0 font-mono">
-            {JSON.stringify(displayArgs, null, 2)}
-          </pre>
-        </div>
-      )}
-
-      {hasResult && (
-        <div className="p-3 sm:p-4 rounded-lg sm:rounded-xl bg-stone-100 dark:bg-stone-700/50">
-          <div className="text-xs uppercase tracking-wider text-stone-400 dark:text-stone-500 mb-2 font-medium">
-            {t("chat.message.result")}
-          </div>
-          <ToolResultContent result={result} />
-        </div>
-      )}
-
-      {isPending && (
-        <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
-          <LoadingSpinner size="xs" />
-          <span>{t("chat.message.running")}</span>
-        </div>
-      )}
-    </div>
-  );
+  const durationLabel = formatDurationMs(durationMs);
+  const ToolIcon = publicCategoryIcon(publicCategory);
+  const publicCategoryLabel = PUBLIC_CATEGORY_LABELS[publicCategory] || "工具";
 
   return (
-    <>
-      <CollapsiblePill
-        status={status}
-        icon={<ToolIcon size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
-        label={isPublicTool && publicCategoryLabel
-          ? `${publicCategoryLabel}：${name}`
-          : toolName}
-        suffix={
-          serverName || statusLabel || durationLabel || publicCategoryLabel ? (
-            <span className="flex min-w-0 items-center gap-1.5">
-              {serverName && (
-                <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-white/30 dark:bg-black/20 opacity-70 font-medium truncate max-w-[120px]">
-                  {serverName}
-                </span>
-              )}
-              {durationLabel && (
-                <span className="text-[10px] font-medium">{durationLabel}</span>
-              )}
-              {statusLabel && (
-                <span role="status" aria-label={statusLabel} className="text-[10px] font-medium">
-                  {statusLabel}
-                </span>
-              )}
-            </span>
-          ) : undefined
-        }
-        variant="tool"
-        formatLabel={!isPublicTool}
-        expandable={canExpand}
-        onPanelOpen={() => {
-          if (!canExpand) return;
-          openPersistentToolPanel({
-            title: formattedToolName,
-            icon: <ToolIcon size={16} aria-hidden="true" />,
-            status,
-            subtitle: publicCategoryLabel || serverName || undefined,
-            children: panelContent,
-          });
-        }}
-      >
-        {canExpand && (
-          <div className="mt-2 ml-4 pl-3 border-l-2 border-stone-200/60 dark:border-stone-700/50 space-y-2 max-h-96 overflow-y-auto min-w-0">
-            {hasArgs && (
-              <div className="p-2 rounded-md bg-stone-50/80 dark:bg-stone-800/50">
-                <div className="text-xs uppercase tracking-wider text-stone-400 dark:text-stone-500 mb-1 font-medium">
-                  {t("chat.message.args")}
-                </div>
-                <pre className="text-xs text-stone-600 dark:text-stone-300 overflow-x-auto max-h-40 overflow-y-auto min-w-0">
-                  {JSON.stringify(displayArgs, null, 2)}
-                </pre>
-              </div>
+    <CollapsiblePill
+      status={status}
+      icon={<ToolIcon size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
+      label={`${publicCategoryLabel}：${canonicalDisplayName}`}
+      suffix={
+        statusLabel || durationLabel ? (
+          <span className="flex min-w-0 items-center gap-1.5">
+            {durationLabel && (
+              <span className="text-[10px] font-medium">{durationLabel}</span>
             )}
-
-            {hasResult && (
-              <div className="p-2 rounded-md bg-stone-50/80 dark:bg-stone-800/50">
-                <div className="text-xs uppercase tracking-wider text-stone-400 dark:text-stone-500 mb-1 font-medium">
-                  {t("chat.message.result")}
-                </div>
-                <ToolResultContent result={result} />
-              </div>
+            {statusLabel && (
+              <span role="status" aria-label={statusLabel} className="text-[10px] font-medium">
+                {statusLabel}
+              </span>
             )}
-
-            {isPending && (
-              <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
-                <LoadingSpinner size="xs" />
-                <span>{t("chat.message.running")}</span>
-              </div>
-            )}
-          </div>
-        )}
-      </CollapsiblePill>
-    </>
+          </span>
+        ) : undefined
+      }
+      variant="tool"
+      formatLabel={false}
+      expandable={false}
+    />
   );
 }

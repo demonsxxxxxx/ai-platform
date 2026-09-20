@@ -24,7 +24,7 @@ from app.runtime.kernel_contracts import (
     SUPPORTED_AGENT_EVENT_TYPES,
     AgentEvent,
 )
-from app.streaming.events import EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES
+from app.streaming.events import AGENT_EVENT_PUBLIC_CANDIDATE_TYPES
 from app.streaming.application.callback_events_v4 import (
     callback_thinking_summary_to_v4,
 )
@@ -65,15 +65,15 @@ def _assert_sandbox_answer_receipt(result, candidates, answer):
     assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in delta_candidates)
 
 
-def test_executor_callback_registry_tracks_the_generated_public_subset():
-    assert EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES <= SUPPORTED_AGENT_EVENT_TYPES
-    assert "commentary.delta" in EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES
+def test_agent_event_candidate_registry_tracks_the_generated_public_subset():
+    assert AGENT_EVENT_PUBLIC_CANDIDATE_TYPES <= SUPPORTED_AGENT_EVENT_TYPES
+    assert "commentary.delta" in AGENT_EVENT_PUBLIC_CANDIDATE_TYPES
     assert {
         "agent.progress",
         "thinking.started",
         "thinking.delta",
         "thinking.completed",
-    }.isdisjoint(EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES)
+    }.isdisjoint(AGENT_EVENT_PUBLIC_CANDIDATE_TYPES)
 
 
 def test_v4_callback_bridge_preserves_safe_text_and_rejects_private_fields():
@@ -463,6 +463,33 @@ def test_tool_hooks_exclude_sdk_tool_payload():
 
     assert adapter.accept_hook("PostToolUse", pre, tool_use_id="sdk-tool-1") == ()
     assert "sdk-tool-1" not in repr(started + completed)
+
+
+def test_skill_tool_lifecycle_exposes_only_authorized_public_label():
+    adapter = _adapter()
+
+    class ToolUseBlock:
+        pass
+
+    block = ToolUseBlock()
+    block.id = "skill-call-1"
+    block.name = "Skill"
+    block.input = {"skill": "qa-review", "private_argument": "secret"}
+    assert adapter.accept_content_block(block) == ()
+
+    hook = {"tool_name": "Skill", "tool_use_id": "skill-call-1"}
+    started = adapter.accept_hook("PreToolUse", hook, tool_use_id="skill-call-1")
+    completed = adapter.accept_hook("PostToolUse", hook, tool_use_id="skill-call-1")
+
+    assert [event.event_type for event in started + completed] == [
+        "tool.started",
+        "tool.completed",
+    ]
+    assert all(event.payload["category"] == "skill" for event in started + completed)
+    assert all(event.payload["display_name"] == "QA review" for event in started + completed)
+    assert "qa-review" not in repr(started + completed)
+    assert "private_argument" not in repr(started + completed)
+    assert "secret" not in repr(started + completed)
 
 
 def test_unknown_sdk_tool_and_mismatched_hook_fail_closed_without_public_candidate():
