@@ -27,6 +27,10 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   assert.match(sidebar, /mt-auto flex items-center justify-between[\s\S]*<UserMenu showLabel \/>[\s\S]*<Settings/);
   assert.match(rail, /<UserMenu \/>[\s\S]*workbench-menu-open/);
   assert.match(sidebar, /workbench-menu-open/);
+  assert.match(rail, /bottom: window\.innerHeight - rect\.top \+ 8/);
+  assert.match(sidebar, /bottom: window\.innerHeight - rect\.top \+ 8/);
+  assert.match(menuHost, /bottom: menuPosition\.bottom/);
+  assert.doesNotMatch(`${rail}\n${sidebar}`, /rect\.top - 220/);
   assert.match(menuHost, /workbench-menu-open/);
   assert.doesNotMatch(menuHost, /data-workbench-header|data-workbench-menu-host/);
   assert.match(userMenu, /showLabel \? rect\.top - \(menuRef\.current\?\.offsetHeight \|\| 120\) - 8/);

@@ -42,7 +42,7 @@ export function WorkbenchMenuHost({
   const [menuOpen, setMenuOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
   const [activeNotifCount, setActiveNotifCount] = useState(0);
-  const [menuPosition, setMenuPosition] = useState({ top: 8, right: 8 });
+  const [menuPosition, setMenuPosition] = useState({ bottom: 8, right: 8 });
   const menuRef = useRef<HTMLDivElement>(null);
 
   const refreshNotifCount = useCallback(() => {
@@ -58,7 +58,7 @@ export function WorkbenchMenuHost({
   useEffect(() => {
     const handleOpen = (event: Event) => {
       setMenuPosition(
-        (event as CustomEvent<{ top: number; right: number }>).detail,
+        (event as CustomEvent<{ bottom: number; right: number }>).detail,
       );
       setMenuOpen(true);
     };
@@ -92,7 +92,7 @@ export function WorkbenchMenuHost({
               ref={menuRef}
               className="fixed z-[301] w-56 overflow-hidden rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
               style={{
-                top: menuPosition.top,
+                bottom: menuPosition.bottom,
                 right: menuPosition.right,
                 backgroundColor: "var(--theme-bg-card)",
                 borderColor: "var(--theme-border)",
