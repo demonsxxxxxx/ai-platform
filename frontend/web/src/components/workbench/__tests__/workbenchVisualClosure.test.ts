@@ -638,6 +638,14 @@ test("public catalog pages use semantic workbench status tokens", () => {
   }
 });
 
+test("model admin governance state follows its projection", () => {
+  const source = read("src/components/panels/ModelCatalogPanel.tsx");
+
+  assert.match(source, /data-frontend-governance-state=\{adminState\}/);
+  assert.match(source, /onStateChange=\{setAdminState\}/);
+  assert.doesNotMatch(source, /data-frontend-governance-state="ready"/);
+});
+
 test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
   const composer = read("src/librechat-ui/Composer.tsx");
