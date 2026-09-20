@@ -117,6 +117,15 @@ function normalizeV4Event(event: V4PublicEvent): {
       };
     case "message.completed":
       return activity("message_completed", "Assistant response complete");
+    case "commentary.delta":
+      return {
+        eventType: "summary",
+        data: {
+          ...base,
+          content: String(payload.delta),
+          summary_id: String(payload.summary_id),
+        },
+      };
     case "thinking.started":
     case "thinking.delta":
     case "thinking.completed":

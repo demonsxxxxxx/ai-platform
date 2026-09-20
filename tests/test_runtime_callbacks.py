@@ -1256,7 +1256,14 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
     from app.runtime.kernel_contracts import AgentEvent
     sdk_events = tuple(
         AgentEvent(**event.as_agent_event_fields())
-        for event in adapter.accept_answer_text("answer")
+        for event in (
+            *adapter.accept_commentary_text(
+                "working",
+                commentary_identity="assistant-a",
+                already_gated=True,
+            ),
+            *adapter.accept_answer_text("answer"),
+        )
     )
     authority = SimpleNamespace(attempt_id="attempt-a", state="confirmed")
     async def fake_get_authority(conn, *, tenant_id, run_id, for_update=False):
@@ -1292,9 +1299,10 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"accepted": True, "batch_id": "batch-a", "event_count": 4}
+    assert response.json() == {"accepted": True, "batch_id": "batch-a", "event_count": 5}
     assert [event["event_type"] for event in persisted] == [
         "executor_callback",
+        "executor_private_event",
         "executor_private_event",
         "executor_private_event",
         "executor_private_event",
@@ -1305,8 +1313,13 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
     assert "private callback payload" not in str(persisted)
     assert len(v4_rows) == 1
     items = v4_rows[0]["items"]
-    assert [item.callback_index for item in items] == [1, 2]
-    assert [item.batch_index for item in items] == [0, 1]
+    assert [item.callback_index for item in items] == [1, 2, 3]
+    assert [item.batch_index for item in items] == [0, 1, 2]
+    assert [item.event_type for item in items] == [
+        "commentary.delta",
+        "message.started",
+        "message.delta",
+    ]
     assert {item.message_id for item in items} == {adapter.message_id}
     assert adapter.message_id.startswith("msg_")
 

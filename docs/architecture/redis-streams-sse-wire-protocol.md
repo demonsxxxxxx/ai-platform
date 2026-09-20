@@ -48,7 +48,12 @@ Streaming body contract is explicit: each public `message.delta` frame is at
 most 8,192 code points, and this per-frame bound never becomes a cumulative
 answer cutoff. `message.completed` is metadata-only with
 `{delta_count,text_length}`; its `causation_event_id` identifies the last delta
-and the completion never carries full text.
+and the completion never carries full text. `commentary.delta` is separately
+bounded to 8,192 code points and carries a stable `summary_id`; it is work
+activity from a complete tool-using Assistant turn, not answer content or
+capability evidence. Structured output remains the only terminal answer and
+deliverable authority. Worker, API, and frontend support for this closed event
+is deployed release-atomically because older v4 clients reject unknown events.
 
 The Sandbox may enqueue only single-item callbacks containing one adjacent,
 already-projected `message.delta` event before this boundary. The worker batches
@@ -133,6 +138,8 @@ not persisted publication state, and is stripped at the public boundary.
 The closed Agent-kernel application registry is:
 
 - `message.started`, `message.delta`, `message.completed`;
+- `commentary.delta` for sanitized tool-using Assistant progress rendered as
+  work activity, never terminal answer content;
 - `thinking.started`, `thinking.delta`, `thinking.completed`, `model.completed`;
 - `agent.progress` for fixed, server-owned execution-phase lifecycle;
 - `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;
@@ -440,8 +447,9 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
 - **Rollback:** the original progressive-projection repair introduced no schema
   migration. After the Stream-only cutover, recovery follows the release runbook;
   an older backend image is not compatible with the migrated schema.
-- **Stop conditions:** stop before code expands the public schema, weakens
-  sanitizer or admission controls, treats narration as capability evidence,
+- **Stop conditions:** stop before code expands the public schema beyond the
+  separately contracted `commentary.delta`, weakens sanitizer or admission
+  controls, treats narration as capability evidence,
   trusts callback-owned publication metadata, creates a second body or terminal
   authority, requires same-incarnation Redis reconstruction, or depends on a
   product choice not fixed above. Active successor-incarnation recovery is a

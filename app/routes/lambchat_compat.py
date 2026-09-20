@@ -228,6 +228,9 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "Agent progress update",
         "active",
     ),
+    "commentary.delta": _ChatPublicRunEventProjection(
+        "summary", "commentary", "", "active"
+    ),
     "thinking.started": _ChatPublicRunEventProjection(
         "public_activity", "thinking_started", "", "active"
     ),
@@ -651,6 +654,7 @@ def _strict_v4_execution_history_payload(
 ) -> dict[str, object] | None:
     if event_type not in {
         "agent.progress",
+        "commentary.delta",
         "thinking.started",
         "thinking.delta",
         "thinking.completed",
@@ -694,6 +698,7 @@ def _public_run_event_envelope(
         raw_event_type
         in {
             "agent.progress",
+            "commentary.delta",
             "thinking.started",
             "thinking.delta",
             "thinking.completed",
@@ -770,6 +775,9 @@ def _public_run_event_envelope(
             if public_progress["lifecycle"] == "completed"
             else "active",
         )
+    if raw_event_type == "commentary.delta" and strict_v4_payload is not None:
+        message = str(strict_v4_payload["delta"])
+        stage = "commentary"
     if raw_event_type.startswith("thinking.") and strict_v4_payload is not None:
         thinking_message = strict_v4_payload.get("delta")
         if not isinstance(thinking_message, str):
@@ -840,6 +848,10 @@ def _persisted_v4_assistant_delta(
         },
         "trace_id": event.get("trace_id"),
         "created_at": event.get("created_at"),
+        "_history_message_identity": (
+            projected["message_id"],
+            projected["stream_incarnation"],
+        ),
     }
 
 
@@ -897,6 +909,7 @@ def _compatibility_events_for_run(
     *,
     user_messages: list[dict[str, Any]] | None = None,
     include_terminal: bool = True,
+    compact_answer_deltas: bool = False,
 ) -> list[_CompatibilityWireEvent]:
     """Build the sole public terminal wire, ordered for live and history replay."""
     compatibility_events, _ = _compatibility_events_for_run_page(
@@ -911,6 +924,7 @@ def _compatibility_events_for_run(
         ),
         user_messages=user_messages,
         include_terminal=include_terminal,
+        compact_answer_deltas=compact_answer_deltas,
     )
     return compatibility_events
 
@@ -924,6 +938,7 @@ def _compatibility_events_for_run_page(
     fold_state: _CompatibilityFoldState,
     user_messages: list[dict[str, Any]] | None = None,
     include_terminal: bool = True,
+    compact_answer_deltas: bool = False,
 ) -> tuple[list[_CompatibilityWireEvent], _CompatibilityFoldState]:
     """Fold one durable page while carrying only public compatibility facts forward."""
     run_id = str(run["id"])
@@ -979,6 +994,11 @@ def _compatibility_events_for_run_page(
         and (projected := _persisted_v4_assistant_delta(run, event)) is not None
     }
     prefer_v4_answer = fold_state.answer_source == "v4"
+    compact_terminal_answer = (
+        compact_answer_deltas
+        and prefer_v4_answer
+        and status in {"succeeded", "failed", "cancelled"}
+    )
     final_answer_position = next(
         (
             position
@@ -995,6 +1015,59 @@ def _compatibility_events_for_run_page(
         ),
         None,
     )
+    pending_answer_events: list[tuple[int, dict[str, Any]]] = []
+
+    def emit_answer_event(
+        answer_event: dict[str, Any], *, final_answer_delta: bool
+    ) -> None:
+        delta = _assistant_delta_projection(
+            run,
+            answer_event,
+            principal,
+            answer_projector=answer_projector,
+            final_answer_delta=final_answer_delta,
+        )
+        if delta is None:
+            return
+        compatibility_events.append(
+            _CompatibilityWireEvent(
+                id=str(answer_event["id"]),
+                stream_event_type="message:chunk",
+                stream_data=delta,
+                history_event={
+                    "id": answer_event["id"],
+                    "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
+                    "trace_id": str(answer_event.get("trace_id") or trace_id),
+                    "type": "message:chunk",
+                    "event_type": "message:chunk",
+                    "stage": "answer",
+                    "severity": "info",
+                    "visible_to_user": True,
+                    "payload": delta,
+                    "sequence": delta["sequence"],
+                    "data": delta,
+                    "timestamp": answer_event.get("created_at"),
+                    "run_id": run_id,
+                },
+            )
+        )
+
+    def flush_pending_answer_events() -> None:
+        if not pending_answer_events:
+            return
+        # ponytail: public barriers reproject the prefix; materialize terminal
+        # messages if heavily interleaved histories make that cost measurable.
+        last_position, last_event = pending_answer_events[-1]
+        payload = dict(last_event["payload_json"])
+        payload["delta"] = "".join(
+            str(event["payload_json"]["delta"])
+            for _, event in pending_answer_events
+        )
+        emit_answer_event(
+            {**last_event, "payload_json": payload},
+            final_answer_delta=last_position == final_answer_position,
+        )
+        pending_answer_events.clear()
 
     for message in user_messages or []:
         message_id = str(message.get("id") or "")
@@ -1055,6 +1128,7 @@ def _compatibility_events_for_run_page(
             execution_event = public_execution_event_from_row(run_id, event)
             if execution_event is None:
                 continue
+            flush_pending_answer_events()
             event_type = str(event["event_type"])
             compatibility_events.append(
                 _CompatibilityWireEvent(
@@ -1108,37 +1182,19 @@ def _compatibility_events_for_run_page(
                 if raw_event_type != "assistant_delta":
                     continue
                 answer_event = event
-            delta = _assistant_delta_projection(
-                run,
-                answer_event,
-                principal,
-                answer_projector=answer_projector,
-                final_answer_delta=position == final_answer_position,
-            )
-            if delta is None:
-                continue
-            compatibility_events.append(
-                _CompatibilityWireEvent(
-                    id=str(answer_event["id"]),
-                    stream_event_type="message:chunk",
-                    stream_data=delta,
-                    history_event={
-                        "id": answer_event["id"],
-                        "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
-                        "trace_id": str(answer_event.get("trace_id") or trace_id),
-                        "type": "message:chunk",
-                        "event_type": "message:chunk",
-                        "stage": "answer",
-                        "severity": "info",
-                        "visible_to_user": True,
-                        "payload": delta,
-                        "sequence": delta["sequence"],
-                        "data": delta,
-                        "timestamp": answer_event.get("created_at"),
-                        "run_id": run_id,
-                    },
+            if compact_terminal_answer:
+                if (
+                    pending_answer_events
+                    and pending_answer_events[-1][1].get("_history_message_identity")
+                    != answer_event.get("_history_message_identity")
+                ):
+                    flush_pending_answer_events()
+                pending_answer_events.append((position, answer_event))
+            else:
+                emit_answer_event(
+                    answer_event,
+                    final_answer_delta=position == final_answer_position,
                 )
-            )
             continue
         envelope = _public_run_event_envelope(run, event, principal)
         if envelope is None:
@@ -1148,6 +1204,7 @@ def _compatibility_events_for_run_page(
             if public_event_type in seen_public_lifecycle_singletons:
                 continue
             seen_public_lifecycle_singletons.add(public_event_type)
+        flush_pending_answer_events()
         payload = (
             envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}
         )
@@ -1197,6 +1254,7 @@ def _compatibility_events_for_run_page(
             )
         )
 
+    flush_pending_answer_events()
     for artifact in sorted(
         artifacts,
         key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")),
@@ -1587,6 +1645,7 @@ async def session_runs(
 async def session_events(
     session_id: str,
     run_id: str | None = None,
+    compact_message_chunks: bool = False,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
@@ -1663,6 +1722,7 @@ async def session_events(
                     artifacts,
                     principal,
                     user_messages=user_messages_by_run.get(str(run["id"]), []),
+                    compact_answer_deltas=compact_message_chunks,
                 )
             )
     return {

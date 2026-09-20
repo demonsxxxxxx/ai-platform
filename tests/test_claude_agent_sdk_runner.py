@@ -4125,6 +4125,110 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
 
 
 @pytest.mark.asyncio
+async def test_sdk_structured_tool_turn_publishes_safe_commentary_before_result(
+    monkeypatch, tmp_path
+):
+    captured, candidates, observed_before_result, deltas = {}, [], [], []
+    private_call_id = "call-private-1"
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class ToolUseBlock:
+        id = private_call_id
+        name = "Read"
+        input = {"file_path": "input.txt"}
+
+    class AssistantMessage:
+        content = [
+            TextBlock(
+                f"Checking {private_call_id} in {tmp_path} before the next step."
+            ),
+            ToolUseBlock(),
+        ]
+
+    class ResultMessage:
+        __annotations__ = {"structured_output": object}
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = '{"answer":"wire json","deliverables":[]}'
+        structured_output = {
+            "answer": "Final user answer",
+            "deliverables": [],
+        }
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        terminal_reason = "completed"
+        num_turns = 1
+        permission_denials = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    def acknowledge(batch):
+        candidates.extend(batch)
+        return True
+
+    async def query(*, prompt, options):
+        del prompt, options
+        yield AssistantMessage()
+        observed_before_result.extend(
+            candidate.event_type for candidate in candidates
+        )
+        yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=AssistantMessage,
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                ResultMessage=ResultMessage,
+                StreamEvent=type("StreamEvent", (), {}),
+                TextBlock=TextBlock,
+                query=query,
+            ),
+            captured,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        on_text=deltas.append,
+        on_agent_event=acknowledge,
+        run_id="run-commentary",
+        attempt_id="attempt-commentary",
+    )
+
+    commentary = [
+        candidate
+        for candidate in candidates
+        if candidate.event_type == "commentary.delta"
+    ]
+    assert observed_before_result
+    assert set(observed_before_result) == {"commentary.delta"}
+    assert len(commentary) == len(observed_before_result)
+    commentary_text = "".join(
+        str(candidate.payload["delta"]) for candidate in commentary
+    )
+    assert private_call_id not in commentary_text
+    assert str(tmp_path) not in commentary_text
+    assert commentary_text == "Checking \u2588 in \u2588 before the next step."
+    assert "Checking" not in "".join(deltas)
+    assert "".join(deltas) == "Final user answer"
+    assert result.error is None
+    assert result.message == "Final user answer"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("structured_output", "expected_error"),
     [

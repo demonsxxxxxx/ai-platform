@@ -42,6 +42,40 @@ test("v4 adapter accepts generated message delta and retains transport identity"
   assert.equal(adapted?.transportCursor, "run-1:2:1-0");
 });
 
+test("v4 commentary becomes work summary without changing final answer text", () => {
+  const adapted = adaptPublicRunStreamEventV4(
+    frame("commentary.delta", {
+      summary_id: "summary-1",
+      delta: "正在检查授权输入。",
+    }),
+    { runId: "run-1", streamIncarnation: 2 },
+  );
+
+  assert.ok(adapted);
+  const result = reduce(adapted);
+  assert.equal(result.content, "");
+  assert.equal(result.parts[0]?.type, "summary");
+  assert.equal(
+    (result.parts[0] as { content?: string }).content,
+    "正在检查授权输入。",
+  );
+  assert.equal(
+    (result.parts[0] as { summary_id?: string }).summary_id,
+    "summary-1",
+  );
+  assert.equal(
+    adaptPublicRunStreamEventV4(
+      frame("commentary.delta", {
+        summary_id: "summary-1",
+        delta: "safe",
+        tool_input: "private",
+      }),
+      { runId: "run-1", streamIncarnation: 2 },
+    ),
+    null,
+  );
+});
+
 test("v4 delta projection keeps semantic identity and completion is metadata-only activity", () => {
   const delta = adaptPublicRunStreamEventV4(
     frame("message.delta", { delta: "hello" }, 7),

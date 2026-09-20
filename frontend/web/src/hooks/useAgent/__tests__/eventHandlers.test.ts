@@ -1673,6 +1673,7 @@ test("v4 accepts correlated activity before message owner is declared", () => {
       | "artifact.ready"
       | "thinking.started"
       | "thinking.completed"
+      | "commentary.delta"
       | "message.started"
       | "message.delta",
     messageId: string,
@@ -1696,7 +1697,9 @@ test("v4 accepts correlated activity before message owner is declared", () => {
       payload:
         eventType === "message.delta"
           ? { delta: "accepted" }
-          : eventType.startsWith("artifact.")
+          : eventType === "commentary.delta"
+            ? { summary_id: "summary-1", delta: "正在检查授权输入。" }
+            : eventType.startsWith("artifact.")
             ? {
                 artifact_id: "artifact-1",
                 filename: "result.txt",
@@ -1733,17 +1736,20 @@ test("v4 accepts correlated activity before message owner is declared", () => {
     streamIncarnation: 2,
     protocolMessageId: "message-1",
   });
-  assert.equal(accept(frame("thinking.completed", "message-1", 3)), true);
-  assert.equal(accept(frame("thinking.completed", "message-2", 4)), false);
-  assert.equal(accept(frame("message.started", "message-1", 4)), true);
+  assert.equal(accept(frame("commentary.delta", "message-1", 3)), true);
+  assert.equal(accept(frame("thinking.completed", "message-1", 4)), true);
+  assert.equal(accept(frame("thinking.completed", "message-2", 5)), false);
+  assert.equal(accept(frame("message.started", "message-1", 5)), true);
   assert.equal(ctx.v4MessageCandidateRef.current, null);
-  assert.equal(accept(frame("message.delta", "message-1", 5)), true);
-  assert.equal(accept(frame("artifact.ready", "other-artifact-ref", 6)), true);
+  assert.equal(accept(frame("message.delta", "message-1", 6)), true);
+  assert.equal(accept(frame("artifact.ready", "other-artifact-ref", 7)), true);
   assert.equal(ctx.v4MessageOwnerRef.current?.protocolMessageId, "message-1");
   assert.equal(ctx.messages()[0]?.content, "");
-  assert.equal(deferredMessageUpdates.length, 6);
+  assert.equal(deferredMessageUpdates.length, 7);
   for (const apply of deferredMessageUpdates) apply();
   assert.equal(ctx.messages()[0]?.content, "accepted");
+  const summary = ctx.messages()[0]?.parts?.find((part) => part.type === "summary");
+  assert.equal(summary?.type === "summary" ? summary.content : null, "正在检查授权输入。");
 });
 
 test("v4 history-covered message.started restores ownership before live delta", () => {
