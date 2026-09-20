@@ -66,6 +66,30 @@ def public_text_or_fallback(value: object, fallback: object = "") -> str:
 
 RESULT_UNAVAILABLE_MESSAGE = "本次执行未能生成可展示的回复内容。"
 CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
+_LEGACY_ARTIFACT_LINK_LINE = re.compile(
+    r"- .+: /api/ai/artifacts/[^/\s]+/download"
+)
+
+
+def _strip_legacy_artifact_link_block(value: object) -> object:
+    """Remove only the exact artifact-link suffix emitted by older workers."""
+
+    if not isinstance(value, str):
+        return value
+    lines = value.splitlines()
+    end = len(lines)
+    while end and not lines[end - 1].strip():
+        end -= 1
+    for position in range(end - 1, -1, -1):
+        if lines[position].strip() != "输出文件:":
+            continue
+        link_lines = [line.strip() for line in lines[position + 1 : end]]
+        if link_lines and all(
+            _LEGACY_ARTIFACT_LINK_LINE.fullmatch(line) for line in link_lines
+        ):
+            return "\n".join(lines[:position]).rstrip()
+        break
+    return value
 
 
 def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
@@ -202,7 +226,7 @@ def _chat_terminal_answer_candidate(run: dict[str, object]) -> object:
     if isinstance(result, dict):
         message = result.get("message")
         if isinstance(message, str) and message.strip():
-            return message
+            return _strip_legacy_artifact_link_block(message)
     return run.get("error_message") or ""
 
 

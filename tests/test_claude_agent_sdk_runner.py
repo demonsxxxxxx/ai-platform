@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import types
 
@@ -510,7 +511,7 @@ async def _acknowledge_capability_evidence(_evidence):
 
 
 @pytest.mark.asyncio
-async def test_sdk_structured_output_protocol_bypasses_capability_admission(
+async def test_sdk_structured_output_protocol_does_not_bypass_capability_admission(
     monkeypatch,
     tmp_path,
 ):
@@ -555,8 +556,8 @@ async def test_sdk_structured_output_protocol_bypasses_capability_admission(
         hook_input["tool_input"],
         {"tool_use_id": hook_input["tool_use_id"]},
     )
-    assert pretool_output["permissionDecision"] == "allow"
-    assert permission.behavior == "allow"
+    assert pretool_output["permissionDecision"] == "deny"
+    assert permission.behavior == "deny"
     assert lifecycle_facts == []
     assert result.error is None
     assert result.capability_evidence == []
@@ -4087,10 +4088,8 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
 
 
 @pytest.mark.asyncio
-async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
-    monkeypatch, tmp_path
-):
-    captured, observed_before_result, deltas = {}, [], []
+async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, tmp_path):
+    captured, attach_results, deltas = {}, [], []
     (tmp_path / "outputs").mkdir()
     (tmp_path / "outputs" / "final.txt").write_text("final", encoding="utf-8")
     (tmp_path / "tasks").mkdir()
@@ -4100,8 +4099,7 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
     (skill_output / "report.docx").write_bytes(b"report")
 
     class AssistantMessage:
-        def __init__(self):
-            self.content = [TextBlock("internal draft")]
+        content = []
 
     class TextBlock:
         def __init__(self, text):
@@ -4112,22 +4110,8 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
         session_id = "sdk-session"
         usage = None
         model_usage = None
-        result = '{"answer":"wire json"}'
-        structured_output = {
-            "answer": "Final user answer",
-            "deliverables": [
-                {
-                    "source_path": "outputs/final.txt",
-                    "display_name": "final-report.txt",
-                    "role": "primary",
-                    "description": "Final report",
-                },
-                {
-                    "source_path": ".claude/skills/reporting/output/report.docx",
-                    "role": "supporting",
-                },
-            ],
-        }
+        result = "Final user answer"
+        structured_output = {"legacy": "ignored"}
         is_error = False
         errors = None
         stop_reason = "end_turn"
@@ -4138,11 +4122,62 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+            self.__dict__.update(kwargs)
+
+    def sdk_tool(name, description, input_schema):
+        def decorate(handler):
+            handler.name = name
+            handler.description = description
+            handler.input_schema = input_schema
+            return handler
+
+        return decorate
+
+    def create_sdk_mcp_server(name, *, version, tools):
+        return {
+            "type": "sdk",
+            "name": name,
+            "version": version,
+            "tools": tools,
+        }
 
     async def query(*, prompt, options):
-        del prompt, options
-        yield AssistantMessage()
-        observed_before_result.extend(deltas)
+        del prompt
+        attach_file = options.mcp_servers["ai-platform-response"]["tools"][0]
+        attach_results.append(
+            await attach_file(
+                {
+                    "path": "outputs/final.txt",
+                    "role": [],
+                }
+            )
+        )
+        attach_results.append(
+            await attach_file(
+                {
+                    "path": "outputs/final.txt",
+                    "display_name": "draft-name.txt",
+                }
+            )
+        )
+        attach_results.append(
+            await attach_file(
+                {
+                    "path": ".claude/skills/reporting/output/report.docx",
+                    "role": "supporting",
+                }
+            )
+        )
+        attach_results.append(
+            await attach_file(
+                {
+                    "path": "outputs/final.txt",
+                    "display_name": "final-report.txt",
+                    "role": "primary",
+                    "description": "Final report",
+                }
+            )
+        )
         yield ResultMessage()
 
     monkeypatch.setitem(
@@ -4155,7 +4190,9 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
                 ResultMessage=ResultMessage,
                 StreamEvent=type("StreamEvent", (), {}),
                 TextBlock=TextBlock,
+                create_sdk_mcp_server=create_sdk_mcp_server,
                 query=query,
+                tool=sdk_tool,
             ),
             captured,
         ),
@@ -4170,7 +4207,6 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
         on_text=deltas.append,
     )
 
-    assert observed_before_result == []
     assert "".join(deltas) == "Final user answer"
     assert result.error is None
     assert result.message == "Final user answer"
@@ -4185,16 +4221,39 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
         "description": "Final report",
     }
     assert "tasks/facts.json" not in result.response_files
-    assert captured["output_format"]["type"] == "json_schema"
-    assert captured["output_format"]["schema"]["required"] == [
-        "answer",
-        "deliverables",
+    assert attach_results[0]["is_error"] is True
+    assert [json.loads(item["content"][0]["text"]) for item in attach_results[1:]] == [
+        {"attached": True, "position": 0},
+        {"attached": True, "position": 1},
+        {"attached": True, "position": 0},
     ]
-    assert "ai-platform-response" not in captured["mcp_servers"]
+    assert "output_format" not in captured
+    assert "ai-platform-response" in captured["mcp_servers"]
 
 
 @pytest.mark.asyncio
-async def test_sdk_structured_tool_turn_publishes_safe_commentary_before_result(
+async def test_sdk_empty_result_is_not_a_successful_terminal(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, [], result_text="   "),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+    )
+
+    assert result.error == "claude_agent_sdk_missing_structured_terminal"
+    assert result.received_structured_terminal is True
+    assert not result.message.strip()
+
+
+@pytest.mark.asyncio
+async def test_sdk_tool_turn_publishes_safe_commentary_before_result(
     monkeypatch, tmp_path
 ):
     captured, candidates, observed_before_result, deltas = {}, [], [], []
@@ -4222,11 +4281,8 @@ async def test_sdk_structured_tool_turn_publishes_safe_commentary_before_result(
         session_id = "sdk-session"
         usage = None
         model_usage = None
-        result = '{"answer":"wire json","deliverables":[]}'
-        structured_output = {
-            "answer": "Final user answer",
-            "deliverables": [],
-        }
+        result = "Final user answer"
+        structured_output = {"legacy": "ignored"}
         is_error = False
         errors = None
         stop_reason = "end_turn"
@@ -4299,14 +4355,14 @@ async def test_sdk_structured_tool_turn_publishes_safe_commentary_before_result(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("structured_output", "expected_error"),
+    "structured_output",
     [
-        pytest.param(None, None, id="missing"),
-        pytest.param({}, "claude_agent_sdk_delivery_manifest_invalid", id="invalid"),
+        pytest.param(None, id="missing"),
+        pytest.param({}, id="present-but-unused"),
     ],
 )
-async def test_sdk_structured_output_is_optional_but_present_manifest_is_validated(
-    monkeypatch, tmp_path, structured_output, expected_error
+async def test_sdk_structured_output_does_not_control_plain_text_terminal(
+    monkeypatch, tmp_path, structured_output
 ):
     captured = {}
 
@@ -4356,11 +4412,12 @@ async def test_sdk_structured_output_is_optional_but_present_manifest_is_validat
         skill_id=None,
     )
 
-    assert result.error == expected_error
-    assert result.received_structured_terminal is (expected_error is None)
-    assert result.message == ("done" if expected_error is None else "")
+    assert result.error is None
+    assert result.received_structured_terminal is True
+    assert result.message == "done"
     assert result.response_files == []
     assert result.response_file_descriptors == []
+    assert "output_format" not in captured
 
 
 @pytest.mark.asyncio

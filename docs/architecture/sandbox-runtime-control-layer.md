@@ -152,14 +152,14 @@ roots, and the OpenSandbox attempt sentinel. Lexical and resolved paths must bot
 remain inside the workspace, which preserves traversal and symlink-escape
 protection.
 
-Artifact collection traverses ordinary workspace directories regardless of
-whether a Skill selected `output/`, `outputs/**/delivery/`, `tasks/`,
-`artifacts/`, `review/`, or another directory name. It continues to exclude
-inputs, installed Skills, platform/runtime state, debug/audit trees, native-tool
-scratch space, and platform instruction files. OpenSandbox collection validates
-every listed path before classifying it, traverses only ordinary directories,
-and downloads only ordinary files; SDK-classified `symlink` and `other` entries
-are ignored without dereferencing them, while missing or unknown entry types
+Artifact collection never enumerates the workspace. The Agent explicitly selects
+each final deliverable with the private `attach_file` tool, and OpenSandbox
+validates and downloads only that ordered path allowlist. A selected file may be
+in an ordinary workspace directory such as `output/`, `tasks/`, `artifacts/`, or
+`review/`; inputs, platform/runtime state, debug/audit trees, native-tool scratch
+space, and platform instruction files remain excluded. An authorized Skill may
+select a file below its exact staged `output/` directory, while the rest of the
+installed Skill stays private. Missing, unknown, symlink, and non-file entries
 fail closed. The former output-directory
 write allowlist and `outputs/**/delivery/`-only collection rule are retired
 together so a permitted write cannot disappear solely because of its path.
@@ -180,17 +180,17 @@ request with `run_in_background=true` currently fails closed because no
 RunAttempt-bound monitor owns that process. Its lifecycle must be separately
 bound to the RunAttempt and proved before that feature is enabled.
 
-`StructuredOutput` is separate from this local-tool capability set. When the
-adapter has enabled the SDK structured-output format, the exact SDK-generated
-`StructuredOutput` protocol call is admitted without ordinary tool lifecycle or
-capability evidence. `ResultMessage.structured_output` and the delivery manifest
-remain the sole terminal-answer and deliverable authority; a lookalike call is
-still denied when structured output is unavailable or its input shape is invalid.
+`attach_file` is a private in-process MCP tool with an exact platform-owned
+parameter contract and normal tool lifecycle evidence. It records file selection;
+it does not upload bytes, scan directories, or replace the assistant answer. The
+SDK's non-error terminal `ResultMessage` remains completion authority, while its
+ordinary `result` text and the ordered attachment selections remain separate
+terminal fields.
 
 A policy-only denial of an optional tool is not an executor failure when the SDK has
-already produced a structured answer: the executor returns the answer with
+already produced a final answer: the executor returns the answer with
 `tool_outcome=denied` and `tool_outcome_code=tool_permission_denied`. A required
-capability declaration, lifecycle/receipt mismatch, missing structured terminal,
+capability declaration, lifecycle/receipt mismatch, missing SDK terminal,
 or executor control-plane error remains fail-closed and terminally failed. This
 keeps recoverable tool outcomes separate from the Run outcome without adding a
 second Run status vocabulary.

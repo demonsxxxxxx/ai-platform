@@ -314,6 +314,7 @@ def collect_workspace_artifacts(
                         "source_executor": source_executor,
                         "workspace_output": path.relative_to(workspace_root).as_posix(),
                         "delivery_scope": "assistant_response",
+                        "delivery_position": index - 1,
                         **(
                             {"delivery_role": delivery_role}
                             if delivery_role is not None

@@ -39,9 +39,10 @@ they are not interchangeable:
 | --- | --- | --- |
 | `thinking_effort` | Canonical Run input control: `auto`, `low`, `medium`, or `high` | It changes provider effort, not SSE content visibility |
 | `agent_options.enable_thinking` | Legacy profile/Chat alias translated to `thinking_effort` at admission | Despite the name, it is not a boolean; legacy `off` means `auto` |
-| SDK `TextBlock` | Ordinary Assistant text from one complete provider message | In structured mode, text from a tool-using turn may become `commentary.delta`; it is not terminal-answer authority |
+| SDK `TextBlock` | Ordinary Assistant text from one complete provider message | Text from a tool-using turn may become `commentary.delta`; it is not terminal-answer authority |
 | SDK `ThinkingBlock` | Provider model-reasoning content | The current runner discards it and `thinking.display` is `omitted` |
-| `ResultMessage.structured_output.answer` | Structured-mode terminal answer authority | It does not include commentary, tool data, or Thinking content |
+| `ResultMessage.result` | Ordinary-text terminal answer authority | It does not include commentary, tool data, Thinking content, or file-publication metadata |
+| `attach_file` | Optional platform-owned response-file selection action | It publishes zero or more validated deliverables independently of terminal answer text |
 | `message.delta` | Public terminal-answer text chunk | It is rendered and copied as answer content |
 | `commentary.delta` | Disclosure-safe work-progress text from a complete tool-using Assistant turn | It is rendered as work activity and never appended to the answer or answer receipt |
 | `thinking.*` | Legacy public-reasoning compatibility events | The current runner does not emit them; retained readers do not make hidden model reasoning public |
@@ -76,9 +77,11 @@ answer cutoff. `message.completed` is metadata-only with
 and the completion never carries full text. `commentary.delta` is separately
 bounded to 8,192 code points and carries a stable `summary_id`; it is work
 activity from a complete tool-using Assistant turn, not answer content or
-capability evidence. Structured output remains the only terminal answer and
-deliverable authority. Worker, API, and frontend support for this closed event
-is deployed release-atomically because older v4 clients reject unknown events.
+capability evidence. The SDK terminal result closes ordinary assistant text;
+optional final files are selected separately through `attach_file` and projected
+as ordered artifact parts after storage succeeds. Worker, API, and frontend
+support for this closed event is deployed release-atomically because older v4
+clients reject unknown events.
 
 The Sandbox may enqueue only single-item callbacks containing one adjacent,
 already-projected `message.delta` event before this boundary. The worker batches

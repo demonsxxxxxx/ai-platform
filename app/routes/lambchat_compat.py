@@ -884,6 +884,60 @@ def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int,
         return (2**63 - 1, position)
 
 
+def _artifact_delivery_sort_key(row: dict[str, Any]) -> tuple[int, str, str]:
+    manifest = row.get("manifest_json")
+    delivery_position = None
+    if (
+        isinstance(manifest, dict)
+        and manifest.get("delivery_scope") == "assistant_response"
+        and isinstance(manifest.get("delivery_position"), int)
+        and not isinstance(manifest.get("delivery_position"), bool)
+        and int(manifest["delivery_position"]) >= 0
+    ):
+        delivery_position = int(manifest["delivery_position"])
+    return (
+        delivery_position if delivery_position is not None else 2**31 - 1,
+        str(row.get("created_at") or ""),
+        str(row.get("id") or ""),
+    )
+
+
+def _visible_assistant_artifacts(
+    run: dict[str, Any], artifacts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Select explicit response artifacts plus bounded legacy recovery rows."""
+
+    result = run.get("result_json")
+    legacy_artifact_ids: set[str] | None = None
+    if isinstance(result, dict) and isinstance(result.get("artifacts"), list):
+        legacy_artifact_ids = {
+            str(item.get("id"))
+            for item in result["artifacts"]
+            if isinstance(item, dict) and item.get("id")
+        }
+    preserve_unclassified_failure_artifacts = (
+        legacy_artifact_ids is None
+        and _platform_status(str(run.get("status") or ""))
+        in {"failed", "cancelled"}
+    )
+    visible = []
+    for artifact in artifacts:
+        artifact_id = str(artifact.get("id") or "")
+        manifest = artifact.get("manifest_json")
+        delivery_scope = (
+            manifest.get("delivery_scope") if isinstance(manifest, dict) else None
+        )
+        if delivery_scope == "assistant_response":
+            visible.append(artifact)
+        elif delivery_scope is not None:
+            continue
+        elif (
+            legacy_artifact_ids is not None and artifact_id in legacy_artifact_ids
+        ) or preserve_unclassified_failure_artifacts:
+            visible.append(artifact)
+    return visible
+
+
 def _answer_source_for_run(
     run: dict[str, Any],
     run_events: list[dict[str, Any]],
@@ -1256,8 +1310,8 @@ def _compatibility_events_for_run_page(
 
     flush_pending_answer_events()
     for artifact in sorted(
-        artifacts,
-        key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")),
+        _visible_assistant_artifacts(run, artifacts),
+        key=_artifact_delivery_sort_key,
     ):
         artifact_id = str(artifact["id"])
         public_artifact = artifact_card(artifact, principal=principal)

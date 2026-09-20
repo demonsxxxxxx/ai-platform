@@ -44,9 +44,11 @@ from app.control_plane_contracts import (
 )
 from app.db import transaction
 from app.execution.api import (
+    AnswerPersistenceLimits,
     WorkerAttemptLifecycle,
     WorkerExecutorReconciliation,
-    WorkerQueueLease, WorkerRunCancelled, AnswerPersistenceLimits, append_artifact_links,
+    WorkerQueueLease,
+    WorkerRunCancelled,
     bind_worker_attempt_lifecycle,
     build_artifact_execution_owner,
     build_artifact_records,
@@ -57,6 +59,7 @@ from app.execution.api import (
     promote_artifact_reservations,
     predispatch_failure_result as _pre_dispatch_failure_result, reconciliation_agent_profile_binding_matches as _reconciliation_agent_profile_binding_matches,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
+    sanitize_assistant_message,
     submit_run_until_cancelled as _submit_run_until_cancelled_with_owner,
     time,
     with_locked_run_model_snapshot as _with_locked_run_model_snapshot,
@@ -2729,7 +2732,7 @@ async def process_run_payload(
     result_payload = {
         **public_result,
         **observability,
-        "message": append_artifact_links(str(result.result.get("message") or ""), artifact_records),
+        "message": sanitize_assistant_message(str(result.result.get("message") or "")),
         "artifacts": [
             {
                 "id": item["id"],
@@ -2975,7 +2978,11 @@ async def process_run_payload(
                              if assistant_message_for_persistence is not None
                              else str(result_payload.get("message") or "")),
                     metadata_json={
-                        "artifact_count": len(result.artifacts),
+                        "artifact_count": len(artifact_records),
+                        "artifact_ids": [
+                            artifact["id"] for artifact in artifact_records
+                        ],
+                        "artifact_delivery": "assistant_message_parts_v1",
                         "executor_type": result.executor_type,
                         "adapter_version": result.adapter_version,
                         **assistant_message_metadata,

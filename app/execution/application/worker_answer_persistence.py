@@ -27,7 +27,9 @@ class WorkerAnswerMaterialization:
     assistant_message_metadata: dict[str, Any]
 
 
-def _strip_local_output_paths(message: str) -> str:
+def sanitize_assistant_message(message: str) -> str:
+    """Remove legacy local-path hints without mixing artifacts into answer text."""
+
     lines = []
     for line in message.splitlines():
         stripped = line.strip()
@@ -35,15 +37,6 @@ def _strip_local_output_paths(message: str) -> str:
             continue
         lines.append(line)
     return "\n".join(lines).strip()
-
-
-def append_artifact_links(message: str, artifact_records: list[dict[str, Any]]) -> str:
-    base = _strip_local_output_paths(message)
-    if not artifact_records:
-        return base
-    links = [f"- {item['label']}: {item['download_url']}" for item in artifact_records]
-    suffix = "输出文件:\n" + "\n".join(links)
-    return f"{base}\n\n{suffix}" if base else suffix
 
 
 def _bounded_answer_persistence(
@@ -127,10 +120,7 @@ async def materialize_worker_answer(
             assistant_message_metadata={},
         )
 
-    reconstructed_message = append_artifact_links(
-        reconstructed.text,
-        artifact_records,
-    )
+    reconstructed_message = sanitize_assistant_message(reconstructed.text)
     (
         materialized_payload,
         assistant_message_for_persistence,
@@ -153,6 +143,6 @@ async def materialize_worker_answer(
 __all__ = [
     "AnswerPersistenceLimits",
     "WorkerAnswerMaterialization",
-    "append_artifact_links",
     "materialize_worker_answer",
+    "sanitize_assistant_message",
 ]
