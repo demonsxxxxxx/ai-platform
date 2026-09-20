@@ -448,7 +448,7 @@ function AgentMarketCatalog({
 
   return (
     <main data-agent-market className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--theme-workbench-canvas)]">
-      <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+      <div className="flex w-full flex-col min-h-0 flex-1 overflow-hidden px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <header className="shrink-0 grid gap-4 lg:grid-cols-[minmax(12rem,1fr)_minmax(0,34rem)_minmax(6rem,1fr)] lg:items-center">
           <div className="min-w-0">
             <h1 className="text-xl font-semibold">专家市场</h1>
