@@ -170,7 +170,9 @@ _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_EXECUTION_RECEIPT_INCOMPLETE = "claude_agent_sdk_execution_receipt_incomplete"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 _SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
-_SDK_NATIVE_COMPACT_FAILED = "context_native_compact_failed"
+_SDK_AUTOCOMPACT_TARGET_PERCENT = 80
+_SDK_AUTOCOMPACT_MIN_TOKENS = 100_000
+_SDK_AUTOCOMPACT_MAX_TOKENS = 1_000_000
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
 _MAX_TURN_DIAGNOSTIC_COUNTER = 1_000_000
 _MAX_PUBLIC_DIAGNOSTIC_SKILLS = 16
@@ -193,6 +195,10 @@ _PUBLIC_DIAGNOSTIC_COUNTERS = (
 _TURN_LIMIT_ERROR_PATTERN = re.compile(
     r"(?:reached\s+)?maximum\s+(?:number\s+of\s+)?turns|"
     r"max(?:imum)?[_ -]?turns?(?:[_ -]?(?:exceeded|reached))?",
+    re.IGNORECASE,
+)
+_CONTEXT_LIMIT_ERROR_PATTERN = re.compile(
+    r"prompt\s+is\s+too\s+long|request\s+too\s+large|max\s+32mb",
     re.IGNORECASE,
 )
 _SDK_SKILL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -548,8 +554,11 @@ def _canonical_sdk_error(
         return _SDK_TIMEOUT
     if error_text == _SDK_MISSING_STRUCTURED_TERMINAL:
         return _SDK_MISSING_STRUCTURED_TERMINAL
-    if error_text == _SDK_NATIVE_COMPACT_FAILED:
-        return _SDK_NATIVE_COMPACT_FAILED
+    if (
+        terminal in {"image_error", "prompt_too_long"}
+        or _CONTEXT_LIMIT_ERROR_PATTERN.search(error_text)
+    ):
+        return _SDK_UPSTREAM_ERROR
     if selected_skill_error:
         return selected_skill_error
     if tool_admission_denials > 0:
@@ -665,6 +674,16 @@ def _sdk_permission_type(sdk: object, name: str):
             self.interrupt = interrupt
 
     return PermissionResult
+
+
+def _sdk_autocompact_window(model_max_input_tokens: int | None) -> int | None:
+    if model_max_input_tokens is None:
+        return None
+    target = model_max_input_tokens * _SDK_AUTOCOMPACT_TARGET_PERCENT // 100
+    return min(
+        _SDK_AUTOCOMPACT_MAX_TOKENS,
+        max(_SDK_AUTOCOMPACT_MIN_TOKENS, target),
+    )
 
 
 def build_sdk_env(*, cwd: Path | None = None, model_max_output_tokens: int | None = None) -> dict[str, str]:
@@ -2616,11 +2635,7 @@ async def run_claude_agent_sdk(
             }
         )
 
-    compact_in_progress = False
-
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
-        if compact_in_progress:
-            return PermissionResultDeny(message="native_compact_tools_forbidden")
         decision = policy_for_tool(tool_name, tool_input)
         context_tool_use_id = permission_context_tool_use_id(_context)
         record_runtime_tool_stage(
@@ -2655,9 +2670,6 @@ async def run_claude_agent_sdk(
         nonlocal mcp_execution_conflicted
         hook_input_is_mapping = isinstance(hook_input, dict)
         hook_input = hook_input if hook_input_is_mapping else {}
-        if compact_in_progress:
-            return {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                    "permissionDecisionReason": "native_compact_tools_forbidden"}
         tool_name = ""
         if not hook_input_is_mapping:
             decision = evaluate_tool_policy(tool={})
@@ -3091,6 +3103,11 @@ async def run_claude_agent_sdk(
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd, model_max_output_tokens=model_max_output_tokens),
+        extra_args=(
+            {"autocompact": str(_sdk_autocompact_window(model_max_input_tokens))}
+            if model_max_input_tokens is not None
+            else {}
+        ),
         skills=configured_skills,
         max_turns=max_turns,
         can_use_tool=can_use_tool,
@@ -3219,45 +3236,15 @@ async def run_claude_agent_sdk(
         return True
 
     async def _client_messages() -> AsyncIterator[Any]:
-        nonlocal compact_in_progress
         if client_factory is None:
             raise RuntimeError("sdk_client_unavailable")
         client = client_factory(options)
         try:
             await client.connect()
-            context_usage = await client.get_context_usage()
-            used = context_usage.get("totalTokens") if isinstance(context_usage, dict) else None
-            if type(used) is not int or used < 0:
-                raise RuntimeError("sdk_context_usage_invalid")
-            prompt_ceiling = len(sdk_prompt.encode("utf-8"))
-            if (provider_session_resume_required and model_max_input_tokens is not None
-                and used + prompt_ceiling >= model_max_input_tokens):
-                compact_in_progress = True
-                try:
-                    await client.set_permission_mode("dontAsk")
-                    await client.query("/compact", session_id=session_id or "default")
-                    terminal = None
-                    async for private in client.receive_response():
-                        if isinstance(private, AssistantMessage) and any(
-                            type(block).__name__ == "ToolUseBlock" for block in private.content
-                        ):
-                            raise ValueError(_SDK_NATIVE_COMPACT_FAILED)
-                        if isinstance(private, ResultMessage):
-                            terminal = private
-                    if (terminal is None or terminal.is_error
-                        or terminal.session_id != session_id):
-                        raise ValueError(_SDK_NATIVE_COMPACT_FAILED)
-                    await client.set_permission_mode(permission_mode)
-                except Exception as exc:
-                    raise ValueError(_SDK_NATIVE_COMPACT_FAILED) from exc
-                finally:
-                    compact_in_progress = False
-                context_usage = await client.get_context_usage()
-                after = context_usage.get("totalTokens") if isinstance(context_usage, dict) else None
-                if type(after) is not int or after < 0 or after + prompt_ceiling >= model_max_input_tokens:
-                    raise ValueError(_SDK_NATIVE_COMPACT_FAILED)
-            await client.query(_sdk_user_prompt_stream(sdk_prompt, session_id=session_id),
-                               session_id=session_id or "default")
+            await client.query(
+                _sdk_user_prompt_stream(sdk_prompt, session_id=session_id),
+                session_id=session_id or "default",
+            )
             async for message in client.receive_response():
                 yield message
         finally:

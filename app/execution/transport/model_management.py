@@ -194,8 +194,6 @@ async def proxy_model_request(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if str(exc) == "model_proxy_max_tokens_invalid":
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if str(exc) == "context_bootstrap_input_too_large":
-            raise HTTPException(status_code=413, detail=str(exc)) from exc
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(

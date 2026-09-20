@@ -53,6 +53,7 @@ types used by this adapter.
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
+| Automatic compaction | Bundled CLI `2.1.222` owns ongoing auto-compaction and accepts `--autocompact` windows from 100k through 1M | The runner targets 80% of the immutable Run input ceiling, bounds it to the public CLI range, and does not issue `/compact` when opening or resuming a session |
 | Process context | `cwd` and `env` remain supported | The runner supplies the governed workspace and an allowlisted environment |
 | Abort/cancel | `query` has no explicit interrupt method; task cancellation closes iterator/subprocess work | Outer cancellation propagates; SDK abort terminal reasons map to cancellation |
 
@@ -60,6 +61,29 @@ The target wheel is also exercised in an isolated local environment without a
 model or network call. That smoke imports the installed distribution, checks
 metadata and signatures, constructs every option and hook shape used here, and
 instantiates the stream and terminal message types.
+
+## SDK-native automatic compaction
+
+Execution computes an automatic-compaction target at 80% of the immutable Run
+`max_input_tokens` and passes the result through
+`ClaudeAgentOptions.extra_args["autocompact"]`. The target is bounded to the
+CLI's public 100k-1M range. Claude Code still owns its output reserve and safety
+buffer, so its actual compaction point may be earlier than the platform target.
+Targets below 100k use the CLI minimum and depend on the hard model proxy gate's
+Anthropic-shaped prompt-too-long response for reactive compaction; targets
+above 1M compact conservatively at 1M. `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
+continues to carry the independent output ceiling. The inherited
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` remains scrubbed because the platform does not
+own a separate raw total-context value.
+
+This replaces the runner-authored resume preflight that inspected context usage
+and issued `/compact` before the business query. That preflight, its private
+permission-mode branch, `context_native_compact_failed`, and the bootstrap-only
+413 response are retired together. The count-tokens gate remains enforced for
+every request; all conversation modes now return the same bounded Anthropic
+`invalid_request_error` with a `prompt is too long` message so the pinned CLI
+can run its native reactive path. HTTP request-body size limits and their 413
+response are unchanged.
 
 ## Change Contract: public answer projection failures
 

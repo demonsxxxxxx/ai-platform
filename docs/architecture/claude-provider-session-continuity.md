@@ -30,7 +30,15 @@ migration bridge and must not own or grow this orchestration.
 The old per-Run `sdk_session_id_for_run`, `has_main_transcript`, 64-candidate,
 and 8192-byte conversation selectors are retired from production execution.
 The superseded provider-session infrastructure and direct SDK adapter tests
-have also been removed.
+have also been removed. Claude Code owns ongoing automatic compaction during
+both fresh and resumed execution; opening or resuming a provider session does
+not issue a platform-authored `/compact` command. The runner targets automatic
+compaction at 80% of the Run-frozen maximum input and bounds that target to the
+CLI's public 100k-1M window range. Claude Code retains its own output reserve
+and safety buffer, so the actual compact point may be earlier. Targets below
+the CLI minimum use 100k and rely on the model proxy's native prompt-too-long
+response for reactive compaction; targets above the maximum compact
+conservatively at 1M.
 
 ## 1. Problem
 
@@ -144,10 +152,10 @@ runtime changes are in scope.
     config path becomes durable.
 13. **Single SDK runtime:** Claude execution uses `ClaudeSDKClient` for both
     fresh and resumed sessions. MCP activation completes before client
-    construction and remains active through usage inspection, optional native
-    compaction, business execution, message consumption, cancellation, and
-    disconnect. The legacy top-level SDK `query()` path is not a runtime
-    fallback.
+    construction and remains active through SDK-owned automatic compaction,
+    business execution, message consumption, cancellation, and disconnect.
+    The runner never issues a session-open `/compact`, and the legacy top-level
+    SDK `query()` path is not a runtime fallback.
 
 ### Acceptance
 
@@ -170,6 +178,12 @@ runtime changes are in scope.
 - The runner fails closed when `ClaudeSDKClient` is unavailable and never
   degrades to the legacy top-level SDK `query()` path; selected MCP sessions
   are active before the client is constructed.
+- Fresh and resumed executions use the same CLI-owned automatic compaction
+  lifecycle. The runner passes an 80%-of-maximum-input target through
+  `--autocompact`, bounded to the CLI's public range, never issues `/compact`
+  on session open, and receives the same Anthropic-shaped prompt-too-long
+  response for `empty_start`, `platform_bootstrap`, and `native_resume` when
+  the hard input gate is crossed.
 - Focused unit, route, schema, worker-adapter, sandbox-executor, and installed
   SDK contract checks pass through the repository local test-stage runner.
 - Architecture governance reports no new frozen-hot-file growth.
@@ -180,6 +194,10 @@ At minimum, tests must fail if any of these regressions occur:
 
 - provider identity returns to per-Run UUIDs;
 - `session_id` and `resume` are passed together;
+- the runner issues `/compact` while opening or resuming a session;
+- the frozen input ceiling is not reflected in the CLI automatic-compaction
+  window, or a proxy over-limit response bypasses Claude Code's native
+  prompt-too-long handling;
 - a missing resume silently starts fresh;
 - append responds before commit or skips active-attempt authorization;
 - transcript scope can be selected by sandbox-provided tenant/user fields;

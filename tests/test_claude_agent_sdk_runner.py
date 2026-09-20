@@ -9,6 +9,8 @@ from tests.support.claude_mcp import install_mcp_sessions
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
+    _canonical_sdk_error,
+    _sdk_autocompact_window,
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
 )
@@ -72,6 +74,37 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("model_max_input_tokens", "expected"),
+    [
+        (None, None),
+        (32_000, 100_000),
+        (100_000, 100_000),
+        (125_000, 100_000),
+        (200_000, 160_000),
+        (1_000_000, 800_000),
+        (2_000_000, 1_000_000),
+    ],
+)
+def test_sdk_autocompact_window_targets_eighty_percent_within_cli_bounds(
+    model_max_input_tokens, expected
+):
+    assert _sdk_autocompact_window(model_max_input_tokens) == expected
+
+
+def test_context_limit_error_outranks_prior_tool_denial():
+    assert _canonical_sdk_error(
+        ["prompt is too long: 100001 tokens > 100000 maximum"],
+        terminal_reason="prompt_too_long",
+        tool_admission_denials=1,
+    ) == "claude_agent_sdk_upstream_error"
+    assert _canonical_sdk_error(
+        ["Request too large (max 32MB)"],
+        terminal_reason="image_error",
+        tool_admission_denials=1,
+    ) == "claude_agent_sdk_upstream_error"
 
 
 def _settings():
@@ -206,12 +239,6 @@ def _client_sdk(module, captured):
 
         async def connect(self):
             captured["client_connected"] = True
-
-        async def get_context_usage(self):
-            return {"totalTokens": 0}
-
-        async def set_permission_mode(self, mode):
-            captured["client_permission_mode"] = mode
 
         async def query(self, prompt, session_id="default"):
             assert session_id
@@ -5204,21 +5231,20 @@ async def test_sdk_mirror_error_is_a_private_fail_closed_provider_failure(monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("compact_tool_attempt", [False, True])
-async def test_native_client_compact_is_private_and_fails_closed_on_a_tool_attempt(
-    monkeypatch, tmp_path, compact_tool_attempt,
+@pytest.mark.parametrize("resume_required", [False, True])
+async def test_native_client_delegates_compaction_to_cli_without_session_open_query(
+    monkeypatch, tmp_path, resume_required
 ):
     captured = {}
     sdk = _fake_sdk(captured, hook_invocations=[])
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
-    published = []
 
     class Store:
         accepted_final_sequence = 1
 
         async def load(self, _key):
-            return [{"uuid": "entry-1"}]
+            return [{"uuid": "entry-1"}] if resume_required else None
 
         async def append(self, _key, _entries):
             return None
@@ -5226,40 +5252,16 @@ async def test_native_client_compact_is_private_and_fails_closed_on_a_tool_attem
     class Client:
         def __init__(self, options):
             self.options = options
-            self.after_compact = False
             self.responses = None
 
         async def connect(self):
             captured["connected"] = True
 
-        async def get_context_usage(self):
-            return {"totalTokens": 128 if self.after_compact else 31990}
-
-        async def set_permission_mode(self, mode):
-            assert mode == "dontAsk"
-
         async def query(self, prompt, session_id="default"):
-            if prompt == "/compact":
-                self.after_compact = True
-                captured["compact"] = True
-                denial = await self.options.can_use_tool("Bash", {"command": "do work"}, None)
-                assert denial.behavior == "deny" and denial.message == "native_compact_tools_forbidden"
-                terminal = sdk.ResultMessage()
-                terminal.session_id = "stable-provider-id"
-
-                async def private_response():
-                    if compact_tool_attempt:
-                        class ToolUseBlock:
-                            pass
-                        yield sdk.AssistantMessage([ToolUseBlock()])
-                    else:
-                        yield sdk.AssistantMessage([types.SimpleNamespace(text="private compact transcript")])
-                    yield terminal
-
-                self.responses = private_response()
-            else:
-                captured["business_query"] = True
-                self.responses = sdk.query(prompt=prompt, options=self.options)
+            assert prompt != "/compact"
+            captured["business_query"] = True
+            captured["query_session_id"] = session_id
+            self.responses = sdk.query(prompt=prompt, options=self.options)
 
         async def receive_response(self):
             async for message in self.responses:
@@ -5269,17 +5271,25 @@ async def test_native_client_compact_is_private_and_fails_closed_on_a_tool_attem
             captured["disconnected"] = True
 
     result = await run_claude_agent_sdk(
-        prompt="continue with recent user request", cwd=tmp_path,
-        skill_id=None, session_id="stable-provider-id", session_store=Store(),
-        provider_session_resume_required=True, model_max_input_tokens=32000,
-        model_max_output_tokens=2048, client_fn=Client,
-        on_text=lambda text: published.append(text),
+        prompt="continue with recent user request",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+        provider_session_resume_required=resume_required,
+        model_max_input_tokens=100_000,
+        model_max_output_tokens=36_500,
+        client_fn=Client,
     )
-    assert captured["compact"] and captured["disconnected"]
-    assert "private compact transcript" not in str(published)
-    if compact_tool_attempt:
-        assert result.error == "context_native_compact_failed" and not captured.get("business_query")
-        assert result.message == "" and not published
-    else:
-        assert result.error is None and captured["business_query"]
-        assert result.provider_final_sequence == 1
+
+    assert result.error is None
+    assert result.provider_final_sequence == 1
+    assert (
+        captured["connected"]
+        and captured["business_query"]
+        and captured["disconnected"]
+    )
+    assert captured["query_session_id"] == "stable-provider-id"
+    assert captured["extra_args"] == {"autocompact": "100000"}
+    assert captured["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "36500"
+    assert captured["env"].get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") in {None, ""}
