@@ -604,7 +604,7 @@ test("market search commits Chinese IME text only after composition ends", async
       await Promise.resolve();
     });
 
-    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 9);
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 10);
     const moreTags = container.querySelector("details");
     assert.ok(moreTags, "additional market tags stay reachable without a sidebar");
     const eighthTag = moreTags.querySelectorAll("button")
@@ -623,15 +623,7 @@ test("market search commits Chinese IME text only after composition ends", async
       await Promise.resolve();
     });
     assert.equal(currentPath, "/agent-market");
-    const pageTwo = container
-      .querySelectorAll("button")
-      .find((button) => button.textContent === "2");
-    assert.ok(pageTwo);
-    await React.act(async () => {
-      pageTwo.dispatchEvent({ type: "click", bubbles: true });
-      await Promise.resolve();
-    });
-    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 10);
 
     const search = container.querySelector("[data-agent-market-search]");
     assert.ok(search);

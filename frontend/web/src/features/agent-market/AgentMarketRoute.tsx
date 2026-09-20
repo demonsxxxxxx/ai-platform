@@ -26,7 +26,6 @@ import {
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
-import { Pagination } from "../../components/common/Pagination";
 
 type LoadPhase = "loading" | "ready" | "error" | "unavailable";
 interface LoadState<T> {
@@ -43,7 +42,6 @@ function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error
 }
 
 const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的专家，请稍后重新加载。";
-const MARKET_PAGE_SIZE = 9;
 type MarketView = "grid" | "list";
 type MarketSort = "default" | "tasks" | "recent";
 
@@ -221,7 +219,7 @@ function ExpertMarketCard({
   return (
     <article
       data-agent-market-card
-      className={`group flex min-w-0 flex-col overflow-hidden rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_3px_rgba(15,23,42,0.05)] transition-[border-color,box-shadow] hover:border-[var(--theme-primary)] hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
+      className={`group flex min-w-0 flex-col overflow-hidden rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_3px_rgba(15,23,42,0.05)] [content-visibility:auto] [contain-intrinsic-size:0_17rem] transition-[border-color,box-shadow] hover:border-[var(--theme-primary)] hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
         listView ? "sm:min-h-36 sm:flex-row" : "min-h-[17rem]"
       }`}
     >
@@ -332,7 +330,6 @@ function AgentMarketCatalog({
   const searchQuery = searchParams.get("q") ?? "";
   const [searchInput, setSearchInput] = useState(searchQuery);
   const isSearchComposing = useRef(false);
-  const [page, setPage] = useState(1);
   const [view, setView] = useState<MarketView>("grid");
   const [sort, setSort] = useState<MarketSort>("default");
   const [tagSearch, setTagSearch] = useState("");
@@ -380,20 +377,6 @@ function AgentMarketCatalog({
     });
   }, [activeTab, activeTags, catalog.value, searchQuery, sort]);
 
-  const pageCount = Math.max(1, Math.ceil(visibleProfiles.length / MARKET_PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount);
-  const paginatedProfiles = useMemo(
-    () => visibleProfiles.slice(
-      (currentPage - 1) * MARKET_PAGE_SIZE,
-      currentPage * MARKET_PAGE_SIZE,
-    ),
-    [currentPage, visibleProfiles],
-  );
-
-  useEffect(() => {
-    if (page !== currentPage) setPage(currentPage);
-  }, [currentPage, page]);
-
   const handleOpenWorkspace = useCallback(
     (profile: AgentProfilePublicProjection) => {
       navigate(buildAgentMarketWorkspacePath(profile));
@@ -414,7 +397,6 @@ function AgentMarketCatalog({
         for (const selectedTag of selectedTags) next.append("tag", selectedTag);
         next.delete("tab");
       }
-      setPage(1);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -426,7 +408,6 @@ function AgentMarketCatalog({
       if (tab === "tags") next.delete("tab");
       else next.set("tab", "favorites");
       if (tab === "favorites") next.delete("tag");
-      setPage(1);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -437,7 +418,6 @@ function AgentMarketCatalog({
       const next = new URLSearchParams(searchParams);
       if (query) next.set("q", query);
       else next.delete("q");
-      setPage(1);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -456,22 +436,20 @@ function AgentMarketCatalog({
   }, [refresh]);
   const handleSort = useCallback((nextSort: MarketSort) => {
     setSort(nextSort);
-    setPage(1);
   }, []);
   const handleView = useCallback((nextView: MarketView) => {
     setView(nextView);
   }, []);
   const handleClearFilters = useCallback(() => {
-    setPage(1);
     setSort("default");
     setTagSearch("");
     setSearchParams(new URLSearchParams(), { replace: true });
   }, [setSearchParams]);
 
   return (
-    <main data-agent-market className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]">
-      <div className="flex w-full flex-col px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-        <header className="grid gap-4 lg:grid-cols-[minmax(12rem,1fr)_minmax(0,34rem)_minmax(6rem,1fr)] lg:items-center">
+    <main data-agent-market className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--theme-workbench-canvas)]">
+      <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <header className="shrink-0 grid gap-4 lg:grid-cols-[minmax(12rem,1fr)_minmax(0,34rem)_minmax(6rem,1fr)] lg:items-center">
           <div className="min-w-0">
             <h1 className="text-xl font-semibold">专家市场</h1>
             <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">找到最适合您项目的专家伙伴</p>
@@ -528,9 +506,9 @@ function AgentMarketCatalog({
           </button>
         </header>
 
-        <div className="mt-5 min-w-0">
-          <section className="min-w-0">
-            <div className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 sm:p-4">
+        <div className="mt-5 flex min-h-0 min-w-0 flex-1 flex-col">
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="shrink-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 sm:p-4">
               <div data-agent-market-filter aria-label="市场标签" className="flex flex-wrap items-center gap-2" role="group">
                 <button
                   aria-pressed={activeTab === "tags" && activeTags.length === 0}
@@ -647,6 +625,7 @@ function AgentMarketCatalog({
               </div>
             </div>
 
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
             {catalog.phase === "error" ? (
           <CatalogError error={catalog.error ?? MARKET_CATALOG_LOAD_ERROR} refresh={handleRefresh} />
         ) : catalog.phase === "loading" ? (
@@ -680,9 +659,9 @@ function AgentMarketCatalog({
             <section
               aria-label="已发布专家"
               data-agent-market-catalog
-              className={view === "grid" ? "mt-4 grid grid-cols-[repeat(auto-fill,minmax(min(100%,13.5rem),1fr))] gap-3" : "mt-4 flex flex-col gap-3"}
+              className={view === "grid" ? "mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5" : "mt-4 flex flex-col gap-3"}
             >
-              {paginatedProfiles.map((profile) => (
+              {visibleProfiles.map((profile) => (
                 <ExpertMarketCard
                   key={`${profile.agent_id}:${profile.expected_revision}`}
                   profile={profile}
@@ -704,16 +683,9 @@ function AgentMarketCatalog({
                 />
               ))}
             </section>
-            <div className="mt-6">
-              <Pagination
-                page={currentPage}
-                pageSize={MARKET_PAGE_SIZE}
-                total={visibleProfiles.length}
-                onChange={setPage}
-              />
-            </div>
           </>
         )}
+            </div>
           </section>
         </div>
       </div>
