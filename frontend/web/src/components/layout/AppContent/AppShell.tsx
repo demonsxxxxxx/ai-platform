@@ -96,7 +96,7 @@ export function AppShell({
   allowNewSessionAction = true,
   newSessionActionLabel,
   chatIdentity,
-  showHeaderUserMenu = true,
+  showHeaderUserMenu = false,
 }: AppShellProps) {
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
