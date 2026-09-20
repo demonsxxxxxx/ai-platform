@@ -440,6 +440,7 @@ export const SessionSidebar = forwardRef<
               onOpenAgentMarket={() => navigate("/agent-market")}
               onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
               onOpenSkills={() => navigate("/skills")}
+              onOpenPluginMarket={() => navigateWorkbenchItem("pluginMarket")}
               onOpenMcp={() => navigate("/mcp")}
               onOpenModels={() => navigateWorkbenchItem("models")}
               onOpenRuns={() => navigateWorkbenchItem("runs")}
@@ -481,6 +482,7 @@ export const SessionSidebar = forwardRef<
           onOpenAgentMarket={() => navigate("/agent-market")}
           onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
           onOpenSkills={() => navigate("/skills")}
+          onOpenPluginMarket={() => navigateWorkbenchItem("pluginMarket")}
           onOpenMcp={() => navigate("/mcp")}
           onOpenModels={() => navigateWorkbenchItem("models")}
           onOpenRuns={() => navigateWorkbenchItem("runs")}

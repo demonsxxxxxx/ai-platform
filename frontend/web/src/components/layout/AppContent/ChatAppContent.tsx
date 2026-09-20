@@ -1332,7 +1332,6 @@ export function ChatAppContent({
           />
         ) : undefined
       }
-      showHeaderUserMenu={!agentWorkspace}
       sidebar={
         <SessionSidebar
           ref={sidebarRef}

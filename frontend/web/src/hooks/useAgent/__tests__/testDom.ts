@@ -108,6 +108,12 @@ class TestElement extends TestNode {
     return this.tagName.toUpperCase();
   }
 
+  get options() {
+    return this.tagName.toLowerCase() === "select"
+      ? this.querySelectorAll("option")
+      : [];
+  }
+
   get innerHTML() {
     return this.html;
   }

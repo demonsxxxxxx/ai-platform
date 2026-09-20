@@ -359,6 +359,8 @@ async def company_credential_handoff(
     response: Response,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, str]:
+    """Return the current company JWT to approved same-origin handoff clients."""
+
     try:
         credential = await get_mcp_principal_jwt_store().get(principal)
     except McpRuntimeContextError as exc:

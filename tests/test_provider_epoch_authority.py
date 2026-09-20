@@ -45,6 +45,7 @@ class Connection:
         self.rows: list[dict[str, Any]] = []
         self.terminal_row: dict[str, Any] | None = None
         self.release_row: dict[str, Any] | None = None
+        self.provider_entries: list[dict[str, Any]] = []
 
     async def execute(self, sql, params=()):
         values = tuple(params)
@@ -74,6 +75,16 @@ class Connection:
             return Cursor(self.terminal_row)
         if "select id, run_id, role, content, created_at from messages" in sql:
             return Cursor(rows=self.rows)
+        if "select count(*) as main_entry_count" in sql:
+            epoch_id, start_sequence = values
+            main_entry_count = sum(
+                1
+                for entry in self.provider_entries
+                if entry.get("epoch_id") == epoch_id
+                and entry.get("sequence", 0) >= start_sequence
+                and entry.get("subpath") == ""
+            )
+            return Cursor({"main_entry_count": main_entry_count})
         return Cursor()
 
 
@@ -204,6 +215,21 @@ async def test_assistant_coverage_is_verified_before_turn_epoch_and_head_updates
             assistant_message_id="msg-assistant", final_sequence=2,
         )
     assert not any(sql.startswith("update provider_turn_receipts") for sql in conn.calls)
+    conn.provider_entries = [
+        {"epoch_id": "pe-old", "sequence": 99, "subpath": ""},
+        {"epoch_id": "pe-a", "sequence": 0, "subpath": ""},
+        {"epoch_id": "pe-a", "sequence": 1, "subpath": "child-agent"},
+        {"epoch_id": "pe-a", "sequence": 1, "subpath": ""},
+    ]
+    conn.calls.clear()
+    conn.params.clear()
+    await provider_epochs.commit_provider_turn(
+        conn, tenant_id="tenant-a", run_id="run-current", attempt_id="attempt-a",
+        assistant_message_id="msg-assistant", final_sequence=None,
+    )
+    updates = [(sql, params) for sql, params in zip(conn.calls, conn.params) if sql.startswith("update")]
+    assert updates[0][1][0] == 1
+
     conn.calls.clear()
     conn.params.clear()
     await provider_epochs.commit_provider_turn(
@@ -217,3 +243,17 @@ async def test_assistant_coverage_is_verified_before_turn_epoch_and_head_updates
     expected = extend_source_digest(receipt["source_sha256"], conn.rows)
     assert updates[0][1][2] == updates[1][1][0] == expected
     assert updates[1][1][2] == 2
+
+    conn.provider_entries = [
+        {"epoch_id": "pe-old", "sequence": 99, "subpath": ""},
+        {"epoch_id": "pe-a", "sequence": 0, "subpath": ""},
+        {"epoch_id": "pe-a", "sequence": 1, "subpath": "child-agent"},
+    ]
+    with pytest.raises(
+        ProviderSessionConflictError,
+        match="provider_session_terminal_receipt_invalid",
+    ):
+        await provider_epochs.commit_provider_turn(
+            conn, tenant_id="tenant-a", run_id="run-current", attempt_id="attempt-a",
+            assistant_message_id="msg-assistant", final_sequence=None,
+        )

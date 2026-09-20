@@ -58,6 +58,8 @@ test("SessionListContent gives ordinary users a Chinese Agent Market entry and a
   assert.match(source, /label: "专家市场"/);
   assert.match(source, /key: "agentBuilder"/);
   assert.match(source, /label: "专家管理"/);
+  assert.match(source, /key: "pluginMarket"/);
+  assert.match(source, /canAccessWorkbenchItem\(user, key\)/);
 
   const railSource = readFileSync(
     join(process.cwd(), "src/components/panels/SidebarParts/SidebarRail.tsx"),
@@ -72,8 +74,15 @@ test("SessionListContent gives ordinary users a Chinese Agent Market entry and a
   assert.match(railSource, /isRailItemActive\("agentBuilder"\)/);
   assert.match(railSource, /title="专家市场"/);
   assert.match(railSource, /title="专家管理"/);
+  assert.match(railSource, /canAccessWorkbenchItem\(user, "pluginMarket"\)/);
+  assert.match(railSource, /itemKey="pluginMarket"/);
   assert.equal(
     (sidebarSource.match(/onOpenAgentBuilder=\{\(\) => navigateWorkbenchItem\("agentBuilder"\)\}/g) ?? [])
+      .length,
+    2,
+  );
+  assert.equal(
+    (sidebarSource.match(/onOpenPluginMarket=\{\(\) => navigateWorkbenchItem\("pluginMarket"\)\}/g) ?? [])
       .length,
     2,
   );

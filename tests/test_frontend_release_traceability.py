@@ -25,6 +25,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:company-rbac-browser-smoke-source "
     "&& corepack pnpm run test:skill-admin-ui "
     "&& corepack pnpm run test:run-monitor "
+    "&& corepack pnpm run test:profile-drive "
     "&& corepack pnpm run test:control-plane-ui "
     "&& corepack pnpm run test:sse "
     "&& eslint . && tsc -b && vite build "
@@ -586,12 +587,17 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     runtime_dockerfile = dockerfile.split(f"FROM {nginx_base} AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
     nginx_template = Path("frontend/web/nginx.conf.template").read_text(encoding="utf-8")
+    vite_config = Path("frontend/web/vite.config.ts").read_text(encoding="utf-8")
+    environment_example = Path("deploy/ai-platform/.env.example").read_text(encoding="utf-8")
     health_proxy = nginx_template.split("location = /api/ai/health {", 1)[1].split(
         "    }", 1
     )[0]
     auth_proxy = nginx_template.split("location ~ ^/api/(?:ai/)?auth/ {", 1)[1].split(
         "    }", 1
     )[0]
+    profile_drive_proxy = nginx_template.split(
+        "location ^~ /api/profile-drive/ {", 1
+    )[1].split("    }", 1)[0]
     compose_overlay = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     runtime_compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     provenance_script = Path("frontend/web/scripts/write-build-provenance.mjs").read_text(encoding="utf-8")
@@ -680,6 +686,15 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "proxy_connect_timeout 3s;" in auth_proxy
     assert "proxy_read_timeout 15s;" in auth_proxy
     assert "proxy_send_timeout 15s;" in auth_proxy
+    assert "ENV PROFILE_DRIVE_MCP_UPSTREAM=http://127.0.0.1:5201" in runtime_dockerfile
+    assert "proxy_pass ${PROFILE_DRIVE_MCP_UPSTREAM};" in profile_drive_proxy
+    assert "proxy_set_header Authorization $http_authorization;" in profile_drive_proxy
+    assert 'proxy_set_header Cookie "";' in profile_drive_proxy
+    assert "proxy_request_buffering off;" in profile_drive_proxy
+    assert '"/api/profile-drive"' in vite_config
+    assert "target: PROFILE_DRIVE_MCP_TARGET" in vite_config
+    assert 'proxyReq.removeHeader("cookie")' in vite_config
+    assert "PROFILE_DRIVE_MCP_UPSTREAM=http://profile-drive-mcp:5201" in environment_example
     assert "proxy_request_buffering off" in nginx_template
     assert 'location = /sw.js' in nginx_template
     assert 'location = /index.html' in nginx_template
@@ -691,6 +706,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert 'ai-platform.source-dirty: "false"' in compose_overlay
     assert "ai-platform.release-owner: repo-local-compose" in compose_overlay
     assert "AI_PLATFORM_API_UPSTREAM" in compose_overlay
+    assert "PROFILE_DRIVE_MCP_UPSTREAM: ${PROFILE_DRIVE_MCP_UPSTREAM:?set PROFILE_DRIVE_MCP_UPSTREAM}" in compose_overlay
     assert "AI_PLATFORM_FRONTEND_MAX_BODY_SIZE" in compose_overlay
     assert "  frontend:" in runtime_compose
     assert "container_name: ai-platform-frontend" in runtime_compose

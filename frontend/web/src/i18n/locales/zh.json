@@ -1267,6 +1267,7 @@
     "runs": "运行监控",
     "more": "更多",
     "notifications": "通知公告",
+    "pluginMarket": "插件市场",
     "roles": "角色治理",
     "settings": "设置",
     "skillManagement": "技能管理",
@@ -1500,6 +1501,10 @@
     "mcp": {
       "description": "管理模型上下文协议服务器连接。连接外部工具、数据库和服务，扩展 AI 专家能力。",
       "title": "MCP 服务器管理"
+    },
+    "pluginMarket": {
+      "description": "发现并认证企业数据源和服务插件，为 AI 工作区增加受控能力。",
+      "title": "插件市场"
     },
     "memory": {
       "description": "查看和管理 AI 记忆内容。持久化上下文和知识存储，实现跨对话的 AI 专家长期理解。",

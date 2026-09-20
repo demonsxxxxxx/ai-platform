@@ -3,6 +3,7 @@ import test from "node:test";
 import { installTestDom } from "../../../hooks/useAgent/__tests__/testDom.ts";
 import { modelAdminApi } from "../../../services/api/modelAdmin.ts";
 import type { AdminModelEntry, AdminModelState } from "../../../services/api/modelAdmin.ts";
+import type { ModelAdminControlState } from "../ModelAdminControl.tsx";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 
 const dom = installTestDom();
@@ -62,6 +63,14 @@ function inputByLabel(container: QueryContainer, label: string): InputElement {
   return input as unknown as InputElement;
 }
 
+function selectByLabel(container: QueryContainer, label: string): InputElement {
+  const select = container
+    .querySelectorAll("select")
+    .find((candidate) => candidate.getAttribute("aria-label") === label);
+  assert.ok(select, `expected select ${label}`);
+  return select as unknown as InputElement;
+}
+
 function changeMountedInput(input: InputElement, value: string): void {
   input.value = value;
   const propsKey = Object.keys(input).find((key) => key.startsWith("__reactProps$"));
@@ -113,6 +122,8 @@ test("Model admin discovery is a draft and only publication changes the active c
     discover: modelAdminApi.discover,
     publish: modelAdminApi.publish,
   };
+  const controlStates: ModelAdminControlState[] = [];
+  const onStateChange = (next: ModelAdminControlState) => controlStates.push(next);
   const calls = {
     get: 0,
     discover: [] as Array<{ baseUrl: string; credential?: string }>,
@@ -169,13 +180,19 @@ test("Model admin discovery is a draft and only publication changes the active c
   const root = createRoot(container as never);
   try {
     await React.act(async () => {
-      root.render(React.createElement(ModelAdminControl, { canManage: false }));
+      root.render(React.createElement(ModelAdminControl, {
+        canManage: false,
+        onStateChange,
+      }));
     });
     assert.equal(container.querySelectorAll("[data-model-admin-control]").length, 0);
     assert.equal(calls.get, 0, "non-admin projection must not call the admin API");
 
     await React.act(async () => {
-      root.render(React.createElement(ModelAdminControl, { canManage: true }));
+      root.render(React.createElement(ModelAdminControl, {
+        canManage: true,
+        onStateChange,
+      }));
     });
     await waitFor(
       React,
@@ -183,10 +200,16 @@ test("Model admin discovery is a draft and only publication changes the active c
       "admin control should mount after the initial projection loads",
     );
     assert.equal(calls.get, 1);
+    assert.deepEqual(controlStates, ["loading", "ready"]);
     assert.match(
       container.querySelectorAll("[data-model-admin-control]")[0].getAttribute("class") ?? "",
-      /px-4/,
+      /p-4/,
       "admin controls should keep page-edge padding",
+    );
+    assert.doesNotMatch(
+      nodeText(container),
+      /全员模型配置|先获取候选模型|公开模型投影|管理写操作/,
+      "admin view should omit explanatory and duplicate catalog surfaces",
     );
 
     const keyInput = inputByLabel(container, "模型 API Key");
@@ -212,6 +235,15 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.publish.length, 0);
     assert.equal(inputByLabel(container, "模型 API Key").value, "super-secret-key");
 
+    const statusSelect = selectByLabel(container, "筛选模型状态");
+    await React.act(async () => {
+      changeMountedInput(statusSelect, "unavailable");
+    });
+    assert.match(nodeText(container), /没有匹配的模型/);
+    await React.act(async () => {
+      changeMountedInput(statusSelect, "all");
+    });
+
     const enabled = inputByLabel(container, "启用 GPT-5");
     enabled.checked = true;
     const defaultInput = inputByLabel(container, "设为默认 GPT-5");
@@ -225,6 +257,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     const publishButton = container.querySelectorAll("button")
       .find((button) => button.getAttribute("data-model-admin-publish") !== null);
     assert.ok(publishButton);
+    assert.match(nodeText(publishButton), /发布到全员/);
     await React.act(async () => {
       publishButton.dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
@@ -239,7 +272,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.publish[0].models[0].is_default, true);
     assert.equal(calls.publish[0].models[0].max_input_tokens, 32000);
     assert.equal(calls.publish[0].models[0].max_output_tokens, 2048);
-    assert.match(renderedParagraphText(container), /当前发布版本 4/);
+    assert.match(nodeText(container), /已配置/);
     assert.doesNotMatch(renderedParagraphText(container), /super-secret-key/);
 
     modelAdminApi.discover = async () => {
@@ -259,6 +292,28 @@ test("Model admin discovery is a draft and only publication changes the active c
       "model errors should use model-admin copy",
     );
     assert.doesNotMatch(renderedParagraphText(container), /加载会话失败/);
+
+    modelAdminApi.get = async () => {
+      throw new ApiRequestError("模型服务不可用", 503);
+    };
+    await React.act(async () => {
+      root.render(React.createElement(ModelAdminControl, {
+        canManage: false,
+        onStateChange,
+      }));
+    });
+    await React.act(async () => {
+      root.render(React.createElement(ModelAdminControl, {
+        canManage: true,
+        onStateChange,
+      }));
+    });
+    await waitFor(
+      React,
+      () => controlStates.at(-1) === "degraded",
+      "admin control should report a degraded initial projection",
+    );
+    assert.deepEqual(controlStates.slice(-2), ["loading", "degraded"]);
   } finally {
     await React.act(async () => {
       root.unmount();
