@@ -1,5 +1,6 @@
 """Scoped checkpoint ancestry and checksum regression checks."""
 
+import asyncio
 import hashlib
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -15,10 +16,11 @@ from app.context.application.worker_snapshot import materialize_worker_context_s
 from app.context.domain.conversation_authority import ConversationSourceChain
 
 from app.context.infrastructure.checkpoint_build_postgres import (
-    assert_checkpoint_lease,
     claim_checkpoint_build,
     complete_checkpoint_build,
+    fail_expired_checkpoint_builds,
     load_checkpoint_build_source,
+    renew_checkpoint_lease,
     save_checkpoint_progress,
 )
 from app.context.infrastructure.checkpoints_postgres import (
@@ -318,8 +320,8 @@ async def test_checkpoint_claim_and_progress_are_short_scoped_lease_transactions
         predecessor_checkpoint_id=None, predecessor_sha256="c" * 64,
     )
     assert claim["id"] == "ccp-test"
-    await assert_checkpoint_lease(conn, checkpoint_id="ccp-test", lease_id="cbl-test",
-                                  run_id="run-current")
+    await renew_checkpoint_lease(conn, checkpoint_id="ccp-test", lease_id="cbl-test",
+                                 run_id="run-current")
     boundaries = {"created_at": "2026-09-15T00:00:00+00:00", "id": "msg-001"}
     await save_checkpoint_progress(
         conn, checkpoint_id="ccp-test", lease_id="cbl-test", run_id="run-current",
@@ -333,14 +335,34 @@ async def test_checkpoint_claim_and_progress_are_short_scoped_lease_transactions
     for sql, params in conn.calls:
         assert sql.count("%s") == len(params)
         assert "runs.status = 'queued'" in sql or "runs.status = 'queued'" in sql.lower()
-    blocked = Connection([])
+    claim_sql = conn.calls[1][0]
+    assert "conversation_context_checkpoints.state = 'failed'" in claim_sql
+    assert "conversation_context_checkpoints.lease_not_after is null" in claim_sql
     with pytest.raises(ValueError, match="conversation_checkpoint_builder_fenced"):
-        await assert_checkpoint_lease(blocked, checkpoint_id="ccp-test", lease_id="old-lease",
-                                      run_id="run-current")
+        await renew_checkpoint_lease(
+            Connection([]), checkpoint_id="ccp-test", lease_id="old-lease",
+            run_id="run-current",
+        )
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_builder_compacts_old_complete_turns_outside_transactions_and_preserves_tail():
+async def test_expired_checkpoint_builds_converge_to_failed_with_bounded_skip_locked_claim():
+    conn = Connection([{"id": "ccp-a"}, {"id": "ccp-b"}])
+
+    assert await fail_expired_checkpoint_builds(conn, limit=2) == 2
+
+    sql, params = conn.calls[0]
+    assert params == (2,)
+    assert "state = 'building'" in sql
+    assert "lease_not_after is null or lease_not_after <= clock_timestamp()" in sql
+    assert "for update skip locked" in sql
+    assert "set state = 'failed', builder_lease_id = null, lease_not_after = null" in sql
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_builder_compacts_old_complete_turns_outside_transactions_and_preserves_tail(
+    monkeypatch,
+):
     rows = [
         {"id": f"msg-{index:03d}", "run_id": f"run-{index:03d}", "role": "user",
          "content": f"goal constraint {index}: " + "x" * 128,
@@ -353,6 +375,9 @@ async def test_checkpoint_builder_compacts_old_complete_turns_outside_transactio
     receipt = chain.receipt()
     assert sum(len(row["content"]) for row in rows) > 8192
     active_transactions = 0
+    model_operation_active = False
+    heartbeat_renewals = 0
+    monkeypatch.setattr(checkpoint_build_app, "CHECKPOINT_LEASE_HEARTBEAT_SECONDS", 0.001)
 
     @asynccontextmanager
     async def transaction():
@@ -382,6 +407,12 @@ async def test_checkpoint_builder_compacts_old_complete_turns_outside_transactio
 
         async def assert_lease(self, _conn, **kwargs):
             assert kwargs["checkpoint_id"] == "ccp-built" and self.state == "building"
+
+        async def renew_lease(self, _conn, **kwargs):
+            nonlocal heartbeat_renewals
+            assert kwargs["checkpoint_id"] == "ccp-built" and self.state == "building"
+            if model_operation_active:
+                heartbeat_renewals += 1
 
         async def save_progress(self, _conn, **kwargs):
             assert self.progress is None
@@ -419,12 +450,18 @@ async def test_checkpoint_builder_compacts_old_complete_turns_outside_transactio
         return len(source_text.encode()) // 2
 
     async def summarize(*, run_id, source_text):
+        nonlocal model_operation_active
         assert run_id == "run-current" and active_transactions == 0
         assert "goal constraint 0" in source_text and "goal constraint 73" in source_text
         assert "goal constraint 74" not in source_text
         model_calls.append("summarize")
-        return {"summary": "Earlier goal and explicit constraints survive.",
-                "input_tokens": 4200, "output_tokens": 24}
+        model_operation_active = True
+        try:
+            await asyncio.sleep(0.01)
+            return {"summary": "Earlier goal and explicit constraints survive.",
+                    "input_tokens": 4200, "output_tokens": 24}
+        finally:
+            model_operation_active = False
 
     builder = ConversationCheckpointBuilder(
         repository=repository, page_loader=page, checkpoint_loader=checkpoint,
@@ -439,6 +476,7 @@ async def test_checkpoint_builder_compacts_old_complete_turns_outside_transactio
     assert repository.progress["covered_turn_count"] == 74
     assert repository.progress["range_end"]["id"] == "msg-073"
     assert model_calls.count("summarize") == 1 and active_transactions == 0
+    assert heartbeat_renewals > 0
 
     async def snapshot(_conn, **_kwargs):
         return {"id": "ctx-current", "included_message_ids": ["msg-current"],
@@ -509,6 +547,9 @@ async def test_checkpoint_redelivery_replays_committed_building_prefix_without_m
                     "summary_text": saved["summary"], "summary_sha256": saved["summary_sha256"]}
 
         async def assert_lease(self, _conn, **_kwargs):
+            assert self.state == "building"
+
+        async def renew_lease(self, _conn, **_kwargs):
             assert self.state == "building"
 
         async def save_progress(self, _conn, **kwargs):

@@ -2441,6 +2441,213 @@ async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks
 
 
 @pytest.mark.asyncio
+async def test_sdk_mcp_pretool_hook_before_tool_block_is_admitted(
+    monkeypatch, tmp_path
+):
+    captured, candidate_batches = {}, []
+    subject = _subject()
+
+    async def acknowledge_candidates(candidates):
+        candidate_batches.append(candidates)
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _mcp_hook_steps(subject),
+            result_text="done",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        on_agent_event=acknowledge_candidates,
+        run_id="run-pretool-first",
+        attempt_id="attempt-1",
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert pretool_output["permissionDecision"] == "allow"
+    assert result.error is None
+    event_types = [
+        event.event_type for batch in candidate_batches for event in batch
+    ]
+    assert "tool.started" in event_types
+    assert "tool.completed" in event_types
+    assert "tool.denied" not in event_types
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("block_after_terminal", [False, True])
+async def test_sdk_hook_seed_conflict_fails_as_unknown_execution(
+    monkeypatch, tmp_path, block_after_terminal
+):
+    captured, candidate_batches = {}, []
+    subject = _subject()
+    call_id = "mcp-call-conflict"
+    hook_input = {
+        "tool_name": subject["identity"],
+        "tool_use_id": call_id,
+        "tool_input": {"private": "hook-value"},
+    }
+
+    class ToolUseBlock:
+        pass
+
+    late_block = ToolUseBlock()
+    late_block.id = call_id
+    late_block.name = subject["identity"]
+    late_block.input = {"private": "conflicting-late-value"}
+    pretool_step = ("hook", ("PreToolUse", hook_input, call_id))
+    terminal_step = ("hook", ("PostToolUse", hook_input, call_id))
+    block_step = ("assistant_blocks", [late_block])
+    steps = (
+        [pretool_step, terminal_step, block_step]
+        if block_after_terminal
+        else [pretool_step, block_step, terminal_step]
+    )
+
+    async def acknowledge_candidates(candidates):
+        candidate_batches.append(candidates)
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="done"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        on_agent_event=acknowledge_candidates,
+        run_id="run-hook-conflict",
+        attempt_id="attempt-1",
+    )
+
+    assert result.error == "mcp_execution_outcome_unknown"
+    assert result.turn_diagnostics["retryable"] is False
+    public_events = [event for batch in candidate_batches for event in batch]
+    event_types = [event.event_type for event in public_events]
+    assert ("tool.completed" in event_types) is block_after_terminal
+    assert "hook-value" not in repr(public_events)
+    assert "conflicting-late-value" not in repr(public_events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejected_terminal_stage", ["answer", "result"])
+async def test_sdk_completed_mcp_keeps_receipt_error_on_late_publication_failure(
+    monkeypatch, tmp_path, rejected_terminal_stage
+):
+    captured = {}
+    subject = _subject()
+
+    async def acknowledge_candidates(candidates):
+        event_types = {event.event_type for event in candidates}
+        if rejected_terminal_stage == "answer" and "message.delta" in event_types:
+            return False
+        if rejected_terminal_stage == "result" and "model.completed" in event_types:
+            return False
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _mcp_hook_steps(subject),
+            result_text="done",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        on_agent_event=acknowledge_candidates,
+        run_id="run-late-publication-failure",
+        attempt_id="attempt-1",
+    )
+
+    assert result.error == "mcp_execution_succeeded_receipt_incomplete"
+    assert result.turn_diagnostics["action"] == "reconcile_before_retry"
+    assert result.turn_diagnostics["retryable"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["completed_then_unmatched", "owner_conflict"])
+async def test_sdk_unmatched_mcp_terminal_is_outcome_unknown(
+    monkeypatch, tmp_path, case
+):
+    captured = {}
+    first = _subject(server_id="first-server", tool_name="search")
+    second = _subject(
+        server_id="second-server",
+        tool_name="lookup",
+        endpoint="https://second.private.example/mcp",
+    )
+    call_id = "mcp-call-shared" if case == "owner_conflict" else "mcp-call-1"
+    first_steps = _mcp_hook_steps(first, call_id=call_id)
+    second_terminal = _mcp_hook_steps(
+        second,
+        call_id=call_id if case == "owner_conflict" else "mcp-call-unmatched",
+    )[1]
+    steps = (
+        [first_steps[0], second_terminal]
+        if case == "owner_conflict"
+        else [*first_steps, second_terminal]
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="done"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[first, second],
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert result.error == "mcp_execution_outcome_unknown"
+    assert result.turn_diagnostics["retryable"] is False
+
+
+@pytest.mark.asyncio
 async def test_sdk_registers_only_exact_authorized_external_mcp_subjects(
     monkeypatch, tmp_path
 ):
@@ -2605,11 +2812,15 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             ):
                 assert private_value not in result.message
     else:
-        expected = (
-            None
-            if outcome == "overflow"
-            else "required_tool_completion_evidence_mismatch"
-        )
+        expected = {
+            "overflow": None,
+            "false": "mcp_execution_succeeded_receipt_incomplete",
+            "exception": "mcp_execution_succeeded_receipt_incomplete",
+            "failed": "mcp_execution_outcome_unknown",
+            "incomplete": "mcp_execution_outcome_unknown",
+            "duplicate": "mcp_execution_succeeded_receipt_incomplete",
+            "multiple_failed": "mcp_execution_outcome_unknown",
+        }.get(outcome, "required_tool_completion_evidence_mismatch")
         if outcome == "overflow":
             assert result.error is None
             assert result.message == text
@@ -2620,6 +2831,10 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
         else:
             assert result.error == expected
             assert result.message == text
+            assert "mcp_execution_" not in result.message
+            assert "private callback failure" not in result.message
+            assert "retryable" in result.turn_diagnostics
+            assert result.turn_diagnostics["retryable"] is False
             assert "".join(deltas) == text
         if outcome == "overflow":
             assert "projection_failure_reason" not in result.turn_diagnostics
@@ -2724,7 +2939,8 @@ async def test_unmatched_capability_terminal_cannot_reopen_active_invocation(
     )
 
     assert deltas == []
-    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.error == "mcp_execution_outcome_unknown"
+    assert result.turn_diagnostics["retryable"] is False
     assert result.message == ""
 
 
@@ -2939,7 +3155,8 @@ async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabiliti
         ("mcp-call-2", "invocation_requested"),
         ("mcp-call-2", "failed"),
     ]
-    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.error == "mcp_execution_outcome_unknown"
+    assert result.turn_diagnostics["retryable"] is False
     assert result.message
     assert "first verified answer" in result.message
     assert "second capability in-flight text" in result.message

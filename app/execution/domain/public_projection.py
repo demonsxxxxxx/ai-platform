@@ -47,6 +47,14 @@ _CLAUDE_SDK_ACTIONABLE_FAILURE_CODES = frozenset(
 )
 
 
+def sdk_failure_result_fields(value: object) -> dict[str, object]:
+    diagnostics = value if isinstance(value, dict) else {}
+    return {
+        "sdk_turn_diagnostics": diagnostics,
+        "retryable": bool(diagnostics.get("retryable")),
+    }
+
+
 def claude_sdk_failure_code(sdk_result: object) -> str:
     if sdk_result is None:
         return "claude_agent_sdk_disabled"

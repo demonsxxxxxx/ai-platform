@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import secrets
 
-from app.context.application.checkpoint_build import prepare_checkpoint_for_run
+from app.context.application.checkpoint_build import (
+    fail_expired_checkpoint_builds,
+    prepare_checkpoint_for_run,
+)
 from app.context.application.checkpoints import (
     load_ready_checkpoint as load_ready_checkpoint,
     load_checkpoint_usage_for_run,
@@ -241,6 +244,7 @@ __all__ = [
     "validate_authority_receipt",
     "load_ready_checkpoint",
     "load_checkpoint_usage_for_run",
+    "fail_expired_checkpoint_builds",
     "prepare_checkpoint_for_run",
     "normalize_context_file_error_code",
     "MAX_PROVIDER_SESSION_BATCH_BYTES",

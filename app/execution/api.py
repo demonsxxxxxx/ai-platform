@@ -23,6 +23,7 @@ from app.execution.application.context_file_diagnostics import (
 )
 from app.execution.application.executor_reconciliation import (
     locked_run_payload_candidate,
+    reconciliation_agent_profile_binding_matches,
     restored_executor_reconciliation_queue_payload,
     restored_sandbox_run_payload,
     sandbox_reconciliation_payload,
@@ -67,6 +68,7 @@ from app.execution.domain.public_projection import (
     claude_sdk_failure_code,
     claude_sdk_failure_message,
     public_answer_failure_reason,
+    sdk_failure_result_fields,
 )
 
 from typing import Any
@@ -115,6 +117,7 @@ __all__ = [
     "WorkerAnswerMaterialization",
     "append_artifact_links",
     "materialize_worker_answer",
+    "reconciliation_agent_profile_binding_matches",
     "runtime_terminal_payload",
     "RunModelSelection",
     "SkillInvocationEvidenceBinder",
@@ -139,6 +142,7 @@ __all__ = [
     "restored_executor_reconciliation_queue_payload",
     "restored_sandbox_run_payload",
     "sandbox_reconciliation_payload",
+    "sdk_failure_result_fields",
     "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
     "list_public_models",

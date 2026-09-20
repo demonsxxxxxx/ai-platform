@@ -445,6 +445,7 @@ class ClaudeSdkAgentEventAdapter:
         self._task_progress_seen: set[tuple[str, str]] = set()
         self._accepted_event_ids: dict[str, str] = {}
         self._tool_blocks: dict[str, tuple[str, dict[str, object]]] = {}
+        self._tool_block_conflicts: set[str] = set()
         self._tools: dict[str, tuple[str, str, str]] = {}
         self._tool_states: dict[str, _ToolState] = {}
         self._tasks: dict[str, _TaskState] = {}
@@ -476,6 +477,9 @@ class ClaudeSdkAgentEventAdapter:
     @property
     def public_projection_omissions(self) -> int:
         return self._public_projection_omissions
+
+    def has_tool_block_conflict(self, tool_call_ids: set[str]) -> bool:
+        return not self._tool_block_conflicts.isdisjoint(tool_call_ids)
 
     def seal(self, reason: str = "") -> None:
         del reason
@@ -778,7 +782,13 @@ class ClaudeSdkAgentEventAdapter:
             tool_input = getattr(block, "input", None)
             if identity is None or not isinstance(tool_name, str) or not isinstance(tool_input, dict):
                 return ()
-            self._tool_blocks[identity] = (tool_name, dict(tool_input))
+            block_value = (tool_name, dict(tool_input))
+            existing = self._tool_blocks.get(identity)
+            if existing is not None and existing != block_value:
+                self._tool_block_conflicts.add(identity)
+                self._tools.pop(identity, None)
+                return ()
+            self._tool_blocks[identity] = block_value
             resolved = self._resolve_tool(tool_name, tool_input)
             if resolved is not None:
                 self._tools[identity] = resolved
@@ -879,10 +889,17 @@ class ClaudeSdkAgentEventAdapter:
         if not supplied or len({str(value) for value in supplied}) != 1:
             return ()
         call_id = _safe_private_identity(supplied[0])
-        if call_id is None:
+        if call_id is None or call_id in self._tool_block_conflicts:
             return ()
         block = self._tool_blocks.get(call_id)
         tool_name = hook_input.get("tool_name")
+        if (
+            block is None
+            and isinstance(tool_name, str)
+            and isinstance(hook_input.get("tool_input"), dict)
+        ):
+            block = (tool_name, dict(hook_input["tool_input"]))
+            self._tool_blocks[call_id] = block
         if block is None or not isinstance(tool_name, str) or block[0] != tool_name:
             return ()
         resolved = self._tools.get(call_id) or self._resolve_tool(tool_name, block[1])
