@@ -46,6 +46,20 @@ async def test_publish_executor_terminal_signal_contains_only_fixed_wake_marker(
 
 
 @pytest.mark.asyncio
+async def test_publish_executor_terminal_signal_wraps_client_acquisition_failure(monkeypatch):
+    def unavailable_client():
+        raise RuntimeError("redis client unavailable")
+
+    monkeypatch.setattr(executor_signals, "get_redis_client", unavailable_client)
+
+    with pytest.raises(
+        executor_signals.ExecutorSignalUnavailable,
+        match="executor_terminal_signal_unavailable",
+    ):
+        await executor_signals.publish_executor_terminal_signal()
+
+
+@pytest.mark.asyncio
 async def test_wait_for_executor_reconciliation_signal_is_global(monkeypatch):
     client = FakeRedisHandle(rows=[("stream", [("1-0", {"wake": "1"})])])
     monkeypatch.setattr(executor_signals, "get_redis_client", lambda: client)
@@ -57,6 +71,20 @@ async def test_wait_for_executor_reconciliation_signal_is_global(monkeypatch):
         ({"ai-platform:executor-terminal:v1:reconcile": "$"}, 1, 5000)
     ]
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_wait_for_executor_reconciliation_signal_wraps_client_acquisition_failure(monkeypatch):
+    def unavailable_client():
+        raise RuntimeError("redis client unavailable")
+
+    monkeypatch.setattr(executor_signals, "get_redis_client", unavailable_client)
+
+    with pytest.raises(
+        executor_signals.ExecutorSignalUnavailable,
+        match="executor_reconciliation_signal_unavailable",
+    ):
+        await executor_signals.wait_for_executor_reconciliation_signal(block_ms=5000)
 
 
 @pytest.mark.asyncio

@@ -26,9 +26,10 @@ async def _close_signal_client(client, *, operation_failed: bool) -> None:
 
 
 async def publish_executor_terminal_signal() -> None:
-    client = get_redis_client()
+    client = None
     operation_failed = False
     try:
+        client = get_redis_client()
         await client.xadd(
             _EXECUTOR_RECONCILIATION_SIGNAL_KEY,
             {"wake": "1"},
@@ -39,13 +40,15 @@ async def publish_executor_terminal_signal() -> None:
         operation_failed = True
         raise ExecutorSignalUnavailable("executor_terminal_signal_unavailable") from exc
     finally:
-        await _close_signal_client(client, operation_failed=operation_failed)
+        if client is not None:
+            await _close_signal_client(client, operation_failed=operation_failed)
 
 
 async def wait_for_executor_reconciliation_signal(*, block_ms: int) -> bool:
-    client = get_redis_client()
+    client = None
     operation_failed = False
     try:
+        client = get_redis_client()
         rows = await client.xread(
             {_EXECUTOR_RECONCILIATION_SIGNAL_KEY: "$"},
             count=1,
@@ -55,5 +58,6 @@ async def wait_for_executor_reconciliation_signal(*, block_ms: int) -> bool:
         operation_failed = True
         raise ExecutorSignalUnavailable("executor_reconciliation_signal_unavailable") from exc
     finally:
-        await _close_signal_client(client, operation_failed=operation_failed)
+        if client is not None:
+            await _close_signal_client(client, operation_failed=operation_failed)
     return bool(rows)
