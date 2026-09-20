@@ -165,20 +165,27 @@ returned in API responses or written to audit payloads.
 
 Company login stores one encrypted MCP JWT per `tenant_id + user_id` in Redis;
 the JWT's own `exp` is its lifetime and a later login replaces the earlier
-value. Ordinary MCP flows never return this JWT to the browser. The document
-translator is the only exception: `POST /api/ai/auth/company-credential-handoff`
-returns the current user's JWT to an authenticated same-origin page with
-`Cache-Control: private, no-store`; the page keeps it only in memory and sends
-it to the fixed translator origin after validating the child window and its
-nonce. It is never placed in a URL or AI Platform browser storage. The
-translator stores the received JWT in its own tab-scoped `sessionStorage` for
-its API calls. At MCP execution time the Worker reuses the existing Capability
-Distribution and Tool Policy plan and reads the current JWT and encrypted
-Server target. The executor opens remote MCP sessions with static headers plus
-`JWT-Authorization`, then exposes only the authorized selected tools through
-the SDK's in-process MCP interface. SDK calls pass through that adapter to the
-original remote tool names. There is no separate MCP Broker capability or host
-Relay, and runtime connection material is removed from reconciliation persistence.
+value. Ordinary MCP flows never return this JWT to the browser. Two bounded
+same-origin integrations use `POST /api/ai/auth/company-credential-handoff`,
+which returns the current user's JWT to an authenticated page with
+`Cache-Control: private, no-store`:
+
+- the document translator keeps it only in memory, validates the child window
+  and nonce, and sends it to the fixed translator origin; the translator keeps
+  it in tab-scoped `sessionStorage` for its API calls;
+- the administrator-only ProfileDrive marketplace page keeps it only for one
+  request to the fixed same-origin `/api/profile-drive/` proxy. That proxy
+  strips the AI Platform session cookie and forwards the JWT as
+  `Authorization` to the configured connector.
+
+Neither flow places the JWT in a URL or AI Platform browser storage. At MCP
+execution time the Worker reuses the existing Capability Distribution and Tool
+Policy plan and reads the current JWT and encrypted Server target. The executor
+opens remote MCP sessions with static headers plus `JWT-Authorization`, then
+exposes only the authorized selected tools through the SDK's in-process MCP
+interface. SDK calls pass through that adapter to the original remote tool
+names. There is no separate MCP Broker capability or host Relay, and runtime
+connection material is removed from reconciliation persistence.
 
 The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selected-tool exposure, SDK alias mapping, HTTP/SSE transport limits, and runnable acceptance. Command/stdin (`sandbox`) configuration writes are rejected until a governed process adapter exists; existing rows remain readable but do not authorize command execution. Ordinary directory responses with `unavailable_reason` display unavailable state rather than an empty successful catalog.
 

@@ -5,6 +5,7 @@ import {
   MessageSquarePlus,
   LayoutGrid,
   Package,
+  Plug,
   Server,
   Bot,
   Cpu,
@@ -201,6 +202,12 @@ export function SessionListContent({
       label: skillsNavigationLabel,
       onClick: () => navigate("/skills"),
     },
+    {
+      key: "pluginMarket",
+      icon: Plug,
+      label: "插件市场",
+      onClick: () => navigate("/plugins"),
+    },
   ];
   const governanceNavItems: Array<{
     key: WorkbenchNavItem;
@@ -315,22 +322,24 @@ export function SessionListContent({
         ) : null}
 
         <LibreChatPanelSection group="tasks" label={t("sidebar.tasks")}>
-          {taskNavItems.map(({ key, icon: Icon, label, onClick }) => {
-            const isActive = activeNavItem === key;
-            return (
-              <button
-                key={key}
-                onClick={onClick}
-                aria-current={isActive ? "page" : undefined}
-                data-active={isActive ? "true" : "false"}
-                data-workbench-nav-item={key}
-                className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
-              >
-                <Icon size={19} />
-                <span className="min-w-0 truncate">{label}</span>
-              </button>
-            );
-          })}
+          {taskNavItems
+            .filter(({ key }) => canAccessWorkbenchItem(user, key))
+            .map(({ key, icon: Icon, label, onClick }) => {
+              const isActive = activeNavItem === key;
+              return (
+                <button
+                  key={key}
+                  onClick={onClick}
+                  aria-current={isActive ? "page" : undefined}
+                  data-active={isActive ? "true" : "false"}
+                  data-workbench-nav-item={key}
+                  className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
+                >
+                  <Icon size={19} />
+                  <span className="min-w-0 truncate">{label}</span>
+                </button>
+              );
+            })}
         </LibreChatPanelSection>
 
         <LibreChatPanelSection

@@ -4,6 +4,7 @@ import {
   Clock,
   LayoutGrid,
   Package,
+  Plug,
   Server,
   Bot,
   Cpu,
@@ -38,6 +39,7 @@ interface SidebarRailProps {
   onOpenAgentMarket: () => void;
   onOpenAgentBuilder: () => void;
   onOpenSkills: () => void;
+  onOpenPluginMarket: () => void;
   onOpenMcp: () => void;
   onOpenModels: () => void;
   onOpenRuns: () => void;
@@ -59,6 +61,7 @@ export function SidebarRail({
   onOpenAgentMarket,
   onOpenAgentBuilder,
   onOpenSkills,
+  onOpenPluginMarket,
   onOpenMcp,
   onOpenModels,
   onOpenRuns,
@@ -207,6 +210,20 @@ export function SidebarRail({
         >
           <Package size={20} />
         </LibreChatRailButton>
+        {canAccessWorkbenchItem(user, "pluginMarket") && (
+          <LibreChatRailButton
+            type="button"
+            onClick={onOpenPluginMarket}
+            className={railBtn}
+            aria-current={isRailItemActive("pluginMarket") ? "page" : undefined}
+            title="插件市场"
+            aria-label="插件市场"
+            itemKey="pluginMarket"
+            active={isRailItemActive("pluginMarket")}
+          >
+            <Plug size={20} />
+          </LibreChatRailButton>
+        )}
         <LibreChatRailButton
           type="button"
           onClick={onOpenMcp}
