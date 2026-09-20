@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
   "slice_id": "KTRACE-62",
   "issue_number": 1311,
-  "summary": "Required atomic-case manifest validation for External Knowledge delivery slices",
+  "summary": "Required atomic-case and complete candidate-path manifest validation for External Knowledge delivery slices",
   "atomic_case_ids": [
     "KAC-FR-KOPS-035"
   ],

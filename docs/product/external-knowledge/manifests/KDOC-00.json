@@ -2,7 +2,7 @@
   "schema_version": "ai-platform.external-knowledge-slice-manifest.v1",
   "slice_id": "KDOC-00",
   "issue_number": 1311,
-  "summary": "External Knowledge product, domain, acceptance, traceability, delivery, and baseline contracts",
+  "summary": "Final External Knowledge product, domain, acceptance, traceability, delivery, and baseline contracts",
   "atomic_case_ids": [],
   "changed_paths": [
     "docs/product/README.md",
