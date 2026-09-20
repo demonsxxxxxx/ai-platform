@@ -84,7 +84,7 @@ from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     SKILL_WORKSPACE_CONTRACT_VERSION,
 )
-from app.tool_policy import evaluate_tool_policy
+from app.tool_policy import ToolPolicyDecision, evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
 _translation_target_language = _prompt_translation_target_language
@@ -1099,13 +1099,21 @@ def _workspace_path_parameters_authorized(
         return all(authorize(relative) for relative in relatives)
 
     def glob_pattern_authorized(raw: object, *, search_path: object) -> bool:
-        if not path_authorized(raw):
+        if (
+            not isinstance(raw, str)
+            or not raw
+            or "\x00" in raw
+            or any(char in raw for char in "{}()![]?")
+            or not isinstance(search_path, str)
+            or not search_path
+        ):
             return False
-        assert isinstance(raw, str)
         normalized_pattern = raw.replace("\\", "/")
         if (
             "\\" in raw
-            or any(char in normalized_pattern for char in "[]")
+            or any(char in normalized_pattern for char in "{}()![]?")
+            or normalized_pattern.startswith("/")
+            or re.match(r"^[A-Za-z]:/", normalized_pattern)
             or _GLOB_PARENT_COMPONENT.search(normalized_pattern)
         ):
             return False
@@ -1113,8 +1121,6 @@ def _workspace_path_parameters_authorized(
             workspace_read_name_private(token)
             for token in re.findall(r"[A-Za-z0-9._-]+", normalized_pattern)
         ):
-            return False
-        if not isinstance(search_path, str) or not search_path:
             return False
         try:
             root = workspace_root.resolve(strict=True)
@@ -1129,11 +1135,14 @@ def _workspace_path_parameters_authorized(
         )
         if not pattern_parts:
             return False
+        lowered_pattern_parts = tuple(part.casefold() for part in pattern_parts)
         hidden_pattern_parts = tuple(
-            index for index, part in enumerate(pattern_parts) if part.startswith(".")
+            index
+            for index, part in enumerate(lowered_pattern_parts)
+            if part.startswith(".")
         )
         if hidden_pattern_parts and (
-            pattern_parts[:2] != (".claude", "skills")
+            lowered_pattern_parts[:2] != (".claude", "skills")
             or any(index >= 2 for index in hidden_pattern_parts)
         ):
             return False
@@ -1791,6 +1800,18 @@ async def run_claude_agent_sdk(
             )
             or hasattr(ResultMessage, "structured_output")
         )
+
+        def is_sdk_internal_structured_output_tool(
+            tool_name: object,
+            tool_input: object,
+        ) -> bool:
+            return (
+                sdk_structured_output_supported
+                and tool_name == "StructuredOutput"
+                and isinstance(tool_input, dict)
+                and set(tool_input) == {"answer", "deliverables"}
+            )
+
         client_factory = client_fn or getattr(sdk, "ClaudeSDKClient", None)
         if client_factory is None:
             raise AttributeError("ClaudeSDKClient")
@@ -2512,6 +2533,14 @@ async def run_claude_agent_sdk(
         return mcp_registration.canonical_identity(value)
 
     def policy_for_tool(tool_name: object, tool_input: object):
+        if is_sdk_internal_structured_output_tool(tool_name, tool_input):
+            return ToolPolicyDecision(
+                outcome="allow",
+                reason="sdk_internal_structured_output_allowed",
+                canonical_identity="StructuredOutput",
+                risk_level="low",
+                write_capable=False,
+            )
         identity = adapter_identity(tool_name)
         selected_skills = (
             _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
@@ -2690,6 +2719,16 @@ async def run_claude_agent_sdk(
             "permissionDecision": decision.outcome,
             "permissionDecisionReason": decision.reason,
         }
+        if decision.allowed and is_sdk_internal_structured_output_tool(
+            tool_name, hook_input.get("tool_input")
+        ):
+            record_runtime_tool_stage(
+                tool_name=tool_name,
+                invocation_id=resolved_tool_call_id,
+                stage="protocol_allowed",
+                tool_input=hook_input.get("tool_input"),
+            )
+            return {"hookSpecificOutput": output}
         if decision.allowed:
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
@@ -2969,7 +3008,13 @@ async def run_claude_agent_sdk(
             hook_input = hook_input if isinstance(hook_input, dict) else {}
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
-            if tool_name.lower() == "skill" or identity.startswith("mcp__"):
+            if (
+                tool_name.lower() == "skill"
+                or identity.startswith("mcp__")
+                or is_sdk_internal_structured_output_tool(
+                    tool_name, hook_input.get("tool_input")
+                )
+            ):
                 return {}
             call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
             record_runtime_tool_stage(

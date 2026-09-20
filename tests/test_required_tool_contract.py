@@ -156,6 +156,9 @@ def test_real_sandbox_rebuilds_only_authorized_local_tool_identities_once():
     assert bash_subject["registered"] is True
     assert bash_subject["active"] is True
     assert bash_subject["distributed"] is True
+    assert bash_subject["parameter_validation"] == "sdk"
+    assert "allowed_parameter_keys" not in bash_subject
+    assert "required_parameter_keys" not in bash_subject
     assert bash_subject["command_isolation"] == "opensandbox-workspace-v1"
     assert bash_subject["workspace_contract"] == "ai-platform.skill-workspace.v1"
 
@@ -171,24 +174,11 @@ def test_sandbox_local_tools_use_credential_free_docker_sibling_for_bash():
     assert bash_subject["command_isolation"] == "sibling-tool-sandbox-v1"
     assert bash_subject["execution_strategy"] == "sandbox_full_local"
     grep_subject = next(subject for subject in subjects if subject["identity"] == "Grep")
-    assert grep_subject["allowed_parameter_keys"] == [
-        "pattern",
-        "path",
-        "glob",
-        "output_mode",
-        "-i",
-        "multiline",
-        "head_limit",
-        "offset",
-        "context",
-        "-A",
-        "-B",
-        "-C",
-        "-n",
-        "-o",
-        "type",
-    ]
-    assert grep_subject["required_parameter_keys"] == ["pattern"]
+    assert grep_subject["risk_level"] == "low"
+    assert grep_subject["write_capable"] is False
+    assert grep_subject["parameter_validation"] == "sdk"
+    assert "allowed_parameter_keys" not in grep_subject
+    assert "required_parameter_keys" not in grep_subject
 
 
 def test_sandbox_local_tool_subjects_reject_non_real_provider():
