@@ -47,7 +47,15 @@ function validTokenLimit(value: number | undefined): boolean {
     && Number.isInteger(value) && value >= 1 && value <= 10_000_000;
 }
 
-export function ModelAdminControl({ canManage = true }: { canManage?: boolean }) {
+export type ModelAdminControlState = "loading" | "ready" | "degraded";
+
+export function ModelAdminControl({
+  canManage = true,
+  onStateChange,
+}: {
+  canManage?: boolean;
+  onStateChange?: (state: ModelAdminControlState) => void;
+}) {
   const [state, setState] = useState<AdminModelState | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [credential, setCredential] = useState("");
@@ -69,13 +77,20 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
   useEffect(() => {
     if (!canManage) return undefined;
     let current = true;
+    onStateChange?.("loading");
     void modelAdminApi.get().then((next) => {
-      if (current) applyState(next);
+      if (current) {
+        applyState(next);
+        onStateChange?.("ready");
+      }
     }).catch((caught) => {
-      if (current) setError(errorMessage(caught));
+      if (current) {
+        setError(errorMessage(caught));
+        onStateChange?.("degraded");
+      }
     });
     return () => { current = false; };
-  }, [canManage]);
+  }, [canManage, onStateChange]);
 
   const discover = async () => {
     setBusy("discover");
@@ -247,7 +262,7 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
             type="button"
           >
             <Save size={16} aria-hidden="true" />
-            保存配置
+            发布到全员
           </button>
         </div>
 
@@ -279,7 +294,7 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
                         })}
                         type="checkbox"
                       />
-                      <span className="relative h-5 w-9 rounded-full bg-[var(--theme-border)] transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform peer-checked:bg-[var(--theme-primary)] peer-checked:after:translate-x-4 peer-disabled:cursor-not-allowed peer-disabled:opacity-50" />
+                      <span className="relative h-5 w-9 rounded-full bg-[var(--theme-border)] transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform peer-checked:bg-[var(--theme-primary)] peer-checked:after:translate-x-4 peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--theme-primary)] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[var(--theme-workbench-panel)] peer-disabled:cursor-not-allowed peer-disabled:opacity-50" />
                     </label>
                   </td>
                   <td className="px-4 py-3">

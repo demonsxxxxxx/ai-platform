@@ -16,7 +16,10 @@ import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
-import { ModelAdminControl } from "./ModelAdminControl";
+import {
+  ModelAdminControl,
+  type ModelAdminControlState,
+} from "./ModelAdminControl";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
 
@@ -89,6 +92,7 @@ export function ModelCatalogPanel() {
   const [state, setState] = useState<ModelCatalogState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [adminState, setAdminState] = useState<ModelAdminControlState>("loading");
 
   const canAdminModels = hasAnyPermission([Permission.MODEL_ADMIN]);
   const adminAvailability = resolveGroupAvailability({
@@ -151,10 +155,10 @@ export function ModelCatalogPanel() {
     return (
       <div
         data-model-catalog-shell
-        data-frontend-governance-state="ready"
+        data-frontend-governance-state={adminState}
         className={workbenchSurface.page}
       >
-        <ModelAdminControl />
+        <ModelAdminControl onStateChange={setAdminState} />
       </div>
     );
   }
