@@ -1629,7 +1629,7 @@ async def begin_auth_operation_for_cookie(
 def principal_snapshot(principal: Any) -> dict[str, object]:
     """Serialize a server-derived principal for the Redis context record."""
 
-    return {
+    snapshot: dict[str, object] = {
         "user_id": str(principal.user_id),
         "display_name": str(principal.display_name),
         "tenant_id": str(principal.tenant_id),
@@ -1641,6 +1641,10 @@ def principal_snapshot(principal: Any) -> dict[str, object]:
         "authority_source": str(principal.authority_source or principal.source),
         "authority_checked_at": str(principal.authority_checked_at),
     }
+    company_jwt_expires_at = getattr(principal, "company_jwt_expires_at", None)
+    if company_jwt_expires_at is not None:
+        snapshot["company_jwt_expires_at"] = int(company_jwt_expires_at)
+    return snapshot
 
 
 async def commit_auth_operation(
@@ -1727,7 +1731,14 @@ def _valid_snapshot(value: object) -> dict[str, object] | None:
         return None
     if checked_at.tzinfo is None:
         return None
-    return {
+    company_jwt_expires_at = value.get("company_jwt_expires_at")
+    if company_jwt_expires_at is not None and (
+        isinstance(company_jwt_expires_at, bool)
+        or not isinstance(company_jwt_expires_at, int)
+        or company_jwt_expires_at <= 0
+    ):
+        return None
+    snapshot = {
         "user_id": value["user_id"],
         "display_name": value["display_name"],
         "tenant_id": value["tenant_id"],
@@ -1739,6 +1750,9 @@ def _valid_snapshot(value: object) -> dict[str, object] | None:
         "authority_source": authority_source,
         "authority_checked_at": authority_checked_at,
     }
+    if company_jwt_expires_at is not None:
+        snapshot["company_jwt_expires_at"] = company_jwt_expires_at
+    return snapshot
 
 
 async def principal_for_context(

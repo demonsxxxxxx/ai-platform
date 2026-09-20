@@ -1757,6 +1757,54 @@ test("production cookie-session SSE 401 never probes auth or opens a refreshed s
   }
 });
 
+test("SSE force-relogin 401 emits the shared recovery signal", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const events: string[] = [];
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      dispatchEvent: (event: Event) => {
+        events.push((event as CustomEvent).type);
+        return true;
+      },
+    },
+  });
+  const { context } = createTokenRefreshContext();
+
+  try {
+    await assert.rejects(
+      connectToSSE(
+        "session-old",
+        "run-old",
+        "assistant-old",
+        context,
+        false,
+        async (_input, init) => {
+          await init.onopen?.(
+            new Response(null, {
+              status: 401,
+              headers: { "X-Force-Relogin": "true" },
+            }),
+          );
+        },
+        { getValidAccessToken: async () => "access" },
+      ),
+      (error: unknown) => {
+        assert.equal(isNonRetryableSSEAuthenticationError(error), true);
+        if (isNonRetryableSSEAuthenticationError(error)) {
+          assert.equal(error.failure, "forced_relogin");
+        }
+        return true;
+      },
+    );
+
+    assert.deepEqual(events, ["auth:force-relogin"]);
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else delete (globalThis as { window?: Window }).window;
+  }
+});
+
 test("SSE failures log only fixed phases and bounded safe codes", async () => {
   const originalError = console.error;
   const originalWarn = console.warn;

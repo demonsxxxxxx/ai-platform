@@ -1,10 +1,17 @@
+from dataclasses import replace
 import logging
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from app.auth import AuthPrincipal, is_ai_admin, principal_to_response, require_principal
+from app.auth import (
+    FORCE_RELOGIN_HEADER,
+    AuthPrincipal,
+    is_ai_admin,
+    principal_to_response,
+    require_principal,
+)
 from app.auth_sessions import (
     AuthContextError,
     AuthOperation,
@@ -23,6 +30,7 @@ from app.principal_authority import (
     CompanyLoginJwtUnavailable,
     PrincipalAuthorityDenied,
     fetch_company_user_info,
+    read_company_jwt_expiry,
     resolve_company_login_jwt,
     resolve_login_principal,
 )
@@ -287,7 +295,15 @@ async def _resolve_login_principal(
         )
     except PrincipalAuthorityDenied as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="company_login_failed") from exc
-    return principal, company_jwt.strip() if isinstance(company_jwt, str) else None
+    company_jwt = company_jwt.strip() if isinstance(company_jwt, str) else None
+    company_jwt_expires_at = (
+        read_company_jwt_expiry(company_jwt, settings=get_settings())
+        if company_jwt
+        else None
+    )
+    if company_jwt_expires_at is not None:
+        principal = replace(principal, company_jwt_expires_at=company_jwt_expires_at)
+    return principal, company_jwt
 
 
 async def _store_mcp_login_jwt(
@@ -364,7 +380,12 @@ async def company_credential_handoff(
     try:
         credential = await get_mcp_principal_jwt_store().get(principal)
     except McpRuntimeContextError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+        headers = (
+            {FORCE_RELOGIN_HEADER: "true"}
+            if exc.code in {"mcp_principal_jwt_expired", "mcp_principal_jwt_missing", "mcp_jwt_expired_or_missing"}
+            else None
+        )
+        raise HTTPException(status_code=exc.status_code, detail=exc.code, headers=headers) from exc
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Pragma"] = "no-cache"
     return {"credential": credential}

@@ -22,6 +22,7 @@ RUNTIME_OPERATOR_ROLE = "runtime_operator"
 AUDITOR_ROLE = "auditor"
 BREAK_GLASS_ADMIN_ROLE = "break_glass_admin"
 COMPANY_AUTHZ_POLICY_VERSION = 1
+FORCE_RELOGIN_HEADER = "X-Force-Relogin"
 
 ADMIN_ROLE_ALIASES = {"admin", "developer", PLATFORM_ADMIN_ROLE, BREAK_GLASS_ADMIN_ROLE}
 PLATFORM_ROLE_TAXONOMY = {
@@ -49,6 +50,7 @@ class AuthPrincipal:
     authz_policy_version: int = COMPANY_AUTHZ_POLICY_VERSION
     authority_source: str = ""
     authority_checked_at: str = ""
+    company_jwt_expires_at: int | None = None
 
 
 def authority_checked_at_now() -> str:
@@ -147,6 +149,7 @@ def sign_principal_session(principal: AuthPrincipal) -> str:
         "authz_policy_version": principal.authz_policy_version,
         "authority_source": principal.authority_source,
         "authority_checked_at": principal.authority_checked_at,
+        "company_jwt_expires_at": principal.company_jwt_expires_at,
         "iat": now,
         "exp": now + int(settings.ai_session_max_age_seconds),
     }
@@ -179,10 +182,25 @@ def verify_principal_session(token: str) -> AuthPrincipal:
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session") from exc
     if int(payload.get("exp") or 0) <= int(time.time()):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session_expired")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="session_expired",
+            headers={FORCE_RELOGIN_HEADER: "true"},
+        )
     source = str(payload.get("source") or "ai-session")
+    raw_company_jwt_expires_at = payload.get("company_jwt_expires_at")
+    if raw_company_jwt_expires_at is not None and (
+        isinstance(raw_company_jwt_expires_at, bool)
+        or not isinstance(raw_company_jwt_expires_at, int)
+        or raw_company_jwt_expires_at <= 0
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session")
     if source == "company-login" and payload.get("authz_policy_version") != COMPANY_AUTHZ_POLICY_VERSION:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_session")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="stale_company_session",
+            headers={FORCE_RELOGIN_HEADER: "true"},
+        )
     return AuthPrincipal(
         user_id=str(payload.get("user_id") or ""),
         display_name=str(payload.get("display_name") or payload.get("user_id") or ""),
@@ -194,6 +212,11 @@ def verify_principal_session(token: str) -> AuthPrincipal:
         authz_policy_version=int(payload.get("authz_policy_version") or 0),
         authority_source=str(payload.get("authority_source") or ""),
         authority_checked_at=str(payload.get("authority_checked_at") or ""),
+        company_jwt_expires_at=(
+            int(raw_company_jwt_expires_at)
+            if raw_company_jwt_expires_at is not None
+            else None
+        ),
     )
 
 
@@ -214,23 +237,47 @@ def _enforce_company_authority_freshness(
 
     if principal.source != "company-login":
         return principal
+    relogin_headers = {FORCE_RELOGIN_HEADER: "true"}
     if principal.authz_policy_version != COMPANY_AUTHZ_POLICY_VERSION:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_session")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="stale_company_session",
+            headers=relogin_headers,
+        )
     if not principal.authority_source.strip() or not principal.authority_checked_at.strip():
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="stale_company_authority",
+            headers=relogin_headers,
+        )
+    if principal.company_jwt_expires_at is not None and principal.company_jwt_expires_at <= int(time.time()):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="company_login_expired",
+            headers=relogin_headers,
+        )
     try:
         checked_at = datetime.fromisoformat(principal.authority_checked_at.replace("Z", "+00:00"))
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="stale_company_authority",
+            headers=relogin_headers,
         ) from exc
     if checked_at.tzinfo is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="stale_company_authority",
+            headers=relogin_headers,
+        )
     age_seconds = (datetime.now(timezone.utc) - checked_at.astimezone(timezone.utc)).total_seconds()
     max_age_seconds = int(getattr(settings, "company_authority_freshness_seconds", 24 * 60 * 60))
     if age_seconds < -60 or age_seconds > max_age_seconds:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_authority")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="stale_company_authority",
+            headers=relogin_headers,
+        )
     return principal
 
 
@@ -272,6 +319,11 @@ async def require_principal(request: Request) -> AuthPrincipal:
                     authz_policy_version=int(snapshot["authz_policy_version"]),
                     authority_source=str(snapshot["authority_source"]),
                     authority_checked_at=str(snapshot["authority_checked_at"]),
+                    company_jwt_expires_at=(
+                        int(snapshot["company_jwt_expires_at"])
+                        if snapshot.get("company_jwt_expires_at") is not None
+                        else None
+                    ),
                 )
                 return _enforce_deployment_scope(
                     _enforce_company_authority_freshness(browser_principal, settings),
