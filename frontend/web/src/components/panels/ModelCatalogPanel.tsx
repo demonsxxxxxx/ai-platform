@@ -100,6 +100,10 @@ export function ModelCatalogPanel() {
   });
 
   useEffect(() => {
+    if (canAdminModels) {
+      setIsLoading(false);
+      return undefined;
+    }
     let cancelled = false;
 
     async function loadModelCatalog() {
@@ -134,7 +138,7 @@ export function ModelCatalogPanel() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [canAdminModels, t]);
 
   const query = normalizeQuery(searchQuery);
   const filteredModels = useMemo(
@@ -142,6 +146,19 @@ export function ModelCatalogPanel() {
     [query, state?.models],
   );
   const providerCount = state?.providers.length ?? 0;
+
+  if (canAdminModels) {
+    return (
+      <div
+        data-model-catalog-shell
+        data-frontend-governance-state="ready"
+        className={workbenchSurface.page}
+      >
+        <ModelAdminControl />
+      </div>
+    );
+  }
+
   const panelHeader = (
     <PanelHeader
       title={t("models.title", "模型")}
