@@ -4125,7 +4125,16 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
 
 
 @pytest.mark.asyncio
-async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("structured_output", "expected_error"),
+    [
+        pytest.param(None, None, id="missing"),
+        pytest.param({}, "claude_agent_sdk_delivery_manifest_invalid", id="invalid"),
+    ],
+)
+async def test_sdk_structured_output_is_optional_but_present_manifest_is_validated(
+    monkeypatch, tmp_path, structured_output, expected_error
+):
     captured = {}
 
     class ResultMessage:
@@ -4134,13 +4143,14 @@ async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path)
         usage = None
         model_usage = None
         result = "done"
-        structured_output = None
         is_error = False
         errors = None
         stop_reason = "end_turn"
         terminal_reason = "completed"
         num_turns = 1
         permission_denials = None
+
+    ResultMessage.structured_output = structured_output
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -4173,9 +4183,11 @@ async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path)
         skill_id=None,
     )
 
-    assert result.error == "claude_agent_sdk_delivery_manifest_invalid"
-    assert result.received_structured_terminal is False
+    assert result.error == expected_error
+    assert result.received_structured_terminal is (expected_error is None)
+    assert result.message == ("done" if expected_error is None else "")
     assert result.response_files == []
+    assert result.response_file_descriptors == []
 
 
 @pytest.mark.asyncio

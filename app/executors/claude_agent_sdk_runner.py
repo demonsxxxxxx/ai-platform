@@ -3456,10 +3456,11 @@ async def run_claude_agent_sdk(
                         turn_diagnostics=turn_diagnostics(error_code),
                         capability_evidence=list(capability_evidence),
                     )
-                if sdk_structured_output_supported:
+                structured_output = getattr(message, "structured_output", None)
+                if sdk_structured_output_supported and structured_output is not None:
                     try:
                         final_answer, declared_files = _delivery_manifest(
-                            getattr(message, "structured_output", None),
+                            structured_output,
                             workspace=cwd,
                             allowed_skill_names=allowed_skill_names,
                         )
