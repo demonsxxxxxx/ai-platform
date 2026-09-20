@@ -486,9 +486,8 @@ export function SessionListContent({
         </div>
       </div> : <div className="flex-1" data-workbench-navigation-spacer />}
 
-      {agentWorkspace ? (
-        <div className="mt-auto flex items-center justify-between border-t border-[var(--theme-border)] px-3 py-3">
-          <div className="min-w-0 flex-1"><UserMenu showLabel /></div>
+      <div className="mt-auto flex items-center justify-between border-t border-[var(--theme-border)] px-3 py-3">
+        <div className="min-w-0 flex-1"><UserMenu showLabel /></div>
           <button
             aria-label="设置"
             className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
@@ -509,7 +508,6 @@ export function SessionListContent({
             <Settings aria-hidden="true" size={17} />
           </button>
         </div>
-      ) : null}
 
     </div>
   );

@@ -8,6 +8,7 @@ import {
   Bot,
   Cpu,
   Activity,
+  Settings,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
@@ -16,6 +17,7 @@ import {
   type WorkbenchNavItem,
 } from "./navigationState";
 import { LibreChatRailButton } from "../../../librechat-ui/Rail";
+import { UserMenu } from "../../layout/UserMenu";
 import { canAccessWorkbenchItem } from "../../governance/workbenchAccessPolicy";
 import { isAiAdminUser } from "../capabilityAdmin";
 
@@ -259,6 +261,28 @@ export function SidebarRail({
             <Clock size={20} />
           </LibreChatRailButton>
         ) : null}
+      </div>
+      <div className="mt-auto flex flex-col items-center border-t border-[var(--theme-border)] py-2">
+        <UserMenu />
+        <button
+          aria-label="设置"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            window.dispatchEvent(
+              new CustomEvent("workbench-menu-open", {
+                detail: {
+                  top: Math.max(8, rect.top - 220),
+                  right: window.innerWidth - rect.right,
+                },
+              }),
+            );
+          }}
+          title="设置"
+          type="button"
+        >
+          <Settings aria-hidden="true" size={17} />
+        </button>
       </div>
     </nav>
   );
