@@ -185,8 +185,13 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.get, 1);
     assert.match(
       container.querySelectorAll("[data-model-admin-control]")[0].getAttribute("class") ?? "",
-      /px-4/,
+      /p-4/,
       "admin controls should keep page-edge padding",
+    );
+    assert.doesNotMatch(
+      nodeText(container),
+      /全员模型配置|先获取候选模型|公开模型投影|管理写操作/,
+      "admin view should omit explanatory and duplicate catalog surfaces",
     );
 
     const keyInput = inputByLabel(container, "模型 API Key");
@@ -239,7 +244,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.publish[0].models[0].is_default, true);
     assert.equal(calls.publish[0].models[0].max_input_tokens, 32000);
     assert.equal(calls.publish[0].models[0].max_output_tokens, 2048);
-    assert.match(renderedParagraphText(container), /当前发布版本 4/);
+    assert.match(nodeText(container), /已配置/);
     assert.doesNotMatch(renderedParagraphText(container), /super-secret-key/);
 
     modelAdminApi.discover = async () => {
