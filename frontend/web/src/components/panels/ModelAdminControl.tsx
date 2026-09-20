@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
-import { Download, Save } from "lucide-react";
-
+import { DatabaseZap, RefreshCw, Save, Search } from "lucide-react";
 import {
   modelAdminApi,
   type AdminModelEntry,
   type AdminModelState,
 } from "../../services/api/modelAdmin";
 import { ApiRequestError } from "../../services/api/fetch";
+
+const STATUS_FILTERS = [
+  ["all", "状态：全部"],
+  ["enabled", "状态：已启用"],
+  ["disabled", "状态：未启用"],
+  ["unavailable", "状态：上游缺失"],
+] as const;
 
 const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
   model_connection_endpoint_invalid: "API 地址格式无效，请填写模型服务地址。",
@@ -41,7 +47,15 @@ function validTokenLimit(value: number | undefined): boolean {
     && Number.isInteger(value) && value >= 1 && value <= 10_000_000;
 }
 
-export function ModelAdminControl({ canManage = true }: { canManage?: boolean }) {
+export type ModelAdminControlState = "loading" | "ready" | "degraded";
+
+export function ModelAdminControl({
+  canManage = true,
+  onStateChange,
+}: {
+  canManage?: boolean;
+  onStateChange?: (state: ModelAdminControlState) => void;
+}) {
   const [state, setState] = useState<AdminModelState | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [credential, setCredential] = useState("");
@@ -51,6 +65,8 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   const applyState = (next: AdminModelState) => {
     setState(next);
@@ -61,13 +77,20 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
   useEffect(() => {
     if (!canManage) return undefined;
     let current = true;
+    onStateChange?.("loading");
     void modelAdminApi.get().then((next) => {
-      if (current) applyState(next);
+      if (current) {
+        applyState(next);
+        onStateChange?.("ready");
+      }
     }).catch((caught) => {
-      if (current) setError(errorMessage(caught));
+      if (current) {
+        setError(errorMessage(caught));
+        onStateChange?.("degraded");
+      }
     });
     return () => { current = false; };
-  }, [canManage]);
+  }, [canManage, onStateChange]);
 
   const discover = async () => {
     setBusy("discover");
@@ -127,49 +150,228 @@ export function ModelAdminControl({ canManage = true }: { canManage?: boolean })
     }
   };
 
+  const visibleDraft = draft.filter((model) => {
+    const normalizedQuery = query.trim().toLowerCase();
+    const matchesQuery = !normalizedQuery
+      || model.label.toLowerCase().includes(normalizedQuery)
+      || model.value.toLowerCase().includes(normalizedQuery);
+    const matchesStatus = statusFilter === "all"
+      || (statusFilter === "enabled" && model.enabled)
+      || (statusFilter === "disabled" && !model.enabled)
+      || (statusFilter === "unavailable" && !model.available);
+    return matchesQuery && matchesStatus;
+  });
+
   if (!canManage) return null;
 
   return (
-    <section aria-labelledby="model-admin-heading" className="min-w-0 border-b border-[var(--theme-border)] px-4 pb-6 pt-3" data-model-admin-control>
-      <div className="mb-4">
-        <h2 id="model-admin-heading" className="text-base font-semibold">全员模型配置</h2>
-        <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">
-          先获取候选模型，再配置启用状态、容量和默认模型；只有发布后新 Run 才使用此配置。
-        </p>
+    <section
+      aria-label="模型管理"
+      className="min-w-0 space-y-4 p-4"
+      data-model-admin-control
+    >
+      <div className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
+        <h2 className="mb-3 text-sm font-semibold">连接配置</h2>
+        <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(16rem,1fr)_minmax(14rem,1fr)_auto_auto]">
+          <label className="flex min-w-0 flex-col gap-1.5 text-sm">
+            <span className="font-medium">API 地址</span>
+            <input
+              aria-label="模型 API 地址"
+              className="h-10 min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-3 outline-none focus:border-[var(--theme-primary)]"
+              onChange={(event) => {
+                setBaseUrl(event.target.value);
+                setDiscoveredRevision(null);
+                setDiscovered(false);
+              }}
+              placeholder="https://gateway.example.com"
+              value={baseUrl}
+            />
+          </label>
+          <label className="flex min-w-0 flex-col gap-1.5 text-sm">
+            <span className="font-medium">API Key</span>
+            <input
+              aria-label="模型 API Key"
+              autoComplete="new-password"
+              className="h-10 min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-3 outline-none focus:border-[var(--theme-primary)]"
+              onChange={(event) => {
+                setCredential(event.target.value);
+                setDiscoveredRevision(null);
+                setDiscovered(false);
+              }}
+              placeholder={state?.connection.configured ? "留空则保持当前 Key" : "输入 API Key"}
+              type="password"
+              value={credential}
+            />
+          </label>
+          <div className="flex items-end">
+            <span
+              className={`inline-flex h-8 items-center gap-2 rounded-md px-3 text-xs font-medium ${
+                discovered || state?.connection.configured
+                  ? "bg-[var(--theme-success-soft)] text-[var(--theme-success)]"
+                  : "bg-[var(--theme-background)] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
+              }`}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
+              {discovered ? "连接正常" : state?.connection.configured ? "已配置" : "未配置"}
+            </span>
+          </div>
+          <button
+            className="btn-primary mt-auto inline-flex h-10 items-center justify-center gap-2"
+            data-model-admin-discover
+            disabled={busy !== null || !baseUrl.trim()}
+            onClick={() => void discover()}
+            type="button"
+          >
+            <RefreshCw className={busy === "discover" ? "animate-spin" : ""} size={16} aria-hidden="true" />
+            同步模型
+          </button>
+        </div>
+        {error ? <p className="mt-3 text-sm text-[var(--theme-danger)]" role="alert">{error}</p> : null}
+        {message ? <p className="mt-3 text-sm text-[var(--theme-text-secondary)]" role="status">{message}</p> : null}
       </div>
-      <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(16rem,1fr)_minmax(14rem,0.8fr)_auto]">
-        <label className="flex flex-col gap-1.5 text-sm">
-          <span className="font-medium">API 地址</span>
-          <input aria-label="模型 API 地址" className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 outline-none focus:border-[var(--theme-primary)]" onChange={(event) => { setBaseUrl(event.target.value); setDiscoveredRevision(null); setDiscovered(false); }} placeholder="https://gateway.example.com" value={baseUrl} />
-        </label>
-        <label className="flex flex-col gap-1.5 text-sm">
-          <span className="font-medium">API Key</span>
-          <input aria-label="模型 API Key" autoComplete="new-password" className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 outline-none focus:border-[var(--theme-primary)]" onChange={(event) => { setCredential(event.target.value); setDiscoveredRevision(null); setDiscovered(false); }} placeholder={state?.connection.configured ? "留空则保持当前 Key" : "输入 API Key"} type="password" value={credential} />
-        </label>
-        <button data-model-admin-discover className="btn-secondary mt-auto inline-flex h-10 w-full items-center justify-center gap-2 lg:w-auto" disabled={busy !== null || !baseUrl.trim()} onClick={() => void discover()} type="button">
-          <Download size={16} aria-hidden="true" />获取模型
-        </button>
+
+      <div className="overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]">
+        <div className="flex flex-col gap-3 border-b border-[var(--theme-border)] p-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row">
+            <label className="relative min-w-0 sm:max-w-sm sm:flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]" size={16} aria-hidden="true" />
+              <input
+                aria-label="搜索模型"
+                className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] pl-9 pr-3 text-sm outline-none focus:border-[var(--theme-primary)]"
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索模型名称或模型 ID"
+                value={query}
+              />
+            </label>
+            <select
+              aria-label="筛选模型状态"
+              className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] sm:w-40"
+              onChange={(event) => setStatusFilter(event.target.value)}
+              value={statusFilter}
+            >
+              {STATUS_FILTERS.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </div>
+          <button
+            className="btn-primary inline-flex h-10 items-center justify-center gap-2"
+            data-model-admin-publish
+            disabled={busy !== null || !discovered}
+            onClick={() => void publish()}
+            type="button"
+          >
+            <Save size={16} aria-hidden="true" />
+            发布到全员
+          </button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[880px] table-fixed text-left text-sm">
+            <thead className="bg-[var(--theme-background)] text-xs text-[var(--theme-text-secondary)]">
+              <tr>
+                <th className="w-24 px-4 py-3 font-medium">启用</th>
+                <th className="w-[28%] px-4 py-3 font-medium">显示名称 / 上游模型 ID</th>
+                <th className="w-40 px-4 py-3 font-medium">最大输入 Token</th>
+                <th className="w-40 px-4 py-3 font-medium">最大输出 Token</th>
+                <th className="w-28 px-4 py-3 font-medium">状态</th>
+                <th className="w-20 px-4 py-3 text-center font-medium">默认</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleDraft.map((model) => (
+                <tr key={model.id} className="border-t border-[var(--theme-border)] first:border-t-0">
+                  <td className="px-4 py-3">
+                    <label className="inline-flex cursor-pointer items-center">
+                      <input
+                        aria-label={`启用 ${model.label}`}
+                        checked={model.enabled}
+                        className="peer sr-only"
+                        disabled={!model.available || busy !== null}
+                        onChange={(event) => updateDraft(model.id, {
+                          enabled: event.target.checked,
+                          ...(!event.target.checked ? { is_default: false } : {}),
+                        })}
+                        type="checkbox"
+                      />
+                      <span className="relative h-5 w-9 rounded-full bg-[var(--theme-border)] transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform peer-checked:bg-[var(--theme-primary)] peer-checked:after:translate-x-4 peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--theme-primary)] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[var(--theme-workbench-panel)] peer-disabled:cursor-not-allowed peer-disabled:opacity-50" />
+                    </label>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#eef2ff] text-[#5967e8]" aria-hidden="true">
+                        <DatabaseZap size={16} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <input
+                          aria-label={`${model.value} 显示名称`}
+                          className="h-7 w-full truncate border-0 bg-transparent p-0 font-medium outline-none focus:text-[var(--theme-primary)]"
+                          onChange={(event) => updateDraft(model.id, { label: event.target.value })}
+                          value={model.label}
+                        />
+                        <p className="truncate text-xs text-[var(--theme-text-secondary)]">{model.value}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <input
+                      aria-label={`${model.value} 最大输入 Token`}
+                      className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-2 disabled:opacity-60"
+                      disabled={!model.enabled || busy !== null}
+                      min={1}
+                      max={10000000}
+                      onChange={(event) => updateDraft(model.id, { max_input_tokens: event.target.value ? Number(event.target.value) : undefined })}
+                      placeholder="—"
+                      type="number"
+                      value={model.max_input_tokens ?? ""}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <input
+                      aria-label={`${model.value} 最大输出 Token`}
+                      className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-2 disabled:opacity-60"
+                      disabled={!model.enabled || busy !== null}
+                      min={1}
+                      max={10000000}
+                      onChange={(event) => updateDraft(model.id, { max_output_tokens: event.target.value ? Number(event.target.value) : undefined })}
+                      placeholder="—"
+                      type="number"
+                      value={model.max_output_tokens ?? ""}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs ${
+                      model.available
+                        ? "bg-[var(--theme-success-soft)] text-[var(--theme-success)]"
+                        : "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)]"
+                    }`}>
+                      <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
+                      {model.available ? "已发现" : "上游缺失"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <input
+                      aria-label={`设为默认 ${model.label}`}
+                      checked={model.is_default}
+                      disabled={!model.enabled || !model.available || busy !== null}
+                      name="default-model"
+                      onChange={() => updateDraft(model.id, { is_default: true })}
+                      type="radio"
+                    />
+                  </td>
+                </tr>
+              ))}
+              {!visibleDraft.length ? (
+                <tr>
+                  <td className="px-4 py-12 text-center text-sm text-[var(--theme-text-secondary)]" colSpan={6}>
+                    {draft.length ? "没有匹配的模型" : "请先同步模型"}
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </div>
-      {state?.connection.configured ? <p className="mt-3 text-xs text-[var(--theme-text-secondary)]">当前发布版本 {state.connection.revision} · Key 指纹 {state.connection.key_fingerprint}</p> : null}
-      {error ? <p className="mt-3 text-sm text-[var(--theme-danger)]" role="alert">{error}</p> : null}
-      {message ? <p className="mt-3 text-sm text-[var(--theme-text-secondary)]" role="status">{message}</p> : null}
-      {draft.length ? <div className="mt-6 overflow-x-auto border-t border-[var(--theme-border)]">
-        <table className="w-full min-w-[1050px] text-left text-sm">
-          <thead className="text-[var(--theme-text-secondary)]"><tr>
-            <th className="py-3 pr-3 font-medium">启用</th><th className="py-3 pr-3 font-medium">显示名称</th><th className="py-3 pr-3 font-medium">上游模型 ID</th><th className="py-3 pr-3 font-medium">最大输入 Token</th><th className="py-3 pr-3 font-medium">最大输出 Token</th><th className="py-3 pr-3 font-medium">状态</th><th className="py-3 font-medium">默认</th>
-          </tr></thead>
-          <tbody>{draft.map((model) => <tr key={model.id} className="border-t border-[var(--theme-border)]">
-            <td className="py-3 pr-3"><input aria-label={`启用 ${model.label}`} checked={model.enabled} disabled={!model.available || busy !== null} onChange={(event) => updateDraft(model.id, { enabled: event.target.checked, ...(!event.target.checked ? { is_default: false } : {}) })} type="checkbox" /></td>
-            <td className="py-3 pr-3"><input aria-label={`${model.value} 显示名称`} className="h-9 min-w-48 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-2" onChange={(event) => updateDraft(model.id, { label: event.target.value })} value={model.label} /></td>
-            <td className="break-all py-3 pr-3 font-mono text-xs">{model.value}</td>
-            <td className="py-3 pr-3"><input aria-label={`${model.value} 最大输入 Token`} className="h-9 w-32 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-2" min={1} max={10000000} onChange={(event) => updateDraft(model.id, { max_input_tokens: event.target.value ? Number(event.target.value) : undefined })} type="number" value={model.max_input_tokens ?? ""} /></td>
-            <td className="py-3 pr-3"><input aria-label={`${model.value} 最大输出 Token`} className="h-9 w-32 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-2" min={1} max={10000000} onChange={(event) => updateDraft(model.id, { max_output_tokens: event.target.value ? Number(event.target.value) : undefined })} type="number" value={model.max_output_tokens ?? ""} /></td>
-            <td className="py-3 pr-3">{model.available ? "已发现" : "上游缺失"}</td>
-            <td className="py-3"><input aria-label={`设为默认 ${model.label}`} checked={model.is_default} disabled={!model.enabled || !model.available || busy !== null} name="default-model" onChange={() => updateDraft(model.id, { is_default: true })} type="radio" /></td>
-          </tr>)}</tbody>
-        </table>
-      </div> : null}
-      {draft.length ? <div className="mt-4 flex justify-end"><button data-model-admin-publish className="btn-primary inline-flex items-center gap-2" disabled={busy !== null || !discovered} onClick={() => void publish()} type="button"><Save size={16} aria-hidden="true" />发布到全员</button></div> : null}
     </section>
   );
 }
