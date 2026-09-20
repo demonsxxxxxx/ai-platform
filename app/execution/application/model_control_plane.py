@@ -498,14 +498,27 @@ class ModelControlPlaneService:
                 query=query,
                 max_response_bytes=8192,
             )
-            if _input_token_count(count_response, fallback_body=count_body) > connection.max_input_tokens:
-                if connection.conversation_mode == "native_resume":
-                    error = {"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long"}}
-                    return RuntimeProxyResponse(
-                        status=400, content_type="application/json",
-                        body=(json.dumps(error, separators=(",", ":")).encode("utf-8"),),
-                    )
-                raise ValueError("context_bootstrap_input_too_large")
+            counted_input_tokens = _input_token_count(
+                count_response, fallback_body=count_body
+            )
+            if counted_input_tokens > connection.max_input_tokens:
+                error = {
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": (
+                            f"prompt is too long: {counted_input_tokens} tokens > "
+                            f"{connection.max_input_tokens} maximum"
+                        ),
+                    },
+                }
+                return RuntimeProxyResponse(
+                    status=400,
+                    content_type="application/json",
+                    body=(
+                        json.dumps(error, separators=(",", ":")).encode("utf-8"),
+                    ),
+                )
         elif provider == "anthropic" and upstream_path == "v1/messages/count_tokens":
             count_response = await asyncio.to_thread(
                 self._upstream.request,
