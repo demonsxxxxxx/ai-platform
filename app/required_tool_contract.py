@@ -32,6 +32,16 @@ REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION = (
     "ai-platform.required-capability-evidence.v1"
 )
 TOOL_INVOCATION_EVIDENCE_SCHEMA_VERSION = "ai-platform.tool-invocation-evidence.v1"
+MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE = (
+    "mcp_execution_succeeded_receipt_incomplete"
+)
+MCP_EXECUTION_OUTCOME_UNKNOWN = "mcp_execution_outcome_unknown"
+MCP_EXECUTION_UNCERTAIN_ERROR_CODES = frozenset(
+    {
+        MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
+        MCP_EXECUTION_OUTCOME_UNKNOWN,
+    }
+)
 REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY = "_required_capability_declaration"
 REQUIRED_CAPABILITY_EVIDENCE_KEY = "required_capability_evidence"
 TOOL_INVOCATION_EVIDENCE_KEY = "tool_invocation_evidence"
@@ -889,12 +899,12 @@ def _builtin_subject(
     identity: str,
     active: bool,
     distributed: bool,
-    allowed_parameter_keys: list[str],
-    required_parameter_keys: list[str],
+    allowed_parameter_keys: list[str] | None,
+    required_parameter_keys: list[str] | None,
     allowed_skill_names: list[str],
     profile: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    return {
+    subject = {
         "identity": identity,
         "declared_identities": [identity],
         "registered": True,
@@ -906,13 +916,16 @@ def _builtin_subject(
         "parameters_authorized": True,
         "risk_level": "low" if identity in {"Read", "Glob", "Grep", "LS", "Skill"} else "high",
         "write_capable": identity not in {"Read", "Glob", "Grep", "LS", "Skill"},
-        "allowed_parameter_keys": list(allowed_parameter_keys),
-        "required_parameter_keys": list(required_parameter_keys),
         "allowed_skill_names": list(allowed_skill_names),
         "execution_strategy": str((profile or {}).get("strategy") or "sdk_restricted"),
         "command_isolation": str((profile or {}).get("command_isolation") or "none"),
         "workspace_contract": str((profile or {}).get("workspace_contract") or ""),
     }
+    if allowed_parameter_keys is not None:
+        subject["allowed_parameter_keys"] = list(allowed_parameter_keys)
+    if required_parameter_keys is not None:
+        subject["required_parameter_keys"] = list(required_parameter_keys)
+    return subject
 
 
 def with_sandbox_local_tool_capability_subjects(
@@ -965,13 +978,12 @@ def with_sandbox_local_tool_capability_subjects(
     for identity in SANDBOX_LOCAL_TOOL_IDENTITIES:
         if identity not in selected_sandbox_tool_identities:
             continue
-        parameter_contract = BUILTIN_TOOL_PARAMETER_CONTRACTS[identity]
         subject = _builtin_subject(
             identity=identity,
             active=True,
             distributed=True,
-            allowed_parameter_keys=list(parameter_contract.allowed_parameter_keys),
-            required_parameter_keys=list(parameter_contract.required_parameter_keys),
+            allowed_parameter_keys=None,
+            required_parameter_keys=None,
             allowed_skill_names=[],
             profile={
                 "strategy": SANDBOX_FULL_LOCAL,
@@ -983,6 +995,7 @@ def with_sandbox_local_tool_capability_subjects(
                 "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
             },
         )
+        subject["parameter_validation"] = "sdk"
         if (
             required_declaration is not None
             and identity == CANONICAL_REQUIRED_TOOL_IDENTITY

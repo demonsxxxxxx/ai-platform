@@ -2317,6 +2317,50 @@ async def test_executor_rejects_unpersistable_local_tool_invocation_id(
     assert all(isinstance(event, executor_app._PlatformExecutionPhaseFact) for event in events)
 
 
+@pytest.mark.asyncio
+async def test_executor_preserves_mcp_execution_receipt_error_after_callback_loss(
+    tmp_path,
+    monkeypatch,
+):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def emit_event(event):
+        return getattr(event, "type", "") != "capability_completed"
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        identity = "mcp__tenant-server__search"
+        call_id = "capability-call-1"
+        assert await kwargs["on_capability_evidence"](
+            sdk_mcp_evidence(identity, call_id, "invocation_requested")
+        ) is True
+        assert await kwargs["on_capability_evidence"](
+            sdk_mcp_evidence(identity, call_id, "completed")
+        ) is False
+        return sdk_result(
+            "",
+            error="mcp_execution_succeeded_receipt_incomplete",
+        )
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings()
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+    request = ExecutorTaskRequest.model_validate(selected_mcp_task_payload())
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert (
+        result["error_code"]
+        == "mcp_execution_succeeded_receipt_incomplete"
+    )
+    assert result["capability_evidence"] == []
+
+
 @pytest.mark.parametrize(
     "receipt_mode",
     "rejected missing malformed nonliteral_true wrong_count over_count wrong_batch exception stale_run mismatched_attempt".split(),

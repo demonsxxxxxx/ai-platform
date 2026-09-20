@@ -76,8 +76,10 @@ the input limit. If and only if that endpoint returns `404`, the platform uses a
 conservative local estimate equal to the canonical count-request UTF-8 byte
 length plus fixed protocol overhead; explicit SDK count requests receive the
 same estimate. Authentication, authorization, rate-limit, server, transport and
-malformed-success failures still fail closed. Native-resume and
-platform-bootstrap overflows retain their separate current error behavior.
+malformed-success failures still fail closed. `native_resume`,
+`platform_bootstrap`, and `empty_start` overflows all return the same bounded
+Anthropic `invalid_request_error` with HTTP 400 so the pinned Claude CLI can
+run its native reactive compaction path.
 
 Callbacks use the same stateless egress origin and are forwarded to the
 existing `/api/ai/runtime/callbacks/*` routes. Callback-token validation remains

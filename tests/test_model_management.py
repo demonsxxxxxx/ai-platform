@@ -1132,7 +1132,7 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
 
 @pytest.mark.asyncio
 async def test_anthropic_messages_recount_each_request_and_fail_closed_on_invalid_budget():
-    counts = iter([10, 32001, 32001])
+    counts = iter([10, 32001, 32001, 32001])
     count_bodies = []
     forwarded = []
     mode = "platform_bootstrap"
@@ -1173,20 +1173,26 @@ async def test_anthropic_messages_recount_each_request_and_fail_closed_on_invali
                "tools": [{"name": "Read"}], "thinking": {"type": "disabled"}, "stream": True, "max_tokens": 512}
     await service.proxy(body=json.dumps(payload).encode(), **fields)
     assert count_bodies == [{key: payload[key] for key in ("model", "system", "messages", "tools", "thinking")}]
-    with pytest.raises(ValueError, match="context_bootstrap_input_too_large"):
-        await service.proxy(body=json.dumps({**payload, "messages": [{"role": "user", "content": "tool output"}]}).encode(), **fields)
-    assert len(forwarded) == 1
-    mode = "native_resume"
-    native_response = await service.proxy(body=json.dumps(payload).encode(), **fields)
-    assert native_response.status == 400
-    assert json.loads(b"".join(native_response.body)) == {
-        "type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long"},
-    }
+    for mode in ("platform_bootstrap", "empty_start", "native_resume"):
+        over_limit = await service.proxy(
+            body=json.dumps(
+                {**payload, "messages": [{"role": "user", "content": "tool output"}]}
+            ).encode(),
+            **fields,
+        )
+        assert over_limit.status == 400
+        assert json.loads(b"".join(over_limit.body)) == {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "prompt is too long: 32001 tokens > 32000 maximum",
+            },
+        }
     assert len(forwarded) == 1
     for output in (True, 2049, 0):
         with pytest.raises(ValueError, match="model_proxy_max_tokens_invalid"):
             await service.proxy(body=json.dumps({**payload, "max_tokens": output}).encode(), **fields)
-    assert len(count_bodies) == 3
+    assert len(count_bodies) == 4
 
     def invalid_count(**_kwargs):
         return SimpleNamespace(status=503, body=b'{}')
@@ -1293,10 +1299,20 @@ async def test_anthropic_count_tokens_404_uses_bounded_local_fallback_only():
         return value
 
     service._repository = SimpleNamespace(run_connection=low_capacity_connection)
-    with pytest.raises(ValueError, match="context_bootstrap_input_too_large"):
-        await service.proxy(
-            provider="anthropic", upstream_path="v1/messages", body=message_body, **fields,
-        )
+    over_limit = await service.proxy(
+        provider="anthropic", upstream_path="v1/messages", body=message_body, **fields,
+    )
+    assert over_limit.status == 400
+    assert json.loads(b"".join(over_limit.body)) == {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": (
+                f"prompt is too long: {len(count_body) + 4096} tokens > "
+                "4096 maximum"
+            ),
+        },
+    }
     assert len(forwarded) == 1
 
 

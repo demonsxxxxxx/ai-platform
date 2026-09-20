@@ -491,6 +491,7 @@ export const sessionApi = {
       event_types?: string[];
       run_id?: string;
       exclude_run_id?: string;
+      compact_message_chunks?: boolean;
       signal?: AbortSignal;
     },
   ): Promise<SessionEventsResponse & { run_id?: string }> {
@@ -503,6 +504,9 @@ export const sessionApi = {
     }
     if (options?.exclude_run_id) {
       searchParams.set("exclude_run_id", options.exclude_run_id);
+    }
+    if (options?.compact_message_chunks !== false) {
+      searchParams.set("compact_message_chunks", "true");
     }
 
     const url = `${API_BASE}/api/sessions/${sessionId}/events${

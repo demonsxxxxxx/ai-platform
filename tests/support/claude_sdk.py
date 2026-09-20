@@ -12,12 +12,6 @@ def native_client_factory(message_source):
         async def connect(self):
             return None
 
-        async def get_context_usage(self):
-            return {"totalTokens": 0}
-
-        async def set_permission_mode(self, _mode):
-            return None
-
         async def query(self, prompt, session_id="default"):
             assert session_id
             self._messages = message_source(prompt=prompt, options=self._options)

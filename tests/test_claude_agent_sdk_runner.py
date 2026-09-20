@@ -9,6 +9,8 @@ from tests.support.claude_mcp import install_mcp_sessions
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
+    _canonical_sdk_error,
+    _sdk_autocompact_window,
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
 )
@@ -72,6 +74,37 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("model_max_input_tokens", "expected"),
+    [
+        (None, None),
+        (32_000, 100_000),
+        (100_000, 100_000),
+        (125_000, 100_000),
+        (200_000, 160_000),
+        (1_000_000, 800_000),
+        (2_000_000, 1_000_000),
+    ],
+)
+def test_sdk_autocompact_window_targets_eighty_percent_within_cli_bounds(
+    model_max_input_tokens, expected
+):
+    assert _sdk_autocompact_window(model_max_input_tokens) == expected
+
+
+def test_context_limit_error_outranks_prior_tool_denial():
+    assert _canonical_sdk_error(
+        ["prompt is too long: 100001 tokens > 100000 maximum"],
+        terminal_reason="prompt_too_long",
+        tool_admission_denials=1,
+    ) == "claude_agent_sdk_upstream_error"
+    assert _canonical_sdk_error(
+        ["Request too large (max 32MB)"],
+        terminal_reason="image_error",
+        tool_admission_denials=1,
+    ) == "claude_agent_sdk_upstream_error"
 
 
 def _settings():
@@ -207,12 +240,6 @@ def _client_sdk(module, captured):
         async def connect(self):
             captured["client_connected"] = True
 
-        async def get_context_usage(self):
-            return {"totalTokens": 0}
-
-        async def set_permission_mode(self, mode):
-            captured["client_permission_mode"] = mode
-
         async def query(self, prompt, session_id="default"):
             assert session_id
             self.responses = module.query(prompt=prompt, options=self.options)
@@ -236,6 +263,7 @@ def _fake_sdk(
     mirror_error=False,
     append_provider_session=True,
     append_provider_subpath=None,
+    supports_structured_output=False,
 ):
     class ThinkingBlock:
         def __init__(self, thinking):
@@ -264,6 +292,8 @@ def _fake_sdk(
         stop_reason = None
         num_turns = 1
         permission_denials = None
+        if supports_structured_output:
+            structured_output = {"answer": "done", "deliverables": []}
 
     class HookMatcher:
         def __init__(self, *, matcher, hooks):
@@ -479,6 +509,90 @@ async def _acknowledge_capability_evidence(_evidence):
     return True
 
 
+@pytest.mark.asyncio
+async def test_sdk_structured_output_protocol_bypasses_capability_admission(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    lifecycle_facts = []
+    hook_input = {
+        "tool_name": "StructuredOutput",
+        "tool_use_id": "structured-output-call-1",
+        "tool_input": {"answer": "done", "deliverables": []},
+    }
+
+    async def record_lifecycle(fact):
+        lifecycle_facts.append(fact)
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[
+                ("PreToolUse", hook_input, hook_input["tool_use_id"]),
+            ],
+            supports_structured_output=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        on_tool_lifecycle=record_lifecycle,
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    permission = await captured["can_use_tool"](
+        hook_input["tool_name"],
+        hook_input["tool_input"],
+        {"tool_use_id": hook_input["tool_use_id"]},
+    )
+    assert pretool_output["permissionDecision"] == "allow"
+    assert permission.behavior == "allow"
+    assert lifecycle_facts == []
+    assert result.error is None
+    assert result.capability_evidence == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_structured_output_name_is_not_a_global_tool_allowance(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[]),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+
+    await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+    )
+
+    permission = await captured["can_use_tool"](
+        "StructuredOutput",
+        {"answer": "done", "deliverables": []},
+        {"tool_use_id": "structured-output-call-1"},
+    )
+    assert permission.behavior == "deny"
+    assert permission.message == "tool_identity_malformed"
+
+
 @pytest.mark.parametrize(
     ("thinking_effort", "expected_thinking", "expected_effort"),
     [
@@ -564,7 +678,10 @@ async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_li
     hook_input = {
         "tool_name": "Bash",
         "tool_use_id": "bash-call-1",
-        "tool_input": {"command": "python --version"},
+        "tool_input": {
+            "command": "python --version",
+            "description": "inspect the sandbox",
+        },
     }
     monkeypatch.setitem(
         sys.modules,
@@ -738,54 +855,6 @@ async def test_sandbox_grep_denies_outside_workspace_path(monkeypatch, tmp_path)
         "skill_invocations": 0,
         "public_projection_omissions": 0,
     }
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_required_keys", [None, "pattern", {"pattern": True}])
-async def test_sandbox_grep_denies_invalid_required_parameter_configuration(
-    monkeypatch,
-    tmp_path,
-    invalid_required_keys,
-):
-    captured = {}
-    hook_input = {
-        "tool_name": "Grep",
-        "tool_use_id": "grep-call-1",
-        "tool_input": {},
-    }
-    subjects = _full_sandbox_local_tool_capability_subjects(
-        [], sandbox_provider="opensandbox"
-    )
-    next(subject for subject in subjects if subject["identity"] == "Grep")[
-        "required_parameter_keys"
-    ] = invalid_required_keys
-    monkeypatch.setitem(
-        sys.modules,
-        "claude_agent_sdk",
-        _fake_sdk(
-            captured,
-            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
-        ),
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_sdk_runner.get_settings",
-        _sandbox_brokered_settings,
-    )
-
-    result = await run_claude_agent_sdk(
-        prompt="search the workspace",
-        cwd=tmp_path,
-        skill_id=None,
-        execution_policy="sandbox_brokered",
-        tool_policy_subjects=subjects,
-        on_tool_lifecycle=_acknowledge_capability_evidence,
-    )
-
-    assert (
-        captured["hook_results"][0][1]["hookSpecificOutput"]["permissionDecision"]
-        == "deny"
-    )
-    assert result.turn_diagnostics["counters"]["tool_policy_denials"] == 1
 
 
 @pytest.mark.asyncio
@@ -2441,6 +2510,213 @@ async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks
 
 
 @pytest.mark.asyncio
+async def test_sdk_mcp_pretool_hook_before_tool_block_is_admitted(
+    monkeypatch, tmp_path
+):
+    captured, candidate_batches = {}, []
+    subject = _subject()
+
+    async def acknowledge_candidates(candidates):
+        candidate_batches.append(candidates)
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _mcp_hook_steps(subject),
+            result_text="done",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        on_agent_event=acknowledge_candidates,
+        run_id="run-pretool-first",
+        attempt_id="attempt-1",
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    assert pretool_output["permissionDecision"] == "allow"
+    assert result.error is None
+    event_types = [
+        event.event_type for batch in candidate_batches for event in batch
+    ]
+    assert "tool.started" in event_types
+    assert "tool.completed" in event_types
+    assert "tool.denied" not in event_types
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("block_after_terminal", [False, True])
+async def test_sdk_hook_seed_conflict_fails_as_unknown_execution(
+    monkeypatch, tmp_path, block_after_terminal
+):
+    captured, candidate_batches = {}, []
+    subject = _subject()
+    call_id = "mcp-call-conflict"
+    hook_input = {
+        "tool_name": subject["identity"],
+        "tool_use_id": call_id,
+        "tool_input": {"private": "hook-value"},
+    }
+
+    class ToolUseBlock:
+        pass
+
+    late_block = ToolUseBlock()
+    late_block.id = call_id
+    late_block.name = subject["identity"]
+    late_block.input = {"private": "conflicting-late-value"}
+    pretool_step = ("hook", ("PreToolUse", hook_input, call_id))
+    terminal_step = ("hook", ("PostToolUse", hook_input, call_id))
+    block_step = ("assistant_blocks", [late_block])
+    steps = (
+        [pretool_step, terminal_step, block_step]
+        if block_after_terminal
+        else [pretool_step, block_step, terminal_step]
+    )
+
+    async def acknowledge_candidates(candidates):
+        candidate_batches.append(candidates)
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="done"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        on_agent_event=acknowledge_candidates,
+        run_id="run-hook-conflict",
+        attempt_id="attempt-1",
+    )
+
+    assert result.error == "mcp_execution_outcome_unknown"
+    assert result.turn_diagnostics["retryable"] is False
+    public_events = [event for batch in candidate_batches for event in batch]
+    event_types = [event.event_type for event in public_events]
+    assert ("tool.completed" in event_types) is block_after_terminal
+    assert "hook-value" not in repr(public_events)
+    assert "conflicting-late-value" not in repr(public_events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejected_terminal_stage", ["answer", "result"])
+async def test_sdk_completed_mcp_keeps_receipt_error_on_late_publication_failure(
+    monkeypatch, tmp_path, rejected_terminal_stage
+):
+    captured = {}
+    subject = _subject()
+
+    async def acknowledge_candidates(candidates):
+        event_types = {event.event_type for event in candidates}
+        if rejected_terminal_stage == "answer" and "message.delta" in event_types:
+            return False
+        if rejected_terminal_stage == "result" and "model.completed" in event_types:
+            return False
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _mcp_hook_steps(subject),
+            result_text="done",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        on_agent_event=acknowledge_candidates,
+        run_id="run-late-publication-failure",
+        attempt_id="attempt-1",
+    )
+
+    assert result.error == "mcp_execution_succeeded_receipt_incomplete"
+    assert result.turn_diagnostics["action"] == "reconcile_before_retry"
+    assert result.turn_diagnostics["retryable"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["completed_then_unmatched", "owner_conflict"])
+async def test_sdk_unmatched_mcp_terminal_is_outcome_unknown(
+    monkeypatch, tmp_path, case
+):
+    captured = {}
+    first = _subject(server_id="first-server", tool_name="search")
+    second = _subject(
+        server_id="second-server",
+        tool_name="lookup",
+        endpoint="https://second.private.example/mcp",
+    )
+    call_id = "mcp-call-shared" if case == "owner_conflict" else "mcp-call-1"
+    first_steps = _mcp_hook_steps(first, call_id=call_id)
+    second_terminal = _mcp_hook_steps(
+        second,
+        call_id=call_id if case == "owner_conflict" else "mcp-call-unmatched",
+    )[1]
+    steps = (
+        [first_steps[0], second_terminal]
+        if case == "owner_conflict"
+        else [*first_steps, second_terminal]
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_text="done"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[first, second],
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert result.error == "mcp_execution_outcome_unknown"
+    assert result.turn_diagnostics["retryable"] is False
+
+
+@pytest.mark.asyncio
 async def test_sdk_registers_only_exact_authorized_external_mcp_subjects(
     monkeypatch, tmp_path
 ):
@@ -2605,11 +2881,15 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             ):
                 assert private_value not in result.message
     else:
-        expected = (
-            None
-            if outcome == "overflow"
-            else "required_tool_completion_evidence_mismatch"
-        )
+        expected = {
+            "overflow": None,
+            "false": "mcp_execution_succeeded_receipt_incomplete",
+            "exception": "mcp_execution_succeeded_receipt_incomplete",
+            "failed": "mcp_execution_outcome_unknown",
+            "incomplete": "mcp_execution_outcome_unknown",
+            "duplicate": "mcp_execution_succeeded_receipt_incomplete",
+            "multiple_failed": "mcp_execution_outcome_unknown",
+        }.get(outcome, "required_tool_completion_evidence_mismatch")
         if outcome == "overflow":
             assert result.error is None
             assert result.message == text
@@ -2620,6 +2900,10 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
         else:
             assert result.error == expected
             assert result.message == text
+            assert "mcp_execution_" not in result.message
+            assert "private callback failure" not in result.message
+            assert "retryable" in result.turn_diagnostics
+            assert result.turn_diagnostics["retryable"] is False
             assert "".join(deltas) == text
         if outcome == "overflow":
             assert "projection_failure_reason" not in result.turn_diagnostics
@@ -2724,7 +3008,8 @@ async def test_unmatched_capability_terminal_cannot_reopen_active_invocation(
     )
 
     assert deltas == []
-    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.error == "mcp_execution_outcome_unknown"
+    assert result.turn_diagnostics["retryable"] is False
     assert result.message == ""
 
 
@@ -2939,7 +3224,8 @@ async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabiliti
         ("mcp-call-2", "invocation_requested"),
         ("mcp-call-2", "failed"),
     ]
-    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.error == "mcp_execution_outcome_unknown"
+    assert result.turn_diagnostics["retryable"] is False
     assert result.message
     assert "first verified answer" in result.message
     assert "second capability in-flight text" in result.message
@@ -3908,7 +4194,120 @@ async def test_sdk_structured_output_is_final_answer_and_delivery_authority(
 
 
 @pytest.mark.asyncio
-async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path):
+async def test_sdk_structured_tool_turn_publishes_safe_commentary_before_result(
+    monkeypatch, tmp_path
+):
+    captured, candidates, observed_before_result, deltas = {}, [], [], []
+    private_call_id = "call-private-1"
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class ToolUseBlock:
+        id = private_call_id
+        name = "Read"
+        input = {"file_path": "input.txt"}
+
+    class AssistantMessage:
+        content = [
+            TextBlock(
+                f"Checking {private_call_id} in {tmp_path} before the next step."
+            ),
+            ToolUseBlock(),
+        ]
+
+    class ResultMessage:
+        __annotations__ = {"structured_output": object}
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = '{"answer":"wire json","deliverables":[]}'
+        structured_output = {
+            "answer": "Final user answer",
+            "deliverables": [],
+        }
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        terminal_reason = "completed"
+        num_turns = 1
+        permission_denials = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    def acknowledge(batch):
+        candidates.extend(batch)
+        return True
+
+    async def query(*, prompt, options):
+        del prompt, options
+        yield AssistantMessage()
+        observed_before_result.extend(
+            candidate.event_type for candidate in candidates
+        )
+        yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=AssistantMessage,
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                ResultMessage=ResultMessage,
+                StreamEvent=type("StreamEvent", (), {}),
+                TextBlock=TextBlock,
+                query=query,
+            ),
+            captured,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        on_text=deltas.append,
+        on_agent_event=acknowledge,
+        run_id="run-commentary",
+        attempt_id="attempt-commentary",
+    )
+
+    commentary = [
+        candidate
+        for candidate in candidates
+        if candidate.event_type == "commentary.delta"
+    ]
+    assert observed_before_result
+    assert set(observed_before_result) == {"commentary.delta"}
+    assert len(commentary) == len(observed_before_result)
+    commentary_text = "".join(
+        str(candidate.payload["delta"]) for candidate in commentary
+    )
+    assert private_call_id not in commentary_text
+    assert str(tmp_path) not in commentary_text
+    assert commentary_text == "Checking \u2588 in \u2588 before the next step."
+    assert "Checking" not in "".join(deltas)
+    assert "".join(deltas) == "Final user answer"
+    assert result.error is None
+    assert result.message == "Final user answer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("structured_output", "expected_error"),
+    [
+        pytest.param(None, None, id="missing"),
+        pytest.param({}, "claude_agent_sdk_delivery_manifest_invalid", id="invalid"),
+    ],
+)
+async def test_sdk_structured_output_is_optional_but_present_manifest_is_validated(
+    monkeypatch, tmp_path, structured_output, expected_error
+):
     captured = {}
 
     class ResultMessage:
@@ -3917,13 +4316,14 @@ async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path)
         usage = None
         model_usage = None
         result = "done"
-        structured_output = None
         is_error = False
         errors = None
         stop_reason = "end_turn"
         terminal_reason = "completed"
         num_turns = 1
         permission_denials = None
+
+    ResultMessage.structured_output = structured_output
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -3956,9 +4356,11 @@ async def test_sdk_structured_output_missing_fails_closed(monkeypatch, tmp_path)
         skill_id=None,
     )
 
-    assert result.error == "claude_agent_sdk_delivery_manifest_invalid"
-    assert result.received_structured_terminal is False
+    assert result.error == expected_error
+    assert result.received_structured_terminal is (expected_error is None)
+    assert result.message == ("done" if expected_error is None else "")
     assert result.response_files == []
+    assert result.response_file_descriptors == []
 
 
 @pytest.mark.asyncio
@@ -4871,21 +5273,20 @@ async def test_sdk_mirror_error_is_a_private_fail_closed_provider_failure(monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("compact_tool_attempt", [False, True])
-async def test_native_client_compact_is_private_and_fails_closed_on_a_tool_attempt(
-    monkeypatch, tmp_path, compact_tool_attempt,
+@pytest.mark.parametrize("resume_required", [False, True])
+async def test_native_client_delegates_compaction_to_cli_without_session_open_query(
+    monkeypatch, tmp_path, resume_required
 ):
     captured = {}
     sdk = _fake_sdk(captured, hook_invocations=[])
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
-    published = []
 
     class Store:
         accepted_final_sequence = 1
 
         async def load(self, _key):
-            return [{"uuid": "entry-1"}]
+            return [{"uuid": "entry-1"}] if resume_required else None
 
         async def append(self, _key, _entries):
             return None
@@ -4893,40 +5294,16 @@ async def test_native_client_compact_is_private_and_fails_closed_on_a_tool_attem
     class Client:
         def __init__(self, options):
             self.options = options
-            self.after_compact = False
             self.responses = None
 
         async def connect(self):
             captured["connected"] = True
 
-        async def get_context_usage(self):
-            return {"totalTokens": 128 if self.after_compact else 31990}
-
-        async def set_permission_mode(self, mode):
-            assert mode == "dontAsk"
-
         async def query(self, prompt, session_id="default"):
-            if prompt == "/compact":
-                self.after_compact = True
-                captured["compact"] = True
-                denial = await self.options.can_use_tool("Bash", {"command": "do work"}, None)
-                assert denial.behavior == "deny" and denial.message == "native_compact_tools_forbidden"
-                terminal = sdk.ResultMessage()
-                terminal.session_id = "stable-provider-id"
-
-                async def private_response():
-                    if compact_tool_attempt:
-                        class ToolUseBlock:
-                            pass
-                        yield sdk.AssistantMessage([ToolUseBlock()])
-                    else:
-                        yield sdk.AssistantMessage([types.SimpleNamespace(text="private compact transcript")])
-                    yield terminal
-
-                self.responses = private_response()
-            else:
-                captured["business_query"] = True
-                self.responses = sdk.query(prompt=prompt, options=self.options)
+            assert prompt != "/compact"
+            captured["business_query"] = True
+            captured["query_session_id"] = session_id
+            self.responses = sdk.query(prompt=prompt, options=self.options)
 
         async def receive_response(self):
             async for message in self.responses:
@@ -4936,17 +5313,25 @@ async def test_native_client_compact_is_private_and_fails_closed_on_a_tool_attem
             captured["disconnected"] = True
 
     result = await run_claude_agent_sdk(
-        prompt="continue with recent user request", cwd=tmp_path,
-        skill_id=None, session_id="stable-provider-id", session_store=Store(),
-        provider_session_resume_required=True, model_max_input_tokens=32000,
-        model_max_output_tokens=2048, client_fn=Client,
-        on_text=lambda text: published.append(text),
+        prompt="continue with recent user request",
+        cwd=tmp_path,
+        skill_id=None,
+        session_id="stable-provider-id",
+        session_store=Store(),
+        provider_session_resume_required=resume_required,
+        model_max_input_tokens=100_000,
+        model_max_output_tokens=36_500,
+        client_fn=Client,
     )
-    assert captured["compact"] and captured["disconnected"]
-    assert "private compact transcript" not in str(published)
-    if compact_tool_attempt:
-        assert result.error == "context_native_compact_failed" and not captured.get("business_query")
-        assert result.message == "" and not published
-    else:
-        assert result.error is None and captured["business_query"]
-        assert result.provider_final_sequence == 1
+
+    assert result.error is None
+    assert result.provider_final_sequence == 1
+    assert (
+        captured["connected"]
+        and captured["business_query"]
+        and captured["disconnected"]
+    )
+    assert captured["query_session_id"] == "stable-provider-id"
+    assert captured["extra_args"] == {"autocompact": "100000"}
+    assert captured["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "36500"
+    assert captured["env"].get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") in {None, ""}

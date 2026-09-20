@@ -164,6 +164,29 @@ fail closed. The former output-directory
 write allowlist and `outputs/**/delivery/`-only collection rule are retired
 together so a permitted write cannot disappear solely because of its path.
 
+## Native local tool admission
+
+The platform does not duplicate the Claude SDK's parameter schema for these local
+sandbox tools. When a real sandbox grants `sandbox_full_local`, tool identity and
+workspace boundary remain platform-authorized, while ordinary tool parameter
+names and shapes are validated by the SDK/tool implementation. Glob/Grep
+workspace patterns remain platform-checked; brace, extglob, character-class,
+and question-mark forms fail closed because their expansions can cross private
+roots or escape the authorized workspace. Skill identity and
+object constraints, platform context tools, external MCP schemas, and the
+Docker-native command proxy's command/timeout limits remain platform-owned.
+This contract does not claim support for background Bash jobs; a local Bash
+request with `run_in_background=true` currently fails closed because no
+RunAttempt-bound monitor owns that process. Its lifecycle must be separately
+bound to the RunAttempt and proved before that feature is enabled.
+
+`StructuredOutput` is separate from this local-tool capability set. When the
+adapter has enabled the SDK structured-output format, the exact SDK-generated
+`StructuredOutput` protocol call is admitted without ordinary tool lifecycle or
+capability evidence. `ResultMessage.structured_output` and the delivery manifest
+remain the sole terminal-answer and deliverable authority; a lookalike call is
+still denied when structured output is unavailable or its input shape is invalid.
+
 ## Delivery slices
 
 The first slice closes immediately unsafe competing-writer paths:

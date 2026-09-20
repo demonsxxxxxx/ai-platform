@@ -2724,6 +2724,46 @@ def test_sandbox_runtime_fake_provider_result_fails_closed(monkeypatch, tmp_path
     assert result.result["error_code"] == "sandbox_real_provider_required"
 
 
+def test_sandbox_runtime_marks_unconfirmed_mcp_execution_non_retryable(tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="search",
+    )
+    current_payload = sandbox_writing_payload(
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input={"message": "search"},
+    )
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        current_payload,
+        prepared,
+        types.SimpleNamespace(
+            status="failed",
+            provider="docker",
+            executor_response={
+                "status": "failed",
+                "error_code": "mcp_execution_outcome_unknown",
+                "sdk_used": True,
+            },
+            timings={},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "mcp_execution_outcome_unknown"
+    assert result.result["retryable"] is False
+    assert result.result["sdk_turn_diagnostics"]["terminal_class"] == (
+        "execution_outcome_unknown"
+    )
+
+
 def test_sandbox_runtime_preserves_bash_invocation_lifecycle_evidence(tmp_path):
     adapter = ClaudeAgentWorkerAdapter()
     prepared = PreparedSdkRun(

@@ -181,6 +181,13 @@ def _stub_run_control_operation_guard(monkeypatch, events):
     monkeypatch.setattr(repository_module, "get_run_control_operation", no_existing_operation)
 
 
+def _stub_retryable_run_source(monkeypatch):
+    async def retryable_source(conn, **kwargs):
+        return {"status": "failed", "error_code": None}
+
+    monkeypatch.setattr(repository_module, "get_authorized_run", retryable_source)
+
+
 def principal(**overrides):
     values = {
         "user_id": "user-a",
@@ -4399,6 +4406,7 @@ async def test_requeue_routes_audit_capability_denial_after_source_transaction_r
     monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", deny_prepare)
     monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
     _stub_run_control_operation_guard(monkeypatch, events)
+    _stub_retryable_run_source(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await route_func("run-source", principal=principal(department_id="finance", roles=["user"]))
@@ -4636,6 +4644,7 @@ async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypa
     monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
     _stub_run_control_operation_guard(monkeypatch, calls)
+    _stub_retryable_run_source(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await route(
@@ -4703,6 +4712,7 @@ async def test_copy_retry_resume_capability_lifecycle_denial_returns_403_without
     monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
     monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
     _stub_run_control_operation_guard(monkeypatch, calls)
+    _stub_retryable_run_source(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await route(

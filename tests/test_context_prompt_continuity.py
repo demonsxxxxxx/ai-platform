@@ -61,6 +61,10 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
         "Use Simplified Chinese for the final answer and all public summarized-thinking text. "
         "Keep code, commands, filenames, and other literal values unchanged when the task requires them."
     ) in prompt
+    assert (
+        "put one concise user-facing progress update in ordinary assistant text in the same "
+        "Assistant turn as the first tool call of each new work stage"
+    ) in prompt
 
 
 def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payload():

@@ -21,8 +21,10 @@ from app.required_tool_contract import with_sandbox_local_tool_capability_subjec
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import (
     CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+    SUPPORTED_AGENT_EVENT_TYPES,
     AgentEvent,
 )
+from app.streaming.events import EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES
 from app.streaming.application.callback_events_v4 import (
     callback_thinking_summary_to_v4,
 )
@@ -61,6 +63,17 @@ def _assert_sandbox_answer_receipt(result, candidates, answer):
     }
     assert delta_candidates
     assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in delta_candidates)
+
+
+def test_executor_callback_registry_tracks_the_generated_public_subset():
+    assert EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES <= SUPPORTED_AGENT_EVENT_TYPES
+    assert "commentary.delta" in EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES
+    assert {
+        "agent.progress",
+        "thinking.started",
+        "thinking.delta",
+        "thinking.completed",
+    }.isdisjoint(EXECUTOR_CALLBACK_APPLICATION_EVENT_TYPES)
 
 
 def test_v4_callback_bridge_preserves_safe_text_and_rejects_private_fields():
@@ -201,6 +214,56 @@ def test_answer_candidates_are_gated_and_have_one_stable_message_identity():
     assert events[-1].causation_event_id == events[1].event_id
 
 
+def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
+    adapter = _adapter()
+
+    events = adapter.accept_commentary_text(
+        "正在检查授权输入。",
+        commentary_identity="assistant_1",
+        already_gated=True,
+    )
+    continued = adapter.accept_commentary_text(
+        "正在继续处理。",
+        commentary_identity="assistant_1",
+        already_gated=True,
+    )
+
+    assert [event.event_type for event in (*events, *continued)] == [
+        "commentary.delta",
+        "commentary.delta",
+    ]
+    assert events[0].message_id == continued[0].message_id == adapter.message_id
+    assert events[0].payload["summary_id"] == continued[0].payload["summary_id"]
+    assert events[0].event_id != continued[0].event_id
+    assert adapter.answer_receipt is None
+    bridged = agent_event_to_executor_event(
+        AgentEvent(**events[0].as_agent_event_fields())
+    )
+    assert bridged["event_type"] == "commentary.delta"
+    assert bridged["payload"] == events[0].payload
+    unsafe_bridged = agent_event_to_executor_event(
+        AgentEvent(
+            type="commentary.delta",
+            event_id="evt_unsafe_commentary",
+            run_id="run-a",
+            message_id=adapter.message_id,
+            payload={
+                "summary_id": events[0].payload["summary_id"],
+                "delta": "storage_key=tenants/private/secret.txt",
+            },
+        )
+    )
+    assert unsafe_bridged["event_type"] == "executor_private_event"
+    assert "storage_key" not in str(unsafe_bridged)
+    assert (
+        adapter.accept_commentary_text(
+            'client_secret="opaque12345"',
+            commentary_identity="assistant_2",
+        )
+        == ()
+    )
+
+
 def test_answer_candidate_failure_does_not_advance_receipt_state():
     failed_once = False
 
@@ -313,6 +376,56 @@ def test_policy_decision_emits_checking_then_terminal_and_denial_tool_event():
     assert all("allowed-call" not in repr(event.as_dict()) for event in allowed)
     assert all("denied-call" not in repr(event.as_dict()) for event in denied)
 
+
+def test_tool_hook_can_precede_tool_use_block_without_exposing_sdk_payload():
+    adapter = _adapter()
+    hook = {
+        "tool_name": "Read",
+        "tool_use_id": "sdk-tool-before-block",
+        "tool_input": {"file_path": "C:\\private\\x"},
+    }
+
+    started = adapter.accept_hook(
+        "PreToolUse", hook, tool_use_id="sdk-tool-before-block"
+    )
+    completed = adapter.accept_hook(
+        "PostToolUse", hook, tool_use_id="sdk-tool-before-block"
+    )
+
+    assert [event.event_type for event in started + completed] == [
+        "tool.started",
+        "tool.completed",
+    ]
+    assert "file_path" not in repr(started + completed)
+    assert "C:\\private\\x" not in repr(started + completed)
+
+
+def test_hook_seed_rejects_conflicting_late_tool_block_without_private_payload():
+    adapter = _adapter()
+    hook = {
+        "tool_name": "Read",
+        "tool_use_id": "sdk-tool-conflict",
+        "tool_input": {"file_path": "C:\\private\\hook"},
+    }
+    started = adapter.accept_hook(
+        "PreToolUse", hook, tool_use_id="sdk-tool-conflict"
+    )
+    assert [event.event_type for event in started] == ["tool.started"]
+
+    class ToolUseBlock:
+        pass
+
+    block = ToolUseBlock()
+    block.id = "sdk-tool-conflict"
+    block.name = "Read"
+    block.input = {"file_path": "C:\\private\\late"}
+    assert adapter.accept_content_block(block) == ()
+
+    assert adapter.accept_hook(
+        "PostToolUse", hook, tool_use_id="sdk-tool-conflict"
+    ) == ()
+    assert "C:\\private\\hook" not in repr(started)
+    assert "C:\\private\\late" not in repr(started)
 
 
 def test_tool_hooks_exclude_sdk_tool_payload():

@@ -158,6 +158,50 @@ def test_non_skill_tools_keep_strict_parameter_key_authorization():
     )
 
 
+def test_sandbox_local_tools_delegate_parameter_validation_to_the_sdk():
+    subject = {
+        "identity": "Bash",
+        "execution_strategy": "sandbox_full_local",
+        "parameter_validation": "sdk",
+    }
+
+    assert _parameters_match_subject(
+        subject,
+        "Bash",
+        {
+            "command": "pwd",
+            "description": "inspect the workspace",
+        },
+    )
+    assert not _parameters_match_subject(
+        subject,
+        "Bash",
+        {"command": "pwd", "run_in_background": True},
+    )
+    for invalid_background in (1, "true", None):
+        assert not _parameters_match_subject(
+            subject,
+            "Bash",
+            {"command": "pwd", "run_in_background": invalid_background},
+        )
+
+
+def test_sandbox_local_parameter_delegation_does_not_apply_to_other_identities():
+    subject = {
+        "identity": "Agent",
+        "execution_strategy": "sandbox_full_local",
+        "parameter_validation": "sdk",
+        "allowed_parameter_keys": ["agent"],
+        "required_parameter_keys": ["agent"],
+    }
+
+    assert not _parameters_match_subject(
+        subject,
+        "Agent",
+        {"agent": "reviewer", "opaque": "not allowed"},
+    )
+
+
 @pytest.mark.parametrize(
     ("tool_name", "tool_input"),
     [

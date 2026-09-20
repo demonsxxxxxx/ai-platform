@@ -138,12 +138,15 @@ Output: final response plus zero or more explicitly selected response files.
 
 ### A7. Bounded response-file collection
 
-The Claude Agent SDK final `ResultMessage.structured_output` is the publication
-boundary. Its server-owned JSON schema contains the user-facing `answer` and an
-ordered `deliverables` list. Each deliverable declares a relative `source_path`
-and may include a display name, primary/supporting role, and description. The
-executor validates every declared path while the Sandbox is still alive and
-derives the terminal receipt's ordered, deduplicated `response_files` allowlist.
+The Claude Agent SDK final `ResultMessage.structured_output` is the file
+publication boundary. Its server-owned JSON schema contains the user-facing
+`answer` and an ordered `deliverables` list. Each deliverable declares a
+relative `source_path` and may include a display name, primary/supporting role,
+and description. The executor validates every declared path while the Sandbox
+is still alive and derives the terminal receipt's ordered, deduplicated
+`response_files` allowlist. When the SDK omits `structured_output`, the executor
+accepts `ResultMessage.result` only as a text response with zero deliverables; a
+present but invalid manifest still fails closed.
 
 The Sandbox provider transfers exactly that allowlist and the artifact collector
 validates and uploads exactly those paths; neither enumerates the workspace.

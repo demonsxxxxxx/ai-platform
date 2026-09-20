@@ -310,7 +310,12 @@ export function ChatView({
       ),
     [messages, sessionId, workspaceProjection],
   );
-  const sessionRunning = isSessionRunning(messages, isLoading);
+  const sessionRunning = isSessionRunning(
+    messages,
+    isLoading,
+    isLoadingHistory,
+  );
+  const canSendInCurrentView = canSendMessage && !isLoadingHistory;
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
@@ -786,7 +791,7 @@ export function ChatView({
     onSend: onSendMessage,
     onStop: onStopGeneration,
     isLoading: sessionRunning,
-    canSend: canSendMessage,
+    canSend: canSendInCurrentView,
     placeholder: composerPlaceholder,
     acceptedFileTypes: undefined,
     disableSlashCommands: Boolean(agentEmptyProfile),
@@ -921,7 +926,7 @@ export function ChatView({
             <button
               className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
               key={prompt}
-              disabled={!canSendMessage || isLoading}
+              disabled={!canSendInCurrentView || isLoading}
               onClick={() => setComposerInput(prompt)}
               type="button"
             >

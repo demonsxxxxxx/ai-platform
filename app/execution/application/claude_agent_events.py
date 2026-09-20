@@ -440,10 +440,12 @@ class ClaudeSdkAgentEventAdapter:
         self._last_delta_identity: str | None = None
         self._last_delta_event_id: str | None = None
         self._answer_completed = False
+        self._commentary_delta_counts: dict[str, int] = {}
         self._public_projection_omissions = 0
         self._task_progress_seen: set[tuple[str, str]] = set()
         self._accepted_event_ids: dict[str, str] = {}
         self._tool_blocks: dict[str, tuple[str, dict[str, object]]] = {}
+        self._tool_block_conflicts: set[str] = set()
         self._tools: dict[str, tuple[str, str, str]] = {}
         self._tool_states: dict[str, _ToolState] = {}
         self._tasks: dict[str, _TaskState] = {}
@@ -475,6 +477,9 @@ class ClaudeSdkAgentEventAdapter:
     @property
     def public_projection_omissions(self) -> int:
         return self._public_projection_omissions
+
+    def has_tool_block_conflict(self, tool_call_ids: set[str]) -> bool:
+        return not self._tool_block_conflicts.isdisjoint(tool_call_ids)
 
     def seal(self, reason: str = "") -> None:
         del reason
@@ -668,6 +673,71 @@ class ClaudeSdkAgentEventAdapter:
         self._last_delta_event_id = pending[-1][1].event_id
         return tuple(candidate for _identity, candidate in pending)
 
+    def accept_commentary_text(
+        self,
+        value: object,
+        *,
+        commentary_identity: object,
+        already_gated: bool = False,
+    ) -> tuple[ClaudeAgentEventCandidate, ...]:
+        if self._sealed or not isinstance(value, str) or not value:
+            return ()
+        identity = _safe_private_identity(commentary_identity)
+        if identity is None:
+            return ()
+        if not already_gated:
+            try:
+                sanitized = self._sanitizer(value)
+                if (
+                    not isinstance(sanitized, str)
+                    or sanitized != value
+                    or _safe_text(
+                        value,
+                        maximum=len(value),
+                        sanitizer=self._sanitizer,
+                    )
+                    is None
+                ):
+                    self._omit_public_projection()
+                    return ()
+            except Exception:  # noqa: BLE001 - projection faults omit only this text.
+                self._omit_public_projection()
+                return ()
+
+        summary_id = _opaque(
+            "summary",
+            self.run_id,
+            "commentary",
+            f"{self.attempt_id}:{identity}",
+        )
+        next_delta_count = self._commentary_delta_counts.get(identity, 0)
+        pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
+        try:
+            for offset in range(0, len(value), _MAX_DELTA):
+                chunk = value[offset : offset + _MAX_DELTA]
+                next_delta_count += 1
+                event_identity = (
+                    f"commentary:{self.attempt_id}:{identity}:{next_delta_count}"
+                )
+                pending.append(
+                    (
+                        event_identity,
+                        self._candidate(
+                            "commentary.delta",
+                            {"summary_id": summary_id, "delta": chunk},
+                            identity=event_identity,
+                            commit=False,
+                        ),
+                    )
+                )
+        except Exception:  # noqa: BLE001 - no candidate state has been committed.
+            self._omit_public_projection()
+            return ()
+
+        self._commit_candidates(pending)
+        self._commentary_delta_counts[identity] = next_delta_count
+        return tuple(candidate for _identity, candidate in pending)
+
     def complete_answer(
         self,
         value: object,
@@ -712,7 +782,13 @@ class ClaudeSdkAgentEventAdapter:
             tool_input = getattr(block, "input", None)
             if identity is None or not isinstance(tool_name, str) or not isinstance(tool_input, dict):
                 return ()
-            self._tool_blocks[identity] = (tool_name, dict(tool_input))
+            block_value = (tool_name, dict(tool_input))
+            existing = self._tool_blocks.get(identity)
+            if existing is not None and existing != block_value:
+                self._tool_block_conflicts.add(identity)
+                self._tools.pop(identity, None)
+                return ()
+            self._tool_blocks[identity] = block_value
             resolved = self._resolve_tool(tool_name, tool_input)
             if resolved is not None:
                 self._tools[identity] = resolved
@@ -813,10 +889,17 @@ class ClaudeSdkAgentEventAdapter:
         if not supplied or len({str(value) for value in supplied}) != 1:
             return ()
         call_id = _safe_private_identity(supplied[0])
-        if call_id is None:
+        if call_id is None or call_id in self._tool_block_conflicts:
             return ()
         block = self._tool_blocks.get(call_id)
         tool_name = hook_input.get("tool_name")
+        if (
+            block is None
+            and isinstance(tool_name, str)
+            and isinstance(hook_input.get("tool_input"), dict)
+        ):
+            block = (tool_name, dict(hook_input["tool_input"]))
+            self._tool_blocks[call_id] = block
         if block is None or not isinstance(tool_name, str) or block[0] != tool_name:
             return ()
         resolved = self._tools.get(call_id) or self._resolve_tool(tool_name, block[1])

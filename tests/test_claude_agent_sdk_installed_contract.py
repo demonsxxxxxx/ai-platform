@@ -7,6 +7,9 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     assert installed_version == "0.2.130"
 
     import claude_agent_sdk as sdk
+    from claude_agent_sdk._internal.transport.subprocess_cli import (
+        SubprocessCLITransport,
+    )
     from claude_agent_sdk.types import (
         PostToolUseHookSpecificOutput,
         PreToolUseHookSpecificOutput,
@@ -19,8 +22,6 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     assert "prompt" in signature(sdk.ClaudeSDKClient.connect).parameters
     assert "prompt" in signature(sdk.ClaudeSDKClient.query).parameters
     assert "session_id" in signature(sdk.ClaudeSDKClient.query).parameters
-    assert callable(sdk.ClaudeSDKClient.get_context_usage)
-    assert callable(sdk.ClaudeSDKClient.set_permission_mode)
     assert callable(sdk.ClaudeSDKClient.receive_response)
     assert callable(sdk.ClaudeSDKClient.disconnect)
     assert {"matcher", "hooks", "timeout"}.issubset(signature(sdk.HookMatcher).parameters)
@@ -57,6 +58,8 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         disallowed_tools=["Write"],
         permission_mode="dontAsk",
         env={"PATH": ""},
+        cli_path="synthetic-claude",
+        extra_args={"autocompact": "100000"},
         skills=["qa-review"],
         session_id="session-a",
         session_store=session_store,
@@ -90,6 +93,8 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     assert resume_options.resume == "session-a"
     assert resume_options.session_id is None
     options = bootstrap_options
+    command = SubprocessCLITransport(prompt="", options=options)._build_command()
+    autocompact_index = command.index("--autocompact")
 
     assistant = sdk.AssistantMessage(content=[sdk.TextBlock(text="partial")], model="model-a")
     event = sdk.StreamEvent(uuid="event-a", session_id="session-a", event={"type": "message_start"})
@@ -110,6 +115,11 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
 
     assert options.include_partial_messages is True
     assert options.setting_sources == ["project"]
+    assert options.extra_args == {"autocompact": "100000"}
+    assert command[autocompact_index : autocompact_index + 2] == [
+        "--autocompact",
+        "100000",
+    ]
     assert options.session_store is session_store
     assert options.session_store_flush == "eager"
     assert options.thinking == {"type": "adaptive", "display": "omitted"}

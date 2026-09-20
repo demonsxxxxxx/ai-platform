@@ -1326,7 +1326,10 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
     )
     client = TestClient(create_app())
 
-    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+    response = client.get(
+        "/api/sessions/ses_a/events?compact_message_chunks=true",
+        headers=auth_headers(),
+    )
 
     assert response.status_code == 200
     events = response.json()["events"]
@@ -1598,6 +1601,228 @@ def test_lambchat_failed_history_reconstructs_authorized_v4_body() -> None:
     assert "__stream_v4" not in serialized
     assert "attempt-v4-failed" not in serialized
     assert "authorization_epoch" not in serialized
+
+
+def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
+
+    run = {
+        "id": "run-v4-commentary",
+        "tenant_id": "default",
+        "trace_id": "trace-v4-commentary",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+        "finished_at": None,
+    }
+    base = {
+        "tenant_id": "default",
+        "run_id": run["id"],
+        "trace_id": run["trace_id"],
+        "schema_version": "ai-platform.event-envelope.v1",
+        "stage": "agent_kernel",
+        "message": "",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "stream_publication_state": "published",
+        "v4_attempt_authorized": True,
+        "created_at": "2026-08-01T00:00:01Z",
+    }
+    stream_receipt = {
+        "attempt_id": "attempt-v4-commentary",
+        "version": 1,
+        "stream_incarnation": 2,
+        "authorization_epoch": 4,
+        "message_id": opaque_message_id("default", run["id"]),
+        "publication_state": "published",
+    }
+    events = [
+        {
+            **base,
+            "id": "evt4-commentary",
+            "sequence": 1,
+            "event_type": "commentary.delta",
+            "payload_json": {
+                "summary_id": "summary-public-1",
+                "delta": "正在检查授权输入。",
+                "__stream_v4": stream_receipt,
+            },
+        },
+        {
+            **base,
+            "id": "evt4-commentary-forged",
+            "sequence": 2,
+            "event_type": "commentary.delta",
+            "payload_json": {
+                "summary_id": "summary-public-2",
+                "delta": "unsafe",
+                "tool_input": "private",
+                "__stream_v4": stream_receipt,
+            },
+        },
+    ]
+
+    history = [
+        record.history_event
+        for record in _compatibility_events_for_run(
+            run,
+            events,
+            [],
+            AuthPrincipal(
+                user_id="user-a",
+                display_name="User A",
+                tenant_id="default",
+                roles=["user"],
+            ),
+        )
+    ]
+
+    summaries = [event for event in history if event["event_type"] == "summary"]
+    assert len(summaries) == 1
+    assert summaries[0]["data"]["summary_id"] == "summary-public-1"
+    assert summaries[0]["data"]["content"] == "正在检查授权输入。"
+    assert summaries[0]["data"]["payload"] == {
+        "summary_id": "summary-public-1",
+        "delta": "正在检查授权输入。",
+    }
+    assert "__stream_v4" not in str(history)
+    assert "tool_input" not in str(history)
+
+
+def test_lambchat_history_compacts_v4_answer_deltas_without_crossing_public_events() -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
+
+    run = {
+        "id": "run-v4-compact",
+        "tenant_id": "default",
+        "trace_id": "trace-v4-compact",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "result_json": {},
+        "error_code": "run_failed",
+        "finished_at": "2026-08-01T00:00:07Z",
+    }
+    message_id = opaque_message_id("default", run["id"])
+
+    def delta(
+        sequence: int,
+        content: str,
+        *,
+        owner: str = message_id,
+        incarnation: int = 2,
+    ) -> dict[str, object]:
+        return {
+            "id": f"evt4_delta_{sequence}",
+            "tenant_id": "default",
+            "run_id": run["id"],
+            "trace_id": run["trace_id"],
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": sequence,
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "payload_json": {
+                "delta": content,
+                "__stream_v4": {
+                    "attempt_id": "attempt-v4-compact",
+                    "version": 1,
+                    "stream_incarnation": incarnation,
+                    "authorization_epoch": 4,
+                    "message_id": owner,
+                    "publication_state": "published",
+                },
+            },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
+            "created_at": f"2026-08-01T00:00:0{sequence}Z",
+        }
+
+    events = [
+        delta(1, "第一段"),
+        {
+            "id": "evt-private",
+            "sequence": 2,
+            "event_type": "executor_private_event",
+            "visible_to_user": False,
+            "payload_json": {"private_payload": "never project"},
+        },
+        delta(3, "第二段"),
+        delta(4, "独立消息", owner="msg4_foreign"),
+        delta(5, "新流实例", incarnation=3),
+        {
+            "id": "evt-worker",
+            "trace_id": run["trace_id"],
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 6,
+            "event_type": "worker_started",
+            "stage": "worker",
+            "message": "private worker identity",
+            "severity": "info",
+            "visible_to_user": True,
+            "payload_json": {"visible_to_user": True},
+            "created_at": "2026-08-01T00:00:06Z",
+        },
+        delta(7, "已开始，general-"),
+        delta(8, "chat 完成。"),
+    ]
+    principal = AuthPrincipal(
+        user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
+    )
+
+    uncompressed = _compatibility_events_for_run(run, events, [], principal)
+    compacted = _compatibility_events_for_run(
+        run, events, [], principal, compact_answer_deltas=True
+    )
+    uncompressed_chunks = [
+        record.history_event
+        for record in uncompressed
+        if record.history_event["event_type"] == "message:chunk"
+    ]
+    compacted_history = [record.history_event for record in compacted]
+    compacted_chunks = [
+        event for event in compacted_history if event["event_type"] == "message:chunk"
+    ]
+
+    assert [event["data"]["content"] for event in uncompressed_chunks] == [
+        "第一段",
+        "第二段",
+        "独立消息",
+        "新流实例",
+        "已开始，general-agent 完成。",
+    ]
+    assert [event["event_type"] for event in compacted_history] == [
+        "message:chunk",
+        "message:chunk",
+        "message:chunk",
+        "run_started",
+        "message:chunk",
+        "final_detail",
+        "done",
+    ]
+    assert [event["data"]["content"] for event in compacted_chunks] == [
+        "第一段第二段",
+        "独立消息",
+        "新流实例",
+        "已开始，general-agent 完成。",
+    ]
+    assert [event["id"] for event in compacted_chunks] == [
+        "evt4_delta_3",
+        "evt4_delta_4",
+        "evt4_delta_5",
+        "evt4_delta_8",
+    ]
+    assert [event["sequence"] for event in compacted_chunks] == [3, 4, 5, 8]
+    assert "never project" not in str(compacted_history)
 
 
 @pytest.mark.parametrize(

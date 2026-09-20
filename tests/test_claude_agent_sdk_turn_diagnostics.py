@@ -678,6 +678,25 @@ def test_required_tool_completion_errors_are_not_classified_as_upstream(error_co
     assert diagnostics["retryable"] is False
 
 
+def test_mcp_execution_receipt_errors_require_reconciliation_before_retry():
+    for error_code, terminal_class in (
+        (
+            "mcp_execution_succeeded_receipt_incomplete",
+            "execution_receipt_incomplete",
+        ),
+        ("mcp_execution_outcome_unknown", "execution_outcome_unknown"),
+    ):
+        diagnostics = project_sdk_turn_diagnostics({}, error_code=error_code)
+
+        assert diagnostics["terminal_class"] == terminal_class
+        assert (
+            diagnostics["error_code"]
+            == "claude_agent_sdk_execution_receipt_incomplete"
+        )
+        assert diagnostics["action"] == "reconcile_before_retry"
+        assert diagnostics["retryable"] is False
+
+
 @pytest.mark.asyncio
 async def test_generic_upstream_error_never_exposes_private_exception_text(
     monkeypatch,

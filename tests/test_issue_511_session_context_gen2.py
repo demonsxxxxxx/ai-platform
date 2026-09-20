@@ -345,6 +345,9 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
     async def no_existing_operation(_conn, **_kwargs):
         return None
 
+    async def retryable_source(_conn, **_kwargs):
+        return {"status": "failed", "error_code": None}
+
     async def record_operation(_conn, **_kwargs):
         return "event-operation"
 
@@ -396,6 +399,10 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
     monkeypatch.setattr(
         "app.routes.runs.repositories.get_run_control_operation",
         no_existing_operation,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        retryable_source,
     )
     monkeypatch.setattr(
         "app.routes.runs.repositories.record_run_control_operation",

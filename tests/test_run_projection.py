@@ -307,6 +307,17 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     )["detail_code"] == "required_capability_unavailable"
 
 
+def test_unconfirmed_mcp_execution_terminal_projection_forbids_blind_retry():
+    projection = public_terminal_projection(
+        "failed", "mcp_execution_succeeded_receipt_incomplete"
+    )
+
+    assert projection["detail_code"] == "tool_execution_outcome_unconfirmed"
+    assert projection["error_code"] == "tool_execution_outcome_unconfirmed"
+    assert "请勿重试" in projection["message"]
+    assert "mcp_execution" not in str(projection)
+
+
 def test_terminal_projection_has_one_runs_owner_and_preserves_fences():
     assert normalize_run_status is API_NORMALIZE_RUN_STATUS is DOMAIN_NORMALIZE_RUN_STATUS
     assert (

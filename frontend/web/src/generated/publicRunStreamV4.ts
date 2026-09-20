@@ -7,6 +7,7 @@ export const PUBLIC_STREAM_EVENT_TYPES = [
   "message.started",
   "message.delta",
   "message.completed",
+  "commentary.delta",
   "thinking.started",
   "thinking.delta",
   "thinking.completed",
@@ -78,6 +79,7 @@ export const PUBLIC_APPLICATION_EVENT_TYPES = [
   "message.started",
   "message.delta",
   "message.completed",
+  "commentary.delta",
   "thinking.started",
   "thinking.delta",
   "thinking.completed",
@@ -113,6 +115,7 @@ export const PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES = [
   "message.started",
   "message.delta",
   "message.completed",
+  "commentary.delta",
   "thinking.started",
   "thinking.delta",
   "thinking.completed",
@@ -135,6 +138,7 @@ export const PUBLIC_PAYLOAD_FIELDS = {
   "message.started": [],
   "message.delta": ["delta"],
   "message.completed": ["delta_count", "text_length"],
+  "commentary.delta": ["summary_id", "delta"],
   "thinking.started": ["thinking_id", "public_summary"],
   "thinking.delta": ["thinking_id", "delta"],
   "thinking.completed": ["thinking_id", "public_summary"],
@@ -168,6 +172,7 @@ export const PUBLIC_REQUIRED_PAYLOAD_FIELDS = {
   "message.started": [],
   "message.delta": ["delta"],
   "message.completed": ["delta_count", "text_length"],
+  "commentary.delta": ["summary_id", "delta"],
   "thinking.started": [],
   "thinking.delta": ["thinking_id", "delta"],
   "thinking.completed": [],
@@ -231,6 +236,7 @@ export const PUBLIC_PAYLOAD_ENUMS = {
 } as const;
 export const PUBLIC_PAYLOAD_STRING_BOUNDS = {
   "message.delta.delta": [1, 8192],
+  "commentary.delta.delta": [1, 8192],
   "thinking.delta.delta": [1, 8192],
   "agent.progress.message": [1, 128],
   "tool.started.display_name": [1, 128],
@@ -274,7 +280,7 @@ export const PUBLIC_PAYLOAD_INTEGER_BOUNDS = {
   "artifact.created.size_bytes": [0, 1099511627776],
   "artifact.ready.size_bytes": [0, 1099511627776],
 } as const;
-export const PUBLIC_PAYLOAD_REF_FIELDS = ["artifact_id", "decision_id", "operation_id", "step_id", "subagent_id", "terminal_event_id", "thinking_id"] as const;
+export const PUBLIC_PAYLOAD_REF_FIELDS = ["artifact_id", "decision_id", "operation_id", "step_id", "subagent_id", "summary_id", "terminal_event_id", "thinking_id"] as const;
 export const PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS = ["earliest_available_event_id", "evidence_ref", "latest_available_event_id", "requested_event_id"] as const;
 export const PUBLIC_PAYLOAD_REF_ARRAY_FIELDS = ["artifact_refs", "evidence_refs"] as const;
 
@@ -306,7 +312,7 @@ export type PublicApplicationEnvelopeV4 = {
   "run_id": RunIdV4;
   "message_id": NullableSafeRefV4;
   "seq": number;
-  "event_type": "message.started" | "message.delta" | "message.completed" | "thinking.started" | "thinking.delta" | "thinking.completed" | "model.completed" | "agent.progress" | "tool.started" | "tool.completed" | "tool.failed" | "tool.denied" | "subagent.started" | "subagent.progress" | "subagent.completed" | "subagent.failed" | "subagent.cancelled" | "artifact.created" | "artifact.ready" | "artifact.failed" | "policy.checking" | "policy.allowed" | "policy.denied" | "run.cancel_requested" | "run.succeeded" | "run.cancelled" | "run.failed";
+  "event_type": "message.started" | "message.delta" | "message.completed" | "commentary.delta" | "thinking.started" | "thinking.delta" | "thinking.completed" | "model.completed" | "agent.progress" | "tool.started" | "tool.completed" | "tool.failed" | "tool.denied" | "subagent.started" | "subagent.progress" | "subagent.completed" | "subagent.failed" | "subagent.cancelled" | "artifact.created" | "artifact.ready" | "artifact.failed" | "policy.checking" | "policy.allowed" | "policy.denied" | "run.cancel_requested" | "run.succeeded" | "run.cancelled" | "run.failed";
   "stream_incarnation": number;
   "replayable": true;
   "trace_ref": NullableTraceRefV4;
@@ -389,6 +395,14 @@ export type MessageCompletedEventV4 = PublicMessageApplicationEnvelopeV4 & {
   "payload": {
   "delta_count": number;
   "text_length": number;
+};
+};
+
+export type CommentaryDeltaEventV4 = PublicMessageApplicationEnvelopeV4 & {
+  "event_type": "commentary.delta";
+  "payload": {
+  "summary_id": SafeRefV4;
+  "delta": string;
 };
 };
 
@@ -630,7 +644,7 @@ export type RunFailedEventV4 = PublicApplicationEnvelopeV4 & {
 };
 };
 
-export type PublicApplicationEventV4 = MessageStartedEventV4 | MessageDeltaEventV4 | MessageCompletedEventV4 | ThinkingStartedEventV4 | ThinkingDeltaEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | AgentProgressEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4;
+export type PublicApplicationEventV4 = MessageStartedEventV4 | MessageDeltaEventV4 | MessageCompletedEventV4 | CommentaryDeltaEventV4 | ThinkingStartedEventV4 | ThinkingDeltaEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | AgentProgressEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4;
 
 export type PublicTransportControlEventV4 = StreamOpenControlV4 | StreamHeartbeatControlV4 | StreamGapControlV4 | StreamEndControlV4;
 
