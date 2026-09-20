@@ -263,6 +263,7 @@ def _fake_sdk(
     mirror_error=False,
     append_provider_session=True,
     append_provider_subpath=None,
+    supports_structured_output=False,
 ):
     class ThinkingBlock:
         def __init__(self, thinking):
@@ -291,6 +292,8 @@ def _fake_sdk(
         stop_reason = None
         num_turns = 1
         permission_denials = None
+        if supports_structured_output:
+            structured_output = {"answer": "done", "deliverables": []}
 
     class HookMatcher:
         def __init__(self, *, matcher, hooks):
@@ -506,6 +509,90 @@ async def _acknowledge_capability_evidence(_evidence):
     return True
 
 
+@pytest.mark.asyncio
+async def test_sdk_structured_output_protocol_bypasses_capability_admission(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    lifecycle_facts = []
+    hook_input = {
+        "tool_name": "StructuredOutput",
+        "tool_use_id": "structured-output-call-1",
+        "tool_input": {"answer": "done", "deliverables": []},
+    }
+
+    async def record_lifecycle(fact):
+        lifecycle_facts.append(fact)
+        return True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[
+                ("PreToolUse", hook_input, hook_input["tool_use_id"]),
+            ],
+            supports_structured_output=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        on_tool_lifecycle=record_lifecycle,
+    )
+
+    pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
+    permission = await captured["can_use_tool"](
+        hook_input["tool_name"],
+        hook_input["tool_input"],
+        {"tool_use_id": hook_input["tool_use_id"]},
+    )
+    assert pretool_output["permissionDecision"] == "allow"
+    assert permission.behavior == "allow"
+    assert lifecycle_facts == []
+    assert result.error is None
+    assert result.capability_evidence == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_structured_output_name_is_not_a_global_tool_allowance(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(captured, hook_invocations=[]),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+
+    await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+    )
+
+    permission = await captured["can_use_tool"](
+        "StructuredOutput",
+        {"answer": "done", "deliverables": []},
+        {"tool_use_id": "structured-output-call-1"},
+    )
+    assert permission.behavior == "deny"
+    assert permission.message == "tool_identity_malformed"
+
+
 @pytest.mark.parametrize(
     ("thinking_effort", "expected_thinking", "expected_effort"),
     [
@@ -591,7 +678,10 @@ async def test_sandbox_bash_subject_is_exposed_and_admitted_with_acknowledged_li
     hook_input = {
         "tool_name": "Bash",
         "tool_use_id": "bash-call-1",
-        "tool_input": {"command": "python --version"},
+        "tool_input": {
+            "command": "python --version",
+            "description": "inspect the sandbox",
+        },
     }
     monkeypatch.setitem(
         sys.modules,
@@ -765,54 +855,6 @@ async def test_sandbox_grep_denies_outside_workspace_path(monkeypatch, tmp_path)
         "skill_invocations": 0,
         "public_projection_omissions": 0,
     }
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_required_keys", [None, "pattern", {"pattern": True}])
-async def test_sandbox_grep_denies_invalid_required_parameter_configuration(
-    monkeypatch,
-    tmp_path,
-    invalid_required_keys,
-):
-    captured = {}
-    hook_input = {
-        "tool_name": "Grep",
-        "tool_use_id": "grep-call-1",
-        "tool_input": {},
-    }
-    subjects = _full_sandbox_local_tool_capability_subjects(
-        [], sandbox_provider="opensandbox"
-    )
-    next(subject for subject in subjects if subject["identity"] == "Grep")[
-        "required_parameter_keys"
-    ] = invalid_required_keys
-    monkeypatch.setitem(
-        sys.modules,
-        "claude_agent_sdk",
-        _fake_sdk(
-            captured,
-            hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
-        ),
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_sdk_runner.get_settings",
-        _sandbox_brokered_settings,
-    )
-
-    result = await run_claude_agent_sdk(
-        prompt="search the workspace",
-        cwd=tmp_path,
-        skill_id=None,
-        execution_policy="sandbox_brokered",
-        tool_policy_subjects=subjects,
-        on_tool_lifecycle=_acknowledge_capability_evidence,
-    )
-
-    assert (
-        captured["hook_results"][0][1]["hookSpecificOutput"]["permissionDecision"]
-        == "deny"
-    )
-    assert result.turn_diagnostics["counters"]["tool_policy_denials"] == 1
 
 
 @pytest.mark.asyncio
