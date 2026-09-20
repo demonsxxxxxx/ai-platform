@@ -174,7 +174,7 @@ export function Header({
 
               {chatIdentity ? (
                 <div
-                  className="flex min-w-0 items-center gap-2 border-l border-[var(--theme-border)] pl-2 sm:pl-3"
+                  className={`flex min-w-0 items-center gap-2 ${showUserMenu ? "border-l border-[var(--theme-border)] pl-2 sm:pl-3" : ""}`}
                   data-chat-header-identity
                 >
                   {chatIdentity}
@@ -199,9 +199,9 @@ export function Header({
           )}
         </div>
 
-        {showUserMenu ? (
-          <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-            <div className="relative">
+        {showUserMenu || mobileMenuOpen ? (
+          <div className="flex flex-shrink-0 items-center gap-1.5 sm:gap-2">
+            <div className={showUserMenu ? "relative" : "hidden"}>
             {/* Overflow menu (unified for all screen sizes) */}
             <button
               ref={mobileMenuBtnRef}
@@ -324,7 +324,7 @@ export function Header({
               )}
             </div>
 
-            <UserMenu />
+            {showUserMenu ? <UserMenu /> : null}
           </div>
         ) : null}
       </header>
