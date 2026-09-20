@@ -7,8 +7,7 @@ from typing import Any
 EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION = (
     "ai-platform.executor-conversation-context.v1"
 )
-MAX_CONVERSATION_CONTEXT_CANDIDATES = 64
-DEFAULT_CONVERSATION_HISTORY_BYTES = 8192
+EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2 = "ai-platform.executor-conversation-context.v2"
 _ALLOWED_CONVERSATION_ROLES = {"user", "assistant"}
 
 
@@ -16,9 +15,7 @@ class ConversationContextError(ValueError):
     pass
 
 
-def empty_executor_conversation_context(
-    *, max_history_bytes: int = DEFAULT_CONVERSATION_HISTORY_BYTES
-) -> dict[str, Any]:
+def empty_executor_conversation_context() -> dict[str, Any]:
     return {
         "schema_version": EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION,
         "messages": [],
@@ -26,7 +23,7 @@ def empty_executor_conversation_context(
         "selected_turn_count": 0,
         "dropped_turn_count": 0,
         "estimated_bytes": 0,
-        "max_history_bytes": max(0, int(max_history_bytes)),
+        "max_history_bytes": None,
     }
 
 
@@ -64,12 +61,32 @@ def _group_complete_turns(messages: list[dict[str, str]]) -> list[list[dict[str,
     return turns
 
 
+def build_executor_conversation_context_v2(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Render an exact verified source tail without an old-history byte selector."""
+    history = [
+        {"message_id": row["id"], "run_id": row["run_id"], "role": row["role"], "content": row["content"]}
+        for row in rows
+    ]
+    if history and history[0]["role"] != "user":
+        raise ConversationContextError("conversation_source_turn_invalid")
+    turns = _group_complete_turns(history)
+    if sum(map(len, turns)) != len(history):
+        raise ConversationContextError("conversation_source_turn_invalid")
+    return {
+        "schema_version": EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2,
+        "messages": history,
+        "selected_message_count": len(history),
+        "selected_turn_count": len(turns),
+        "dropped_turn_count": 0,
+        "estimated_bytes": sum(_message_cost(message) for message in history),
+    }
+
+
 def build_executor_conversation_context(
     rows: list[dict[str, Any]],
     *,
     selected_message_ids: list[str],
     current_run_id: str,
-    max_history_bytes: int = DEFAULT_CONVERSATION_HISTORY_BYTES,
 ) -> dict[str, Any]:
     """Materialize and trim snapshot-authorized history as complete user turns."""
 
@@ -109,17 +126,12 @@ def build_executor_conversation_context(
 
     turns = _group_complete_turns(history)
     if not turns:
-        return empty_executor_conversation_context(max_history_bytes=max_history_bytes)
+        return empty_executor_conversation_context()
 
-    budget = max(0, int(max_history_bytes))
-    selected_turns: list[list[dict[str, str]]] = []
-    estimated_bytes = 0
-    for turn in reversed(turns):
-        turn_bytes = sum(_message_cost(message) for message in turn)
-        if selected_turns and estimated_bytes + turn_bytes > budget:
-            break
-        selected_turns.insert(0, turn)
-        estimated_bytes += turn_bytes
+    selected_turns = turns
+    estimated_bytes = sum(
+        _message_cost(message) for turn in selected_turns for message in turn
+    )
 
     selected_messages = [message for turn in selected_turns for message in turn]
     return {
@@ -127,7 +139,7 @@ def build_executor_conversation_context(
         "messages": selected_messages,
         "selected_message_count": len(selected_messages),
         "selected_turn_count": len(selected_turns),
-        "dropped_turn_count": len(turns) - len(selected_turns),
+        "dropped_turn_count": 0,
         "estimated_bytes": estimated_bytes,
-        "max_history_bytes": budget,
+        "max_history_bytes": None,
     }

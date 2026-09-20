@@ -40,7 +40,7 @@ import {
 } from "../components/governance/permissionProjection";
 import { THEME_STORAGE_KEY } from "../utils/themeDom";
 import { Permission } from "../types";
-import type { User, UserCreate, LoginRequest, AuthState } from "../types";
+import type { User, LoginRequest, AuthState } from "../types";
 
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
 
@@ -125,10 +125,6 @@ interface AuthContextType extends AuthState {
   loginWithAD: (
     loginUrl: string,
   ) => Promise<AuthOperationOutcome<string | null>>;
-  register: (
-    userData: UserCreate,
-    turnstileToken?: string,
-  ) => Promise<{ requiresVerification: boolean; email: string }>;
   loginWithOAuth: (provider: string) => Promise<void>;
   handleOAuthCallback: (
     provider: string,
@@ -400,7 +396,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 初始化：检查现有 token 并获取用户信息
   useEffect(() => {
     mountedRef.current = true;
-    if (isDevAuthPreviewRequested() && !getAccessToken()) {
+    if (isDevAuthPreviewRequested()) {
+      clearTokens();
       setToken("dev-auth-preview");
       setUser(DEV_AUTH_PREVIEW_USER);
       setDynamicPermissions(Object.values(Permission));
@@ -541,16 +538,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  // AD 登录：浏览器先取得 Windows 身份签发的公司 JWT，再由服务端换取平台 session。
+  // AD 登录：先取得 Windows 身份签发的公司 JWT，再建立并提交平台 session。
   const loginWithAD = useCallback(
     async (loginUrl: string): Promise<AuthOperationOutcome<string | null>> => {
       const owner = beginAuthOperation();
       if (isCurrentAuthOperation(owner)) setIsLoading(true);
       let sessionEstablished = false;
       try {
+        const companyJwt = await authApi.fetchCompanyADLogin(
+          loginUrl,
+          owner.abortController.signal,
+        );
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         await ensureBrowserAuthContextBeforeLogin(owner.abortController.signal);
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
-        await authApi.loginWithAD(loginUrl, owner.abortController.signal);
+        await authApi.loginWithAD(companyJwt, owner.abortController.signal);
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         sessionEstablished = true;
         if (!establishLocalSession(owner)) return cancelledAuthOperation();
@@ -580,26 +582,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isCurrentAuthOperation,
       rollbackOwnedSession,
     ],
-  );
-
-  // 注册
-  const register = useCallback(
-    async (
-      userData: UserCreate,
-      turnstileToken?: string,
-    ): Promise<{ requiresVerification: boolean; email: string }> => {
-      setIsLoading(true);
-      try {
-        const response = await authApi.register(userData, turnstileToken);
-        return {
-          requiresVerification: response.requires_verification,
-          email: userData.email,
-        };
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [],
   );
 
   // OAuth 登录由服务端 state 绑定同一个 browser auth context。
@@ -718,7 +700,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     permissions,
     login,
     loginWithAD,
-    register,
     loginWithOAuth,
     handleOAuthCallback,
     logout,

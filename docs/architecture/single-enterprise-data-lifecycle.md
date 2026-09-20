@@ -16,6 +16,15 @@ user-info authority. Ordinary clients cannot choose them. A trusted gateway may
 inject principal headers only with the configured shared secret. Production
 startup rejects an absent secret or the frontend POC header path.
 
+Windows login first obtains the company-signed JWT from `GetADName`. AI Platform
+accepts only that JWT, verifies its HS256 signature, issuer, audience, and
+lifetime, and projects the signed `workid`, `username`, `cnname`, `depart`, and
+`role` claims into platform authority. It does not trust browser-supplied
+identity fields or repeat the PermissionMS user-info lookup already performed by
+`GetADName`. The superseded AD request shape and login-time requery have no
+compatibility owner and are removed atomically; password login and Worker
+current-authority revalidation continue to use the existing user-info endpoint.
+
 [ADR 0007](../adr/0007-fixed-browser-authentication-day.md) owns the browser
 authentication lifetime: signed token, server authentication context and company
 authority freshness use one absolute, non-sliding 86,400-second day. Policy/source
@@ -85,9 +94,7 @@ across the concurrent index build. Every committed schema change must advance
 checksum mismatch.
 
 Compose runs this command as a one-shot `migrate` service before API and worker
-startup. The legacy authenticated `POST /admin/apply-schema` endpoint delegates
-to the same runner for compatibility; it is not the normal release path.
-`python -m app.schema_migrations status`, API readiness, and worker startup all
+startup. `python -m app.schema_migrations status`, API readiness, and worker startup all
 verify the target ledger and index-ledger entries, checksum, critical column
 types/nullability, named constraints, and valid/ready indexes. Connectivity or
 relation existence alone is insufficient.
@@ -125,6 +132,12 @@ constraints and target ledger before API or Worker startup. New application
 versions strip the private carrier from `runs.result_json`; historical result
 diagnostics remain read-only through the authorized Runs projection.
 
+OpenSandbox renewal observations add two nullable columns to `sandbox_leases`
+under a new core-schema ledger version. The existing platform `expires_at`
+retains its lease authority, and older application images ignore the added
+columns on rollback. Do not drop the columns until all renewal-receipt callers
+are retired; no legacy provider-expiry reader is retained.
+
 Before rolling back to an artifact-only worker, stop the file-delete producer.
 Namespaced file rows remain invisible to that worker, so rollback cannot make it
 physically delete them; however, deletion progress stops until a target-aware
@@ -148,33 +161,30 @@ working but receive only the bounded first page.
 
 ## Retention and physical deletion
 
-### Release note: object-deletion ownership and settings
+### Object-deletion ownership and settings
 
-The 2026-08-12 release separates persistence ownership without changing the
-deletion protocol. Generic claim, receipt, retry, dead-letter, and operator
-requeue logic now belongs to the object-deletion boundary. Artifact expiry and
-ACL reads remain artifact-owned, owner-requested file admission is file-owned,
-and the worker still runs one shared bounded loop.
+Generic claim, receipt, retry, dead-letter, and operator requeue logic belongs
+to the object-deletion boundary. Artifact expiry and ACL reads remain
+artifact-owned, owner-requested file admission is file-owned, and the worker
+runs one shared bounded loop.
 
-New deployments should use the following generic worker settings:
+Deployments use only the shared worker settings:
 
-| Canonical setting | Deprecated fallback | Scope |
-| --- | --- | --- |
-| `OBJECT_DELETE_BATCH_LIMIT` | `ARTIFACT_RETENTION_CLEANUP_LIMIT` | Shared artifact/file outbox claim batch. |
-| `OBJECT_DELETE_MAX_ATTEMPTS` | `ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS` | Shared retry/dead-letter threshold. |
-| `OBJECT_DELETE_RETRY_BASE_SECONDS` | `ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS` | Shared retry backoff base. |
-| `OBJECT_DELETE_RETRY_CAP_SECONDS` | `ARTIFACT_OBJECT_DELETE_RETRY_CAP_SECONDS` | Shared retry backoff cap. |
+| Setting | Scope |
+| --- | --- |
+| `OBJECT_DELETE_BATCH_LIMIT` | Shared artifact/file outbox claim batch. |
+| `OBJECT_DELETE_MAX_ATTEMPTS` | Shared retry/dead-letter threshold. |
+| `OBJECT_DELETE_RETRY_BASE_SECONDS` | Shared retry backoff base. |
+| `OBJECT_DELETE_RETRY_CAP_SECONDS` | Shared retry backoff cap. |
 
-When both names are present, the canonical `OBJECT_DELETE_*` value wins. When a
-canonical value is absent, the deprecated value preserves the previous
-behavior. `ARTIFACT_RETENTION_CLEANUP_LIMIT` remains the artifact-expiry
-selection limit; only its fallback role as the shared object claim limit is
-deprecated. The old names and the logic-free
-`app.artifact_lifecycle_repository` import facade are supported through
-2026-10-31 and may be removed no earlier than 2026-11-01 after operator and
-internal-import migration evidence is complete. This is a configuration and
-code-ownership rename only: it does not change SQL, persisted states, retry
-semantics, or retention eligibility.
+The former `ARTIFACT_OBJECT_DELETE_*` environment and Python aliases, and the
+artifact-retention fallback for the shared claim batch, are no longer
+accepted. This remains a configuration and code-ownership rename only: it does
+not change SQL, persisted states, retry semantics, or retention eligibility.
+The logic-free `app.artifact_lifecycle_repository` import facade remains under
+the base architecture policy and only re-exports canonical `app.persistence`
+symbols. It owns no SQL or lifecycle behavior; removing it requires a prior
+authority-only policy change.
 
 Cleanup runs in small worker batches and is retryable:
 

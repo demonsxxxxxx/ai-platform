@@ -7,8 +7,12 @@ export type VisibleConnectionStatus = Exclude<ConnectionStatus, "connected">;
 export function isSessionRunning(
   messages: Pick<Message, "isStreaming">[],
   isLoading: boolean,
+  isLoadingHistory = false,
 ): boolean {
-  return isLoading || messages.some((message) => message.isStreaming);
+  return (
+    (!isLoadingHistory && isLoading) ||
+    messages.some((message) => message.isStreaming)
+  );
 }
 
 export function shouldShowStreamingFooterSkeleton({
@@ -39,12 +43,19 @@ export function getVisibleConnectionStatus({
   connectionStatus,
   sessionId,
   currentRunId,
+  sessionRunning,
 }: {
   connectionStatus?: ConnectionStatus;
   sessionId: string | null;
   currentRunId: string | null;
+  sessionRunning: boolean;
 }): VisibleConnectionStatus | null {
-  if (!sessionId || !currentRunId || connectionStatus === "connected") {
+  if (
+    !sessionId ||
+    !currentRunId ||
+    !sessionRunning ||
+    connectionStatus === "connected"
+  ) {
     return null;
   }
   return connectionStatus ?? null;

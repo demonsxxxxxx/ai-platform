@@ -22,7 +22,7 @@
 | E08 | `app/runs/domain/admin_diagnostics.py:6`；`app/routes/admin_runs.py:288`；`frontend/web/src/components/panels/RunMonitorPanel.tsx:408` | 只为 failed Run 从 result_json 恢复诊断，前端主要显示 JSON；非失败状态的已有异常没有这个入口 |
 | E09 | `app/runtime/sandbox/executor_app.py:3297` 附近，callback delivery | 终态回调发送错误存于 task_state；Executor 消失后不能依赖此内存恢复。平台侧可以记录已观察的未送达，但不能重建原异常 |
 | E10 | `app/routes/admin_runtime.py:637`，`admin_runtime_overview`；`:579`，`admin_runtime_containers` | overview GET 默认 `include_maintenance_cleanup=True`；containers GET 也会触发 orphan/lease 清理。两处均与诊断页面只读需求冲突 |
-| E11 | `app/routes/lambchat_compat.py:1457`；`app/trace_audit_export_readiness.py:57` | `/api/version` 固定 POC 文案；export readiness 是有消费者的契约报告，不能作为真实下载能力 |
+| E11 | `app/trace_audit_export_readiness.py:57` | 已退役的 `/api/version` 固定 POC 路由不再作为版本来源；export readiness 是仍有消费者的契约报告，不能作为真实下载能力 |
 
 这些是数据链路缺陷或清理候选，不说明项目缺少管理页面、完全没有日志或所有归一化均有问题。主分支已有的环境变量和假设置清理不再作为本方案待做项。
 
@@ -183,7 +183,7 @@ S4 计划新增 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校
 
 版本信息复用现有构建 source snapshot、OCI label 和 runtime commit 来源，经 bootstrap 注入；不让 API 读取 Docker socket。无法读取 image digest 时记为未知，不用 commit 推导 digest。Run 发生时未记录的 SDK/镜像版本不能从当前服务器版本倒填。
 
-已有 `/api/version` 的固定 POC 值将在 D08 改为统一构建版本投影，保留已识别客户端需要的响应形状。当前管理诊断响应只显示实际记录中已有的契约版本，不从当前服务倒填执行时构建版本，也不增加第二个版本常量。
+已退役的 `/api/version` 固定 POC 响应不再保留。后续构建版本投影直接复用可信构建来源并按当前消费者定义独立契约；当前管理诊断响应只显示实际记录中已有的契约版本，不从当前服务倒填执行时构建版本，也不增加第二个版本常量。
 
 ## 6. 验证方案
 
@@ -225,7 +225,7 @@ S4 计划新增 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校
 | D05 | admin failed-only 门槛和向 result 恢复 runtime_diagnostics | 已改为独立、tenant-scoped 诊断查询并按证据状态展示 | 删除 `app/runs/domain/admin_diagnostics.py`、详情路由的 failed-only 拼装和前端整块结果 JSON；历史 result 只由 Runs 查询投影读取；T11/T13 |
 | D06 | 调和失败只留通用结果的证据丢失路径 | callback 或 probe 的原观察先进入独立诊断记录，精简 terminal receipt 用于协议调和；永久失败再追加分类观察 | 首次回执与诊断同事务，重复回执不增 revision；调和仍保持固定公共终态码；T06/T07 |
 | D07 | GET overview 的 `include_maintenance_cleanup` 与 containers GET 清理 | 两个查询改为只读；复用 `worker_main.py` 中 `sandbox_cleanup` 调度，另核对 orphan 清理是否由该入口覆盖 | 完整盘点前端/脚本/运维调用；缺失的维护职责迁入既有维护流程后再移除 GET 分支/参数，需消费方退出证明；T14 |
-| D08 | `/api/version` 固定 `ai-platform-poc` | 复用可信构建来源；缺失为未知 | 消除重复版本文案与固定值断言；保持实际客户端需要的 wire shape |
+| D08 | 已退役的 `/api/version` 固定 `ai-platform-poc` 响应 | 路由与前端 version API 已删除；未来版本查询复用可信构建来源并定义自己的契约 | 路由缺席回归、前端引用清单和构建验证证明旧 wire shape 不再活跃 |
 | D09 | `app/trace_audit_export_readiness.py` 及组合 readiness / CLI | 将仍被调用的契约报告归属工具；实际下载能力从运行接口和测试证明 | 现有 consumers 包括 `app/observability_readiness.py`、工具 CLI 和 `tests/test_observability_readiness.py`；按调用链迁移，不能直接删除，也不能把本功能通过写成 G9 全部验收 |
 | D10 | 相关测试、selector、env、部署说明中的旧约束 | 随 D01–D09 所属批次修改/删除 | 每项列出旧断言/配置读取者与新验收；无生产读取的 fixture 字段清掉；已有 env 清理不重复实现 |
 

@@ -1124,7 +1124,6 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
             "enabled": True,
             "url": "https://mcp.example/sse?token=plain-secret",
             "headers": {"Authorization": "Bearer plain-secret"},
-            "env_keys": ["MCP_SECRET"],
             "allowed_roles": [" QA-Operator ", "qa-operator"],
             "department_ids": [" QA ", "qa"],
         },
@@ -1416,8 +1415,6 @@ def test_mcp_lifecycle_audit_and_repository_payloads_never_include_raw_credentia
             "transport": "streamable_http",
             "url": "https://mcp.example/sse?api_key=raw-secret",
             "headers": {"X-Api-Key": "raw-secret"},
-            "command": "run --token raw-secret",
-            "env_keys": ["RAW_SECRET"],
         },
         headers=headers(roles="admin"),
     )
@@ -1432,6 +1429,22 @@ def test_mcp_lifecycle_audit_and_repository_payloads_never_include_raw_credentia
     assert "raw-secret" not in serialized_calls
     assert "run --token" not in serialized_calls
     assert "X-Api-Key" not in serialized_calls
+
+
+@pytest.mark.parametrize("unsupported", [
+    {"transport": "sandbox", "command": "run --token synthetic-secret"},
+    {"transport": "streamable_http", "command": "run --token synthetic-secret"},
+    {"transport": "streamable_http", "env_keys": ["SYNTHETIC_SECRET"]},
+])
+def test_mcp_rejects_unimplemented_command_configuration_without_writes(monkeypatch, unsupported):
+    calls = install_mcp_route_fakes(monkeypatch)
+    response = TestClient(create_app()).post(
+        "/api/admin/mcp/", json={"name": "unsupported", **unsupported},
+        headers=headers(roles="admin"),
+    )
+    assert response.status_code == 422
+    assert "synthetic-secret" not in response.text
+    assert not any(name in {"upsert_server", "record_credential"} for name, _ in calls)
 
 
 def test_mcp_directory_filters_servers_by_principal_department(monkeypatch):
@@ -1598,32 +1611,14 @@ def test_mcp_admin_detail_returns_decrypted_credentials_only_to_admin(monkeypatc
     assert "headers" not in ordinary_detail.json()
 
 
-def test_mcp_lifecycle_route_matrix_fails_closed_after_admin_gate(monkeypatch):
+def test_retired_mcp_lifecycle_routes_are_absent(monkeypatch):
     install_mcp_route_fakes(monkeypatch)
-    client = TestClient(create_app())
+    paths = TestClient(create_app()).get("/openapi.json").json()["paths"]
 
-    non_admin_invalid_name = client.put(
-        "/api/mcp/bad!",
-        json={"enabled": False},
-        headers=headers(),
-    )
-    assert non_admin_invalid_name.status_code == 403
-    assert non_admin_invalid_name.json()["detail"] == "not_ai_admin"
-
-    routes = [
-        ("patch", "/api/mcp/ragflow/tools/ragflow-knowledge-search", {"enabled": False}),
-    ]
-    for method, path, body in routes:
-        if method == "delete":
-            response = client.delete(path, headers=headers(roles="admin"))
-        else:
-            response = getattr(client, method)(
-                path,
-                json=body,
-                headers=headers(roles="admin"),
-            )
-        assert response.status_code == 409
-        assert response.json()["detail"] == "mcp_lifecycle_contract_not_backed"
+    assert "/api/mcp/import" not in paths
+    assert "/api/mcp/{name}/tools/{tool_name}" not in paths
+    assert "/api/admin/mcp/{name}/promote" not in paths
+    assert "/api/admin/mcp/{name}/demote" not in paths
 
 
 @pytest.mark.parametrize(

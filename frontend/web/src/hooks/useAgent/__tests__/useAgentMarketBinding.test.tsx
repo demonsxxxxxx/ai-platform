@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
-import { Permission } from "../../../types/auth.ts";
+import { installBrowserAuthTestDb } from "../../__tests__/browserAuthTestDb.ts";
 
 type Listener = (event: { type: string; [key: string]: unknown }) => void;
 
@@ -225,6 +225,7 @@ function installDom() {
 }
 
 const dom = installDom();
+installBrowserAuthTestDb();
 
 function clearPersistedSubmissionReferences() {
   for (let index = dom.window.localStorage.length - 1; index >= 0; index -= 1) {
@@ -243,11 +244,7 @@ async function settle(act: typeof import("react").act) {
   }
 }
 
-async function loadHarness({
-  permissions = [],
-}: {
-  permissions?: Permission[];
-} = {}) {
+async function loadHarness() {
   clearPersistedSubmissionReferences();
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
@@ -265,13 +262,17 @@ async function loadHarness({
     username: "user-a",
     email: "user-a@example.test",
     roles: [],
-    permissions,
+    permissions: [],
     is_admin: false,
     is_active: true,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   });
-  authApi.bootstrapAuthContext = async () => {};
+  authApi.bootstrapAuthContext = async (request) => ({
+    status: "ready",
+    protocol_version: 2,
+    generation: request.generation,
+  });
 
   function Probe() {
     snapshot = useAgent();
@@ -474,7 +475,7 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
 
     assert.equal(submissions.length, 2);
     assert.equal(submissions[0]?.[11], "high");
-    assert.equal(submissions[1]?.[11], "off");
+    assert.equal(submissions[1]?.[11], "auto");
     for (const submission of submissions) {
       assert.equal(submission[1], "session-agent");
       assert.equal(submission[2], undefined, "model/Prompt options must be omitted");
@@ -808,84 +809,6 @@ test("event history failure keeps verified generic authority for explicit retry"
     sessionApi.getEvents = originalGetEvents;
     sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
-    await harness.cleanup();
-  }
-});
-
-test("optional feedback failure leaves the session authority usable", async () => {
-  const harness = await loadHarness({ permissions: [Permission.FEEDBACK_READ] });
-  const { sessionApi } = await import("../../../services/api/session.ts");
-  const { feedbackApi } = await import("../../../services/api/feedback.ts");
-  const originalGet = sessionApi.get;
-  const originalGetAuthoritative = sessionApi.getAuthoritative;
-  const originalGetEvents = sessionApi.getEvents;
-  const originalMarkRead = sessionApi.markRead;
-  const originalSubmitChat = sessionApi.submitChat;
-  const originalFeedbackList = feedbackApi.list;
-  const originalConsoleError = console.error;
-  const diagnostics: unknown[][] = [];
-  const submissions: unknown[][] = [];
-  console.error = (...args: unknown[]) => diagnostics.push(args);
-  sessionApi.markRead = async () => {};
-  sessionApi.get = async (sessionId) => ({
-    id: sessionId,
-    agent_id: "general-agent",
-    created_at: "2026-07-30T01:38:00Z",
-    updated_at: "2026-07-30T01:38:00Z",
-    is_active: true,
-    metadata: {},
-  });
-  sessionApi.getAuthoritative = async (sessionId) => ({
-    session_id: sessionId,
-    workspace_id: "default",
-    agent_id: "general-agent",
-    title: "普通会话",
-    purpose: "conversation",
-    agent_conversation: null,
-  });
-  sessionApi.getEvents = async () => ({ events: [] });
-  feedbackApi.list = async () => {
-    throw new ApiRequestError(
-      "private feedback payload",
-      502,
-      "feedback_projection_unavailable",
-    );
-  };
-  sessionApi.submitChat = (async (...args) => {
-    submissions.push(args);
-    return { status: "needs_confirmation", suggestions: [] };
-  }) as typeof sessionApi.submitChat;
-
-  try {
-    await harness.act(async () => {
-      assert.notEqual(await harness.hook.loadHistory("session-feedback"), null);
-    });
-    await settle(harness.act);
-    await harness.act(async () => {
-      assert.deepEqual(await harness.hook.sendMessage("仍可继续"), {
-        status: "accepted",
-      });
-    });
-    assert.equal(submissions[0]?.[1], "session-feedback");
-    assert.equal(submissions[0]?.[10], null);
-    assert.deepEqual(diagnostics, [
-      [
-        "[loadHistory] feedback failed",
-        {
-          phase: "feedback",
-          status: 502,
-          code: "feedback_projection_unavailable",
-        },
-      ],
-    ]);
-  } finally {
-    console.error = originalConsoleError;
-    sessionApi.get = originalGet;
-    sessionApi.getAuthoritative = originalGetAuthoritative;
-    sessionApi.getEvents = originalGetEvents;
-    sessionApi.markRead = originalMarkRead;
-    sessionApi.submitChat = originalSubmitChat;
-    feedbackApi.list = originalFeedbackList;
     await harness.cleanup();
   }
 });

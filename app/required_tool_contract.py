@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -23,7 +23,7 @@ from app.skills.execution_profiles import (
     SANDBOX_FULL_LOCAL,
     SKILL_WORKSPACE_CONTRACT_VERSION,
 )
-from app.tool_policy import evaluate_tool_policy
+from app.tool_policy import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 REQUIRED_CAPABILITY_DECLARATION_SCHEMA_VERSION = (
     "ai-platform.required-capability-declaration.v1"
@@ -32,6 +32,16 @@ REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION = (
     "ai-platform.required-capability-evidence.v1"
 )
 TOOL_INVOCATION_EVIDENCE_SCHEMA_VERSION = "ai-platform.tool-invocation-evidence.v1"
+MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE = (
+    "mcp_execution_succeeded_receipt_incomplete"
+)
+MCP_EXECUTION_OUTCOME_UNKNOWN = "mcp_execution_outcome_unknown"
+MCP_EXECUTION_UNCERTAIN_ERROR_CODES = frozenset(
+    {
+        MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
+        MCP_EXECUTION_OUTCOME_UNKNOWN,
+    }
+)
 REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY = "_required_capability_declaration"
 REQUIRED_CAPABILITY_EVIDENCE_KEY = "required_capability_evidence"
 TOOL_INVOCATION_EVIDENCE_KEY = "tool_invocation_evidence"
@@ -671,40 +681,6 @@ def attach_required_tool_declaration(input_payload: dict[str, Any]) -> dict[str,
     return rebuilt
 
 
-_BUILTIN_CAPABILITY_PARAMETERS = {
-    "Read": (["file_path", "offset", "limit", "pages"], ["file_path"]),
-    "Glob": (["pattern", "path"], []),
-    "Grep": (
-        [
-            "pattern",
-            "path",
-            "glob",
-            "output_mode",
-            "-i",
-            "multiline",
-            "head_limit",
-            "offset",
-            "context",
-            "-n",
-        ],
-        ["pattern"],
-    ),
-    "LS": (["path"], []),
-    "Bash": (["command", "timeout", "description"], ["command"]),
-    "Write": (["file_path", "content"], ["file_path", "content"]),
-    "Edit": (
-        ["file_path", "old_string", "new_string", "replace_all"],
-        ["file_path", "old_string", "new_string"],
-    ),
-    "NotebookEdit": (
-        ["notebook_path", "new_source", "cell_id", "cell_type", "edit_mode"],
-        ["notebook_path", "new_source"],
-    ),
-    "Agent": (["agent", "prompt", "description"], ["agent"]),
-    "WebFetch": (["url", "prompt"], ["url"]),
-    "WebSearch": (["query"], ["query"]),
-    "Skill": (["skill"], ["skill"]),
-}
 SANDBOX_LOCAL_TOOL_IDENTITIES = (
     "Read",
     "Glob",
@@ -722,6 +698,73 @@ SANDBOX_EFFECTFUL_TOOL_IDENTITIES = frozenset(
 _SANDBOX_WRITE_TOOL_IDENTITIES = frozenset(
     {"Bash", "Write", "Edit", "NotebookEdit"}
 )
+
+
+def _authorized_sandbox_tool_identities(
+    subjects: Collection[Mapping[str, Any]],
+) -> set[str]:
+    authorized: set[str] = set()
+    for subject in subjects:
+        identity = str(subject.get("identity") or "")
+        if identity not in SANDBOX_LOCAL_TOOL_IDENTITIES:
+            continue
+        decision = evaluate_tool_policy(
+            tool={
+                "requested_identity": identity,
+                "declared_identities": subject.get("declared_identities"),
+                "registered": subject.get("registered"),
+                "declared": subject.get("declared"),
+                "active": subject.get("active"),
+                "distributed": subject.get("distributed"),
+                "identity_authorized": subject.get("identity_authorized"),
+                "object_authorized": subject.get("object_authorized"),
+                "parameters_authorized": subject.get("parameters_authorized"),
+                "risk_level": subject.get("risk_level"),
+                "write_capable": subject.get("write_capable"),
+            }
+        )
+        if decision.allowed and decision.canonical_identity == identity:
+            authorized.add(identity)
+    return authorized
+
+
+def _sandbox_full_sdk_tools_authorized(
+    subjects: Collection[Mapping[str, Any]],
+) -> bool:
+    for subject in subjects:
+        identity = str(subject.get("identity") or "")
+        if identity != "Skill":
+            continue
+        if str(subject.get("execution_strategy") or "") != SANDBOX_FULL_LOCAL:
+            continue
+        allowed_skill_names = subject.get("allowed_skill_names")
+        if not (
+            isinstance(allowed_skill_names, list)
+            and allowed_skill_names
+            and all(
+                isinstance(skill_name, str) and skill_name
+                for skill_name in allowed_skill_names
+            )
+        ):
+            continue
+        decision = evaluate_tool_policy(
+            tool={
+                "requested_identity": identity,
+                "declared_identities": subject.get("declared_identities"),
+                "registered": subject.get("registered"),
+                "declared": subject.get("declared"),
+                "active": subject.get("active"),
+                "distributed": subject.get("distributed"),
+                "identity_authorized": subject.get("identity_authorized"),
+                "object_authorized": subject.get("object_authorized"),
+                "parameters_authorized": subject.get("parameters_authorized"),
+                "risk_level": subject.get("risk_level"),
+                "write_capable": subject.get("write_capable"),
+            }
+        )
+        if decision.allowed and decision.canonical_identity == identity:
+            return True
+    return False
 
 
 def builtin_capability_subjects(
@@ -794,7 +837,7 @@ def builtin_capability_subjects(
         identities.add("Skill")
     subjects: list[dict[str, Any]] = []
     for identity in sorted(identities):
-        keys, required_keys = _BUILTIN_CAPABILITY_PARAMETERS[identity]
+        parameter_contract = BUILTIN_TOOL_PARAMETER_CONTRACTS[identity]
         profiles = profiles_by_identity.get(identity, [])
         profile = (
             primary_profile
@@ -813,8 +856,12 @@ def builtin_capability_subjects(
                 identity=identity,
                 active=active,
                 distributed=distributed,
-                allowed_parameter_keys=keys,
-                required_parameter_keys=required_keys,
+                allowed_parameter_keys=list(
+                    parameter_contract.allowed_parameter_keys
+                ),
+                required_parameter_keys=list(
+                    parameter_contract.required_parameter_keys
+                ),
                 allowed_skill_names=list(authorized_skill_names) if identity == "Skill" else [],
                 profile=profile,
             )
@@ -886,8 +933,9 @@ def with_sandbox_local_tool_capability_subjects(
     *,
     sandbox_provider: str,
     required_declaration: RequiredCapabilityDeclaration | None = None,
+    authorized_sandbox_tool_identities: Collection[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Grant Claude Code local tools only inside a real sandbox boundary."""
+    """Rebuild only the foreground SDK tools authorized by the Worker."""
 
     if sandbox_provider == "docker":
         command_isolation = NATIVE_COMMAND_ISOLATION
@@ -895,6 +943,24 @@ def with_sandbox_local_tool_capability_subjects(
         command_isolation = OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION
     else:
         raise RequiredToolContractError("sandbox_bash_provider_invalid")
+
+    existing_sandbox_tool_identities = _authorized_sandbox_tool_identities(
+        existing_subjects
+    )
+    if authorized_sandbox_tool_identities is None:
+        selected_sandbox_tool_identities = (
+            set(SANDBOX_LOCAL_TOOL_IDENTITIES)
+            if _sandbox_full_sdk_tools_authorized(existing_subjects)
+            else existing_sandbox_tool_identities
+        )
+    else:
+        selected_sandbox_tool_identities = {
+            str(identity) for identity in authorized_sandbox_tool_identities
+        }
+    if not selected_sandbox_tool_identities.issubset(
+        SANDBOX_LOCAL_TOOL_IDENTITIES
+    ):
+        raise RequiredToolContractError("sandbox_local_tool_identity_invalid")
 
     subjects = [
         dict(subject)
@@ -910,6 +976,8 @@ def with_sandbox_local_tool_capability_subjects(
         ):
             raise RequiredToolContractError("required_tool_declaration_mismatch")
     for identity in SANDBOX_LOCAL_TOOL_IDENTITIES:
+        if identity not in selected_sandbox_tool_identities:
+            continue
         subject = _builtin_subject(
             identity=identity,
             active=True,
@@ -944,7 +1012,18 @@ def with_boundary_sandbox_local_tool_subjects(
     *,
     decision: ExecutionBoundaryDecision,
     sandbox_provider: object,
+    authorized_sandbox_tool_identities: Collection[str] | None = None,
 ) -> list[dict[str, Any]]:
+    if authorized_sandbox_tool_identities is None:
+        selected_sandbox_tool_identities = _authorized_sandbox_tool_identities(
+            existing_subjects
+        )
+        if _sandbox_full_sdk_tools_authorized(existing_subjects):
+            selected_sandbox_tool_identities = set(SANDBOX_LOCAL_TOOL_IDENTITIES)
+    else:
+        selected_sandbox_tool_identities = {
+            str(identity) for identity in authorized_sandbox_tool_identities
+        }
     sanitized_subjects = [
         dict(subject)
         for subject in existing_subjects
@@ -961,6 +1040,22 @@ def with_boundary_sandbox_local_tool_subjects(
     return with_sandbox_local_tool_capability_subjects(
         sanitized_subjects,
         sandbox_provider=provider,
+        authorized_sandbox_tool_identities=selected_sandbox_tool_identities,
+    )
+
+
+def with_harness_local_tool_subjects(
+    *,
+    decision: ExecutionBoundaryDecision,
+    sandbox_provider: object,
+) -> list[dict[str, Any]]:
+    """Grant the fixed local tool set from the server-owned Harness boundary."""
+
+    return with_boundary_sandbox_local_tool_subjects(
+        [],
+        decision=decision,
+        sandbox_provider=sandbox_provider,
+        authorized_sandbox_tool_identities=SANDBOX_LOCAL_TOOL_IDENTITIES,
     )
 
 

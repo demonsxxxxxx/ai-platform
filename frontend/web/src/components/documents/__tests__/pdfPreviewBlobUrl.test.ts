@@ -42,7 +42,7 @@ test("PDF preview revokes generated blob URLs", () => {
 test("remote document preview validates URLs before storing or fetching them", () => {
   const remoteBranch = sliceBetween(
     stateSource,
-    "if (s3Key || signedUrl) {",
+    "if (previewUrl || signedUrl) {",
     "setError(t(\"documents.noContent\"",
   );
   const guardIndex = remoteBranch.indexOf("assertSafeDocumentPreviewUrl(url);");

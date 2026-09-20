@@ -116,6 +116,13 @@ export function resolveSkillOperationError(
   return i18n.t(fallbackKey);
 }
 
+export function resolveSkillPreviewError(error: unknown): string {
+  if (error instanceof ApiRequestError && error.status !== 403) {
+    return error.message;
+  }
+  return resolveSkillOperationError(error, "skills.previewFailed");
+}
+
 export function useSkills(options?: {
   enabled?: boolean;
   listParams?: SkillListParams;
@@ -769,7 +776,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.previewZip(file);
       } catch (err) {
-        setError(resolveSkillOperationError(err, "skills.previewFailed"));
+        setError(resolveSkillPreviewError(err));
         return null;
       } finally {
         setIsLoading(false);
@@ -798,7 +805,7 @@ export function useSkills(options?: {
       try {
         return await skillApi.adminPreviewZip(file);
       } catch (err) {
-        setError(resolveSkillOperationError(err, "skills.previewFailed"));
+        setError(resolveSkillPreviewError(err));
         return null;
       } finally {
         setIsLoading(false);

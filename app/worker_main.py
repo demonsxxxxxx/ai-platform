@@ -22,6 +22,7 @@ from app.files.api import (
 )
 from app.bootstrap.agent_profiles import configure_agent_profile_runtime
 from app.bootstrap.files import configure_file_upload_services
+from app.bootstrap.context import configure_context_services
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
@@ -40,6 +41,7 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
+from app.context.api import fail_expired_checkpoint_builds
 from app.data_retention import run_data_retention_maintenance
 from app.db import transaction
 from app.executors.registry import AdapterRegistry
@@ -700,6 +702,9 @@ async def run_worker_cleanup_maintenance(
     phases = {
         "sandbox_cleanup": cleanup_expired_sandbox_leases,
         "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
+        "conversation_checkpoint_cleanup": lambda: fail_expired_checkpoint_builds(
+            transaction_factory=transaction, limit=50,
+        ),
         "data_retention": lambda: run_data_retention_maintenance(settings),
         "tool_permission_terminalization": lambda: progress_pending_tool_permission_terminalizations_for_worker(
             settings,
@@ -974,6 +979,7 @@ async def run_once(
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
 ) -> WorkerOutcome:
+    configure_context_services()
     configure_mcp_runtime()
     configure_agent_profile_runtime()
     resolved_worker_id = worker_id or default_worker_id()
@@ -1128,6 +1134,7 @@ async def run_forever(
     *,
     attempt_lifecycle: RunAttemptLifecycleService,
 ) -> None:
+    configure_context_services()
     configure_mcp_runtime()
     await require_schema_current()
     worker_runtime = build_worker_v4_runtime(transaction)
@@ -1245,6 +1252,7 @@ async def run_worker_pool(
         )
         return
 
+    configure_context_services()
     configure_mcp_runtime()
     await require_schema_current()
     settings = get_settings()

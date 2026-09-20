@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import signal
 import shlex
 import sys
@@ -679,6 +680,24 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
     (workspace / ".ai-platform").mkdir()
     subject = {"workspace_contract": "ai-platform.skill-workspace.v1"}
 
+    for incompatible_subject in (
+        {},
+        {"workspace_contract": "ai-platform.skill-workspace.v2"},
+    ):
+        for tool_name, tool_input in (
+            ("Read", {"file_path": "inputs/source.docx"}),
+            ("LS", {"path": "inputs"}),
+            ("Glob", {"path": "inputs", "pattern": "**/*.xlsx"}),
+            ("Grep", {"path": "inputs", "pattern": "TODO"}),
+            ("Write", {"file_path": "outputs/delivery/report.pdf"}),
+        ):
+            assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
+                incompatible_subject,
+                tool_name,
+                tool_input,
+                workspace_root=workspace,
+            )
+
     assert claude_agent_sdk_runner._workspace_path_parameters_authorized(
         subject,
         "Read",
@@ -722,9 +741,11 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
         workspace_root=workspace,
     )
     for allowed_input in (
+        {"path": ".", "pattern": "**/*.xlsx"},
         {"path": "inputs", "pattern": "**/*.xlsx"},
         {"path": ".", "pattern": "reports/**/*.md"},
         {"path": ".", "pattern": ".CLAUDE/SKILLS/**/*.py"},
+        {"path": ".", "pattern": "foo..bar"},
     ):
         assert claude_agent_sdk_runner._workspace_path_parameters_authorized(
             subject,
@@ -732,7 +753,6 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
             allowed_input,
             workspace_root=workspace,
         )
-
     for forbidden_input in (
         {"path": ".", "pattern": "/proc/**"},
         {"path": ".", "pattern": "C:/outside/**"},
@@ -765,7 +785,9 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
         {"path": ".", "pattern": ".ai-platform/**"},
         {"path": ".", "pattern": ".home/**"},
         {"path": ".", "pattern": ".*/**"},
-        {"path": ".", "pattern": "**/*.xlsx"},
+        {"path": ".", "pattern": ".[a]i-platform/**"},
+        {"path": ".", "pattern": "foo/.*"},
+        {"path": ".", "pattern": "{.a[i]-platform,ok}/**"},
         {"path": ".", "pattern": "{.home,.tmp}/**"},
         {"path": ".", "pattern": "@(.home|.tmp)/**"},
         {"path": ".", "pattern": ".claude/skills/{../settings.json,ok.md}"},
@@ -792,6 +814,12 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
         {"file_path": ".claude/settings.json"},
         workspace_root=workspace,
     )
+    assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
+        subject,
+        "Read",
+        {"file_path": "outputs/.pins/private.txt"},
+        workspace_root=workspace,
+    )
 
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", "/workspace/.ai-platform/native-tool.sock")
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", "x" * 32)
@@ -814,6 +842,142 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
     assert claude_agent_sdk_runner._native_tool_proxy_input(
         {"command": command, "timeout": 600_001}
     ) is None
+
+
+def test_workspace_search_results_filter_private_paths_and_bound_unlimited_grep(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "inputs").mkdir(parents=True)
+    (workspace / ".pins").mkdir()
+    (workspace / "outputs" / ".ai-platform").mkdir(parents=True)
+    (workspace / "inputs" / "public.py").write_text("public", encoding="utf-8")
+    (workspace / ".pins" / "private.py").write_text("secret", encoding="utf-8")
+    (workspace / "outputs" / ".ai-platform" / "state.json").write_text(
+        "secret",
+        encoding="utf-8",
+    )
+
+    filtered, changed = claude_agent_sdk_runner._filtered_workspace_search_output(
+        {
+            "mode": "files_with_matches",
+            "filenames": [
+                "inputs/public.py",
+                ".pins/private.py",
+                "outputs/.ai-platform/state.json",
+            ],
+            "numFiles": 3,
+            "totalFiles": 3,
+        },
+        tool_name="Grep",
+        tool_input={"pattern": "secret", "path": "."},
+        workspace_root=workspace,
+    )
+
+    assert changed is True
+    assert filtered == {
+        "mode": "files_with_matches",
+        "filenames": ["inputs/public.py"],
+        "numFiles": 1,
+    }
+
+    filtered_count, changed = (
+        claude_agent_sdk_runner._filtered_workspace_search_output(
+            {
+                "mode": "count",
+                "filenames": [],
+                "content": "inputs/public.py:2\n.pins/private.py:41",
+                "numFiles": 2,
+                "numMatches": 43,
+                "totalFiles": 2,
+                "totalLines": 43,
+                "countIsComplete": True,
+            },
+            tool_name="Grep",
+            tool_input={
+                "pattern": "secret",
+                "path": ".",
+                "output_mode": "count",
+            },
+            workspace_root=workspace,
+        )
+    )
+    assert changed is True
+    assert filtered_count == {
+        "mode": "count",
+        "filenames": [],
+        "content": (
+            "inputs/public.py:2\n"
+            "[ai-platform filtered or truncated search output]"
+        ),
+        "numFiles": 1,
+        "numMatches": 2,
+    }
+
+    filtered_glob, changed = (
+        claude_agent_sdk_runner._filtered_workspace_search_output(
+            {
+                "durationMs": 17,
+                "numFiles": 2,
+                "filenames": ["inputs/public.py", ".pins/private.py"],
+                "truncated": False,
+                "totalMatches": 2,
+                "countIsComplete": True,
+            },
+            tool_name="Glob",
+            tool_input={"pattern": "**/*.py", "path": "."},
+            workspace_root=workspace,
+        )
+    )
+    assert changed is True
+    assert filtered_glob == {
+        "durationMs": 17,
+        "numFiles": 1,
+        "filenames": ["inputs/public.py"],
+        "truncated": False,
+        "totalMatches": 1,
+        "countIsComplete": True,
+    }
+    assert claude_agent_sdk_runner._bounded_workspace_search_input(
+        "Grep",
+        {"pattern": "TODO", "head_limit": 0},
+    ) == {
+        "pattern": "TODO",
+        "head_limit": claude_agent_sdk_runner._WORKSPACE_GREP_MAX_HEAD_LIMIT,
+    }
+    assert claude_agent_sdk_runner._bounded_workspace_search_input(
+        "Grep",
+        {"pattern": "TODO", "head_limit": -1},
+    ) is None
+
+    filtered_text, changed = (
+        claude_agent_sdk_runner._filtered_workspace_search_output(
+            "No matches found in .pins/private.py",
+            tool_name="Grep",
+            tool_input={"pattern": "secret", "path": "."},
+            workspace_root=workspace,
+        )
+    )
+    assert changed is True
+    assert "private.py" not in filtered_text
+
+    oversized_list = ["inputs/public.py\n" * 2_000 for _ in range(3)]
+    filtered_large, changed = (
+        claude_agent_sdk_runner._filtered_workspace_search_output(
+            oversized_list,
+            tool_name="Glob",
+            tool_input={"pattern": "**/*.py", "path": "."},
+            workspace_root=workspace,
+        )
+    )
+    assert changed is True
+    assert (
+        len(json.dumps(filtered_large, ensure_ascii=False).encode("utf-8"))
+        <= claude_agent_sdk_runner._WORKSPACE_SEARCH_MAX_OUTPUT_BYTES
+    )
+    assert sum(
+        item.count("inputs/public.py")
+        for item in filtered_large
+        if isinstance(item, str)
+    ) == claude_agent_sdk_runner._WORKSPACE_SEARCH_MAX_OUTPUT_LINES
 
 
 def test_staged_skill_paths_are_immutable_to_sdk_mutating_tools(tmp_path):

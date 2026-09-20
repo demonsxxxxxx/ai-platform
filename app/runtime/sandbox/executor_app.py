@@ -29,6 +29,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.bootstrap.execution import build_claude_session_store
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import normalize_thinking_effort
 from app.executors.claude_agent_sdk_runner import (
@@ -43,6 +44,7 @@ from app.public_execution import (
     public_execution_phase_progress_payload,
 )
 from app.required_tool_contract import (
+    MCP_EXECUTION_UNCERTAIN_ERROR_CODES,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
     SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
@@ -67,6 +69,7 @@ from app.runtime.sandbox.contracts import (
     ContextRetrievalScope,
     ExecutorCallbackEvent,
     ExecutorTaskRequest,
+    ModelTokenLimits,
     build_trusted_callback_target,
     executor_callback_receipt_event_count,
 )
@@ -785,6 +788,22 @@ _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
 _CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
 _EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
 _ACTIVE_PROGRESS_INTERVAL_SECONDS = 12.0
+_SDK_PRESERVED_FAILURE_CODES = frozenset(
+    {
+        "claude_agent_sdk_disabled",
+        "claude_agent_sdk_unavailable",
+        "claude_agent_sdk_missing_structured_terminal",
+        "claude_agent_sdk_selected_skill_not_invoked",
+        "claude_agent_sdk_selected_skill_hook_failed",
+        "claude_agent_sdk_selected_skill_not_authorized",
+        "claude_agent_sdk_turn_limit_exceeded",
+        "claude_agent_sdk_timeout",
+        "claude_agent_sdk_public_projection_failed",
+        "claude_agent_sdk_tool_admission_failed",
+        "claude_agent_sdk_upstream_error",
+        "claude_agent_sdk_provider_session_failed",
+    }
+)
 _SDK_TURN_LIMIT_ERROR_PATTERN = re.compile(r"Reached maximum number of turns \(\d+\)")
 
 
@@ -1375,6 +1394,11 @@ def _controlled_file_skill_command(
     return command, None
 
 
+def _controlled_reviewed_docx_relative_path(input_path: Path) -> str:
+    stem = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "_", input_path.stem).strip(" ._")
+    return f"output/{stem or 'document'}_reviewed.docx"
+
+
 def _controlled_runner_environment(workspace_root: Path) -> dict[str, str]:
     workspace = workspace_root.resolve(strict=True)
     home = workspace / ".home"
@@ -1703,10 +1727,19 @@ async def _run_selected_authorized_file_skill(
             error_code="capability_callback_not_acknowledged",
             capability_evidence=[],
         )
+    response_file = _controlled_reviewed_docx_relative_path(Path(command[2]))
+    if _resolved_workspace_file(workspace_root, workspace_root / response_file) is None:
+        return _controlled_skill_result(
+            status="failed",
+            message="Selected file Skill did not produce its final response file",
+            error_code="controlled_skill_output_missing",
+            capability_evidence=capability_evidence,
+        )
     return {
         "status": "completed",
         "message": stdout.decode("utf-8", errors="replace").strip()
         or "Controlled file Skill completed.",
+        "response_files": [response_file],
         "sdk_used": False,
         "executor_mode": "platform_controlled_runner",
         "used_skills": [skill_id],
@@ -1938,7 +1971,6 @@ async def _default_executor_runner(
             status="running",
             progress=20,
             state_patch={"stage": "agent_event"},
-            sdk_session_id=request.sdk_session_id,
             events=events,
         )
         try:
@@ -2213,12 +2245,44 @@ async def _default_executor_runner(
 
     await emit_event(_PlatformExecutionPhaseFact("model_wait", "started"))
     try:
+        model_limits = ModelTokenLimits.model_validate(request.config["model_token_limits"])
+    except Exception:  # noqa: BLE001 - model budget and validation details stay private.
+        return {
+            "status": "failed", "message": "Run model capacity is unavailable",
+            "error_code": "model_capacity_missing", "error_message": "Run model capacity is unavailable",
+            "sdk_used": False, "executor_mode": "model_capacity_invalid",
+        }
+    provider_session_resume_required = request.config.get(
+        "provider_session_resume_required", False
+    )
+    if type(provider_session_resume_required) is not bool:
+        return {
+            "status": "failed",
+            "message": "Provider session continuity state is invalid",
+            "error_code": "claude_agent_sdk_provider_session_failed",
+            "error_message": "Provider session continuity state is invalid",
+            "sdk_used": False,
+            "executor_mode": "provider_session_state_invalid",
+        }
+    try:
+        session_store = build_claude_session_store(
+            callback_url=request.callback_target.provider_session_url,
+            callback_token=request.callback_token,
+            callback_token_id=request.callback_token_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            provider_session_id=request.sdk_session_id,
+        )
         sdk_kwargs = {
             "prompt": request.prompt,
             "cwd": workspace_root,
             "skill_id": skill_ids[0] if skill_ids else None,
             "session_id": request.sdk_session_id,
+            "session_store": session_store,
+            "provider_session_resume_required": provider_session_resume_required,
             "model_id": model_id,
+            "model_max_input_tokens": model_limits.max_input_tokens,
+            "model_max_output_tokens": model_limits.max_output_tokens,
             "skills": skill_ids,
             "context_retrieval": context_retrieval,
             "context_retrieval_identity": context_retrieval_identity,
@@ -2292,8 +2356,13 @@ async def _default_executor_runner(
         "status": "completed" if used_sdk and not error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
         "answer_receipt": getattr(sdk_result, "answer_receipt", None),
+        "response_files": list(getattr(sdk_result, "response_files", []) or []),
+        "response_file_descriptors": list(
+            getattr(sdk_result, "response_file_descriptors", []) or []
+        ),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
+        "provider_session_final_sequence": getattr(sdk_result, "provider_final_sequence", None),
         "sdk_used": used_sdk,
         "sdk_received_structured_terminal": received_structured_terminal,
         "sdk_terminal_reason": getattr(sdk_result, "terminal_reason", None),
@@ -2319,10 +2388,20 @@ async def _default_executor_runner(
     if capability_evidence_error["code"]:
         response["status"] = "failed"
         response["message"] = ""
-        response["error_code"] = capability_evidence_error["code"]
-        if capability_evidence_error["code"] == "capability_callback_not_acknowledged":
+        sdk_error_code = str(response.get("error_code") or "")
+        effective_error_code = (
+            sdk_error_code
+            if sdk_error_code in MCP_EXECUTION_UNCERTAIN_ERROR_CODES
+            else capability_evidence_error["code"]
+        )
+        response["error_code"] = effective_error_code
+        if effective_error_code in MCP_EXECUTION_UNCERTAIN_ERROR_CODES:
+            response["error_message"] = (
+                "MCP execution outcome requires reconciliation before retry"
+            )
+        elif effective_error_code == "capability_callback_not_acknowledged":
             response["error_message"] = "Capability lifecycle callback was not acknowledged"
-        elif capability_evidence_error["code"] == "required_tool_completion_evidence_mismatch":
+        elif effective_error_code == "required_tool_completion_evidence_mismatch":
             response["error_message"] = "Required capability completion evidence is invalid"
         else:
             response["error_message"] = "Capability lifecycle sequence is invalid"
@@ -2349,7 +2428,7 @@ async def _default_executor_runner(
         ]
         response["runtime_diagnostics"] = _merge_runtime_diagnostics(
             response.get("runtime_diagnostics"),
-            error_code=capability_evidence_error["code"],
+            error_code=effective_error_code,
             failure_source="sandbox_capability_validation",
             failure_stage="model_wait",
             tool_lifecycles=capability_lifecycles,
@@ -2949,7 +3028,6 @@ def create_executor_app(
                 status="running",
                 progress=35 if event_type and event_type.startswith("tool_call") else 60 if event_type == "artifact_created" else 20,
                 state_patch={"stage": event_type or "execution_step"},
-                sdk_session_id=request.sdk_session_id,
                 events=agent_events,
             )
             artifact_started_at = time.monotonic() if event_type == "artifact_created" else None
@@ -3116,7 +3194,12 @@ def create_executor_app(
             await await_shutdown_task(progress_cleanup)
 
         if capability_callback_failed["value"]:
-            error_code = "capability_callback_not_acknowledged"
+            runner_error_code = str(runner_result.get("error_code") or "")
+            error_code = (
+                runner_error_code
+                if runner_error_code in MCP_EXECUTION_UNCERTAIN_ERROR_CODES
+                else "capability_callback_not_acknowledged"
+            )
             runner_result["runtime_diagnostics"] = _merge_runtime_diagnostics(
                 runner_result.get("runtime_diagnostics"),
                 error_code=error_code,
@@ -3126,7 +3209,11 @@ def create_executor_app(
             runner_result["status"] = "failed"
             runner_result["message"] = ""
             runner_result["error_code"] = error_code
-            runner_result["error_message"] = "Capability lifecycle callback was not acknowledged"
+            runner_result["error_message"] = (
+                "MCP execution outcome requires reconciliation before retry"
+                if error_code in MCP_EXECUTION_UNCERTAIN_ERROR_CODES
+                else "Capability lifecycle callback was not acknowledged"
+            )
             runner_result["capability_evidence"] = []
         else:
             apply_stream_delivery_failure(runner_result)
@@ -3208,7 +3295,6 @@ def create_executor_app(
                     "marker_path": f"/workspace/runtime/{marker_path.name}",
                 }
             ),
-            sdk_session_id=str(runner_result.get("sdk_session_id") or request.sdk_session_id or "") or None,
             error_message=error_message,
         )
 
@@ -3241,7 +3327,8 @@ def create_executor_app(
         for key in (
             "message",
             "answer_receipt",
-            "sdk_session_id",
+            "response_files",
+            "response_file_descriptors",
             "sdk_usage",
             "sdk_used",
             "sdk_received_structured_terminal",
@@ -3289,7 +3376,6 @@ def create_executor_app(
             batch_id=f"terminal-{uuid.uuid4().hex}",
             status=callback_status,
             progress=progress,
-            sdk_session_id=str(result.get("sdk_session_id") or request.sdk_session_id or "") or None,
             error_message=str(result.get("error_message") or "") or None,
             terminal_result=result,
         )

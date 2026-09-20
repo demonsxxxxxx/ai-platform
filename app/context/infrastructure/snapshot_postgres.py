@@ -47,6 +47,7 @@ async def create_context_snapshot(
     included_memory_record_ids: list[str],
     redaction_summary_json: dict[str, Any],
     payload_json: dict[str, Any],
+    conversation_authority_json: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Atomically authorize and persist one run-scoped context snapshot."""
     snapshot_id = f"ctx_{uuid.uuid4().hex}"
@@ -178,10 +179,12 @@ async def create_context_snapshot(
         insert into run_context_snapshots(
           id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
           schema_version, context_kind, included_message_ids, included_file_ids,
-          included_artifact_ids, included_memory_record_ids, redaction_summary_json, payload_json
+          included_artifact_ids, included_memory_record_ids, redaction_summary_json, payload_json,
+          conversation_authority_json
         )
         select %s, tenant_id, workspace_id, user_id, session_id, run_id, coalesce(trace_id, ''),
-               %s, %s, message_ids, file_ids, artifact_ids, memory_record_ids, %s::jsonb, %s::jsonb
+               %s, %s, message_ids, file_ids, artifact_ids, memory_record_ids, %s::jsonb, %s::jsonb,
+               %s::jsonb
         from eligible_members
         where eligible_message_count = jsonb_array_length(message_ids)
           and eligible_file_count = jsonb_array_length(file_ids)
@@ -205,6 +208,7 @@ async def create_context_snapshot(
             context_kind,
             _dumps_json(redaction_summary_json),
             _dumps_json(payload_json),
+            _dumps_json(conversation_authority_json) if conversation_authority_json is not None else None,
         ),
     )
     row = await cursor.fetchone()
@@ -226,6 +230,7 @@ async def create_context_snapshot(
         "included_memory_record_ids": included_memory_record_ids,
         "redaction_summary_json": redaction_summary_json,
         "payload_json": payload_json,
+        "conversation_authority_json": conversation_authority_json,
     }
 
 
@@ -456,6 +461,7 @@ async def get_context_snapshot_for_worker(
                run_context_snapshots.included_file_ids, run_context_snapshots.included_artifact_ids,
                run_context_snapshots.included_memory_record_ids,
                run_context_snapshots.redaction_summary_json, run_context_snapshots.payload_json,
+               run_context_snapshots.conversation_authority_json,
                run_context_snapshots.created_at
         from run_context_snapshots
         join runs on runs.context_snapshot_id = run_context_snapshots.id

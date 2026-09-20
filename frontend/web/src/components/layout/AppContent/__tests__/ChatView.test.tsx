@@ -79,7 +79,7 @@ test("keeps Agent workspace Chat routes and run-bound file affordances together"
 
   const source = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
   assert.match(source, /sessionApi[\s\S]*\.getInputFiles\(sessionId\)/);
-  assert.match(source, /navigate\(`\$\{sessionRouteBasePath\}\/\$\{response\.session\.id\}`\)/);
+  assert.doesNotMatch(source, /forkMessage|sessionRouteBasePath/);
   assert.match(
     source,
     /mergeProjectedSessionFiles\(\s*messages,\s*visibleWorkspaceProjection\.inputFiles,\s*\)/,

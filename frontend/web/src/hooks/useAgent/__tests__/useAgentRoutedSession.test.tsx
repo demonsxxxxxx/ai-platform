@@ -11,9 +11,11 @@ import type {
   ChatStreamResponse,
   ChatSubmissionResolution,
 } from "../../../services/api/session.ts";
+import { installBrowserAuthTestDb } from "../../__tests__/browserAuthTestDb.ts";
 import { installTestDom } from "./testDom.ts";
 
 const dom = installTestDom();
+installBrowserAuthTestDb();
 
 function clearPersistedSubmissionReferences() {
   for (let index = dom.window.localStorage.length - 1; index >= 0; index -= 1) {
@@ -102,7 +104,11 @@ async function loadReactHarness({
     updated_at: "2026-01-01T00:00:00Z",
   };
   authApi.getCurrentUser = async () => currentAuthUser;
-  authApi.bootstrapAuthContext = async () => {};
+  authApi.bootstrapAuthContext = async (request) => ({
+    status: "ready",
+    protocol_version: 2,
+    generation: request.generation,
+  });
   const restoreAuthApi = () => {
     authApi.getCurrentUser = originalGetCurrentUser;
     authApi.bootstrapAuthContext = originalBootstrapAuthContext;
@@ -2097,23 +2103,21 @@ test("useAgent fences send, resolver, and retry through deferred same-principal 
 });
 
 test("useAgent settles its fence when refresh context setup fails before hydration", async () => {
-  const { BrowserAuthCoordinatorError } = await import(
-    "../../browserAuthCoordinator.ts"
-  );
   const { sessionApi } = await import("../../../services/api/session.ts");
   const { authApi } = await import("../../../services/api/auth.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const harness = await loadReactHarness();
-  const originalBootstrap = authApi.bootstrapAuthContext;
+  const originalIndexedDb = globalThis.indexedDB;
   const originalLogin = authApi.login;
   let submitCalls = 0;
   sessionApi.submitChat = (async () => {
     submitCalls += 1;
     return { status: "needs_confirmation", suggestions: [] };
   }) as typeof sessionApi.submitChat;
-  authApi.bootstrapAuthContext = async () => {
-    throw new BrowserAuthCoordinatorError("auth_context_coordination_unavailable");
-  };
+  Object.defineProperty(globalThis, "indexedDB", {
+    configurable: true,
+    value: undefined,
+  });
 
   try {
     let refreshOutcome!: Awaited<ReturnType<typeof harness.auth.refreshUser>>;
@@ -2127,7 +2131,10 @@ test("useAgent settles its fence when refresh context setup fails before hydrati
 
     // Restore the browser-context seam and prove the hook no longer remains
     // fenced after the pre-hydration failure.
-    authApi.bootstrapAuthContext = originalBootstrap;
+    Object.defineProperty(globalThis, "indexedDB", {
+      configurable: true,
+      value: originalIndexedDb,
+    });
     authApi.login = async () => {};
     await harness.loginAsBeforePassiveEffects("user-a", "tenant-a");
     await settle(harness.act);
@@ -2139,7 +2146,10 @@ test("useAgent settles its fence when refresh context setup fails before hydrati
     assert.equal(submitCalls, 1);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    authApi.bootstrapAuthContext = originalBootstrap;
+    Object.defineProperty(globalThis, "indexedDB", {
+      configurable: true,
+      value: originalIndexedDb,
+    });
     authApi.login = originalLogin;
     await harness.cleanup();
   }
@@ -5180,6 +5190,14 @@ test("useAgent reloads a cancel-requested Skill run as pending without a submit 
     assert.equal(harness.hook.sessionId, "session-cancel-requested");
     assert.equal(harness.hook.currentRunId, "run-cancel-requested");
     assert.equal(harness.hook.isLoading, false);
+    assert.equal(
+      harness.hook.messages.find(
+        (message) =>
+          message.role === "assistant" &&
+          message.runId === "run-cancel-requested",
+      )?.isStreaming,
+      false,
+    );
     const statusPart = harness.hook.messages
       .flatMap((message) => message.parts || [])
       .find(

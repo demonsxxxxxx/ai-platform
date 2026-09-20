@@ -41,7 +41,8 @@ upload/storage
   -> atomically materialized read-only inputs/
   -> file metadata manifest
   -> selected Agent/Skill reads original bytes in Sandbox
-  -> bounded output/artifact collection
+  -> SDK structured output declares zero or more final-response files
+  -> bounded collection of exactly those selected files
 ```
 
 The platform passes a file only after it has established that the current run
@@ -133,17 +134,34 @@ external attachment transmission therefore remain prohibited.
 
 Owner: selected Agent/Skill.
 
-Output: response and/or collected run artifacts.
+Output: final response plus zero or more explicitly selected response files.
 
-### A7. Bounded artifact collection
+### A7. Bounded response-file collection
 
-Artifact enumeration, per-file limits, total output limits, filename safety,
-and artifact authorization remain platform-owned. No input parsing limit is
-repurposed as an output limit.
+The Claude Agent SDK final `ResultMessage.structured_output` is the file
+publication boundary. Its server-owned JSON schema contains the user-facing
+`answer` and an ordered `deliverables` list. Each deliverable declares a
+relative `source_path` and may include a display name, primary/supporting role,
+and description. The executor validates every declared path while the Sandbox
+is still alive and derives the terminal receipt's ordered, deduplicated
+`response_files` allowlist. When the SDK omits `structured_output`, the executor
+accepts `ResultMessage.result` only as a text response with zero deliverables; a
+present but invalid manifest still fails closed.
 
-Owner: artifact collector.
+The Sandbox provider transfers exactly that allowlist and the artifact collector
+validates and uploads exactly those paths; neither enumerates the workspace.
+Ordinary collectible workspace files are allowed. For compatibility with staged
+Skills, an authorized Skill may also declare a file below its exact
+`.claude/skills/<skill>/output/` directory. Other `.claude` content, including
+`SKILL.md`, scripts, and references, remains private. Path confinement, protected
+roots, symlink rejection, per-file limits, total output limits, filename safety,
+and artifact authorization remain platform-owned. An undeclared workspace file
+remains private and is discarded with the attempt.
 
-Output: authorized bounded artifacts only.
+Owner: SDK structured-output contract, terminal receipt, Sandbox provider, and
+artifact collector.
+
+Output: zero or more authorized artifacts marked for assistant-response delivery.
 
 ## Removed Responsibilities
 
@@ -158,7 +176,8 @@ execution path:
   relationship, encryption, and archive-structure admission checks;
 - PDF parsing, decryption, page-limit, and active-content admission checks;
 - the Agent-facing parsed-content retrieval path;
-- parser-specific admission failures such as `xlsx_cell_limit_exceeded`.
+- parser-specific admission failures such as `xlsx_cell_limit_exceeded`;
+- broad workspace artifact enumeration and directory-name-based delivery rules.
 
 The former execution parser is not reachable from run dispatch, runtime staging,
 or the Sandbox SDK boundary after this cutover. Issue #1273 removes its dead

@@ -1,12 +1,11 @@
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL = "2026-10-31"
 DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
 
 
@@ -59,7 +58,6 @@ class Settings(BaseSettings):
     opensandbox_api_key: str = Field(default="")
     opensandbox_ca_cert_file: str = Field(default="")
     opensandbox_use_server_proxy: bool = Field(default=False)
-    opensandbox_internal_test_forward_model_credentials: bool = Field(default=False)
     opensandbox_request_timeout_seconds: float = Field(default=30.0)
     opensandbox_timeout_seconds: int = Field(default=1800)
     opensandbox_executor_image: str = Field(default="")
@@ -97,39 +95,9 @@ class Settings(BaseSettings):
     data_retention_worker_cleanup_interval_seconds: float = Field(default=300.0, ge=1.0)
     artifact_retention_cleanup_limit: int = Field(default=50, ge=1, le=200)
     object_delete_batch_limit: int = Field(default=50, ge=1, le=200)
-    object_delete_max_attempts: int = Field(
-        default=5,
-        ge=1,
-        le=100,
-        validation_alias=AliasChoices(
-            "object_delete_max_attempts",
-            "OBJECT_DELETE_MAX_ATTEMPTS",
-            "artifact_object_delete_max_attempts",
-            "ARTIFACT_OBJECT_DELETE_MAX_ATTEMPTS",
-        ),
-    )
-    object_delete_retry_base_seconds: int = Field(
-        default=60,
-        ge=1,
-        le=3600,
-        validation_alias=AliasChoices(
-            "object_delete_retry_base_seconds",
-            "OBJECT_DELETE_RETRY_BASE_SECONDS",
-            "artifact_object_delete_retry_base_seconds",
-            "ARTIFACT_OBJECT_DELETE_RETRY_BASE_SECONDS",
-        ),
-    )
-    object_delete_retry_cap_seconds: int = Field(
-        default=3600,
-        ge=1,
-        le=86400,
-        validation_alias=AliasChoices(
-            "object_delete_retry_cap_seconds",
-            "OBJECT_DELETE_RETRY_CAP_SECONDS",
-            "artifact_object_delete_retry_cap_seconds",
-            "ARTIFACT_OBJECT_DELETE_RETRY_CAP_SECONDS",
-        ),
-    )
+    object_delete_max_attempts: int = Field(default=5, ge=1, le=100)
+    object_delete_retry_base_seconds: int = Field(default=60, ge=1, le=3600)
+    object_delete_retry_cap_seconds: int = Field(default=3600, ge=1, le=86400)
     memory_physical_purge_limit: int = Field(default=50, ge=1, le=200)
     memory_physical_purge_grace_days: int = Field(default=7, ge=1, le=3650)
     run_event_retention_days: int = Field(default=0, ge=0)
@@ -153,6 +121,9 @@ class Settings(BaseSettings):
     existing_auth_base_url: str = Field(default="")
     existing_user_info_base_url: str = Field(default="")
     existing_auth_timeout_seconds: float = Field(default=15.0)
+    company_login_jwt_secret: str = Field(default="", repr=False)
+    company_login_jwt_issuer: str = Field(default="")
+    company_login_jwt_audience: str = Field(default="")
     ai_admin_work_ids: str = Field(default="")
     ai_session_secret: str = Field(default="")
     ai_session_cookie_secure: bool = Field(default=False)
@@ -200,50 +171,6 @@ class Settings(BaseSettings):
     platform_skills_root: str = Field(default="skills")
     skill_staging_subdir: str = Field(default=".claude/skills")
     public_skill_file_overlay_max_bytes: int = Field(default=262144)
-
-    @property
-    def artifact_object_delete_max_attempts(self) -> int:
-        """Deprecated Python alias for the shared object-deletion setting."""
-
-        return self.object_delete_max_attempts
-
-    @artifact_object_delete_max_attempts.setter
-    def artifact_object_delete_max_attempts(self, value: int) -> None:
-        self.object_delete_max_attempts = value
-
-    @property
-    def artifact_object_delete_retry_base_seconds(self) -> int:
-        """Deprecated Python alias for the shared object-deletion setting."""
-
-        return self.object_delete_retry_base_seconds
-
-    @artifact_object_delete_retry_base_seconds.setter
-    def artifact_object_delete_retry_base_seconds(self, value: int) -> None:
-        self.object_delete_retry_base_seconds = value
-
-    @property
-    def artifact_object_delete_retry_cap_seconds(self) -> int:
-        """Deprecated Python alias for the shared object-deletion setting."""
-
-        return self.object_delete_retry_cap_seconds
-
-    @artifact_object_delete_retry_cap_seconds.setter
-    def artifact_object_delete_retry_cap_seconds(self, value: int) -> None:
-        self.object_delete_retry_cap_seconds = value
-
-    @model_validator(mode="before")
-    @classmethod
-    def apply_legacy_object_delete_batch_fallback(cls, values: Any) -> Any:
-        if (
-            isinstance(values, dict)
-            and "object_delete_batch_limit" not in values
-            and "artifact_retention_cleanup_limit" in values
-        ):
-            values = dict(values)
-            values["object_delete_batch_limit"] = values[
-                "artifact_retention_cleanup_limit"
-            ]
-        return values
 
     @field_validator(
         "browser_public_launchpad_lingxi_url",
@@ -321,15 +248,6 @@ class Settings(BaseSettings):
             and self.opensandbox_expected_network_mode == "bridge"
         ):
             raise ValueError("internal_test_opensandbox_profile_invalid")
-        if self.opensandbox_internal_test_forward_model_credentials and not (
-            self.deployment_environment == "test"
-            and self.sandbox_container_provider == "opensandbox"
-            and self.sandbox_security_profile == "internal-test"
-            and self.opensandbox_expected_network_mode == "bridge"
-            and self.openai_api_key.strip()
-            and self.anthropic_auth_token.strip()
-        ):
-            raise ValueError("internal_test_model_credential_forwarding_invalid")
         if self.deployment_environment == "production" and self.sandbox_container_provider == "opensandbox":
             if self.sandbox_security_profile != "governed":
                 raise ValueError("production_opensandbox_profile_invalid")

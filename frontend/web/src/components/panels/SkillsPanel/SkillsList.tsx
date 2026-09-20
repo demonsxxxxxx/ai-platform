@@ -228,7 +228,7 @@ export function SkillsList({
                 onClick={clearCatalogFilters}
                 className="text-xs text-[var(--theme-text-secondary)] transition-colors hover:text-[var(--theme-primary)]"
               >
-                {t("marketplace.clearFilters")}
+                {t("fileLibrary.clearFilters")}
               </button>
             )}
           </div>
@@ -339,7 +339,7 @@ export function SkillsList({
                     onClick={clearCatalogFilters}
                     type="button"
                   >
-                    {t("marketplace.clearFilters")}
+                    {t("fileLibrary.clearFilters")}
                   </button>
                 ) : null}
               </div>
@@ -411,7 +411,7 @@ export function SkillsList({
                 onClick={clearCatalogFilters}
                 className="btn-secondary mt-4"
               >
-                {t("marketplace.clearFilters")}
+                {t("fileLibrary.clearFilters")}
               </button>
             )}
           </div>

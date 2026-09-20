@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.context.api import ProviderSessionConflictError
 from app.executor_reconciler import (
     PermanentExecutorReconciliationError,
     SandboxReconciliationStopError,
@@ -156,6 +157,12 @@ def test_reconciler_restores_versioned_execution_payload_without_metadata_leakag
                 "trace_id": "trace-a",
                 "schema_version": "ai-platform.run-payload.v2",
                 "skill_manifests": [],
+                "agent_profile": {
+                    "agent_id": "agent-a",
+                    "revision": 1,
+                    "content_hash": "a" * 64,
+                    "skill_set": [],
+                },
             },
             "metadata": {"agent_profile_expected": True},
         },
@@ -166,9 +173,7 @@ def test_reconciler_restores_versioned_execution_payload_without_metadata_leakag
 
     assert context["adapter_context"] == {}
     assert payload.run_id == "run-a"
-    assert row["executor_terminal_json"]["diagnostics"] == [
-        "agent_profile_transport_lost"
-    ]
+    assert "diagnostics" not in row["executor_terminal_json"]
 
 
 @pytest.mark.asyncio
@@ -222,7 +227,10 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
     class Provider:
         fail_collection = False
 
-        async def collect_workspace(self, _lease, _request, _workspace):
+        async def collect_workspace(
+            self, _lease, _request, _workspace, response_files=()
+        ):
+            assert list(response_files) == ["output/final.txt"]
             if self.fail_collection:
                 raise RuntimeError("workspace collection failed")
 
@@ -264,7 +272,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
         "_context_and_payload",
         lambda _row: (
             {"adapter_name": "claude", "adapter_context": {}},
-            {"status": "succeeded"},
+            {"status": "succeeded", "response_files": ["output/final.txt"]},
             SimpleNamespace(attempt_id="attempt-a"),
         ),
     )
@@ -869,6 +877,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
         assert protocol_failure is None
         expected_result = {**terminal_result}
         expected_result.setdefault("message", "")
+        expected_result.setdefault("response_files", [])
         assert persisted[0][1] == {
             "executor_status": expected_executor_status,
             "terminal_result": expected_result,
@@ -980,16 +989,82 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
     assert persisted[0][0]["id"] == "lease-a"
     assert isinstance(persisted[0][1].pop("claim_token"), str)
     assert persisted[0][1].pop("run_diagnostics") is None
-    assert persisted[0][1] == {
-        "executor_status": "failed",
-        "terminal_result": {
-            "run_id": "run-a",
-            "status": "failed",
-            "error_code": "sandbox_executor_lost",
-            "error_message": "Sandbox executor stopped responding",
+    terminal_result = persisted[0][1].pop("terminal_result")
+    private = terminal_result.pop("runtime_diagnostics")
+    assert persisted[0][1] == {"executor_status": "failed"}
+    assert terminal_result == {
+        "run_id": "run-a",
+        "status": "failed",
+        "error_code": "sandbox_executor_lost",
+        "error_message": "Sandbox executor stopped responding",
+    }
+    assert private == {
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": "sandbox_executor_lost",
+        "failure_source": "executor_probe",
+        "failure_stage": "provider_endpoint",
+        "sdk": {
+            "exception_type": "RuntimeError",
+            "errors": [{"reason": "provider_absent"}],
         },
     }
+    assert "provider-confirmed sandbox loss" not in str(private)
     assert released == []
+
+
+@pytest.mark.asyncio
+async def test_probe_retry_persists_only_safe_error_code(monkeypatch):
+    released = []
+
+    async def claim(_conn, **_kwargs):
+        return [_suspect_lease_row()]
+
+    async def release(_conn, **kwargs):
+        released.append(kwargs)
+        return True
+
+    class Provider:
+        async def executor_control_endpoint(self, _lease, _request):
+            raise RuntimeError("provider credential must never be stored")
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects", claim
+    )
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(
+        "app.executor_reconciler.container_lease_from_persisted_row",
+        lambda _row: SimpleNamespace(provider="fake"),
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler.create_container_provider",
+        lambda _provider_name: Provider(),
+    )
+    monkeypatch.setattr(
+        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim", release
+    )
+
+    assert await probe_suspect_executor_tasks_once() == 0
+    assert len(released) == 1
+    assert released[0]["error"] == "sandbox_executor_probe_failed"
+
+
+def test_opensandbox_probe_error_facts_keep_only_typed_safe_fields():
+    from opensandbox.exceptions import SandboxApiException, SandboxError
+    from app.runtime.sandbox.providers.opensandbox.startup import opensandbox_probe_error_facts
+
+    error = SandboxApiException(
+        "private provider response",
+        status_code=404,
+        error=SandboxError("DOCKER::SANDBOX_NOT_FOUND", "private error"),
+        request_id="request_2026",
+    )
+    assert opensandbox_probe_error_facts(error) == {
+        "http_status": 404,
+        "request_id": "request_2026",
+    }
+    assert opensandbox_probe_error_facts(RuntimeError("private provider response")) == {}
 
 
 @pytest.mark.asyncio
@@ -1657,12 +1732,33 @@ async def test_probe_terminal_receipt_is_claim_fenced_when_receipt_matches():
     assert len(statements) == 2
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected_error"),
+    [
+        (
+            PermanentExecutorReconciliationError(
+                "executor_reconciliation_run_payload_invalid"
+            ),
+            "executor_reconciliation_run_payload_invalid",
+        ),
+        (
+            ProviderSessionConflictError(
+                "provider_session_terminal_receipt_invalid"
+            ),
+            "provider_session_terminal_receipt_invalid",
+        ),
+        (
+            ProviderSessionConflictError(
+                "provider_session_terminal_coverage_invalid"
+            ),
+            "provider_session_terminal_coverage_invalid",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_reconciler_terminalizes_explicit_permanent_failure(monkeypatch):
-    failure = PermanentExecutorReconciliationError(
-        "executor_reconciliation_run_payload_invalid"
-    )
-    expected_error = "executor_reconciliation_run_payload_invalid"
+async def test_reconciler_terminalizes_explicit_permanent_failure(
+    monkeypatch, failure, expected_error
+):
     finished = []
     retried = []
     row = _lease_row()
@@ -1747,6 +1843,12 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         calls.append(("publish", kwargs))
         return True
 
+    async def no_checkpoint_usage(_conn, **_kwargs):
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    async def no_provider_lineage(_conn, **_kwargs):
+        return None
+
     owner = "app.executor_reconciler"
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr(f"{owner}.repositories.get_run", get_run)
@@ -1755,6 +1857,14 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         has_claim,
     )
     monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
+        no_checkpoint_usage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        no_provider_lineage,
+    )
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
     monkeypatch.setattr(
         f"{owner}.reconcile_terminalized_permission_run", reconcile_child

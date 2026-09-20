@@ -782,7 +782,10 @@ class SandboxRuntime:
                 "tool_policy_subjects": request.tool_policy_subjects,
                 "input_files": request.file_ids,
                 "materialized_file_names": request.materialized_file_names,
+                "provider_session_resume_required": request.provider_session_resume_required,
             }
+            if request.model_token_limits is not None:
+                task_config["model_token_limits"] = request.model_token_limits.model_dump()
             if request.context_manifest:
                 task_config["context_manifest"] = dict(request.context_manifest)
             if request.context_retrieval_scope is not None:
@@ -853,8 +856,20 @@ class SandboxRuntime:
             if cleanup_timed_out:
                 await stop_and_release_owned("executor_cleanup_timeout")
             else:
+                raw_response_files = response.get("response_files", [])
+                if not isinstance(raw_response_files, list) or not all(
+                    isinstance(path, str) for path in raw_response_files
+                ):
+                    raise ContainerStartFailedError(
+                        "Sandbox response file selection is invalid"
+                    )
                 collection_started = True
-                await self.provider.collect_workspace(lease, request, workspace)
+                await self.provider.collect_workspace(
+                    lease,
+                    request,
+                    workspace,
+                    raw_response_files,
+                )
                 collection_succeeded = True
         except BaseException as exc:
             validation_rejected = validation_started and not validation_succeeded

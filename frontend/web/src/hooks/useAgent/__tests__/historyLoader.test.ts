@@ -1116,24 +1116,18 @@ test("failed history retains canonical public execution activity through termina
   const visibleParts = getVisibleMessageParts(messages[0]?.parts || []);
   assert.deepEqual(
     visibleParts.map((part) => part.type),
-    ["execution_process", "thinking", "tool", "run_status"],
+    ["execution_process", "tool", "run_status"],
   );
   const process = visibleParts[0];
   assert.equal(process?.type, "execution_process");
   if (process?.type !== "execution_process") throw new Error("expected execution process");
   assert.equal(process.steps[0]?.title, "Controlled execution is ready");
-  const thinking = visibleParts[1];
-  assert.equal(thinking?.type, "thinking");
-  if (thinking?.type !== "thinking") throw new Error("expected thinking part");
-  assert.equal(thinking.content, "Compare the public evidence before answering.");
-  assert.equal(thinking.public_reasoning, true);
-  assert.equal(thinking.isStreaming, false);
-  const tool = visibleParts[2];
+  const tool = visibleParts[1];
   assert.equal(tool?.type, "tool");
   if (tool?.type !== "tool") throw new Error("expected tool part");
   assert.equal(Object.hasOwn(tool, "public_input_summary"), false);
   assert.equal(tool.result, undefined);
-  const terminal = visibleParts[3];
+  const terminal = visibleParts[2];
   assert.equal(terminal?.type, "run_status");
   if (terminal?.type !== "run_status") throw new Error("expected failed terminal status");
   assert.match(terminal.event_type, /failed/);

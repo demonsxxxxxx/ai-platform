@@ -12,7 +12,6 @@ const DEFAULT_ROUTES = [
   "/skills",
   "/mcp",
   "/settings",
-  "/shared/smoke-denied",
 ];
 const COMMAND_ITEM_SELECTOR = "[data-composer-command-item]";
 const COMMAND_MENU_SELECTOR = "[data-composer-command-menu]";
@@ -32,7 +31,7 @@ const GOVERNANCE_SMOKE_STATES = [
   "ready",
 ];
 const ROUTE_READY_SELECTOR =
-  '[data-librechat-shell], [data-authenticated-workbench-page], [data-workbench-sidebar-panel], [data-frontend-governance-state], [data-shared-page], [data-yields-sidebar]';
+  '[data-librechat-shell], [data-authenticated-workbench-page], [data-workbench-sidebar-panel], [data-frontend-governance-state], [data-yields-sidebar]';
 const ROUTE_CONTENT_SELECTORS = new Map([
   ["/chat", "[data-librechat-shell]"],
   ["/apps", "[data-launchpad-directory-shell], [data-frontend-governance-state]"],
@@ -42,7 +41,6 @@ const ROUTE_CONTENT_SELECTORS = new Map([
   ],
   ["/mcp", "[data-mcp-directory-shell], [data-ordinary-mcp-catalog]"],
   ["/settings", '[data-workbench-projection-page="settings"], [data-workbench-projection-page]'],
-  ["/shared/smoke-denied", '[data-shared-page], [data-frontend-governance-state="forbidden"]'],
 ]);
 
 function parseArgs(argv) {
@@ -534,16 +532,6 @@ async function navigateAndCollectRoute(client, baseUrl, route, timeoutMs, screen
 }
 
 async function waitForRouteHydration(client, route, timeoutMs) {
-  if (route.startsWith("/shared/")) {
-    return client
-      .waitFor(
-        `document.body.innerText.length > 0 && !document.body.innerText.includes("Loading")`,
-        timeoutMs,
-        `shared_route_hydration:${route}`,
-      )
-      .then(() => true)
-      .catch(() => false);
-  }
   return client
     .waitFor(
       `Boolean(document.querySelector(${jsString(ROUTE_READY_SELECTOR)}))`,

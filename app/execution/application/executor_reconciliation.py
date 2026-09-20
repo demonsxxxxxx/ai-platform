@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable
+import re
 from typing import Any
 
 
@@ -16,8 +17,6 @@ LOCKED_RUN_SNAPSHOT_FIELDS = (
     "agent_profile",
     "schema_version",
 )
-_RUN_MODEL_SNAPSHOT_FIELDS = ("model_id", "model_value", "model_gateway_revision")
-
 
 def locked_run_payload_candidate(
     locked_run: object,
@@ -37,26 +36,16 @@ def locked_run_payload_candidate(
     durable_model_id = locked_run.get("model_id")
     durable_model_value = locked_run.get("model_value")
     durable_gateway_revision = locked_run.get("model_gateway_revision")
-    if any(
-        value is not None
-        for value in (durable_model_id, durable_model_value, durable_gateway_revision)
-    ):
-        if not (
-            isinstance(durable_model_id, str)
-            and durable_model_id
-            and isinstance(durable_model_value, str)
-            and durable_model_value
-        ):
-            return None
-        candidate["model_id"] = durable_model_id
-        candidate["model_value"] = durable_model_value
-    elif not (
-        isinstance(input_json.get("model_id"), str)
-        and input_json["model_id"]
-        and isinstance(input_json.get("model_value"), str)
-        and input_json["model_value"]
+    if not (
+        isinstance(durable_model_id, str) and durable_model_id
+        and isinstance(durable_model_value, str) and durable_model_value
+        and type(durable_gateway_revision) is int and durable_gateway_revision > 0
+        and all(type(locked_run.get(field)) is int and locked_run[field] > 0
+                for field in ("max_input_tokens", "max_output_tokens"))
     ):
         return None
+    candidate["model_id"] = durable_model_id
+    candidate["model_value"] = durable_model_value
     if (
         candidate.get("execution_kind") == harness_execution_kind
         and candidate.get("skill_id") == ""
@@ -72,9 +61,7 @@ async def with_locked_run_model_snapshot(
     run_identity: dict[str, str],
     load_run_model_snapshot: Callable[..., Awaitable[dict[str, Any]]],
 ) -> object:
-    if isinstance(locked_run, dict) and not any(
-        field in locked_run for field in _RUN_MODEL_SNAPSHOT_FIELDS
-    ):
+    if isinstance(locked_run, dict):
         locked_run = {
             **locked_run,
             **await load_run_model_snapshot(
@@ -88,6 +75,9 @@ async def with_locked_run_model_snapshot(
 
 RECONCILIATION_SNAPSHOT_SCHEMA_VERSION = (
     "ai-platform.executor-reconciliation-snapshot.v2"
+)
+RECONCILIATION_AGENT_PROFILE_IDENTITY_INPUT_KEY = (
+    "_executor_reconciliation_agent_profile_identity"
 )
 
 
@@ -113,6 +103,102 @@ def _non_secret_agent_profile(profile: object) -> dict[str, Any]:
             if isinstance(item, dict)
         ],
     }
+
+
+def _validated_agent_profile_identity(
+    value: object,
+    *,
+    expected: bool,
+    run_agent_id: object,
+) -> dict[str, Any] | None:
+    if not expected:
+        if value not in ({}, None):
+            raise ValueError("executor_reconciliation_agent_profile_identity_unexpected")
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "agent_id", "revision", "content_hash", "skill_set",
+    }:
+        raise ValueError("executor_reconciliation_agent_profile_identity_invalid")
+    agent_id = value.get("agent_id")
+    revision = value.get("revision")
+    content_hash = value.get("content_hash")
+    skill_set = value.get("skill_set")
+    if (
+        not isinstance(agent_id, str)
+        or not agent_id
+        or agent_id != run_agent_id
+        or not isinstance(revision, int)
+        or isinstance(revision, bool)
+        or revision < 1
+        or not isinstance(content_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", content_hash) is None
+        or not isinstance(skill_set, list)
+        or len(skill_set) > 64
+    ):
+        raise ValueError("executor_reconciliation_agent_profile_identity_invalid")
+    normalized_skills: list[dict[str, str]] = []
+    for item in skill_set:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"skill_id", "expected_version"}
+            or not isinstance(item.get("skill_id"), str)
+            or not item["skill_id"]
+            or not isinstance(item.get("expected_version"), str)
+            or not item["expected_version"]
+        ):
+            raise ValueError("executor_reconciliation_agent_profile_identity_invalid")
+        normalized_skills.append({
+            "skill_id": item["skill_id"],
+            "expected_version": item["expected_version"],
+        })
+    return {
+        "agent_id": agent_id,
+        "revision": revision,
+        "content_hash": content_hash,
+        "skill_set": normalized_skills,
+    }
+
+
+def reconciliation_agent_profile_identity(value: object) -> dict[str, Any] | None:
+    """Read and validate the non-secret profile pin from one v2 snapshot."""
+
+    if not isinstance(value, dict) or value.get("schema_version") != RECONCILIATION_SNAPSHOT_SCHEMA_VERSION:
+        return None
+    execution_payload = value.get("execution_payload")
+    metadata = value.get("metadata")
+    if not isinstance(execution_payload, dict) or not isinstance(metadata, dict):
+        raise ValueError("executor_reconciliation_snapshot_invalid")
+    expected = metadata.get("agent_profile_expected", False)
+    if not isinstance(expected, bool):
+        raise ValueError("executor_reconciliation_agent_profile_expected_invalid")
+    return _validated_agent_profile_identity(
+        execution_payload.get("agent_profile"),
+        expected=expected,
+        run_agent_id=execution_payload.get("agent_id"),
+    )
+
+
+def reconciliation_agent_profile_identity_matches(
+    expected: object,
+    durable_profile: object,
+) -> bool:
+    """Bind identity-only recovery metadata to the durable private profile."""
+
+    if expected is None:
+        return True
+    return isinstance(expected, dict) and expected == _non_secret_agent_profile(durable_profile)
+
+
+def reconciliation_agent_profile_binding_matches(
+    recovery_input: object,
+    durable_profile: object,
+) -> bool:
+    expected = (
+        recovery_input.get(RECONCILIATION_AGENT_PROFILE_IDENTITY_INPUT_KEY)
+        if isinstance(recovery_input, dict)
+        else None
+    )
+    return reconciliation_agent_profile_identity_matches(expected, durable_profile)
 
 
 def _non_secret_tool_policy_subjects(value: object) -> list[dict[str, Any]]:
@@ -168,6 +254,9 @@ def sandbox_reconciliation_payload(payload: Any) -> dict[str, Any]:
             "context_snapshot_id": payload.context_snapshot_id,
             "model_id": payload.model_id,
             "model_value": payload.model_value,
+            "model_gateway_revision": payload.model_gateway_revision,
+            "model_max_input_tokens": payload.model_max_input_tokens,
+            "model_max_output_tokens": payload.model_max_output_tokens,
             "schema_version": payload.schema_version,
             "agent_profile": _non_secret_agent_profile(payload.agent_profile),
         },
@@ -186,6 +275,7 @@ def restored_sandbox_run_payload(
     snapshot_schema_version = serialized.get("schema_version")
     is_versioned_snapshot = snapshot_schema_version == RECONCILIATION_SNAPSHOT_SCHEMA_VERSION
     if is_versioned_snapshot:
+        reconciliation_agent_profile_identity(serialized)
         execution_payload = serialized.get("execution_payload")
         metadata = serialized.get("metadata")
         if not isinstance(execution_payload, dict) or not isinstance(metadata, dict):
@@ -196,17 +286,10 @@ def restored_sandbox_run_payload(
         agent_profile_expected = serialized.pop("agent_profile_expected", False)
     if not isinstance(agent_profile_expected, bool):
         raise ValueError("executor_reconciliation_agent_profile_expected_invalid")
-    if is_versioned_snapshot and agent_profile_expected:
-        # v2 snapshots intentionally carry identity-only profile metadata, never executable instructions.
+    if is_versioned_snapshot:
+        # v2 snapshots carry a validated identity pin, never executable instructions.
         serialized["agent_profile"] = {}
     run_payload = run_payload_factory(**serialized)
-    if agent_profile_expected and not run_payload.agent_profile:
-        diagnostics = result.get("diagnostics")
-        if not isinstance(diagnostics, list):
-            diagnostics = []
-            result["diagnostics"] = diagnostics
-        if "agent_profile_transport_lost" not in diagnostics:
-            diagnostics.append("agent_profile_transport_lost")
     return run_payload
 
 
@@ -226,6 +309,7 @@ def restored_executor_reconciliation_queue_payload(
     run_payload_value = context.get("run_payload")
     if not isinstance(run_payload_value, dict):
         raise ValueError("executor_reconciliation_run_payload_missing")
+    profile_identity = reconciliation_agent_profile_identity(run_payload_value)
     run_payload = restored_sandbox_run_payload(
         run_payload_value,
         run_payload_factory,
@@ -244,7 +328,11 @@ def restored_executor_reconciliation_queue_payload(
         execution_kind=run_payload.execution_kind,
         skill_id=run_payload.skill_id,
         file_ids=run_payload.file_ids,
-        input={},
+        input=(
+            {RECONCILIATION_AGENT_PROFILE_IDENTITY_INPUT_KEY: profile_identity}
+            if profile_identity is not None
+            else {}
+        ),
         executor_type=adapter_name,
         skill_version=run_payload.skill_version or None,
         release_decision=run_payload.release_decision,

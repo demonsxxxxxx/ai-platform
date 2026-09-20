@@ -77,6 +77,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_queue.py",
         "tests/test_run_attempt_application.py",
         "tests/test_run_attempt_repository.py",
+        "tests/test_context_checkpoint_leases_postgres.py",
         "tests/test_worker_main.py",
         "tests/test_worker_heartbeat_postgres_redis_integration.py",
         "tests/test_sse_runtime_cutover.py",
@@ -92,8 +93,8 @@ BACKEND_TEST_SHARDS = {
     ),
     "model-control-plane": (
         "tests/test_model_management.py",
-        "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_comes_from_settings",
-        "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids",
+        "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_is_empty_without_governed_connection",
+        "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preserves_raw_ids",
         "tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity",
         "tests/test_execution_spec.py::test_execution_spec_rejects_unsafe_upstream_model_identity",
         "tests/test_schema.py::test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog",
@@ -269,7 +270,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 83
+    assert len(all_selectors) == len(set(all_selectors)) == 84
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

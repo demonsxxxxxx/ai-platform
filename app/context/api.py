@@ -2,12 +2,58 @@ from __future__ import annotations
 
 import secrets
 
-from app.context.application.worker_snapshot import materialize_worker_context_snapshot
+from app.context.application.checkpoint_build import (
+    fail_expired_checkpoint_builds,
+    prepare_checkpoint_for_run,
+)
+from app.context.application.checkpoints import (
+    load_ready_checkpoint as load_ready_checkpoint,
+    load_checkpoint_usage_for_run,
+)
+from app.context.domain.conversation_authority import (
+    ConversationSourceChain as ConversationSourceChain,
+    validate_authority_receipt as validate_authority_receipt,
+)
+from app.context.application.provider_sessions import (
+    ProviderSessionOperationResult,
+    matching_ready_provider_epoch,
+    claim_provider_lineage,
+    release_provider_lineage,
+    prepare_provider_epoch,
+    commit_provider_turn,
+    execute_provider_session_callback,
+)
+from app.context.application.worker_snapshot import (
+    materialize_worker_context_snapshot as _materialize_worker_context_snapshot,
+)
+from app.context.domain.file_staging import (
+    context_stage_filename_fits as context_stage_filename_fits,
+)
 from app.context.domain.conversation import (
-    MAX_CONVERSATION_CONTEXT_CANDIDATES,
+    EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2,
     ConversationContextError,
     build_executor_conversation_context,
     empty_executor_conversation_context,
+)
+from app.context.domain.provider_sessions import (
+    MAX_PROVIDER_SESSION_BATCH_BYTES,
+    MAX_PROVIDER_SESSION_BATCH_COUNT,
+    MAX_PROVIDER_SESSION_ENTRIES,
+    MAX_PROVIDER_SESSION_ENTRY_BYTES,
+    MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
+    PROVIDER_SESSION_CONTEXT_EPOCH,
+    PROVIDER_SESSION_ENGINE_CLAUDE,
+    PROVIDER_SESSION_RESUME_CONTEXT_KEY,
+    ProviderSessionConflictError,
+    ProviderSessionContinuityError,
+    ProviderSessionEntry,
+    ProviderSessionNotFoundError,
+    ProviderSessionScope,
+    claude_provider_session_id_for_session,
+    normalize_provider_entry,
+    normalize_provider_entry_batch,
+    normalize_provider_subpath,
+    provider_session_id_for_scope,
 )
 
 
@@ -145,10 +191,48 @@ def context_file_executor_failure(
     return error_code, message, diagnostic
 
 
+async def materialize_worker_context_snapshot(
+    conn: object,
+    *,
+    identity: dict[str, str],
+    context_snapshot_id: str,
+    snapshot_loader,
+    message_loader,
+    context_projector,
+    history_page_loader=None,
+    prepared_checkpoint_id=None,
+):
+    result = await _materialize_worker_context_snapshot(
+        conn,
+        identity=identity,
+        context_snapshot_id=context_snapshot_id,
+        snapshot_loader=snapshot_loader,
+        message_loader=message_loader,
+        context_projector=context_projector,
+        history_page_loader=history_page_loader,
+        provider_epoch_matcher=matching_ready_provider_epoch,
+        prepared_checkpoint_id=prepared_checkpoint_id,
+    )
+    if (result is not None and identity.get("engine") == PROVIDER_SESSION_ENGINE_CLAUDE
+        and result["conversation_context"].get("schema_version") == EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2):
+        try:
+            result["conversation_context"] = await prepare_provider_epoch(
+                conn,
+                scope=ProviderSessionScope(
+                    tenant_id=identity["tenant_id"], workspace_id=identity["workspace_id"],
+                    user_id=identity["user_id"], session_id=identity["session_id"],
+                    agent_id=identity["agent_id"],
+                ),
+                run_id=identity["run_id"],
+                conversation_context=result["conversation_context"],
+            )
+        except (ProviderSessionContinuityError, KeyError, TypeError):
+            return None
+    return result
+
 __all__ = [
     "CONTEXT_FILE_ERROR_CODES",
     "CONTEXT_FILE_FAILURE_SCHEMA_VERSION",
-    "MAX_CONVERSATION_CONTEXT_CANDIDATES",
     "ConversationContextError",
     "ContextFileContentError",
     "build_executor_conversation_context",
@@ -156,5 +240,36 @@ __all__ = [
     "context_file_failure_diagnostic",
     "empty_executor_conversation_context",
     "materialize_worker_context_snapshot",
+    "ConversationSourceChain",
+    "validate_authority_receipt",
+    "load_ready_checkpoint",
+    "load_checkpoint_usage_for_run",
+    "fail_expired_checkpoint_builds",
+    "prepare_checkpoint_for_run",
     "normalize_context_file_error_code",
+    "MAX_PROVIDER_SESSION_BATCH_BYTES",
+    "MAX_PROVIDER_SESSION_BATCH_COUNT",
+    "MAX_PROVIDER_SESSION_ENTRIES",
+    "MAX_PROVIDER_SESSION_ENTRY_BYTES",
+    "MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES",
+    "PROVIDER_SESSION_CONTEXT_EPOCH",
+    "PROVIDER_SESSION_ENGINE_CLAUDE",
+    "PROVIDER_SESSION_RESUME_CONTEXT_KEY",
+    "ProviderSessionConflictError",
+    "ProviderSessionContinuityError",
+    "ProviderSessionEntry",
+    "ProviderSessionNotFoundError",
+    "ProviderSessionOperationResult",
+    "matching_ready_provider_epoch",
+    "claim_provider_lineage",
+    "release_provider_lineage",
+    "prepare_provider_epoch",
+    "commit_provider_turn",
+    "ProviderSessionScope",
+    "claude_provider_session_id_for_session",
+    "normalize_provider_entry",
+    "normalize_provider_entry_batch",
+    "normalize_provider_subpath",
+    "provider_session_id_for_scope",
+    "execute_provider_session_callback",
 ]

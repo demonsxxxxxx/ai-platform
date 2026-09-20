@@ -8,11 +8,13 @@ import concurrent.futures
 import hashlib
 import json
 import re
+import secrets
 import subprocess
 import sys
 import time
 import zipfile
 from dataclasses import dataclass
+from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any
 from urllib import error, request
@@ -161,7 +163,14 @@ def write_minimal_docx(docx_path: Path) -> None:
         archive.writestr("word/document.xml", document_xml)
 
 
-def json_request(method: str, url: str, payload: dict[str, Any] | None = None, headers: dict[str, str] | None = None, timeout: float = 30.0) -> tuple[int, Any]:
+def json_request(
+    method: str,
+    url: str,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+    opener: Any | None = None,
+) -> tuple[int, Any]:
     data = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8") if payload is not None else None
     req = request.Request(
         url,
@@ -170,7 +179,7 @@ def json_request(method: str, url: str, payload: dict[str, Any] | None = None, h
         method=method,
     )
     try:
-        with request.urlopen(req, timeout=timeout) as response:
+        with (opener.open(req, timeout=timeout) if opener else request.urlopen(req, timeout=timeout)) as response:
             status, body = response.status, response.read()
     except error.HTTPError as exc:
         status, body = exc.code, exc.read()
@@ -1289,15 +1298,36 @@ def foundation_runtime_memory_context_summary(results: list[dict[str, Any]]) -> 
 
 
 def login(api_url: str, account: Account) -> dict[str, str]:
+    cookie_jar = CookieJar()
+    opener = request.build_opener(request.HTTPCookieProcessor(cookie_jar))
+    nonce = secrets.token_urlsafe(32)
     status, payload = json_request(
         "POST",
-        f"{api_url.rstrip('/')}/api/auth/login",
-        {"username": account.username, "password": account.password},
+        f"{api_url.rstrip('/')}/api/ai/auth/bootstrap",
+        {
+            "nonce": nonce,
+            "protocol_version": 2,
+            "browser_incarnation": secrets.token_urlsafe(32),
+            "generation": 1,
+        },
+        opener=opener,
     )
-    if status != 200 or not isinstance(payload, dict) or not payload.get("access_token"):
+    if status != 200 or not isinstance(payload, dict) or payload.get("status") != "ready":
+        raise RuntimeError(
+            f"auth bootstrap failed for {account.label}: status={status} payload={payload}"
+        )
+    status, payload = json_request(
+        "POST",
+        f"{api_url.rstrip('/')}/api/ai/auth/login",
+        {"user_name": account.username, "password": account.password},
+        opener=opener,
+    )
+    if status != 200 or not isinstance(payload, dict) or not payload.get("user_id"):
         raise RuntimeError(f"login failed for {account.label}: status={status} payload={payload}")
-    token = str(payload["access_token"])
-    return {"Authorization": f"Bearer {token}"}
+    cookie = "; ".join(f"{item.name}={item.value}" for item in cookie_jar)
+    if not cookie:
+        raise RuntimeError(f"login did not retain an auth context for {account.label}")
+    return {"Cookie": cookie}
 
 
 def trusted_principal_headers(account: Account, *, role: str = "user") -> dict[str, str]:
@@ -1322,17 +1352,24 @@ def auth_headers(
 
 
 def upload_docx(api_url: str, headers: dict[str, str], docx_path: Path, *, workspace_id: str = "default") -> dict[str, Any]:
+    content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     status, payload = multipart_file_post(
-        f"{api_url.rstrip('/')}/api/upload/file?folder=uploads",
+        f"{api_url.rstrip('/')}/api/ai/files",
         filename=docx_path.name,
         content=docx_path.read_bytes(),
-        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        content_type=content_type,
         headers=headers,
         fields={"workspace_id": workspace_id},
     )
-    if status != 200 or not isinstance(payload, dict) or not str(payload.get("key") or "").startswith("file_"):
+    file_id = payload.get("file_id") if isinstance(payload, dict) else None
+    if status != 200 or not str(file_id or "").startswith("file_"):
         raise RuntimeError(f"upload failed: status={status} payload={payload}")
-    return payload
+    return {
+        **payload,
+        "key": file_id,
+        "mimeType": content_type,
+        "size": payload["size_bytes"],
+    }
 
 
 def submit_chat(
@@ -2266,50 +2303,6 @@ def attach_run_detail_probe_results(
         }
 
 
-def attach_tool_permission_probe_results(
-    api_url: str,
-    results: list[dict[str, Any]],
-    accounts: list[Account],
-    *,
-    auth_mode: str = "login",
-    trusted_header_role: str = "user",
-) -> None:
-    """Verify retired permission writes remain compatibility-only and side-effect free."""
-
-    by_label = _account_by_label(accounts)
-    for item in results:
-        account = by_label.get(str(item.get("account") or ""))
-        run_id = str(item.get("run_id") or "")
-        if account is None or not run_id:
-            item["tool_permission_probe"] = {"status": "skipped"}
-            continue
-        headers = auth_headers(
-            api_url,
-            account,
-            auth_mode=auth_mode,
-            trusted_header_role=trusted_header_role,
-        )
-        request_status, _request_payload = json_request(
-            "POST",
-            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/request",
-            {"tool_id": DEFAULT_FIXTURE_TOOL_ID},
-            headers=headers,
-            timeout=30,
-        )
-        decision_status, _decision_payload = json_request(
-            "POST",
-            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/compatibility-probe/decision",
-            {"decision": "allow_once"},
-            headers=headers,
-            timeout=30,
-        )
-        item["tool_permission_probe"] = {
-            "request_status": request_status,
-            "decision_status": decision_status,
-            "no_side_effect": request_status == 410 and decision_status == 410,
-        }
-
-
 def parse_account(value: str, *, require_explicit_tenant: bool = False) -> Account:
     label_part, rest = value.split("=", 1)
     tenant_id = "default"
@@ -2400,28 +2393,6 @@ def _sum_nested_int(results: list[dict[str, Any]], key: str, nested_key: str) ->
         if isinstance(nested, dict) and type(nested.get(nested_key)) is int:
             total += nested[nested_key]
     return total
-
-
-def _zero_click_write_probe_counts(results: list[dict[str, Any]]) -> tuple[int, int, int]:
-    """Return observed compatibility-write probes, 410 confirmations, and unexpected statuses."""
-
-    probe_count = 0
-    gone_count = 0
-    unexpected_count = 0
-    for item in results:
-        probe = item.get("tool_permission_probe")
-        if not isinstance(probe, dict):
-            continue
-        request_status = probe.get("request_status")
-        decision_status = probe.get("decision_status")
-        if type(request_status) is not int or type(decision_status) is not int:
-            continue
-        probe_count += 1
-        if request_status == 410 and decision_status == 410:
-            gone_count += 1
-        else:
-            unexpected_count += 1
-    return probe_count, gone_count, unexpected_count
 
 
 def _any_nested_true(results: list[dict[str, Any]], key: str, nested_key: str) -> bool:
@@ -2638,7 +2609,6 @@ def build_foundation_runtime_concurrency_evidence(
     scenario_counts = _scenario_counts(results)
     concurrency_summary = _foundation_runtime_concurrency_summary(results)
     terminal_run_failures = _foundation_runtime_terminal_run_failures(results)
-    zero_click_probe_count, zero_click_410_count, zero_click_unexpected_status_count = _zero_click_write_probe_counts(results)
     evidence = {
         "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
         "artifact_kind": "foundation_runtime_concurrency",
@@ -2682,12 +2652,6 @@ def build_foundation_runtime_concurrency_evidence(
                 "cross_tenant_statuses": _all_values(results, "cross_tenant_download_statuses"),
                 "preview_cross_user_statuses": _all_values(results, "cross_user_preview_statuses"),
                 "preview_cross_tenant_statuses": _all_values(results, "cross_tenant_preview_statuses"),
-            },
-            "tool_permission": {
-                "status": "passed",
-                "zero_click_write_probe_count": zero_click_probe_count,
-                "zero_click_write_410_count": zero_click_410_count,
-                "zero_click_write_unexpected_status_count": zero_click_unexpected_status_count,
             },
             "skill_snapshots": skill_snapshots,
             "run_playback": {
@@ -2830,13 +2794,6 @@ def main() -> int:
             trusted_header_role="user",
         )
         attach_context_scope_probe_results(
-            args.api_url,
-            results,
-            accounts,
-            auth_mode=args.auth_mode,
-            trusted_header_role="user",
-        )
-        attach_tool_permission_probe_results(
             args.api_url,
             results,
             accounts,

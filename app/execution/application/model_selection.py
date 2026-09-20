@@ -6,18 +6,16 @@ import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.runs.api import bind_run_model
+
 
 @dataclass(frozen=True)
 class RunModelSelection:
     model_id: str
     model_value: str
     connection_revision: int | None
-
-
-class LegacyModelResolver(Protocol):
-    async def public_models(self) -> dict[str, object]: ...
-
-    def resolve(self, selection: dict[str, str] | None) -> RunModelSelection: ...
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
 
 
 class GovernedModelResolver(Protocol):
@@ -28,6 +26,18 @@ class GovernedModelResolver(Protocol):
         model_id: str | None,
         model_value: str | None,
     ) -> RunModelSelection | None: ...
+
+
+async def bind_selected_run_model(
+    conn: Any, *, tenant_id: str, run_id: str, selected_model: RunModelSelection,
+) -> None:
+    await bind_run_model(
+        conn, tenant_id=tenant_id, run_id=run_id,
+        model_id=selected_model.model_id, model_value=selected_model.model_value,
+        connection_revision=selected_model.connection_revision,
+        max_input_tokens=selected_model.max_input_tokens,
+        max_output_tokens=selected_model.max_output_tokens,
+    )
 
 
 def parse_requested_model_selection(agent_options: object) -> dict[str, str] | None:
@@ -62,9 +72,8 @@ async def resolve_chat_model_selection(
     *,
     selection: dict[str, str] | None,
     resolve_governed_model: GovernedModelResolver,
-    resolve_legacy_model: LegacyModelResolver,
-) -> RunModelSelection | None:
-    """Resolve governed selection, retaining legacy fallback only when inactive."""
+) -> RunModelSelection:
+    """Resolve only the configured, Run-budgeted model for new execution."""
 
     model_id = selection.get("id") if selection else None
     model_value = selection.get("value") if selection else None
@@ -73,6 +82,12 @@ async def resolve_chat_model_selection(
         model_id=model_id,
         model_value=model_value,
     )
-    if governed is not None:
-        return governed
-    return resolve_legacy_model.resolve(selection)
+    if governed is None:
+        raise ValueError("model_connection_not_configured")
+    if (
+        governed.connection_revision is None
+        or governed.max_input_tokens is None
+        or governed.max_output_tokens is None
+    ):
+        raise ValueError("model_capacity_missing")
+    return governed

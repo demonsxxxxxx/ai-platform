@@ -166,6 +166,26 @@ test("preserves legacy session get while adding safe authoritative recovery", as
   }
 });
 
+test("history requests opt into compact message chunks", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input) => {
+    calls.push(String(input));
+    return new Response(JSON.stringify({ events: [] }), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await sessionApi.getEvents("session-a", { run_id: "run-a" });
+    await sessionApi.getEvents("session-a", { compact_message_chunks: false });
+    assert.deepEqual(calls, [
+      "/api/sessions/session-a/events?run_id=run-a&compact_message_chunks=true",
+      "/api/sessions/session-a/events",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("authoritative recovery keeps ordinary sessions generic and rejects missing sessions", async () => {
   const originalFetch = globalThis.fetch;
   let status = 200;
@@ -468,7 +488,7 @@ test("builds the selector-free Agent App run URL and deduplicated file body", ()
       message: "Review this",
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: ["file-a"],
-      thinking_effort: "off",
+      thinking_effort: "auto",
       user_timezone: "Asia/Shanghai",
     },
   );
@@ -495,7 +515,7 @@ test("omits unfinished Agent App attachments without a server file id", () => {
       message: "Review this",
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: [],
-      thinking_effort: "off",
+      thinking_effort: "auto",
     },
   );
 });

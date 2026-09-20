@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from app import repositories
+from app.context.api import ProviderSessionConflictError, ProviderSessionContinuityError
 from app.db import transaction
 from app.execution.api import restored_sandbox_run_payload
 from app.executors.base import ExecutorResult, RunPayload
@@ -26,13 +27,14 @@ from app.runtime.sandbox.contracts import (
     executor_terminal_receipt_payload,
     normalize_executor_terminal_status,
 )
-from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
 from app.runtime.sandbox.executor_signals import (
     ExecutorSignalUnavailable,
     wait_for_executor_reconciliation_signal,
 )
 from app.runtime.sandbox.providers.opensandbox.startup import (
     is_authoritative_not_found_error,
+    opensandbox_probe_error_facts,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.runs.api import RunAttemptLifecycleService, RunDiagnosticsService
@@ -155,13 +157,19 @@ def _permanent_reconciliation_error(
 
 
 def _reconciliation_error_code(exc: Exception) -> str:
-    if isinstance(exc, PermanentExecutorReconciliationError):
+    if isinstance(
+        exc,
+        (PermanentExecutorReconciliationError, ProviderSessionContinuityError),
+    ):
         return exc.code
     return type(exc).__name__
 
 
 def _reconciliation_failure_is_terminal(exc: Exception) -> bool:
-    return isinstance(exc, PermanentExecutorReconciliationError)
+    return isinstance(exc, PermanentExecutorReconciliationError) or (
+        isinstance(exc, ProviderSessionConflictError)
+        and exc.code.startswith("provider_session_terminal_")
+    )
 
 
 def _context_payload(
@@ -559,7 +567,17 @@ async def _collect_workspace_and_convert_result(
     provider = _container_provider_for_lease(lease)
     collection_error: Exception | None = None
     try:
-        await provider.collect_workspace(lease, request, workspace)
+        raw_response_files = terminal_result.get("response_files", [])
+        if not isinstance(raw_response_files, list) or not all(
+            isinstance(path, str) for path in raw_response_files
+        ):
+            raise ValueError("executor response file selection is invalid")
+        await provider.collect_workspace(
+            lease,
+            request,
+            workspace,
+            raw_response_files,
+        )
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - converted into a controlled terminal result.
@@ -689,6 +707,7 @@ async def probe_suspect_executor_tasks_once(
     persisted_count = 0
     for lease_row in claimed:
         lease_id = str(lease_row["id"])
+        failure_stage = "attempt_reconstruction"
         try:
             _context, run_payload = _context_payload(lease_row)
             request = _reconciliation_request(lease_row, run_payload)
@@ -696,8 +715,10 @@ async def probe_suspect_executor_tasks_once(
             if lease is None:
                 raise ValueError("executor_reconciliation_runtime_handle_invalid")
             provider = _container_provider_for_lease(lease)
+            failure_stage = "provider_endpoint"
             executor_url, executor_headers = await provider.executor_control_endpoint(lease, request)
             client = SandboxExecutorClient(timeout_seconds=10.0)
+            failure_stage = "run_state_check"
             async with transaction() as conn:
                 run = await repositories.get_run(
                     conn,
@@ -705,12 +726,14 @@ async def probe_suspect_executor_tasks_once(
                     run_id=str(lease_row["run_id"]),
                 )
             if run is not None and str(run.get("status") or "") == "cancelled":
+                failure_stage = "executor_cancel"
                 await client.cancel(
                     executor_url,
                     run_id=str(lease_row["run_id"]),
                     attempt_id=str(lease_row["attempt_id"]),
                     executor_headers=executor_headers,
                 )
+            failure_stage = "executor_status"
             status = await client.get_status(
                 executor_url,
                 run_id=str(lease_row["run_id"]),
@@ -807,7 +830,11 @@ async def probe_suspect_executor_tasks_once(
             raise
         except Exception as exc:  # noqa: BLE001 - persisted retry before eventual terminalization.
             attempts = int(lease_row.get("executor_reconciliation_attempt_count") or 0)
-            if is_authoritative_not_found_error(exc) or attempts >= _EXECUTOR_PROBE_FAILURE_LIMIT:
+            authoritative_absence = is_authoritative_not_found_error(exc)
+            if authoritative_absence or attempts >= _EXECUTOR_PROBE_FAILURE_LIMIT:
+                facts = opensandbox_probe_error_facts(exc)
+                if isinstance(exc, SandboxExecutorHttpError):
+                    facts = {"http_status": exc.status_code, "executor_error_code": exc.error_code}
                 await _persist_probe_terminal(
                     lease_row,
                     executor_status="failed",
@@ -816,6 +843,19 @@ async def probe_suspect_executor_tasks_once(
                         "status": "failed",
                         "error_code": "sandbox_executor_lost",
                         "error_message": "Sandbox executor stopped responding",
+                        "runtime_diagnostics": {
+                            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                            "error_code": "sandbox_executor_lost",
+                            "failure_source": "executor_probe",
+                            "failure_stage": failure_stage,
+                            "sdk": {
+                                "exception_type": type(exc).__name__,
+                                "errors": [{
+                                    "reason": "provider_absent" if authoritative_absence else "probe_retry_exhausted",
+                                    **facts,
+                                }],
+                            },
+                        },
                     },
                     claim_token=claim_token,
                     run_diagnostics=run_diagnostics,
@@ -827,7 +867,7 @@ async def probe_suspect_executor_tasks_once(
                         conn,
                         lease_id=lease_id,
                         claim_token=claim_token,
-                        error=str(exc),
+                        error="sandbox_executor_probe_failed",
                     )
     return persisted_count
 

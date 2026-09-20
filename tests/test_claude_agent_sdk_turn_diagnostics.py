@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.executors.claude_agent_sdk_runner import (
     project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
@@ -382,6 +384,7 @@ def _install_sdk(monkeypatch, query):
         ResultMessage=ResultMessage,
         TextBlock=TextBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     return fake_sdk
@@ -673,6 +676,25 @@ def test_required_tool_completion_errors_are_not_classified_as_upstream(error_co
     assert diagnostics["error_code"] == "claude_agent_sdk_tool_admission_failed"
     assert diagnostics["action"] == "review_skill_or_tool_admission"
     assert diagnostics["retryable"] is False
+
+
+def test_mcp_execution_receipt_errors_require_reconciliation_before_retry():
+    for error_code, terminal_class in (
+        (
+            "mcp_execution_succeeded_receipt_incomplete",
+            "execution_receipt_incomplete",
+        ),
+        ("mcp_execution_outcome_unknown", "execution_outcome_unknown"),
+    ):
+        diagnostics = project_sdk_turn_diagnostics({}, error_code=error_code)
+
+        assert diagnostics["terminal_class"] == terminal_class
+        assert (
+            diagnostics["error_code"]
+            == "claude_agent_sdk_execution_receipt_incomplete"
+        )
+        assert diagnostics["action"] == "reconcile_before_retry"
+        assert diagnostics["retryable"] is False
 
 
 @pytest.mark.asyncio

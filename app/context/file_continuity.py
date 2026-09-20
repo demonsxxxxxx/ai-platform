@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from app.context.api import ContextFileContentError
+from app.context.api import ContextFileContentError, context_stage_filename_fits
 from app.context.file_content import (
     MAX_CONTEXT_FILE_STAGE_BYTES,
     validate_context_file_for_stage,
@@ -283,7 +283,7 @@ async def materialize_run_context_files(
 
     file_names: list[str] = []
     attachment_metadata: list[ContextFileMetadata] = []
-    authorized_files: list[tuple[int, str, dict[str, Any], str, int]] = []
+    authorized_files: list[tuple[int, str, dict[str, Any], str, str, int]] = []
     materialized_name_keys: set[str] = set()
     async with transaction_factory() as conn:
         for attachment_index, file_id in enumerate(file_ids, start=1):
@@ -305,6 +305,12 @@ async def materialize_run_context_files(
             original_name = str(normalized_row.get("original_name") or file_id).replace("\\", "/")
             filename = Path(original_name).name or file_id
             file_kind = Path(filename).suffix.casefold().lstrip(".")
+            if not context_stage_filename_fits(filename):
+                raise ContextFileContentError(
+                    "context_file_staging_write_failed",
+                    file_kind=file_kind,
+                    attachment_index=attachment_index,
+                )
             content_type = str(normalized_row.get("content_type") or "")
             try:
                 size_bytes = int(normalized_row.get("size_bytes"))
@@ -323,17 +329,30 @@ async def materialize_run_context_files(
             attachment_metadata.append(
                 ContextFileMetadata(file_id, filename, content_type, size_bytes)
             )
-            file_names.append(filename)
-            name_key = filename.casefold()
-            if name_key in materialized_name_keys:
+            materialized_filename = filename
+            disambiguator = 2
+            while materialized_filename.casefold() in materialized_name_keys:
+                materialized_filename = (
+                    f"{Path(filename).stem} ({disambiguator}){Path(filename).suffix}"
+                )
+                disambiguator += 1
+            if not context_stage_filename_fits(materialized_filename):
                 raise ContextFileContentError(
-                    "context_file_name_conflict",
+                    "context_file_staging_write_failed",
                     file_kind=file_kind,
                     attachment_index=attachment_index,
                 )
-            materialized_name_keys.add(name_key)
+            materialized_name_keys.add(materialized_filename.casefold())
+            file_names.append(materialized_filename)
             authorized_files.append(
-                (attachment_index, file_id, normalized_row, filename, size_bytes)
+                (
+                    attachment_index,
+                    file_id,
+                    normalized_row,
+                    filename,
+                    materialized_filename,
+                    size_bytes,
+                )
             )
 
     if storage is None:
@@ -341,7 +360,7 @@ async def materialize_run_context_files(
             "context_file_storage_unavailable",
             phase="storage",
         )
-    if sum(item[4] for item in authorized_files) > _MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES:
+    if sum(item[5] for item in authorized_files) > _MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES:
         raise ContextFileContentError("context_file_too_large")
 
     inputs_dir = workspace / "inputs"
@@ -352,9 +371,16 @@ async def materialize_run_context_files(
         if authorized_files:
             created_inputs_dir = not inputs_dir.exists()
             inputs_dir.mkdir(parents=True, exist_ok=True)
-        for attachment_index, _file_id, row, filename, size_bytes in authorized_files:
+        for (
+            attachment_index,
+            _file_id,
+            row,
+            filename,
+            materialized_filename,
+            size_bytes,
+        ) in authorized_files:
             file_kind = Path(filename).suffix.casefold().lstrip(".")
-            target = inputs_dir / filename
+            target = inputs_dir / materialized_filename
             ensure_creatable_inside(
                 inputs_dir,
                 target,

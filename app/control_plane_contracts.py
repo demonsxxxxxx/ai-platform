@@ -36,7 +36,10 @@ LEGACY_SYNTHETIC_CHAT_SKILL_ID = "general-chat"
 
 def validate_thinking_agent_options(value: object) -> object:
     if isinstance(value, dict) and "enable_thinking" in value:
-        normalize_thinking_effort(value["enable_thinking"])
+        return {
+            **value,
+            "enable_thinking": normalize_thinking_effort(value["enable_thinking"]),
+        }
     return value
 
 
@@ -46,7 +49,7 @@ def attach_run_thinking_effort(
 ) -> dict[str, Any]:
     options = agent_options if isinstance(agent_options, dict) else {}
     effort = normalize_thinking_effort(options.get("enable_thinking"))
-    if effort != "off":
+    if effort != "auto":
         run_input[RUN_THINKING_EFFORT_INPUT_KEY] = effort
     return run_input
 

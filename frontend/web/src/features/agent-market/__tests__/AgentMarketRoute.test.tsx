@@ -22,7 +22,10 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /AppShell/);
   assert.match(source, /SessionSidebar/);
   assert.match(source, /min-h-0 flex-1 overflow-y-auto/);
-  assert.match(source, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/);
+  assert.doesNotMatch(source, /lg:grid-cols-\[15rem_minmax\(0,1fr\)\]/);
+  assert.match(source, /更多标签/);
+  assert.match(source, /data-agent-market-sort/);
+  assert.match(source, /data-agent-market-view/);
   assert.doesNotMatch(source, /<Check/);
   assert.doesNotMatch(source, /BadgeCheck/);
   assert.match(source, /mobileSidebarOpen/);
@@ -30,9 +33,8 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /data-agent-market-search/);
   assert.match(source, /data-agent-market-filter/);
   assert.match(source, /data-agent-market-card/);
-  assert.match(source, /MARKET_PAGE_SIZE = 9/);
-  assert.match(source, /paginatedProfiles\.map/);
-  assert.match(source, /<Pagination/);
+  assert.doesNotMatch(source, /MARKET_PAGE_SIZE|paginatedProfiles|<Pagination/);
+  assert.match(source, /visibleProfiles\.map/);
   assert.match(source, /rounded-full p-1 transition-colors/);
   assert.match(source, /text-amber-600/);
   assert.doesNotMatch(source, /bg-amber-/);
@@ -47,9 +49,9 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /buildAgentMarketDetailPath/);
   assert.match(source, /buildAgentMarketWorkspacePath/);
-  assert.match(source, /grid-cols-\[repeat\(auto-fill,minmax\(min\(100%,18rem\),1fr\)\)\]/);
-  assert.doesNotMatch(source, /xl:grid-cols-3/);
-  assert.doesNotMatch(source, /grid-cols-1[\s\S]*md:grid-cols-2[\s\S]*xl:grid-cols-3/);
+  assert.match(source, /grid-cols-1[^\n]*sm:grid-cols-2[^\n]*lg:grid-cols-3[^\n]*xl:grid-cols-4[^\n]*2xl:grid-cols-5/);
+  assert.match(source, /overflow-y-auto pr-1/);
+  assert.match(source, /content-visibility:auto/);
   assert.match(source, /MARKET_CATALOG_LOAD_ERROR/);
   assert.doesNotMatch(source, /<textarea/);
   assert.doesNotMatch(

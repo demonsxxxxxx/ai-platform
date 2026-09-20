@@ -51,6 +51,7 @@ import {
   countEnabledSkills,
   resolveComposerSkillsAvailability,
 } from "./skillAvailability";
+import { AgentConversationPanel } from "../../../features/agent-market/AgentConversationPanel";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
@@ -750,36 +751,37 @@ export function ChatAppContent({
 
   const canSelectMcpTools = canSelectChatMcpTools(mcpCatalogState.status);
 
-  const [currentModelId, setCurrentModelId] = useState<string>(() => {
-    return localStorage.getItem("defaultModelId") || "";
-  });
-  const [currentModelValue, setCurrentModelValue] = useState<string>(
-    () => localStorage.getItem("defaultModel") || defaultModel,
-  );
-
-  const isSessionRestoredRef = useRef(false);
+  const [currentModelId, setCurrentModelId] = useState("");
+  const [currentModelValue, setCurrentModelValue] = useState("");
+  const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isSessionRestoredRef.current) return;
+    if (!availableModels) return;
+    const hasPriorSelection = Boolean(currentModelId || currentModelValue);
+    const stillAvailable = availableModels.some((model) =>
+      (currentModelId && model.id === currentModelId)
+      || (!currentModelId && currentModelValue && model.value === currentModelValue));
+    if (hasPriorSelection && !stillAvailable) {
+      setCurrentModelId("");
+      setCurrentModelValue("");
+      setModelSelectionError("之前选择的模型已不可用，请重新选择模型。");
+      return;
+    }
+    if (modelSelectionError) return;
     const nextSelection = reconcileCurrentModelSelection({
       availableModels,
       currentModelId,
       currentModelValue,
-      storedDefaultId: localStorage.getItem("defaultModelId") || "",
-      storedDefaultValue: localStorage.getItem("defaultModel") || "",
       fallbackDefaultValue: defaultModel,
     });
 
-    if (nextSelection.modelId && nextSelection.modelId !== currentModelId) {
+    if (nextSelection.modelId !== currentModelId) {
       setCurrentModelId(nextSelection.modelId);
     }
-    if (
-      nextSelection.modelValue &&
-      nextSelection.modelValue !== currentModelValue
-    ) {
+    if (nextSelection.modelValue !== currentModelValue) {
       setCurrentModelValue(nextSelection.modelValue);
     }
-  }, [availableModels, currentModelId, currentModelValue, defaultModel]);
+  }, [availableModels, currentModelId, currentModelValue, defaultModel, modelSelectionError]);
 
   useEffect(() => {
     handleToggleAgentOption("model", currentModelValue);
@@ -797,6 +799,7 @@ export function ChatAppContent({
     (modelId: string, modelValue: string) => {
       setCurrentModelId(modelId);
       setCurrentModelValue(modelValue);
+      setModelSelectionError(null);
     },
     [],
   );
@@ -1019,14 +1022,13 @@ export function ChatAppContent({
     }) => {
       console.log("[AppContent] Restoring session config:", config);
 
-      isSessionRestoredRef.current = true;
-
       restoreSessionConfig(config);
 
       if (config.agent_options) {
         restoreAgentOptions(config.agent_options);
 
         const restoredModelSelection = getRestoredModelSelection(config);
+        setModelSelectionError(null);
         if (restoredModelSelection.modelId) {
           setCurrentModelId(restoredModelSelection.modelId);
         }
@@ -1059,8 +1061,6 @@ export function ChatAppContent({
     }
     const nextSelection = resolveDefaultModelSelection({
       availableModels,
-      storedDefaultId: localStorage.getItem("defaultModelId") || "",
-      storedDefaultValue: localStorage.getItem("defaultModel") || "",
       fallbackDefaultValue: defaultModel,
     });
 
@@ -1073,6 +1073,7 @@ export function ChatAppContent({
 
     setCurrentModelId(nextSelection.modelId);
     setCurrentModelValue(nextSelection.modelValue);
+    setModelSelectionError(null);
   }, [
     availableModels,
     defaultModel,
@@ -1095,6 +1096,12 @@ export function ChatAppContent({
       selectedSkill?: SelectedSkillRequest | null,
     ): Promise<SubmissionOutcome> => {
       setAgentWorkspaceError(null);
+      if (!availableModels?.some((model) => model.id === currentModelId
+        && model.value === currentModelValue)) {
+        setModelSelectionError(availableModels?.length
+          ? "请先选择当前可用的模型。" : "当前没有可用模型，请联系管理员。");
+        return { status: "failed" };
+      }
       if (!agentWorkspace || sessionId) {
         return sendMessage(content, options, attachments, selectedSkill);
       }
@@ -1207,6 +1214,9 @@ export function ChatAppContent({
       onAgentWorkspaceSessionCreated,
       sendMessage,
       sessionId,
+      availableModels,
+      currentModelId,
+      currentModelValue,
     ],
   );
 
@@ -1296,7 +1306,7 @@ export function ChatAppContent({
       onNewSession={handleNewSessionWithReset}
       allowNewSessionAction={agentWorkspace !== undefined}
       newSessionActionLabel={agentWorkspace ? "开始新任务" : undefined}
-      availableModels={filteredModels}
+      availableModels={agentWorkspace ? null : filteredModels}
       currentModelId={currentModelId}
       onSelectModel={handleSelectModel}
       sessionId={sessionId}
@@ -1312,6 +1322,17 @@ export function ChatAppContent({
           />
         ) : undefined
       }
+      contentSidebar={
+        agentWorkspace && agentWorkspaceSessionSource ? (
+          <AgentConversationPanel
+            currentSessionId={sessionId}
+            onNewSession={handleNewSessionWithReset}
+            onSelectSession={handleSelectSessionAndClose}
+            source={agentWorkspaceSessionSource}
+          />
+        ) : undefined
+      }
+      showHeaderUserMenu={!agentWorkspace}
       sidebar={
         <SessionSidebar
           ref={sidebarRef}
@@ -1333,11 +1354,15 @@ export function ChatAppContent({
           agentWorkspace={
             agentWorkspace
               ? {
+                  agent_id: agentWorkspace.agent_id,
+                  avatar_ref: agentWorkspace.avatar_ref,
+                  avatar_seed: agentWorkspace.avatar_seed,
                   name: agentWorkspace.name,
                   description: agentWorkspace.description,
                 }
               : undefined
           }
+          agentHistoryInMainPanel={agentWorkspace !== undefined}
           navigationOnly={agentWorkspace === undefined}
         />
       }
@@ -1470,9 +1495,13 @@ export function ChatAppContent({
             externalScrollToBottom={externalScrollToBottom}
             outlineToggleRef={outlineToggleRef}
             WorkbenchShellComponent={WorkbenchShell}
-            sessionRouteBasePath={agentWorkspaceRouteBasePath}
             />
           </ChatMcpCatalogContext.Provider>
+        {modelSelectionError ? (
+          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger)]" role="alert">
+            {modelSelectionError}
+          </p>
+        ) : null}
         {agentWorkspaceError ? (
           <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger)]" role="alert">
             {agentWorkspaceError}

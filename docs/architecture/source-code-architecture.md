@@ -117,8 +117,11 @@ network/security clients remain Execution infrastructure adapters assembled by
 `bootstrap`. Bootstrap also supplies the deployment-backed legacy catalog and
 authentication callbacks, so Execution adapters and transport do not import legacy
 root modules. `runs` alone writes the immutable admitted model ID, upstream value,
-and connection revision snapshot, including Copy/Retry/Resume inheritance, through
-its public application API on the caller's existing transaction. General Harness
+connection revision, and paired input/output capacity snapshot, including
+Copy/Retry/Resume inheritance, through its public application API on the caller's
+existing transaction. Nullable capacity fields are an expansion for legacy Runs;
+new execution still writes ExecutionSpec v1 until the provider count gate and
+Context mode/coverage cutover are ready. General Harness
 chat and specialized Skills remain separate identities under
 [`../adr/0005-harness-chat-is-not-a-skill.md`](../adr/0005-harness-chat-is-not-a-skill.md).
 The Agent Apps application, persistence, transaction, composition, and

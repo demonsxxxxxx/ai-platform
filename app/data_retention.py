@@ -8,24 +8,15 @@ import time
 from app import repositories
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
-from app.settings import OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL, get_settings
+from app.settings import get_settings
 from app.storage import ObjectStorage
 
 
 _next_cleanup_at = 0.0
 
 
-def _resolved_int_setting(
-    settings: object,
-    *,
-    canonical_name: str,
-    legacy_name: str,
-    default: int,
-) -> int:
-    value = getattr(settings, canonical_name, None)
-    if value is None:
-        value = getattr(settings, legacy_name, default)
-    return int(value)
+def _int_setting(settings: object, name: str, default: int) -> int:
+    return int(getattr(settings, name, default))
 
 
 def retention_policy_projection(settings: object) -> dict[str, object]:
@@ -42,29 +33,17 @@ def retention_policy_projection(settings: object) -> dict[str, object]:
     artifact_selection_limit = int(
         getattr(settings, "artifact_retention_cleanup_limit", 50)
     )
-    object_delete_batch_limit = _resolved_int_setting(
+    object_delete_batch_limit = _int_setting(settings, "object_delete_batch_limit", 50)
+    object_delete_max_attempts = _int_setting(settings, "object_delete_max_attempts", 5)
+    object_delete_retry_base_seconds = _int_setting(
         settings,
-        canonical_name="object_delete_batch_limit",
-        legacy_name="artifact_retention_cleanup_limit",
-        default=50,
+        "object_delete_retry_base_seconds",
+        60,
     )
-    object_delete_max_attempts = _resolved_int_setting(
+    object_delete_retry_cap_seconds = _int_setting(
         settings,
-        canonical_name="object_delete_max_attempts",
-        legacy_name="artifact_object_delete_max_attempts",
-        default=5,
-    )
-    object_delete_retry_base_seconds = _resolved_int_setting(
-        settings,
-        canonical_name="object_delete_retry_base_seconds",
-        legacy_name="artifact_object_delete_retry_base_seconds",
-        default=60,
-    )
-    object_delete_retry_cap_seconds = _resolved_int_setting(
-        settings,
-        canonical_name="object_delete_retry_cap_seconds",
-        legacy_name="artifact_object_delete_retry_cap_seconds",
-        default=3600,
+        "object_delete_retry_cap_seconds",
+        3600,
     )
     return {
         "artifacts": "expires_at_with_reference_safe_object_outbox",
@@ -77,10 +56,7 @@ def retention_policy_projection(settings: object) -> dict[str, object]:
             "max_attempts": object_delete_max_attempts,
             "retry_base_seconds": object_delete_retry_base_seconds,
             "retry_cap_seconds": object_delete_retry_cap_seconds,
-            "canonical_environment_prefix": "OBJECT_DELETE_",
-            "legacy_environment_prefix": "ARTIFACT_OBJECT_DELETE_",
-            "legacy_supported_until": OBJECT_DELETE_LEGACY_ENV_SUPPORTED_UNTIL,
-            "precedence": "canonical_over_legacy",
+            "environment_prefix": "OBJECT_DELETE_",
         },
         "configurable_retention_days": configurable,
         "disabled_fail_safe": sorted(
@@ -126,29 +102,17 @@ async def run_data_retention_maintenance(
     artifact_selection_limit = int(
         getattr(settings, "artifact_retention_cleanup_limit", 50)
     )
-    object_delete_batch_limit = _resolved_int_setting(
+    object_delete_batch_limit = _int_setting(settings, "object_delete_batch_limit", 50)
+    object_delete_max_attempts = _int_setting(settings, "object_delete_max_attempts", 5)
+    object_delete_retry_base_seconds = _int_setting(
         settings,
-        canonical_name="object_delete_batch_limit",
-        legacy_name="artifact_retention_cleanup_limit",
-        default=50,
+        "object_delete_retry_base_seconds",
+        60,
     )
-    object_delete_max_attempts = _resolved_int_setting(
+    object_delete_retry_cap_seconds = _int_setting(
         settings,
-        canonical_name="object_delete_max_attempts",
-        legacy_name="artifact_object_delete_max_attempts",
-        default=5,
-    )
-    object_delete_retry_base_seconds = _resolved_int_setting(
-        settings,
-        canonical_name="object_delete_retry_base_seconds",
-        legacy_name="artifact_object_delete_retry_base_seconds",
-        default=60,
-    )
-    object_delete_retry_cap_seconds = _resolved_int_setting(
-        settings,
-        canonical_name="object_delete_retry_cap_seconds",
-        legacy_name="artifact_object_delete_retry_cap_seconds",
-        default=3600,
+        "object_delete_retry_cap_seconds",
+        3600,
     )
     memory_limit = int(getattr(settings, "memory_physical_purge_limit", 50))
     grace_days = int(getattr(settings, "memory_physical_purge_grace_days", 7))

@@ -8,7 +8,9 @@ from app.runtime.sandbox.contracts import (
     ContainerStatus,
     ContainerLease,
     ExecutorCallbackEvent,
+    ExecutorTaskRequest,
     ExecutorTerminalResult,
+    ModelTokenLimits,
     SandboxRuntimeRequest,
     WorkspaceLease,
     executor_terminal_receipt_payload,
@@ -41,6 +43,27 @@ def request_payload(**overrides):
     }
     values.update(overrides)
     return values
+
+
+def test_sandbox_model_budget_is_strict_at_both_transports():
+    budget = {"max_input_tokens": 32000, "max_output_tokens": 2048}
+    request = SandboxRuntimeRequest.model_validate(request_payload(model_token_limits=budget))
+    assert request.model_token_limits == ModelTokenLimits.model_validate(budget)
+    for invalid in (
+        {**budget, "max_input_tokens": "32000"},
+        {**budget, "max_output_tokens": True},
+        {**budget, "extra": 1},
+    ):
+        with pytest.raises(ValidationError):
+            SandboxRuntimeRequest.model_validate(request_payload(model_token_limits=invalid))
+        with pytest.raises(ValidationError, match="model_token_limits_invalid"):
+            ExecutorTaskRequest.model_validate({
+                "tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
+                "session_id": "session-a", "run_id": "run-a", "attempt_id": "attempt-a",
+                "prompt": "hello", "callback_url": "http://localhost:8020/api/ai/runtime/callbacks/executor",
+                "callback_token_id": "cbt-run-a", "callback_token": "synthetic",
+                "callback_base_url": "http://localhost:8020", "config": {"model_token_limits": invalid},
+            })
 
 
 def test_terminal_callback_rejects_empty_success_result():
@@ -192,6 +215,7 @@ def test_terminal_receipt_drops_private_and_unknown_fields_and_enforces_total_bu
             "run_id": "run-a",
             "error_code": "executor_failed",
             "error_message": "Executor failed",
+            "provider_session_final_sequence": 5,
             "runtime_diagnostics": {"tool_input": {"token": "private"}},
             "unexpected": {"prompt": "private"},
             "sdk_turn_diagnostics": {
@@ -205,6 +229,7 @@ def test_terminal_receipt_drops_private_and_unknown_fields_and_enforces_total_bu
     receipt = executor_terminal_receipt_payload(result)
 
     assert receipt["executor_model_latency_ms"] == 123
+    assert receipt["provider_session_final_sequence"] == 5
     assert "runtime_diagnostics" not in receipt
     assert "runtime_diagnostics" not in str(receipt["sdk_turn_diagnostics"])
     assert "unexpected" not in receipt
@@ -219,6 +244,19 @@ def test_terminal_receipt_drops_private_and_unknown_fields_and_enforces_total_bu
     )
     with pytest.raises(ValueError, match="executor_terminal_receipt_too_large"):
         executor_terminal_receipt_payload(oversized)
+
+
+@pytest.mark.parametrize("value", [0, True, "5"])
+def test_terminal_callback_rejects_invalid_provider_session_final_sequence(value):
+    with pytest.raises(ValidationError):
+        ExecutorTerminalResult.model_validate(
+            {
+                "status": "completed",
+                "run_id": "run-a",
+                "message": "done",
+                "provider_session_final_sequence": value,
+            }
+        )
 
 
 def test_terminal_callback_serializes_large_answer_as_a_bounded_receipt():
@@ -338,7 +376,20 @@ def test_probe_and_callback_canonical_failure_results_are_identical():
     ) == callback.terminal_result.model_dump(mode="json", exclude_none=True) == {
         **raw_result,
         "message": "",
+        "response_files": [],
     }
+
+
+@pytest.mark.parametrize("reference", ["ragflow-knowledge-search", "gateway::" + "x" * 384, "server.name::ProjectInfo.get_sequences"])
+def test_sandbox_preserves_valid_mcp_references(reference):
+    request = SandboxRuntimeRequest.model_validate(request_payload(mcp_tool_ids=[reference]))
+    assert request.mcp_tool_ids == [reference]
+
+
+@pytest.mark.parametrize("reference", ["gateway", "gateway::", "gateway::../tool", "gateway::" + "x" * 385])
+def test_sandbox_rejects_malformed_mcp_references(reference):
+    with pytest.raises(ValueError):
+        SandboxRuntimeRequest.model_validate(request_payload(mcp_tool_ids=[reference]))
 
 
 def test_sandbox_runtime_request_requires_platform_identity():
@@ -612,6 +663,86 @@ def test_callback_event_rejects_unknown_typed_agent_event_type():
                         "message": "bad event",
                         "payload": {},
                     }
+                ],
+            }
+        )
+
+
+def test_terminal_callback_normalizes_response_files_and_rejects_unsafe_paths():
+    result = ExecutorTerminalResult.model_validate(
+        {
+            "status": "completed",
+            "run_id": "run-a",
+            "message": "answer",
+            "response_files": ["output\\report.docx", "charts/result.png"],
+        }
+    )
+    assert result.response_files == ["output/report.docx", "charts/result.png"]
+    assert executor_terminal_receipt_payload(result)["response_files"] == result.response_files
+
+    for path in ("../secret.txt", "/tmp/secret.txt", "C:\\secret.txt", "output/./report.docx"):
+        with pytest.raises(ValidationError, match="response_file_path_invalid"):
+            ExecutorTerminalResult.model_validate(
+                {
+                    "status": "completed",
+                    "run_id": "run-a",
+                    "message": "answer",
+                    "response_files": [path],
+                }
+            )
+
+    with pytest.raises(ValidationError, match="response_file_path_duplicate"):
+        ExecutorTerminalResult.model_validate(
+            {
+                "status": "completed",
+                "run_id": "run-a",
+                "message": "answer",
+                "response_files": ["output/report.docx", "output\\report.docx"],
+            }
+        )
+
+
+def test_terminal_callback_preserves_bounded_response_file_descriptors():
+    result = ExecutorTerminalResult.model_validate(
+        {
+            "status": "completed",
+            "run_id": "run-a",
+            "message": "answer",
+            "response_files": ["output/report.txt"],
+            "response_file_descriptors": [
+                {
+                    "source_path": "output\\report.txt",
+                    "display_name": "报告.txt",
+                    "role": "primary",
+                    "description": "最终报告",
+                }
+            ],
+        }
+    )
+
+    assert result.response_file_descriptors is not None
+    assert result.response_file_descriptors[0].source_path == "output/report.txt"
+    assert executor_terminal_receipt_payload(result)["response_file_descriptors"] == [
+        {
+            "source_path": "output/report.txt",
+            "display_name": "报告.txt",
+            "role": "primary",
+            "description": "最终报告",
+        }
+    ]
+
+    with pytest.raises(
+        ValidationError,
+        match="response file descriptors must match response files",
+    ):
+        ExecutorTerminalResult.model_validate(
+            {
+                "status": "completed",
+                "run_id": "run-a",
+                "message": "answer",
+                "response_files": ["output/report.txt"],
+                "response_file_descriptors": [
+                    {"source_path": "output/other.txt"}
                 ],
             }
         )

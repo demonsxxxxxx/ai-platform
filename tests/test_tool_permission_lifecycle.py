@@ -13,6 +13,17 @@ from app.tool_permission_lifecycle import (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_provider_lineage(monkeypatch):
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
 def test_permission_budget_strictly_nests_the_full_wait_and_executor_callbacks():
     budget = tool_permission_budget(120.0)
 

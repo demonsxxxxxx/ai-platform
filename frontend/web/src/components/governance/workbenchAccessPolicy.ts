@@ -33,7 +33,6 @@ const PATH_ACCESS_KEYS: Array<[RegExp, WorkbenchAccessKey]> = [
   [/^\/ai-apps(?:\/|$)/, "aiApplication"],
   [/^\/apps(?:\/|$)/, "apps"],
   [/^\/skills(?:\/|$)/, "skills"],
-  [/^\/marketplace(?:\/|$)/, "skills"],
   [/^\/mcp(?:\/|$)/, "mcp"],
   [/^\/notifications(?:\/|$)/, "notifications"],
   [/^\/memory(?:\/|$)/, "memory"],

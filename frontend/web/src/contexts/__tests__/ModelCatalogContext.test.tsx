@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { AvailableModel } from "../ModelCatalogContext.tsx";
 import type { User } from "../../types/index.ts";
+import { installBrowserAuthTestDb } from "../../hooks/__tests__/browserAuthTestDb.ts";
 
 type Listener = (event: { type: string }) => void;
 
@@ -195,6 +196,7 @@ Object.defineProperty(globalThis, "navigator", {
   configurable: true,
   value: { userAgent: "node", locks: new TestLockManager() },
 });
+installBrowserAuthTestDb();
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -270,7 +272,11 @@ async function mountModelCatalogHarness(
       updatePinnedModelIds: originals.updatePinnedModelIds,
     });
   };
-  authApi.bootstrapAuthContext = async () => {};
+  authApi.bootstrapAuthContext = async (request) => ({
+    status: "ready",
+    protocol_version: 2,
+    generation: request.generation,
+  });
   try {
     configure(authApi, modelPublicApi);
   } catch (error) {

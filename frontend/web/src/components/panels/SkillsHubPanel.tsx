@@ -2,10 +2,7 @@ import { useCallback, useState } from "react";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
 import { SkillsPanel } from "./SkillsPanel";
-import {
-  resolveSkillsHubGovernance,
-  type SkillsHubTab,
-} from "./SkillsHubPanel/state";
+import { resolveSkillsHubGovernance } from "./SkillsHubPanel/state";
 import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { isAiAdminUser } from "./capabilityAdmin";
@@ -26,7 +23,6 @@ export function SkillsHubPanel() {
     isLoading: authLoading,
   } = useAuth();
 
-  const requestedTab: SkillsHubTab = "skills";
   const [catalogState, setCatalogState] = useState<CatalogState>({
     permissionDenied: false,
     projectionError: null,
@@ -40,11 +36,9 @@ export function SkillsHubPanel() {
     !catalogState.projectionError;
   const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
   const hubGovernance = resolveSkillsHubGovernance({
-    requestedTab,
     isAuthenticated,
     isLoading: authLoading,
     canReadSkills,
-    canReadMarketplace: false,
     catalogPermissionDenied: catalogState.permissionDenied,
     catalogReadResolved: catalogState.readResolved,
     projectionError: catalogState.projectionError,

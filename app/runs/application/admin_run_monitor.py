@@ -7,6 +7,11 @@ from app.streaming.api import V4_METADATA_KEY
 
 _V4_MESSAGE_TYPES = frozenset({"message.delta", "message.completed"})
 _LEGACY_MESSAGE_TYPE = "assistant_delta"
+_TOOL_START_TYPES = frozenset({"mcp_tool_call_started", "tool_call_started", "tool.started"})
+_TOOL_SUCCESS_TYPES = frozenset({"mcp_tool_call_completed", "tool_call_completed", "tool.completed"})
+_TOOL_FAILURE_TYPES = frozenset({"mcp_tool_call_failed", "tool_call_failed", "tool.failed"})
+_TOOL_DENIAL_TYPES = frozenset({"mcp_tool_denied", "tool_denied", "tool.denied", "tool_permission_denied"})
+_TOOL_TYPES = _TOOL_START_TYPES | _TOOL_SUCCESS_TYPES | _TOOL_FAILURE_TYPES | _TOOL_DENIAL_TYPES
 
 
 def _sequence(event: Mapping[str, Any], index: int) -> tuple[int, int]:
@@ -106,4 +111,122 @@ def assemble_admin_model_output(
     return sanitized if isinstance(sanitized, str) else ""
 
 
-__all__ = ["assemble_admin_model_output"]
+def _safe_text(value: object, sanitize_text: Callable[[str], str]) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    sanitized = sanitize_text(value)
+    return sanitized.strip() if isinstance(sanitized, str) else ""
+
+
+def _tool_identity(event: Mapping[str, Any], index: int) -> str:
+    payload = event.get("payload")
+    if isinstance(payload, Mapping):
+        for key in ("operation_id", "tool_call_id", "tool_use_id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+    event_id = event.get("event_id")
+    return event_id if isinstance(event_id, str) and event_id else f"tool-{index}"
+
+
+def _tool_status(event_type: str) -> str:
+    if event_type in _TOOL_SUCCESS_TYPES:
+        return "succeeded"
+    if event_type in _TOOL_FAILURE_TYPES:
+        return "failed"
+    if event_type in _TOOL_DENIAL_TYPES:
+        return "denied"
+    return "running"
+
+
+def _bounded_non_negative_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def build_admin_worker_execution(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    sanitize_text: Callable[[str], str],
+) -> dict[str, Any]:
+    """Project one Run into its safe, human-readable Worker execution."""
+
+    ordered = sorted(enumerate(events), key=lambda item: _sequence(item[1], item[0]))
+    actions: list[dict[str, Any]] = []
+    action_indexes: dict[str, int] = {}
+    model: dict[str, Any] = {}
+
+    for index, event in ordered:
+        if event.get("visible_to_user") is False:
+            continue
+        event_type = str(event.get("type") or "")
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, Mapping) else {}
+
+        if event_type == "model.completed":
+            model = {
+                "turn_count": _bounded_non_negative_int(payload.get("turn_count")),
+                "duration_ms": _bounded_non_negative_int(payload.get("duration_ms")),
+                "stop_category": _safe_text(payload.get("stop_category"), sanitize_text),
+            }
+            continue
+        if event_type not in _TOOL_TYPES:
+            continue
+
+        identity = _tool_identity(event, index)
+        action_index = action_indexes.get(identity)
+        if action_index is None:
+            label = ""
+            for key in ("display_name", "tool_name", "name"):
+                label = _safe_text(payload.get(key), sanitize_text)
+                if label:
+                    break
+            action = {
+                "ordinal": len(actions) + 1,
+                "label": label or "工具调用",
+                "category": _safe_text(payload.get("category"), sanitize_text),
+                "status": _tool_status(event_type),
+                "input_summary": _safe_text(payload.get("input_summary"), sanitize_text),
+                "result_summary": "",
+                "duration_ms": _bounded_non_negative_int(payload.get("duration_ms")),
+                "started_at": event.get("created_at") if event_type in _TOOL_START_TYPES else None,
+                "finished_at": None,
+            }
+            actions.append(action)
+            action_index = len(actions) - 1
+            action_indexes[identity] = action_index
+
+        action = actions[action_index]
+        action["status"] = _tool_status(event_type)
+        label = _safe_text(payload.get("display_name"), sanitize_text)
+        if label:
+            action["label"] = label
+        category = _safe_text(payload.get("category"), sanitize_text)
+        if category:
+            action["category"] = category
+        input_summary = _safe_text(payload.get("input_summary"), sanitize_text)
+        if input_summary:
+            action["input_summary"] = input_summary
+        duration_ms = _bounded_non_negative_int(payload.get("duration_ms"))
+        if duration_ms is not None:
+            action["duration_ms"] = duration_ms
+        if event_type not in _TOOL_START_TYPES:
+            result_summary = ""
+            for key in ("result_summary", "failure_category", "denial_code"):
+                result_summary = _safe_text(payload.get(key), sanitize_text)
+                if result_summary:
+                    break
+            if not result_summary:
+                result_summary = _safe_text(event.get("error_code"), sanitize_text)
+            action["result_summary"] = result_summary
+            action["finished_at"] = event.get("created_at")
+
+    return {
+        "response": assemble_admin_model_output(events, sanitize_text=sanitize_text),
+        "actions": actions,
+        "model": model,
+    }
+
+
+__all__ = ["build_admin_worker_execution"]

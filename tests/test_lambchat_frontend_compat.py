@@ -2,14 +2,13 @@ from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 import re
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.models import ChatStreamRequest
+from app.models import AgentAppRunRequest, ChatStreamRequest
 from app.repositories import append_message as real_append_message
 from app.repositories import (
     list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs,
@@ -581,13 +580,37 @@ def test_chat_stream_request_accepts_lambchat_body_shape():
     assert request.enabled_skills == ["general-chat"]
 
 
-@pytest.mark.parametrize("effort", ["off", "low", "medium", "high"])
-def test_chat_stream_request_accepts_supported_thinking_effort(effort):
+@pytest.mark.parametrize(
+    ("effort", "expected"),
+    [
+        ("auto", "auto"),
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("off", "auto"),
+    ],
+)
+def test_chat_stream_request_normalizes_supported_thinking_effort(effort, expected):
     request = ChatStreamRequest.model_validate(
         {"message": "hello", "agent_options": {"enable_thinking": effort}}
     )
 
-    assert request.agent_options == {"enable_thinking": effort}
+    assert request.agent_options == {"enable_thinking": expected}
+
+
+def test_agent_app_run_request_defaults_to_auto_and_normalizes_legacy_off():
+    base = {
+        "message": "hello",
+        "submission_id": "12345678-1234-4678-9234-567812345678",
+    }
+
+    assert AgentAppRunRequest.model_validate(base).thinking_effort == "auto"
+    assert (
+        AgentAppRunRequest.model_validate(
+            {**base, "thinking_effort": "off"}
+        ).thinking_effort
+        == "auto"
+    )
 
 
 @pytest.mark.parametrize("effort", ["max", "extreme"])
@@ -723,45 +746,6 @@ def test_lambchat_session_detail_redacts_custom_retired_agent(monkeypatch):
     assert "baoyu-translate" not in str(payload)
     assert "旧自定义翻译" not in str(payload)
 
-
-async def test_lambchat_agent_repository_exposes_only_canonical_agents():
-    from app.repositories import list_lambchat_agents
-
-    class FakeCursor:
-        async def fetchall(self):
-            return []
-
-    class RecordingConnection:
-        def __init__(self):
-            self.executed = []
-
-        async def execute(self, sql, params):
-            self.executed.append((" ".join(sql.split()), params))
-            return FakeCursor()
-
-    conn = RecordingConnection()
-
-    rows = await list_lambchat_agents(conn, tenant_id="default")
-
-    assert rows == []
-    sql, params = conn.executed[-1]
-    assert "agents.id in ('general-agent', 'qa-word-review')" in sql
-    assert "sop-assistant" not in sql
-    assert "agents.status = 'active'" in sql
-    assert "skills.status = 'active'" in sql
-    assert "skill_release_policies.current_version" in sql
-    assert "coalesce(skill_versions.status, 'active') as skill_version_status" in sql
-    assert (
-        "skill_release_policies.previous_version as release_policy_previous_version"
-        in sql
-    )
-    assert (
-        "previous_skill_versions.status as release_policy_previous_version_status"
-        in sql
-    )
-    assert params == ("default",)
-
-
 def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
     model_catalog = AsyncMock(
         return_value={
@@ -780,26 +764,26 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
     )
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.lambchat_compat.list_public_models", model_catalog)
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
     client = TestClient(create_app())
 
     expectations = {
         "/api/auth/oauth/providers": {"registration_enabled": False},
         "/api/auth/permissions": {"groups": list, "all_permissions": list},
-        "/api/agent/models/": {"enabled_count": 1},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
-        "/api/version": {"version": "ai-platform-poc"},
-        "/api/projects": [],
         "/api/notifications/active": {"notifications": []},
         "/api/upload/config": {
             "categories": ["document"],
             "enabled": True,
             "uploadLimits": dict,
         },
-        "/api/tools": {"tools": []},
     }
 
     anonymous_models = client.get("/api/agent/models/available")
     assert anonymous_models.status_code == 401
+    models = client.get("/api/agent/models/available", headers=auth_headers())
+    assert models.status_code == 200
+    assert models.json()["enabled_count"] == 1
 
     for path, expected in expectations.items():
         response = client.get(path)
@@ -879,53 +863,23 @@ def test_notifications_have_one_workbench_route_owner(monkeypatch):
     assert authenticated_notifications.json()[0]["id"] == "platform-announcement"
 
 
-def test_lambchat_model_catalog_comes_from_settings(monkeypatch):
-    current_settings = type(
-        "S",
-        (),
-        {
-            "openai_model": "deepseek-v4-flash",
-            "anthropic_model": "deepseek-v4-flash",
-            "claude_agent_model": "deepseek-v4-pro",
-            "default_model_id": "deepseek-v4-pro",
-            "model_catalog_json": (
-                '[{"id":"deepseek-v4-flash","label":"DeepSeek V4 Flash","provider":"new-api","max_input_tokens":128000},'
-                '{"id":"deepseek-v4-pro","label":"DeepSeek V4 Pro","provider":"new-api","max_input_tokens":128000}]'
-            ),
-        },
-    )()
-    monkeypatch.setattr(
-        "app.bootstrap.model_services.get_settings",
-        lambda: current_settings,
-    )
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
-        AsyncMock(return_value=[]),
-    )
+def test_lambchat_model_catalog_is_empty_without_governed_connection(monkeypatch):
     monkeypatch.setattr(
         "app.execution.infrastructure.model_management.list_public_models",
         AsyncMock(return_value=None),
     )
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    client = TestClient(create_app())
-
-    response = client.get("/api/agent/models/available", headers=auth_headers())
-
+    response = TestClient(create_app()).get(
+        "/api/agent/models/available", headers=auth_headers(),
+    )
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["default_model_id"] == "deepseek-v4-pro"
-    assert payload["count"] == 2
-    assert payload["enabled_count"] == 2
-    assert [model["id"] for model in payload["models"]] == [
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
-    ]
-    assert payload["models"][1]["label"] == "DeepSeek V4 Pro"
-    assert payload["models"][1]["profile"]["max_input_tokens"] == 128000
+    assert response.json() == {
+        "models": [], "count": 0, "enabled_count": 0, "default_model_id": None,
+    }
 
 
-def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_raw_ids(
+def test_lambchat_governed_model_catalog_preserves_raw_ids(
     monkeypatch,
 ):
     governed = {
@@ -942,20 +896,10 @@ def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_
         "default_model_id": "mdl_public",
     }
 
-    forbidden_legacy_fetch = AsyncMock(
-        side_effect=AssertionError(
-            "legacy discovery must not run after control-plane activation"
-        )
-    )
-
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
         "app.execution.infrastructure.model_management.list_public_models",
         AsyncMock(return_value=governed),
-    )
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_legacy_catalog.fetch_upstream_openai_models",
-        forbidden_legacy_fetch,
     )
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     response = TestClient(create_app()).get(
@@ -964,54 +908,26 @@ def test_lambchat_governed_model_catalog_preempts_legacy_upstream_and_preserves_
     )
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
     assert response.json() == governed
 
 
-def test_lambchat_upload_file_endpoint_matches_frontend_contract(monkeypatch, tmp_path):
-    async def fake_upload_platform_file(file, workspace_id, session_id, principal):
-        assert workspace_id == "default"
-        assert session_id is None
-        assert principal.user_id == "user-a"
-        return SimpleNamespace(
-            file_id="file_uploaded",
-            name="sample.docx",
-            storage_key="tenants/default/files/file_uploaded/sample.docx",
-            sha256="abc123",
-            size_bytes=12,
-        )
-
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr(
-        "app.routes.lambchat_compat.upload_platform_file", fake_upload_platform_file
-    )
+def test_retired_lambchat_subroutes_are_absent():
     client = TestClient(create_app())
-    sample = tmp_path / "sample.docx"
-    sample.write_bytes(b"fake-docx")
 
-    with sample.open("rb") as handle:
-        response = client.post(
-            "/api/upload/file?folder=uploads",
-            headers=auth_headers(),
-            files={
-                "file": (
-                    "sample.docx",
-                    handle,
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-            },
-        )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["key"] == "file_uploaded"
-    assert payload["file_id"] == "file_uploaded"
-    assert payload["name"] == "sample.docx"
-    assert payload["type"] == "uploads"
-    assert (
-        payload["mimeType"]
-        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
-    assert payload["size"] == 12
+    for method, path in (
+        ("post", "/api/auth/login"),
+        ("get", "/api/auth/me"),
+        ("post", "/api/auth/refresh"),
+        ("get", "/api/agent/models/"),
+        ("get", "/api/projects"),
+        ("get", "/api/projects/"),
+        ("get", "/api/tools"),
+        ("post", "/api/upload/file"),
+        ("get", "/api/version"),
+        ("post", "/api/chat/sessions/session-a/cancel"),
+    ):
+        assert getattr(client, method)(path).status_code == 404, path
 
 
 def test_lambchat_upload_check_route_is_retired():
@@ -1079,7 +995,7 @@ def test_lambchat_profile_keeps_empty_principal_permissions(monkeypatch):
     )
     client = TestClient(create_app())
 
-    me_response = client.get("/api/auth/me", headers=auth_headers())
+    me_response = client.get("/api/ai/auth/me", headers=auth_headers())
     profile_response = client.get("/api/auth/profile", headers=auth_headers())
 
     assert me_response.status_code == 200
@@ -1410,7 +1326,10 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
     )
     client = TestClient(create_app())
 
-    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+    response = client.get(
+        "/api/sessions/ses_a/events?compact_message_chunks=true",
+        headers=auth_headers(),
+    )
 
     assert response.status_code == 200
     events = response.json()["events"]
@@ -1682,6 +1601,228 @@ def test_lambchat_failed_history_reconstructs_authorized_v4_body() -> None:
     assert "__stream_v4" not in serialized
     assert "attempt-v4-failed" not in serialized
     assert "authorization_epoch" not in serialized
+
+
+def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
+
+    run = {
+        "id": "run-v4-commentary",
+        "tenant_id": "default",
+        "trace_id": "trace-v4-commentary",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+        "finished_at": None,
+    }
+    base = {
+        "tenant_id": "default",
+        "run_id": run["id"],
+        "trace_id": run["trace_id"],
+        "schema_version": "ai-platform.event-envelope.v1",
+        "stage": "agent_kernel",
+        "message": "",
+        "severity": "info",
+        "visible_to_user": True,
+        "error_code": None,
+        "stream_publication_state": "published",
+        "v4_attempt_authorized": True,
+        "created_at": "2026-08-01T00:00:01Z",
+    }
+    stream_receipt = {
+        "attempt_id": "attempt-v4-commentary",
+        "version": 1,
+        "stream_incarnation": 2,
+        "authorization_epoch": 4,
+        "message_id": opaque_message_id("default", run["id"]),
+        "publication_state": "published",
+    }
+    events = [
+        {
+            **base,
+            "id": "evt4-commentary",
+            "sequence": 1,
+            "event_type": "commentary.delta",
+            "payload_json": {
+                "summary_id": "summary-public-1",
+                "delta": "正在检查授权输入。",
+                "__stream_v4": stream_receipt,
+            },
+        },
+        {
+            **base,
+            "id": "evt4-commentary-forged",
+            "sequence": 2,
+            "event_type": "commentary.delta",
+            "payload_json": {
+                "summary_id": "summary-public-2",
+                "delta": "unsafe",
+                "tool_input": "private",
+                "__stream_v4": stream_receipt,
+            },
+        },
+    ]
+
+    history = [
+        record.history_event
+        for record in _compatibility_events_for_run(
+            run,
+            events,
+            [],
+            AuthPrincipal(
+                user_id="user-a",
+                display_name="User A",
+                tenant_id="default",
+                roles=["user"],
+            ),
+        )
+    ]
+
+    summaries = [event for event in history if event["event_type"] == "summary"]
+    assert len(summaries) == 1
+    assert summaries[0]["data"]["summary_id"] == "summary-public-1"
+    assert summaries[0]["data"]["content"] == "正在检查授权输入。"
+    assert summaries[0]["data"]["payload"] == {
+        "summary_id": "summary-public-1",
+        "delta": "正在检查授权输入。",
+    }
+    assert "__stream_v4" not in str(history)
+    assert "tool_input" not in str(history)
+
+
+def test_lambchat_history_compacts_v4_answer_deltas_without_crossing_public_events() -> None:
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
+
+    run = {
+        "id": "run-v4-compact",
+        "tenant_id": "default",
+        "trace_id": "trace-v4-compact",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "result_json": {},
+        "error_code": "run_failed",
+        "finished_at": "2026-08-01T00:00:07Z",
+    }
+    message_id = opaque_message_id("default", run["id"])
+
+    def delta(
+        sequence: int,
+        content: str,
+        *,
+        owner: str = message_id,
+        incarnation: int = 2,
+    ) -> dict[str, object]:
+        return {
+            "id": f"evt4_delta_{sequence}",
+            "tenant_id": "default",
+            "run_id": run["id"],
+            "trace_id": run["trace_id"],
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": sequence,
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "payload_json": {
+                "delta": content,
+                "__stream_v4": {
+                    "attempt_id": "attempt-v4-compact",
+                    "version": 1,
+                    "stream_incarnation": incarnation,
+                    "authorization_epoch": 4,
+                    "message_id": owner,
+                    "publication_state": "published",
+                },
+            },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
+            "created_at": f"2026-08-01T00:00:0{sequence}Z",
+        }
+
+    events = [
+        delta(1, "第一段"),
+        {
+            "id": "evt-private",
+            "sequence": 2,
+            "event_type": "executor_private_event",
+            "visible_to_user": False,
+            "payload_json": {"private_payload": "never project"},
+        },
+        delta(3, "第二段"),
+        delta(4, "独立消息", owner="msg4_foreign"),
+        delta(5, "新流实例", incarnation=3),
+        {
+            "id": "evt-worker",
+            "trace_id": run["trace_id"],
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 6,
+            "event_type": "worker_started",
+            "stage": "worker",
+            "message": "private worker identity",
+            "severity": "info",
+            "visible_to_user": True,
+            "payload_json": {"visible_to_user": True},
+            "created_at": "2026-08-01T00:00:06Z",
+        },
+        delta(7, "已开始，general-"),
+        delta(8, "chat 完成。"),
+    ]
+    principal = AuthPrincipal(
+        user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
+    )
+
+    uncompressed = _compatibility_events_for_run(run, events, [], principal)
+    compacted = _compatibility_events_for_run(
+        run, events, [], principal, compact_answer_deltas=True
+    )
+    uncompressed_chunks = [
+        record.history_event
+        for record in uncompressed
+        if record.history_event["event_type"] == "message:chunk"
+    ]
+    compacted_history = [record.history_event for record in compacted]
+    compacted_chunks = [
+        event for event in compacted_history if event["event_type"] == "message:chunk"
+    ]
+
+    assert [event["data"]["content"] for event in uncompressed_chunks] == [
+        "第一段",
+        "第二段",
+        "独立消息",
+        "新流实例",
+        "已开始，general-agent 完成。",
+    ]
+    assert [event["event_type"] for event in compacted_history] == [
+        "message:chunk",
+        "message:chunk",
+        "message:chunk",
+        "run_started",
+        "message:chunk",
+        "final_detail",
+        "done",
+    ]
+    assert [event["data"]["content"] for event in compacted_chunks] == [
+        "第一段第二段",
+        "独立消息",
+        "新流实例",
+        "已开始，general-agent 完成。",
+    ]
+    assert [event["id"] for event in compacted_chunks] == [
+        "evt4_delta_3",
+        "evt4_delta_4",
+        "evt4_delta_5",
+        "evt4_delta_8",
+    ]
+    assert [event["sequence"] for event in compacted_chunks] == [3, 4, 5, 8]
+    assert "never project" not in str(compacted_history)
 
 
 @pytest.mark.parametrize(

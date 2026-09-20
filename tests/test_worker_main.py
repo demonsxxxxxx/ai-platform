@@ -49,6 +49,24 @@ _TEST_V4_CAPABILITIES = WorkerV4Capabilities(
 _TEST_ATTEMPT_LIFECYCLE = None
 
 
+@pytest.fixture(autouse=True)
+def _stub_terminal_context_ports(monkeypatch):
+    async def usage(_conn, **_kwargs):
+        return {"input_tokens": 0, "output_tokens": 0}
+
+    async def release(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
+        usage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.provider_terminalization.release_provider_lineage",
+        release,
+    )
+
+
 class _TestWorkerV4Runtime:
     capabilities = _TEST_V4_CAPABILITIES
 
@@ -518,6 +536,9 @@ def default_sandbox_cleanup(monkeypatch):
     async def cleanup_expired_memory_records_for_worker(settings=None):
         return []
 
+    async def fail_expired_checkpoint_builds(**_kwargs):
+        return 0
+
     async def run_data_retention_maintenance(settings=None):
         return {"status": "not_due"}
 
@@ -569,6 +590,11 @@ def default_sandbox_cleanup(monkeypatch):
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_memory_records_for_worker",
         cleanup_expired_memory_records_for_worker,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.fail_expired_checkpoint_builds",
+        fail_expired_checkpoint_builds,
         raising=False,
     )
     monkeypatch.setattr(
@@ -686,6 +712,10 @@ async def test_run_worker_maintenance_isolates_phase_failures(monkeypatch, caplo
     async def retain_data(_settings):
         calls.append("data_retention")
 
+    async def cleanup_checkpoints(**kwargs):
+        assert kwargs == {"transaction_factory": worker_main.transaction, "limit": 50}
+        calls.append("conversation_checkpoint_cleanup")
+
     async def progress_permissions(
         _settings, *, v4_capabilities, attempt_lifecycle
     ):
@@ -705,6 +735,7 @@ async def test_run_worker_maintenance_isolates_phase_failures(monkeypatch, caplo
 
     monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_sandbox)
     monkeypatch.setattr("app.worker_main.cleanup_expired_memory_records_for_worker", cleanup_memory)
+    monkeypatch.setattr("app.worker_main.fail_expired_checkpoint_builds", cleanup_checkpoints)
     monkeypatch.setattr("app.worker_main.run_data_retention_maintenance", retain_data)
     monkeypatch.setattr(
         "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
@@ -723,6 +754,7 @@ async def test_run_worker_maintenance_isolates_phase_failures(monkeypatch, caplo
     assert calls == [
         "sandbox_cleanup",
         "memory_cleanup",
+        "conversation_checkpoint_cleanup",
         "data_retention",
         "tool_permission_terminalization",
         "queue_reclaim",

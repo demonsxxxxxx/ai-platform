@@ -29,12 +29,22 @@ test("ordinary MCP discovery bounds in-flight requests across a large catalog", 
     maxInFlight = Math.max(maxInFlight, inFlight);
     await new Promise((resolve) => setTimeout(resolve, 1));
     inFlight -= 1;
-    return [tool(serverName)];
+    return { tools: [tool(serverName)] };
   });
 
   assert.equal(maxInFlight, ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY);
   assert.equal(result.unavailable, false);
   assert.equal(Object.keys(result.toolsByServer).length, 24);
+});
+
+test("HTTP-200 discovery failure stays unavailable while other servers retain their tools", async () => {
+  const result = await collectOrdinaryMcpTools(["failed", "healthy"], async (serverName) =>
+    serverName === "failed"
+      ? { tools: [], unavailable_reason: "discovery_failed" }
+      : { tools: [tool(serverName)] },
+  );
+  assert.equal(result.unavailable, true);
+  assert.deepEqual(result.toolsByServer, { healthy: [tool("healthy")] });
 });
 
 test("an older ordinary MCP tool generation cannot publish after a newer one", () => {
@@ -58,7 +68,7 @@ test("cancelled ordinary discovery does not dequeue after its active workers fin
     serverNames,
     async (serverName) => {
       started.push(serverName);
-      return new Promise<MCPToolInfo[]>((resolve) => resolvers.push(resolve));
+      return { tools: await new Promise<MCPToolInfo[]>((resolve) => resolvers.push(resolve)) };
     },
     () => activeGeneration,
   );

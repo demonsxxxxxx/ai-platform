@@ -7,12 +7,6 @@ import { API_BASE } from "./config";
 import { ApiRequestError, authFetch } from "./fetch";
 import { authenticatedRequest } from "./authenticatedRequest";
 
-interface SignedUrlItem {
-  key: string;
-  url: string | null;
-  error?: string;
-}
-
 export interface UploadOptions {
   folder?: string;
   onProgress?: (progress: number, loaded: number, total: number) => void;
@@ -239,21 +233,6 @@ export const uploadApi = {
       _configPromise = authFetch<UploadConfig>(`${API_BASE}/api/upload/config`);
     }
     return _configPromise;
-  },
-
-  /**
-   * 获取 S3 签名 URL（用于访问私有文件）
-   */
-  async getSignedUrl(key: string, expires: number = 3600): Promise<string> {
-    const result = await authFetch<SignedUrlItem>(
-      `${API_BASE}/api/upload/signed-url?key=${encodeURIComponent(
-        key,
-      )}&expires=${expires}`,
-    );
-    if (result.error || !result.url) {
-      throw new Error(result.error || "Failed to get signed URL");
-    }
-    return result.url;
   },
 
   /**

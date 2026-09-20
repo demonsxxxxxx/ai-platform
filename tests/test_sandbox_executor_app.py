@@ -17,6 +17,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.support.claude_sdk import native_client_factory
+
 from app.execution.api import ClaudeAgentEventCandidate
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
@@ -81,6 +83,7 @@ def task_payload(
         "permission_mode": "default",
         "config": {
             "model": "deepseek-v4-flash",
+            "model_token_limits": {"max_input_tokens": 32000, "max_output_tokens": 2048},
             "browser_enabled": False,
             "resource_limits": {"max_seconds": 60},
             "skill_ids": [],
@@ -887,7 +890,9 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
         permission_denials = None
 
     async def query(*, prompt, options):
-        del prompt, options
+        del prompt
+        assert options.session_id == "sdk-session-a"
+        await options.session_store.append("sdk-session-a", [{"uuid": "entry-ack"}])
         yield ResultMessage()
 
     fake_sdk = SimpleNamespace(
@@ -899,6 +904,7 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
         TextBlock=TextBlock,
         ThinkingBlock=ThinkingBlock,
         query=query,
+        ClaudeSDKClient=native_client_factory(query),
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     settings = SimpleNamespace(
@@ -921,7 +927,19 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
         lambda: settings,
     )
 
-    request = ExecutorTaskRequest.model_validate(task_payload())
+    class Store:
+        accepted_final_sequence = None
+
+        async def load(self, _session_id):
+            return None
+
+        async def append(self, _session_id, _entries):
+            self.accepted_final_sequence = 1
+
+    monkeypatch.setattr(executor_app, "build_claude_session_store", lambda **_kwargs: Store())
+    raw = task_payload()
+    raw["sdk_session_id"] = "sdk-session-a"
+    request = ExecutorTaskRequest.model_validate(raw)
     emitted = []
 
     async def emit_event(event):
@@ -933,7 +951,8 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
     callbacks = [
         event for event in emitted if isinstance(event, ExecutorCallbackEvent)
     ]
-    assert result["status"] == "completed"
+    assert result["status"] == "completed", result.get("error_code")
+    assert result["provider_session_final_sequence"] == 1
     assert result["message"] == ""
     assert len(callbacks) > 1
     assert all(len(callback.events) <= 100 for callback in callbacks)
@@ -1001,11 +1020,31 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     assert captured["skill_id"] is None
     assert captured["skills"] == []
     assert captured["thinking_effort"] == "high"
+    assert captured["model_max_input_tokens"] == 32000
+    assert captured["model_max_output_tokens"] == 2048
     assert not any(
         isinstance(event, executor_app._PlatformExecutionPhaseFact)
         and event.phase == "skill_staging"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_executor_fails_closed_if_run_model_capacity_is_not_bound(monkeypatch, tmp_path):
+    async def forbidden_sdk(**_kwargs):
+        raise AssertionError("SDK must not start without a strict Run capacity")
+
+    async def emit_event(_event):
+        return True
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: SimpleNamespace(claude_agent_sdk_enabled=True))
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", forbidden_sdk)
+    raw = task_payload()
+    del raw["config"]["model_token_limits"]
+    request = ExecutorTaskRequest.model_validate(raw)
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+    assert result["status"] == "failed"
+    assert result["error_code"] == "model_capacity_missing"
 
 
 @pytest.mark.asyncio
@@ -2278,6 +2317,50 @@ async def test_executor_rejects_unpersistable_local_tool_invocation_id(
     assert all(isinstance(event, executor_app._PlatformExecutionPhaseFact) for event in events)
 
 
+@pytest.mark.asyncio
+async def test_executor_preserves_mcp_execution_receipt_error_after_callback_loss(
+    tmp_path,
+    monkeypatch,
+):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def emit_event(event):
+        return getattr(event, "type", "") != "capability_completed"
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        identity = "mcp__tenant-server__search"
+        call_id = "capability-call-1"
+        assert await kwargs["on_capability_evidence"](
+            sdk_mcp_evidence(identity, call_id, "invocation_requested")
+        ) is True
+        assert await kwargs["on_capability_evidence"](
+            sdk_mcp_evidence(identity, call_id, "completed")
+        ) is False
+        return sdk_result(
+            "",
+            error="mcp_execution_succeeded_receipt_incomplete",
+        )
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings()
+    )
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+    request = ExecutorTaskRequest.model_validate(selected_mcp_task_payload())
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert (
+        result["error_code"]
+        == "mcp_execution_succeeded_receipt_incomplete"
+    )
+    assert result["capability_evidence"] == []
+
+
 @pytest.mark.parametrize(
     "receipt_mode",
     "rejected missing malformed nonliteral_true wrong_count over_count wrong_batch exception stale_run mismatched_attempt".split(),
@@ -2749,6 +2832,7 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
         ("required_tool_completion_evidence_missing", True, "required_tool_completion_evidence_missing"),
         ("required_tool_completion_evidence_mismatch", True, "required_tool_completion_evidence_mismatch"),
         ("claude_agent_sdk_upstream_error", True, "claude_agent_sdk_upstream_error"),
+        ("claude_agent_sdk_provider_session_failed", True, "claude_agent_sdk_provider_session_failed"),
     ],
 )
 def test_executor_execute_preserves_bounded_sdk_error_codes(
@@ -2869,7 +2953,7 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["sdk_session_id"] == "sdk-session-a"
+    assert "sdk_session_id" not in body
     assert body["sdk_usage"] == {"input_tokens": 2, "output_tokens": 3}
     assert isinstance(body["executor_first_token_latency_ms"], int)
     assert isinstance(body["executor_tool_call_latency_ms"], int)
@@ -2884,7 +2968,7 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
     assert callbacks[1][1]["events"][0]["type"] == "assistant_delta"
     assert callbacks[2][1]["events"][0]["type"] == "tool_call_started"
     assert callbacks[3][1]["events"][0]["type"] == "artifact_created"
-    assert callbacks[-1][1]["sdk_session_id"] == "sdk-session-a"
+    assert callbacks[-1][1]["sdk_session_id"] is None
 
 
 def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypatch):
@@ -2900,6 +2984,8 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         calls["model_id"] = kwargs["model_id"]
         calls["skills"] = kwargs["skills"]
         calls["subjects"] = kwargs["tool_policy_subjects"]
+        calls["session_store"] = kwargs["session_store"]
+        calls["session_id"] = kwargs["session_id"]
         assert "on_tool_permission" not in kwargs
         candidate = SimpleNamespace(
             as_agent_event_fields=lambda: {
@@ -2922,6 +3008,7 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
 
     payload = task_payload()
+    payload["sdk_session_id"] = "stable-provider-id"
     payload["config"]["tool_policy_subjects"] = [
         {
             "identity": "Bash",
@@ -2945,12 +3032,22 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["sdk_session_id"] == "sdk-session-a"
+    assert "sdk_session_id" not in body
+    assert "stable-provider-id" not in json.dumps(body)
+    assert "stable-provider-id" not in json.dumps(callbacks)
     assert calls["cwd"] == Path(tmp_path)
     assert calls["skill_id"] is None
     assert calls["model_id"] == "deepseek-v4-flash"
     assert calls["skills"] == []
     assert calls["subjects"][0]["identity"] == "Bash"
+    assert calls["session_id"] == "stable-provider-id"
+    session_store = calls["session_store"]
+    assert type(session_store).__name__ == "ClaudeSessionStoreAdapter"
+    assert session_store._callback_url == (
+        "http://ai-platform.test/api/ai/runtime/callbacks/provider-session"
+    )
+    assert session_store._callback_token == "secret"
+    assert session_store._provider_session_id == "stable-provider-id"
     assert any(
         event["type"] == "message.delta"
         for callback in callbacks
@@ -3015,7 +3112,7 @@ json.dump(
     {key: os.environ.get(key) for key in ("ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "AI_PLATFORM_EXECUTOR_AUTH_TOKEN", "UNRELATED_SECRET")},
     (output / "child-env.json").open("w", encoding="utf-8"),
 )
-shutil.copyfile(sys.argv[1], output / "translated.docx")
+shutil.copyfile(sys.argv[1], output / "source_reviewed.docx")
 """,
         encoding="utf-8",
     )
@@ -3033,6 +3130,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
+    assert response.json()["response_files"] == ["output/source_reviewed.docx"]
     assert json.loads((workspace / "output" / "child-env.json").read_text(encoding="utf-8")) == {
         "ANTHROPIC_AUTH_TOKEN": None,
         "OPENAI_API_KEY": None,
@@ -3055,7 +3153,7 @@ from pathlib import Path
 output = Path(sys.argv[2])
 output.mkdir(parents=True, exist_ok=True)
 (output / "selected-input.txt").write_text(Path(sys.argv[1]).name, encoding="utf-8")
-shutil.copyfile(sys.argv[1], output / "translated.docx")
+shutil.copyfile(sys.argv[1], output / "z_reviewed.docx")
 """,
         encoding="utf-8",
     )
@@ -3069,6 +3167,7 @@ shutil.copyfile(sys.argv[1], output / "translated.docx")
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
+    assert response.json()["response_files"] == ["output/z_reviewed.docx"]
     assert (workspace / "output" / "selected-input.txt").read_text(encoding="utf-8") == "z.docx"
 
 

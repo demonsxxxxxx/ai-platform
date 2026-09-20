@@ -99,6 +99,22 @@ async def test_ordinary_session_repository_lists_pinned_agent_conversations():
         Connection(), tenant_id="tenant-a", user_id="user-a"
     ) == []
     normalized = " ".join(captured["query"].split()).lower()
+    assert "coalesce(legacy_first_user.title, sessions.title) as title" in normalized
+    assert "left join lateral" in normalized
+    assert "sessions.title_source = 'initial'" in normalized
+    assert "sessions.title = profile.name" in normalized
+    assert "messages.tenant_id = sessions.tenant_id" in normalized
+    assert "messages.session_id = sessions.id" in normalized
+    assert "messages.role = 'user'" in normalized
+    normalizer = (
+        "translate( messages.content, "
+        "chr(13) || chr(10) || chr(9) || chr(11) || chr(12), ' ' )"
+    )
+    assert normalized.count(normalizer) == 2
+    assert f"btrim( {normalizer} ) <> ''" in normalized
+    assert f"left( btrim( {normalizer} ), 32 )" in normalized
+    assert "e'\\r\\n\\t\\v\\f'" not in normalized
+    assert "order by messages.created_at asc, messages.id asc limit 1" in normalized
     assert (
         "profile.skill_set @> '[{\"skill_id\": \"baoyu-translate\"}]'::jsonb)"
         " as agent_profile_has_retired_skill"

@@ -8,12 +8,20 @@ import { createRoot } from "react-dom/client";
 
 import {
   adminRunsApi,
+  readAdminRunDeepLinkScope,
   type AdminRunDiagnosticsResponse,
   type AdminRunDetailResponse,
   type AdminRunSummary,
 } from "../../../services/api/adminRuns";
-import { buildAdminRunMonitorView } from "../adminRunTimeline";
-import { filterAdminRuns, RunMonitorPanel, summarizeAdminRuns } from "../RunMonitorPanel";
+import {
+  buildAdminRunEventDiagnostics,
+  buildAdminRunMonitorView,
+} from "../adminRunTimeline";
+import {
+  filterAdminRuns,
+  RunMonitorPanel,
+  summarizeAdminRuns,
+} from "../RunMonitorPanel";
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 2_000) => {
   const startedAt = Date.now();
@@ -108,6 +116,21 @@ test("Run Monitor compacts queue aliases and explains executor failures", () => 
   assert.equal(view.recentActivity.some((item) => item.detail?.includes("sandbox_lease_renewed")), false);
 });
 
+test("Run Monitor keeps every message diagnostic for pagination", () => {
+  const diagnostics = buildAdminRunEventDiagnostics(
+    Array.from({ length: 81 }, (_, index) => ({
+      event_id: `delta-${index}`,
+      sequence: index + 1,
+      type: "message.delta",
+      payload: { delta: "x" },
+    })),
+  );
+
+  assert.equal(diagnostics.length, 81);
+  assert.equal(diagnostics.at(0)?.id, "delta-0");
+  assert.equal(diagnostics.at(-1)?.id, "delta-80");
+});
+
 test("Run Monitor filters only the explicitly projected Run identities", () => {
   assert.deepEqual(filterAdminRuns(runs, "running", "chat_2026").map((run) => run.run_id), [
     "run_running",
@@ -116,6 +139,13 @@ test("Run Monitor filters only the explicitly projected Run identities", () => {
     "run_failed",
   ]);
   assert.deepEqual(summarizeAdminRuns(runs), { queued: 0, running: 1, failed: 1 });
+});
+
+test("Run Monitor reads user and Run deep-link scope", () => {
+  assert.deepEqual(readAdminRunDeepLinkScope("?user_id=user%2Fa&run_id=run%2Fa"), {
+    userId: "user/a",
+    runId: "run/a",
+  });
 });
 
 test("Run Monitor mounts recent Worker state and renders only authorized diagnostics", async () => {
@@ -166,7 +196,37 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         text: "PRIVATE_RESULT_MARKER",
       },
     },
+    worker_execution: {
+      response: "WORKER_EFFECTIVE_RESPONSE",
+      actions: [
+        {
+          ordinal: 1,
+          label: "Read",
+          category: "read",
+          status: "succeeded",
+          input_summary: "读取 3 个文件",
+          result_summary: "已识别 2 个问题",
+          duration_ms: 1200,
+          started_at: "2026-04-01T09:00:02Z",
+          finished_at: "2026-04-01T09:00:03Z",
+        },
+      ],
+      model: {
+        turn_count: 3,
+        duration_ms: 2400,
+        stop_category: "completed",
+      },
+    },
     events: [
+      ...Array.from({ length: 21 }, (_, index) => ({
+        event_id: `event-message-${index}`,
+        sequence: index + 1,
+        type: "message.delta",
+        payload: {
+          delta: "DIAGNOSTIC_EVENT_BODY_MARKER",
+          __stream_v4: { message_id: "message-a", stream_incarnation: 2 },
+        },
+      })),
       {
         event_id: "event-a",
         type: "run_started",
@@ -182,8 +242,19 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         title: null,
         step_kind: "worker_setup",
         status: "succeeded",
+        payload: { output: "步骤返回摘要" },
         started_at: "2026-04-01T09:00:02Z",
         finished_at: "2026-04-01T09:00:03Z",
+      },
+    ],
+    artifacts: [
+      {
+        artifact_id: "artifact-a",
+        artifact_type: "document",
+        label: "审核结果.docx",
+        content_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size_bytes: 2048,
+        created_at: "2026-04-01T09:00:04Z",
       },
     ],
     sandbox_leases: [
@@ -411,12 +482,29 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(container.textContent ?? "", /trace-a/);
     assert.match(container.textContent ?? "", /worker_setup/);
     assert.match(container.textContent ?? "", /lease-a/);
+    assert.match(container.textContent ?? "", /Worker 执行内容/);
+    assert.match(container.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
+    assert.match(container.textContent ?? "", /读取 3 个文件/);
+    assert.match(container.textContent ?? "", /已识别 2 个问题/);
+    assert.match(container.textContent ?? "", /步骤返回摘要/);
+    assert.match(container.textContent ?? "", /审核结果\.docx/);
     assert.match(container.textContent ?? "", /执行诊断/);
     assert.match(container.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
     assert.match(container.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
     assert.match(container.textContent ?? "", /tool_parameters_not_authorized/);
     assert.match(container.textContent ?? "", /逐条观测证据/);
     assert.match(container.textContent ?? "", /ACTUAL_CHAIN_MARKER/);
+    assert.match(container.textContent ?? "", /message.delta/);
+    assert.match(container.textContent ?? "", /第 1 \/ 2 页 · 共 21 条/);
+    assert.doesNotMatch(container.textContent ?? "", /DIAGNOSTIC_EVENT_BODY_MARKER/);
+    const nextDiagnosticPageButton = container.querySelector(
+      '[role="dialog"] button[aria-label="下一页事件"]',
+    ) as HTMLButtonElement | null;
+    assert.ok(nextDiagnosticPageButton);
+    await act(async () => {
+      nextDiagnosticPageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    assert.match(container.textContent ?? "", /第 2 \/ 2 页 · 共 21 条/);
     assert.match(container.textContent ?? "", /artifact_manifest_invalid/);
     assert.match(container.textContent ?? "", /sdk\.exception_chain\[8\]/);
     assert.match(container.textContent ?? "", /终态协议证据/);

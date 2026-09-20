@@ -90,6 +90,7 @@ from app.skills.pinning import (
     SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V1,
     SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2,
     SkillVersionMaterializationError,
+    build_skill_manifest_ref,
     build_skill_manifest_refs,
     build_skill_snapshot_governance,  # noqa: F401 - migration bridge AST compatibility
     skill_manifest_materialization_sha256,
@@ -4620,16 +4621,6 @@ def skill_manifest_refs(skill_manifests: list[dict[str, Any]]) -> list[dict[str,
         raise RepositoryConflictError("run_skill_materialization_identity_mismatch") from exc
 
 
-def _materialization_refs_match(
-    refs: list[dict[str, Any]],
-    manifests: list[dict[str, Any]],
-) -> bool:
-    try:
-        return build_skill_manifest_refs(manifests) == refs
-    except SkillVersionMaterializationError:
-        return False
-
-
 async def materialize_run_skill_manifests(
     conn: AsyncConnection,
     *,
@@ -4655,6 +4646,7 @@ async def materialize_run_skill_manifests(
         (tenant_id, run_id),
     )
     manifests_by_id: dict[str, dict[str, Any]] = {}
+    verified_refs_by_id: dict[str, dict[str, Any]] = {}
     for row in await cursor.fetchall():
         manifest = row.get("manifest_json")
         if isinstance(manifest, str):
@@ -4666,23 +4658,24 @@ async def materialize_run_skill_manifests(
                 ) from exc
         row_skill_id = str(row.get("skill_id") or "")
         try:
-            materialization_sha256 = (
-                skill_manifest_materialization_sha256(manifest)
+            verified_ref = (
+                build_skill_manifest_ref(manifest)
                 if isinstance(manifest, dict)
-                else ""
+                else None
             )
         except SkillVersionMaterializationError as exc:
             raise RepositoryConflictError(
                 "run_skill_materialization_identity_mismatch"
             ) from exc
         if (
-            not isinstance(manifest, dict)
-            or str(manifest.get("skill_id") or "") != row_skill_id
-            or materialization_sha256 != str(row.get("materialization_sha256") or "")
+            verified_ref is None
+            or verified_ref["skill_id"] != row_skill_id
+            or verified_ref["materialization_sha256"] != str(row.get("materialization_sha256") or "")
             or row_skill_id in manifests_by_id
         ):
             raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
         manifests_by_id[row_skill_id] = dict(manifest)
+        verified_refs_by_id[row_skill_id] = verified_ref
     manifests = [
         manifests_by_id.get(str(ref.get("skill_id") or ""))
         for ref in exact_refs
@@ -4690,7 +4683,7 @@ async def materialize_run_skill_manifests(
     if any(manifest is None for manifest in manifests):
         raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
     exact_manifests = [manifest for manifest in manifests if manifest is not None]
-    if not _materialization_refs_match(exact_refs, exact_manifests):
+    if [verified_refs_by_id[ref["skill_id"]] for ref in exact_refs] != exact_refs:
         raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
     return exact_manifests
 

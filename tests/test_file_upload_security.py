@@ -22,7 +22,6 @@ from app.files.api import (
 )
 from app.files.infrastructure import postgres as upload_postgres
 from app.routes import files as files_routes
-from app.routes import lambchat_compat as compat_routes
 from app.storage import StorageIOTimeoutError, StoredObject
 
 
@@ -162,25 +161,6 @@ async def test_platform_upload_rejects_missing_permission_before_body_read(monke
     with pytest.raises(HTTPException) as exc_info:
         await files_routes.upload_file(
             file=upload,
-            workspace_id="default",
-            session_id=None,
-            principal=upload_principal(permissions=[]),
-        )
-
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "missing_permission:file:upload"
-    assert upload.read_calls == []
-
-
-@pytest.mark.asyncio
-async def test_compat_upload_rejects_missing_permission_before_body_read(monkeypatch):
-    install_basic_upload_fakes(monkeypatch)
-    upload = FakeUploadFile("sample.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", make_safe_docx_bytes())
-
-    with pytest.raises(HTTPException) as exc_info:
-        await compat_routes.upload_file(
-            file=upload,
-            folder="uploads",
             workspace_id="default",
             session_id=None,
             principal=upload_principal(permissions=[]),
@@ -1207,41 +1187,3 @@ def test_upload_filename_accepts_exact_utf8_byte_limit():
 
     assert len(filename.encode("utf-8")) == files_routes.MAX_UPLOAD_FILENAME_UTF8_BYTES
     assert files_routes._normalize_upload_filename(filename) == filename
-
-
-@pytest.mark.asyncio
-async def test_compat_upload_preserves_frontend_response_contract(monkeypatch):
-    install_basic_upload_fakes(monkeypatch)
-    upload = FakeUploadFile(
-        "参考文件1-IP248A项目基本信息收集表.docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        make_safe_docx_bytes(),
-    )
-
-    class RecordingStorage:
-        def put_bytes(self, *, storage_key, content, content_type):
-            return StoredObject(
-                storage_key=storage_key,
-                sha256="sha-docx",
-                size_bytes=len(content),
-            )
-
-    monkeypatch.setattr(files_routes, "ObjectStorage", RecordingStorage)
-
-    response = await compat_routes.upload_file(
-        file=upload,
-        folder="uploads",
-        workspace_id="default",
-        session_id=None,
-        principal=upload_principal(),
-    )
-
-    assert response["key"] == "file_upload_1"
-    assert response["file_id"] == "file_upload_1"
-    assert response["url"] == "/api/ai/files/file_upload_1"
-    assert response["name"] == "参考文件1-IP248A项目基本信息收集表.docx"
-    assert response["type"] == "uploads"
-    assert response["mimeType"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    assert response["mime_type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    assert response["size"] == len(make_safe_docx_bytes())
-    assert response["sha256"] == "sha-docx"

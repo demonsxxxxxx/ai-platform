@@ -8,33 +8,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    Form,
-    Header,
-    HTTPException,
-    Request,
-    UploadFile,
-)
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from app import repositories, session_actions
-from app.auth import (
-    AuthPrincipal,
-    is_ai_admin,
-    require_principal,
-    sign_principal_session,
-    verify_principal_session,
-)
+from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import (
     EVENT_ENVELOPE_SCHEMA_VERSION,
     standard_trace_id,
 )
 from app.db import transaction
 from app.execution.api import list_public_models
-from app.models import LoginRequest, SessionRenameRequest
+from app.models import SessionRenameRequest
 from app.projection_redaction import (
     PUBLIC_RETIRED_AGENT_ID,
     PUBLIC_RETIRED_SESSION_TITLE,
@@ -49,8 +34,7 @@ from app.public_execution import (
     public_execution_event_from_row,
     validate_public_agent_progress_payload,
 )
-from app.routes.auth import _login_principal
-from app.routes.files import MAX_UPLOAD_BYTES, upload_file as upload_platform_file
+from app.routes.files import MAX_UPLOAD_BYTES
 from app.routes.runs import (
     artifact_card,
     event_visible_to_principal,
@@ -243,6 +227,9 @@ CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
         "agent_progress",
         "Agent progress update",
         "active",
+    ),
+    "commentary.delta": _ChatPublicRunEventProjection(
+        "summary", "commentary", "", "active"
     ),
     "thinking.started": _ChatPublicRunEventProjection(
         "public_activity", "thinking_started", "", "active"
@@ -667,6 +654,7 @@ def _strict_v4_execution_history_payload(
 ) -> dict[str, object] | None:
     if event_type not in {
         "agent.progress",
+        "commentary.delta",
         "thinking.started",
         "thinking.delta",
         "thinking.completed",
@@ -710,6 +698,7 @@ def _public_run_event_envelope(
         raw_event_type
         in {
             "agent.progress",
+            "commentary.delta",
             "thinking.started",
             "thinking.delta",
             "thinking.completed",
@@ -786,6 +775,9 @@ def _public_run_event_envelope(
             if public_progress["lifecycle"] == "completed"
             else "active",
         )
+    if raw_event_type == "commentary.delta" and strict_v4_payload is not None:
+        message = str(strict_v4_payload["delta"])
+        stage = "commentary"
     if raw_event_type.startswith("thinking.") and strict_v4_payload is not None:
         thinking_message = strict_v4_payload.get("delta")
         if not isinstance(thinking_message, str):
@@ -856,6 +848,10 @@ def _persisted_v4_assistant_delta(
         },
         "trace_id": event.get("trace_id"),
         "created_at": event.get("created_at"),
+        "_history_message_identity": (
+            projected["message_id"],
+            projected["stream_incarnation"],
+        ),
     }
 
 
@@ -913,6 +909,7 @@ def _compatibility_events_for_run(
     *,
     user_messages: list[dict[str, Any]] | None = None,
     include_terminal: bool = True,
+    compact_answer_deltas: bool = False,
 ) -> list[_CompatibilityWireEvent]:
     """Build the sole public terminal wire, ordered for live and history replay."""
     compatibility_events, _ = _compatibility_events_for_run_page(
@@ -927,6 +924,7 @@ def _compatibility_events_for_run(
         ),
         user_messages=user_messages,
         include_terminal=include_terminal,
+        compact_answer_deltas=compact_answer_deltas,
     )
     return compatibility_events
 
@@ -940,6 +938,7 @@ def _compatibility_events_for_run_page(
     fold_state: _CompatibilityFoldState,
     user_messages: list[dict[str, Any]] | None = None,
     include_terminal: bool = True,
+    compact_answer_deltas: bool = False,
 ) -> tuple[list[_CompatibilityWireEvent], _CompatibilityFoldState]:
     """Fold one durable page while carrying only public compatibility facts forward."""
     run_id = str(run["id"])
@@ -995,6 +994,11 @@ def _compatibility_events_for_run_page(
         and (projected := _persisted_v4_assistant_delta(run, event)) is not None
     }
     prefer_v4_answer = fold_state.answer_source == "v4"
+    compact_terminal_answer = (
+        compact_answer_deltas
+        and prefer_v4_answer
+        and status in {"succeeded", "failed", "cancelled"}
+    )
     final_answer_position = next(
         (
             position
@@ -1011,6 +1015,59 @@ def _compatibility_events_for_run_page(
         ),
         None,
     )
+    pending_answer_events: list[tuple[int, dict[str, Any]]] = []
+
+    def emit_answer_event(
+        answer_event: dict[str, Any], *, final_answer_delta: bool
+    ) -> None:
+        delta = _assistant_delta_projection(
+            run,
+            answer_event,
+            principal,
+            answer_projector=answer_projector,
+            final_answer_delta=final_answer_delta,
+        )
+        if delta is None:
+            return
+        compatibility_events.append(
+            _CompatibilityWireEvent(
+                id=str(answer_event["id"]),
+                stream_event_type="message:chunk",
+                stream_data=delta,
+                history_event={
+                    "id": answer_event["id"],
+                    "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
+                    "trace_id": str(answer_event.get("trace_id") or trace_id),
+                    "type": "message:chunk",
+                    "event_type": "message:chunk",
+                    "stage": "answer",
+                    "severity": "info",
+                    "visible_to_user": True,
+                    "payload": delta,
+                    "sequence": delta["sequence"],
+                    "data": delta,
+                    "timestamp": answer_event.get("created_at"),
+                    "run_id": run_id,
+                },
+            )
+        )
+
+    def flush_pending_answer_events() -> None:
+        if not pending_answer_events:
+            return
+        # ponytail: public barriers reproject the prefix; materialize terminal
+        # messages if heavily interleaved histories make that cost measurable.
+        last_position, last_event = pending_answer_events[-1]
+        payload = dict(last_event["payload_json"])
+        payload["delta"] = "".join(
+            str(event["payload_json"]["delta"])
+            for _, event in pending_answer_events
+        )
+        emit_answer_event(
+            {**last_event, "payload_json": payload},
+            final_answer_delta=last_position == final_answer_position,
+        )
+        pending_answer_events.clear()
 
     for message in user_messages or []:
         message_id = str(message.get("id") or "")
@@ -1071,6 +1128,7 @@ def _compatibility_events_for_run_page(
             execution_event = public_execution_event_from_row(run_id, event)
             if execution_event is None:
                 continue
+            flush_pending_answer_events()
             event_type = str(event["event_type"])
             compatibility_events.append(
                 _CompatibilityWireEvent(
@@ -1124,37 +1182,19 @@ def _compatibility_events_for_run_page(
                 if raw_event_type != "assistant_delta":
                     continue
                 answer_event = event
-            delta = _assistant_delta_projection(
-                run,
-                answer_event,
-                principal,
-                answer_projector=answer_projector,
-                final_answer_delta=position == final_answer_position,
-            )
-            if delta is None:
-                continue
-            compatibility_events.append(
-                _CompatibilityWireEvent(
-                    id=str(answer_event["id"]),
-                    stream_event_type="message:chunk",
-                    stream_data=delta,
-                    history_event={
-                        "id": answer_event["id"],
-                        "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
-                        "trace_id": str(answer_event.get("trace_id") or trace_id),
-                        "type": "message:chunk",
-                        "event_type": "message:chunk",
-                        "stage": "answer",
-                        "severity": "info",
-                        "visible_to_user": True,
-                        "payload": delta,
-                        "sequence": delta["sequence"],
-                        "data": delta,
-                        "timestamp": answer_event.get("created_at"),
-                        "run_id": run_id,
-                    },
+            if compact_terminal_answer:
+                if (
+                    pending_answer_events
+                    and pending_answer_events[-1][1].get("_history_message_identity")
+                    != answer_event.get("_history_message_identity")
+                ):
+                    flush_pending_answer_events()
+                pending_answer_events.append((position, answer_event))
+            else:
+                emit_answer_event(
+                    answer_event,
+                    final_answer_delta=position == final_answer_position,
                 )
-            )
             continue
         envelope = _public_run_event_envelope(run, event, principal)
         if envelope is None:
@@ -1164,6 +1204,7 @@ def _compatibility_events_for_run_page(
             if public_event_type in seen_public_lifecycle_singletons:
                 continue
             seen_public_lifecycle_singletons.add(public_event_type)
+        flush_pending_answer_events()
         payload = (
             envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}
         )
@@ -1213,6 +1254,7 @@ def _compatibility_events_for_run_page(
             )
         )
 
+    flush_pending_answer_events()
     for artifact in sorted(
         artifacts,
         key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")),
@@ -1328,52 +1370,6 @@ def _lambchat_status(status: str) -> str:
     }.get(status, status)
 
 
-@router.post("/auth/login")
-async def login(request: LoginRequest) -> dict[str, object]:
-    principal = await _login_principal(request)
-    token = sign_principal_session(principal)
-    settings = get_settings()
-    return {
-        "access_token": token,
-        "refresh_token": token,
-        "token_type": "bearer",
-        "expires_in": settings.ai_session_max_age_seconds,
-    }
-
-
-@router.get("/auth/me")
-async def me(
-    principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, object]:
-    return {
-        "id": principal.user_id,
-        "username": principal.user_id,
-        "email": "",
-        "avatar_url": None,
-        "roles": principal.roles,
-        "permissions": principal.permissions,
-        "is_active": True,
-        "metadata": {
-            "display_name": principal.display_name,
-            "source": principal.source,
-        },
-        "created_at": "",
-        "updated_at": "",
-    }
-
-
-@router.post("/auth/refresh")
-async def refresh(payload: dict[str, str]) -> dict[str, object]:
-    principal = verify_principal_session(payload.get("refresh_token") or "")
-    token = sign_principal_session(principal)
-    return {
-        "access_token": token,
-        "refresh_token": token,
-        "token_type": "bearer",
-        "expires_in": get_settings().ai_session_max_age_seconds,
-    }
-
-
 @router.get("/auth/oauth/providers")
 async def oauth_providers() -> dict[str, object]:
     return {
@@ -1435,32 +1431,12 @@ async def permissions() -> dict[str, object]:
 
 @router.get("/agent/models/available")
 async def available_models(
+    response: Response,
     _principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    response.headers["Cache-Control"] = "no-store"
     async with transaction() as conn:
         return await list_public_models(conn)
-
-
-@router.get("/agent/models/")
-async def model_configs() -> dict[str, object]:
-    async with transaction() as conn:
-        catalog = await list_public_models(conn)
-    models = [
-        {**model, "enabled": True, "order": index}
-        for index, model in enumerate(catalog["models"], start=1)
-    ]
-    return {**catalog, "models": models}
-
-
-@router.get("/version")
-async def version() -> dict[str, object]:
-    return {"version": "ai-platform-poc"}
-
-
-@router.get("/projects")
-@router.get("/projects/")
-async def projects() -> list[object]:
-    return []
 
 
 @router.get("/upload/config")
@@ -1490,39 +1466,6 @@ async def upload_config() -> dict[str, object]:
         "allowed_extensions": ["docx", "txt", "pdf"],
         "categories": ["document"],
     }
-
-
-@router.post("/upload/file")
-async def upload_file(
-    file: UploadFile = File(...),
-    folder: str = "uploads",
-    workspace_id: str = Form("default"),
-    session_id: str | None = Form(None),
-    principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, object]:
-    uploaded = await upload_platform_file(
-        file=file,
-        workspace_id=workspace_id,
-        session_id=session_id,
-        principal=principal,
-    )
-    mime_type = file.content_type or "application/octet-stream"
-    return {
-        "key": uploaded.file_id,
-        "file_id": uploaded.file_id,
-        "url": f"/api/ai/files/{uploaded.file_id}",
-        "name": uploaded.name,
-        "type": folder,
-        "mime_type": mime_type,
-        "mimeType": mime_type,
-        "size": uploaded.size_bytes,
-        "sha256": uploaded.sha256,
-    }
-
-
-@router.get("/tools")
-async def tools() -> dict[str, object]:
-    return {"tools": []}
 
 
 @router.get("/roles")
@@ -1702,6 +1645,7 @@ async def session_runs(
 async def session_events(
     session_id: str,
     run_id: str | None = None,
+    compact_message_chunks: bool = False,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
@@ -1778,6 +1722,7 @@ async def session_events(
                     artifacts,
                     principal,
                     user_messages=user_messages_by_run.get(str(run["id"]), []),
+                    compact_answer_deltas=compact_message_chunks,
                 )
             )
     return {
@@ -1822,13 +1767,6 @@ async def generate_title(
 @router.post("/sessions/{session_id}/mark-read")
 async def mark_read(session_id: str) -> dict[str, bool]:
     return {"success": True}
-
-
-@router.post("/chat/sessions/{session_id}/cancel")
-async def cancel_session(session_id: str) -> dict[str, object]:
-    raise HTTPException(
-        status_code=410, detail="session_cancel_unsupported_use_run_cancel"
-    )
 
 
 @router.get("/chat/sessions/{session_id}/status")

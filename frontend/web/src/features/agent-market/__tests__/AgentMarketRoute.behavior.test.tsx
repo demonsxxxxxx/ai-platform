@@ -6,6 +6,7 @@ import React from "react";
 
 import { Permission } from "../../../types/auth.ts";
 import type { AgentProfilePublicProjection } from "../../../types/agentProfile.ts";
+import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb.ts";
 
 const enterpriseProfileFields = {
   starter_prompts: ["帮我处理企业任务"] as string[],
@@ -451,6 +452,7 @@ function installDom() {
     configurable: true,
     value: { userAgent: "node", locks: new TestLockManager() },
   });
+  installBrowserAuthTestDb();
   return { document, window: windowTarget };
 }
 
@@ -472,7 +474,11 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     getPinnedModelIds: modelPublicApi.getPinnedModelIds,
     getActiveNotifications: notificationPublicApi.getActive,
   };
-  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.bootstrapAuthContext = async (request) => ({
+    status: "ready",
+    protocol_version: 2,
+    generation: request.generation,
+  });
   authApi.getCurrentUser = authenticated
     ? async () => ({
         id: "user-a",
@@ -500,10 +506,14 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     has_more: false,
   });
   modelPublicApi.listAvailable = async () => ({
-    models: [],
-    count: 0,
-    enabled_count: 0,
-    default_model_id: null,
+    models: [{
+      id: "model-default",
+      value: "model-default",
+      label: "默认模型",
+    }],
+    count: 1,
+    enabled_count: 1,
+    default_model_id: "model-default",
   });
   modelPublicApi.getPinnedModelIds = async () => [];
   notificationPublicApi.getActive = async () => [];
@@ -552,6 +562,7 @@ test("market search commits Chinese IME text only after composition ends", async
     expected_revision: 1,
     name: `支持助手 ${index + 1}`,
     description: "处理支持请求。",
+    market_tags: [`标签 ${index + 1}`],
     avatar_ref: "builtin:assistant",
     category: "support",
   }));
@@ -593,16 +604,26 @@ test("market search commits Chinese IME text only after composition ends", async
       await Promise.resolve();
     });
 
-    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 9);
-    const pageTwo = container
-      .querySelectorAll("button")
-      .find((button) => button.textContent === "2");
-    assert.ok(pageTwo);
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 10);
+    const moreTags = container.querySelector("details");
+    assert.ok(moreTags, "additional market tags stay reachable without a sidebar");
+    const eighthTag = moreTags.querySelectorAll("button")
+      .find((button) => button.textContent?.includes("标签 8"));
+    assert.ok(eighthTag);
     await React.act(async () => {
-      pageTwo.dispatchEvent({ type: "click", bubbles: true });
+      eighthTag.dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
     });
-    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    assert.match(currentPath, /tag=%E6%A0%87%E7%AD%BE\+8/);
+    const allTags = container.querySelector("[data-agent-market-filter]")?.querySelectorAll("button")
+      .find((button) => button.textContent?.trim() === "全部");
+    assert.ok(allTags);
+    await React.act(async () => {
+      allTags.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    assert.equal(currentPath, "/agent-market");
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 10);
 
     const search = container.querySelector("[data-agent-market-search]");
     assert.ok(search);

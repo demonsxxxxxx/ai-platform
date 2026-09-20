@@ -170,6 +170,24 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
     assert "source_file_id" not in str(card)
     assert "storage_key" not in str(card)
 
+    selected = artifact_card(
+        {
+            "id": "artifact-selected",
+            "artifact_type": "document",
+            "label": "customer-summary.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "storage_key": "tenants/private/customer-summary.docx",
+            "size_bytes": 18,
+            "manifest_version": "ai-platform.artifact-manifest.v1",
+            "manifest_json": {"delivery_scope": "assistant_response"},
+            "created_at": None,
+        },
+        principal=principal(),
+    )
+    assert selected["label"] == "customer-summary.docx"
+    assert selected["manifest"] == {}
+    assert "delivery_scope" not in str(selected)
+
     admin_step = run_step_response(
         {
             "id": "step-a",
@@ -287,6 +305,17 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert public_terminal_projection(
         "failed", "capability_lifecycle_sequence_invalid"
     )["detail_code"] == "required_capability_unavailable"
+
+
+def test_unconfirmed_mcp_execution_terminal_projection_forbids_blind_retry():
+    projection = public_terminal_projection(
+        "failed", "mcp_execution_succeeded_receipt_incomplete"
+    )
+
+    assert projection["detail_code"] == "tool_execution_outcome_unconfirmed"
+    assert projection["error_code"] == "tool_execution_outcome_unconfirmed"
+    assert "请勿重试" in projection["message"]
+    assert "mcp_execution" not in str(projection)
 
 
 def test_terminal_projection_has_one_runs_owner_and_preserves_fences():

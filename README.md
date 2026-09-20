@@ -44,15 +44,38 @@ curl http://127.0.0.1:8020/api/ai/health
 
 ## Company Login
 
-The frontend shell should call the platform login endpoint and let the platform
-validate credentials through the existing account service. Use real credentials
-only in local curl/runtime input; do not commit them.
+The frontend shell first establishes the V2 browser auth context, then submits
+company credentials with the same HttpOnly context cookie. Use real credentials
+only in local curl/runtime input; do not commit them. This PowerShell example
+uses a temporary cookie jar because `ai_platform_auth_context` is server-owned:
 
 ```powershell
-curl -i -X POST http://127.0.0.1:8020/api/ai/auth/login `
-  -H "Content-Type: application/json" `
-  -d "{\"user_name\":\"<work-id>\",\"password\":\"<password>\"}"
-curl -b "ai_platform_session=<cookie>" http://127.0.0.1:8020/api/ai/auth/me
+$cookieJar = Join-Path $env:TEMP "ai-platform-auth-cookies.txt"
+Remove-Item $cookieJar -ErrorAction SilentlyContinue
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+function New-AuthContextToken {
+  $bytes = New-Object byte[] 32
+  $rng.GetBytes($bytes)
+  [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
+}
+$bootstrap = @{
+  nonce = New-AuthContextToken
+  protocol_version = 2
+  browser_incarnation = New-AuthContextToken
+  generation = 1
+} | ConvertTo-Json -Compress
+$rng.Dispose()
+$login = @{
+  user_name = "<work-id>"
+  password = "<password>"
+} | ConvertTo-Json -Compress
+
+curl.exe -i -c $cookieJar -b $cookieJar -X POST http://127.0.0.1:8020/api/ai/auth/bootstrap `
+  -H "Content-Type: application/json" --data-raw $bootstrap
+curl.exe -i -c $cookieJar -b $cookieJar -X POST http://127.0.0.1:8020/api/ai/auth/login `
+  -H "Content-Type: application/json" --data-raw $login
+curl.exe -b $cookieJar http://127.0.0.1:8020/api/ai/auth/me
+Remove-Item $cookieJar -ErrorAction SilentlyContinue
 ```
 
 ## Smoke test
@@ -64,10 +87,8 @@ curl http://127.0.0.1:8020/api/ai/ready
 ```
 
 Compose runs the same migration command as a one-shot dependency before the API
-or worker starts. The authenticated `/admin/apply-schema` route remains only as
-an emergency-compatible wrapper around the versioned migration runner. See
-`docs/architecture/single-enterprise-data-lifecycle.md` for the identity,
-schema, retention, and rollback contract.
+or worker starts. See `docs/architecture/single-enterprise-data-lifecycle.md`
+for the identity, schema, retention, and rollback contract.
 
 ## Worker
 
@@ -88,9 +109,9 @@ same-origin `/api/*` requests from that entry. The
 frontend reverse proxy routes those requests to the platform API. Do not point
 the frontend at a non-platform backend or a temporary API proxy.
 
-The platform exposes frontend-compatible `/api/auth/login`, `/api/auth/me`,
-`/api/auth/refresh`, `/api/chat/stream`, `/api/sessions/*`, and `/api/upload/*`
-routes. The documented login flow is company-account login.
+The platform exposes the V2 context-bound auth routes under `/api/ai/auth/*`,
+current chat/session routes, and canonical `/api/ai/files*` upload routes. The
+documented login flow is company-account login.
 
 Frontend source lives under `frontend/web` for source ownership and
 backend/worker/frontend same-commit review. This does not create a new runtime

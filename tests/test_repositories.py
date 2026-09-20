@@ -34,6 +34,7 @@ from app.platform.postgres.sandbox_leases import (
     create_sandbox_lease,
     fence_sandbox_lease_release,
     list_expired_active_sandbox_leases,
+    record_opensandbox_renewal_receipt,
     record_sandbox_executor_heartbeat,
     record_sandbox_executor_terminal,
 )
@@ -3896,7 +3897,7 @@ async def test_create_context_snapshot_preserves_private_context_manifest_refs_w
         },
     )
 
-    persisted_payload = json.loads(conn.params[-1])
+    persisted_payload = json.loads(conn.params[-2])
     assert persisted_payload["context_manifest"]["recent_messages"] == [
         {"message_id": "msg-a", "requires_retrieval": True}
     ]
@@ -5923,8 +5924,8 @@ async def test_create_context_snapshot_sanitizes_payload_and_summary_before_inse
     )
 
     _sql, params = conn.calls[0]
-    inserted_summary = json.loads(params[-2])
-    inserted_payload = json.loads(params[-1])
+    inserted_summary = json.loads(params[-3])
+    inserted_payload = json.loads(params[-2])
     assert inserted_summary == {"source": "internal", "note": "authorization=[redacted-secret]"}
     assert inserted_payload == {
         "window": "current",
@@ -9756,6 +9757,48 @@ async def test_sandbox_executor_heartbeat_renews_only_unexpired_attempt_lease():
 
 
 @pytest.mark.asyncio
+async def test_opensandbox_renewal_receipt_is_provider_and_attempt_fenced():
+    class RecordingConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return SingleRowCursor(None)
+
+    conn = RecordingConnection()
+    expiration = datetime.now(timezone.utc) + timedelta(minutes=30)
+    assert await record_opensandbox_renewal_receipt(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        provider_expires_at=expiration,
+    ) is None
+
+    sql, params = conn.calls[0]
+    assert "provider_renewed_at = now()" in sql
+    assert "provider_expires_at = %s" in sql
+    assert "provider = 'opensandbox'" in sql
+    assert "status = 'active'" in sql
+    assert "attempt_id = %s" in sql
+    assert "(expires_at is null or expires_at > now())" in sql
+    assert "executor_terminal_json is null" in sql
+    assert params == (expiration, "lease-a", "tenant-a", "run-a", "attempt-a")
+    with pytest.raises(ValueError, match="timezone_invalid"):
+        await record_opensandbox_renewal_receipt(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            lease_id="lease-a",
+            provider_expires_at=datetime.now(),
+        )
+    assert len(conn.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_sandbox_executor_terminal_receipt_is_attempt_fenced_and_idempotent():
     class TerminalConnection:
         def __init__(self):
@@ -11199,7 +11242,7 @@ async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable
 
 
 @pytest.mark.asyncio
-async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_drift():
+async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_drift(monkeypatch):
     manifests = [
         {
             "skill_id": skill_id,
@@ -11217,19 +11260,18 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
         )
     ]
     refs = repositories.skill_manifest_refs(manifests)
+    stored_rows = [
+        {
+            "skill_id": item["skill_id"],
+            "materialization_sha256": repositories.skill_manifest_materialization_sha256(item),
+            "manifest_json": item,
+        }
+        for item in reversed(manifests)
+    ]
 
     class Cursor:
         async def fetchall(self):
-            return [
-                {
-                    "skill_id": item["skill_id"],
-                    "materialization_sha256": repositories.skill_manifest_materialization_sha256(
-                        item
-                    ),
-                    "manifest_json": item,
-                }
-                for item in reversed(manifests)
-            ]
+            return stored_rows
 
     class Connection:
         async def execute(self, sql, params):
@@ -11237,6 +11279,17 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
             assert params == ("tenant-a", "run-a")
             return Cursor()
 
+    from app.skills import pinning
+
+    hash_manifest = pinning.skill_manifest_materialization_sha256
+    hash_count = 0
+
+    def counted(manifest):
+        nonlocal hash_count
+        hash_count += 1
+        return hash_manifest(manifest)
+
+    monkeypatch.setattr(pinning, "skill_manifest_materialization_sha256", counted)
     loaded = await repositories.materialize_run_skill_manifests(
         Connection(),
         tenant_id="tenant-a",
@@ -11245,6 +11298,7 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
     )
 
     assert [item["skill_id"] for item in loaded] == ["primary", "dependency"]
+    assert hash_count == len(manifests)
     with pytest.raises(
         RepositoryConflictError,
         match="run_skill_materialization_identity_mismatch",

@@ -15,7 +15,6 @@ export { FilesContentSkeleton, FilesPageSkeleton } from "./FilesSkeletons";
 export { PanelHeaderSkeleton } from "./PanelHeaderSkeleton";
 export {
   SkillsPanelSkeleton,
-  MarketplacePanelSkeleton,
   RolesPanelSkeleton,
   MCPPanelSkeleton,
   ChannelsPanelSkeleton,

@@ -126,7 +126,7 @@ def _patch_route(
     monkeypatch.setattr(
         callbacks.ContextRetrievalAuthority,
         "for_broker_connection",
-        staticmethod(lambda conn, storage: authority),
+        staticmethod(lambda conn, storage, *, storage_io: authority),
     )
     return calls
 

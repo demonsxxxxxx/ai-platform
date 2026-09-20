@@ -5,7 +5,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app import repositories
-from app.context.api import MAX_CONVERSATION_CONTEXT_CANDIDATES
+from app.context.api import (
+    ConversationSourceChain, ProviderSessionScope, claim_provider_lineage,
+    load_ready_checkpoint, validate_authority_receipt,
+)
 from app.context.file_continuity import snapshot_file_ids
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
@@ -574,7 +577,43 @@ async def record_initial_context_snapshot(
     legacy_history_excluded = False
     history_candidate_count = 0
     history_authorized_count = 0
+    conversation_authority: dict[str, Any] | None = None
     if include_session_history:
+        current_run = await repositories.get_authorized_run(
+            conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id,
+        )
+        if (
+            current_run is None
+            or current_run.get("workspace_id") != workspace_id
+            or current_run.get("session_id") != session_id
+            or current_run.get("agent_id") != agent_id
+        ):
+            raise repositories.RepositoryConflictError("conversation_authority_scope_invalid")
+        try:
+            await claim_provider_lineage(
+                conn, scope=ProviderSessionScope(tenant_id, workspace_id, user_id, session_id, agent_id),
+                run_id=run_id,
+            )
+        except ValueError as exc:
+            raise repositories.RepositoryConflictError(str(exc)) from exc
+        scope = {"tenant_id": tenant_id, "workspace_id": workspace_id, "user_id": user_id,
+                 "session_id": session_id, "agent_id": agent_id}
+        try:
+            base = await load_ready_checkpoint(conn, scope=scope, run_id=run_id)
+        except ValueError as exc:
+            raise repositories.RepositoryConflictError(str(exc)) from exc
+        chain = ConversationSourceChain(
+            scope=scope,
+            through_session_generation=current_run.get("session_generation"),
+            current_run_id=run_id,
+            current_message_id=(included_message_ids[-1] if included_message_ids else None),
+            predecessor_digest=base["source_sha256"] if base else None,
+            base_checkpoint_id=base["id"] if base else None,
+            base_checkpoint_summary_sha256=base["summary_sha256"] if base else None,
+            predecessor_message_count=base["message_count"] if base else 0,
+            predecessor_range_start=base["range_start"] if base else None,
+            predecessor_range_end=base["range_end"] if base else None,
+        )
         history_candidate_count = await repositories.count_session_context_messages(
             conn,
             tenant_id=tenant_id,
@@ -583,30 +622,28 @@ async def record_initial_context_snapshot(
             session_id=session_id,
             run_id=run_id,
         )
-        session_messages = await repositories.list_session_context_messages(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-            limit=MAX_CONVERSATION_CONTEXT_CANDIDATES,
-        )
-        current_message_ids = {message_id for message_id in included_message_ids if message_id}
-        history_message_ids = list(
-            dict.fromkeys(
-                str(row.get("id") or "")
-                for row in session_messages
-                if isinstance(row, dict)
-                and row.get("id")
-                and str(row.get("id") or "") not in current_message_ids
-                and str(row.get("run_id") or "") != run_id
+        while True:
+            page = await repositories.list_session_context_messages(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                limit=4,
+                oldest_first=True,
+                after_created_at=chain.range_end["created_at"] if chain.range_end else None,
+                after_id=chain.range_end["id"] if chain.range_end else None,
             )
-        )[-MAX_CONVERSATION_CONTEXT_CANDIDATES:]
-        history_authorized_count = len(history_message_ids)
-        included_message_ids = list(
-            dict.fromkeys([*history_message_ids, *included_message_ids])
-        )
+            if len(page) > 4 or sum(len(str(row.get("content") or "").encode("utf-8")) for row in page) > 1024 * 1024:
+                raise repositories.RepositoryConflictError("conversation_source_page_invalid")
+            chain.add_page(page)
+            if len(page) < 4:
+                break
+        if chain.predecessor_message_count + chain.message_count != history_candidate_count:
+            raise repositories.RepositoryConflictError("conversation_authority_range_invalid")
+        history_authorized_count = history_candidate_count
+        conversation_authority = validate_authority_receipt(chain.receipt())
         if include_session_files:
             session_files = await repositories.list_session_context_files(
                 conn,
@@ -779,6 +816,7 @@ async def record_initial_context_snapshot(
             **memory_policy_summary,
         },
         payload_json=summary,
+        conversation_authority_json=conversation_authority,
     )
     public_manifest = public_context_manifest_projection(summary["context_manifest"])
     context_ref = {

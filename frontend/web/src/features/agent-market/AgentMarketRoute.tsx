@@ -26,7 +26,6 @@ import {
   selectPublishedMarketProfile,
 } from "./agentMarketSelection";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
-import { Pagination } from "../../components/common/Pagination";
 
 type LoadPhase = "loading" | "ready" | "error" | "unavailable";
 interface LoadState<T> {
@@ -43,7 +42,6 @@ function loadState<T>(key: string, value: T, phase: LoadPhase = "loading", error
 }
 
 const MARKET_CATALOG_LOAD_ERROR = "暂时无法加载已发布的专家，请稍后重新加载。";
-const MARKET_PAGE_SIZE = 9;
 type MarketView = "grid" | "list";
 type MarketSort = "default" | "tasks" | "recent";
 
@@ -221,11 +219,11 @@ function ExpertMarketCard({
   return (
     <article
       data-agent-market-card
-      className={`group flex min-w-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_3px_rgba(15,23,42,0.05)] transition-[border-color,box-shadow] hover:border-[var(--theme-primary)] hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
-        listView ? "sm:flex-row" : "min-h-72"
+      className={`group flex min-w-0 flex-col overflow-hidden rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_3px_rgba(15,23,42,0.05)] [content-visibility:auto] [contain-intrinsic-size:0_17rem] transition-[border-color,box-shadow] hover:border-[var(--theme-primary)] hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)] ${
+        listView ? "sm:min-h-36 sm:flex-row" : "min-h-[17rem]"
       }`}
     >
-      <div className={`flex min-w-0 flex-1 flex-col p-5 ${listView ? "sm:min-w-0 sm:flex-row sm:gap-6" : ""}`}>
+      <div className={`flex min-w-0 flex-1 flex-col p-4 ${listView ? "sm:min-w-0 sm:flex-row sm:gap-6" : ""}`}>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex items-start gap-3">
             <AgentIdentityAvatar
@@ -237,7 +235,7 @@ function ExpertMarketCard({
             />
             <div className="min-w-0 flex-1">
               <div className="flex items-start justify-between gap-2">
-                <h2 className="line-clamp-2 text-base font-semibold leading-6 text-[var(--theme-text)]">
+                <h2 className="line-clamp-2 break-words text-sm font-semibold leading-5 text-[var(--theme-text)]">
                   {profile.name}
                 </h2>
                 <div className="flex shrink-0 items-center gap-1">
@@ -274,11 +272,11 @@ function ExpertMarketCard({
             </div>
           </div>
 
-          <p className="mt-4 line-clamp-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
+          <p className="mt-3 line-clamp-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
             {profile.description || "已由管理员发布。"}
           </p>
 
-          <div className="mt-5 flex items-center gap-3 border-t border-[var(--theme-border)] pt-3 text-xs">
+          <div className="mt-auto flex items-center gap-3 border-t border-[var(--theme-border)] pt-3 text-xs">
             <span className="text-[var(--theme-text-secondary)]">已完成任务</span>
             <strong className="tabular-nums text-[var(--theme-text)]">
               {completedTasks.toLocaleString("zh-CN")}
@@ -287,7 +285,7 @@ function ExpertMarketCard({
         </div>
       </div>
       <div
-        className={`grid gap-3 border-t border-[var(--theme-border)] p-4 sm:p-5 ${
+        className={`grid gap-2 border-t border-[var(--theme-border)] p-3 ${
           listView ? "sm:w-64 sm:grid-cols-1 sm:border-l sm:border-t-0" : "grid-cols-2"
         }`}
       >
@@ -332,7 +330,6 @@ function AgentMarketCatalog({
   const searchQuery = searchParams.get("q") ?? "";
   const [searchInput, setSearchInput] = useState(searchQuery);
   const isSearchComposing = useRef(false);
-  const [page, setPage] = useState(1);
   const [view, setView] = useState<MarketView>("grid");
   const [sort, setSort] = useState<MarketSort>("default");
   const [tagSearch, setTagSearch] = useState("");
@@ -380,20 +377,6 @@ function AgentMarketCatalog({
     });
   }, [activeTab, activeTags, catalog.value, searchQuery, sort]);
 
-  const pageCount = Math.max(1, Math.ceil(visibleProfiles.length / MARKET_PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount);
-  const paginatedProfiles = useMemo(
-    () => visibleProfiles.slice(
-      (currentPage - 1) * MARKET_PAGE_SIZE,
-      currentPage * MARKET_PAGE_SIZE,
-    ),
-    [currentPage, visibleProfiles],
-  );
-
-  useEffect(() => {
-    if (page !== currentPage) setPage(currentPage);
-  }, [currentPage, page]);
-
   const handleOpenWorkspace = useCallback(
     (profile: AgentProfilePublicProjection) => {
       navigate(buildAgentMarketWorkspacePath(profile));
@@ -414,7 +397,6 @@ function AgentMarketCatalog({
         for (const selectedTag of selectedTags) next.append("tag", selectedTag);
         next.delete("tab");
       }
-      setPage(1);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -426,7 +408,6 @@ function AgentMarketCatalog({
       if (tab === "tags") next.delete("tab");
       else next.set("tab", "favorites");
       if (tab === "favorites") next.delete("tag");
-      setPage(1);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -437,7 +418,6 @@ function AgentMarketCatalog({
       const next = new URLSearchParams(searchParams);
       if (query) next.set("q", query);
       else next.delete("q");
-      setPage(1);
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -456,170 +436,86 @@ function AgentMarketCatalog({
   }, [refresh]);
   const handleSort = useCallback((nextSort: MarketSort) => {
     setSort(nextSort);
-    setPage(1);
   }, []);
   const handleView = useCallback((nextView: MarketView) => {
     setView(nextView);
   }, []);
   const handleClearFilters = useCallback(() => {
-    setPage(1);
     setSort("default");
     setTagSearch("");
     setSearchParams(new URLSearchParams(), { replace: true });
   }, [setSearchParams]);
 
   return (
-    <main data-agent-market className="min-h-0 flex-1 overflow-y-auto bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]">
-      <div className="flex w-full flex-col px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-        <header className="flex flex-col gap-4 lg:flex-row lg:items-center lg:gap-7">
-          <div className="min-w-0 lg:w-60 lg:shrink-0">
-            <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-semibold">专家市场</h1>
-            </div>
+    <main data-agent-market className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--theme-workbench-canvas)]">
+      <div className="flex w-full flex-col min-h-0 flex-1 overflow-hidden px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <header className="shrink-0 grid gap-4 lg:grid-cols-[minmax(12rem,1fr)_minmax(0,34rem)_minmax(6rem,1fr)] lg:items-center">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold">专家市场</h1>
             <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">找到最适合您项目的专家伙伴</p>
           </div>
-          <div className="relative min-w-0 flex-1">
-            <div className="flex items-center gap-2 lg:absolute lg:right-0 lg:top-0">
-              <button
-                aria-label="刷新专家目录"
-                className="btn-secondary inline-flex items-center gap-2"
-                disabled={catalog.phase === "loading"}
-                onClick={handleRefresh}
-                type="button"
-              >
-                <RefreshCw
-                  size={16}
-                  className={catalog.phase === "loading" ? "animate-spin" : undefined}
-                  aria-hidden="true"
-                />
-                刷新
-              </button>
-            </div>
-            <form
-              className="mt-4 flex h-10 w-full overflow-hidden rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] focus-within:border-[var(--theme-primary)] focus-within:ring-2 focus-within:ring-[var(--theme-primary)]/20 lg:mx-auto lg:mt-0 lg:max-w-[43rem]"
-              onSubmit={(event) => {
-                event.preventDefault();
-                handleSearch(searchInput);
+          <form
+            className="flex h-10 min-w-0 overflow-hidden rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] focus-within:border-[var(--theme-primary)] focus-within:ring-2 focus-within:ring-[var(--theme-primary)]/20"
+            onSubmit={(event) => {
+              event.preventDefault();
+              handleSearch(searchInput);
+            }}
+          >
+            <label className="sr-only" htmlFor="agent-market-search">搜索专家</label>
+            <input
+              id="agent-market-search"
+              data-agent-market-search
+              aria-label="搜索专家"
+              className="min-w-0 flex-1 bg-transparent px-4 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)]"
+              maxLength={160}
+              onChange={(event) => handleSearchInput(event.target.value)}
+              onCompositionStart={() => {
+                isSearchComposing.current = true;
               }}
+              onCompositionEnd={(event) => {
+                isSearchComposing.current = false;
+                const query = event.currentTarget.value;
+                setSearchInput(query);
+                handleSearch(query);
+              }}
+              placeholder="搜索专家名称、说明或标签…"
+              type="search"
+              value={searchInput}
+            />
+            <button
+              aria-label="提交搜索"
+              className="inline-flex w-12 shrink-0 items-center justify-center bg-[var(--theme-primary)] text-white transition-colors hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white"
+              type="submit"
             >
-              <label className="sr-only" htmlFor="agent-market-search">搜索专家</label>
-              <input
-                id="agent-market-search"
-                data-agent-market-search
-                aria-label="搜索专家"
-                className="min-w-0 flex-1 bg-transparent px-4 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)]"
-                maxLength={160}
-                onChange={(event) => handleSearchInput(event.target.value)}
-                onCompositionStart={() => {
-                  isSearchComposing.current = true;
-                }}
-                onCompositionEnd={(event) => {
-                  isSearchComposing.current = false;
-                  const query = event.currentTarget.value;
-                  setSearchInput(query);
-                  handleSearch(query);
-                }}
-                placeholder="搜索专家名称、说明或标签…"
-                type="search"
-                value={searchInput}
-              />
-              <button
-                aria-label="提交搜索"
-                className="inline-flex w-12 shrink-0 items-center justify-center bg-[var(--theme-primary)] text-white transition-colors hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white"
-                type="submit"
-              >
-                <Search aria-hidden="true" size={17} />
-              </button>
-            </form>
-          </div>
+              <Search aria-hidden="true" size={17} />
+            </button>
+          </form>
+          <button
+            aria-label="刷新专家目录"
+            className="btn-secondary inline-flex w-fit items-center gap-2 justify-self-end"
+            disabled={catalog.phase === "loading"}
+            onClick={handleRefresh}
+            type="button"
+          >
+            <RefreshCw
+              size={16}
+              className={catalog.phase === "loading" ? "animate-spin" : undefined}
+              aria-hidden="true"
+            />
+            刷新
+          </button>
         </header>
 
-        <div className="mt-6 grid gap-7 lg:grid-cols-[15rem_minmax(0,1fr)]">
-          <aside className="h-fit rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold">筛选条件</h2>
-              <button
-                className="text-xs text-[var(--theme-primary)] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-                onClick={handleClearFilters}
-                type="button"
-              >
-                重置
-              </button>
-            </div>
-            <div className="mt-4 border-t border-[var(--theme-border)] pt-4">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-xs font-semibold">标签筛选</h3>
-              </div>
-              <label className="relative mt-3 block">
-                <span className="sr-only">搜索标签</span>
-                <Search
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
-                  size={14}
-                />
-                <input
-                  aria-label="搜索标签"
-                  className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-8 pr-2 text-xs text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary)]/20"
-                  onChange={(event) => setTagSearch(event.target.value)}
-                  placeholder="搜索标签…"
-                  type="search"
-                  value={tagSearch}
-                />
-              </label>
-              <div
-                data-agent-market-filter
-                aria-label="市场标签"
-                className="mt-3 space-y-1"
-                role="group"
-              >
+        <div className="mt-5 flex min-h-0 min-w-0 flex-1 flex-col">
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="shrink-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 sm:p-4">
+              <div data-agent-market-filter aria-label="市场标签" className="flex flex-wrap items-center gap-2" role="group">
                 <button
                   aria-pressed={activeTab === "tags" && activeTags.length === 0}
-                  className={`flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${
-                    activeTab === "tags" && activeTags.length === 0
-                      ? "bg-[var(--theme-primary)] text-white"
-                      : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
-                  }`}
-                  onClick={() => handleTag(null)}
-                  type="button"
-                >
-                  <span>全部</span>
-                </button>
-                {filteredMarketTags.map((tag) => (
-                  <button
-                    aria-pressed={activeTab === "tags" && activeTags.includes(tag)}
-                    className={`flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs transition-colors ${
-                      activeTab === "tags" && activeTags.includes(tag)
-                        ? "bg-[var(--theme-primary)] text-white"
-                        : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
-                    }`}
-                    key={tag}
-                    onClick={() => handleTag(tag)}
-                    type="button"
-                  >
-                    <span className="min-w-0 flex-1 truncate">{tag}</span>
-                    <span className="tabular-nums text-[11px] opacity-70">{tagCounts.get(tag)}</span>
-                  </button>
-                ))}
-              </div>
-              {marketTags.length === 0 ? (
-                <p className="mt-3 text-xs text-[var(--theme-text-secondary)]">暂无可用标签</p>
-              ) : null}
-            </div>
-          </aside>
-
-          <section className="min-w-0">
-            <div className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4 sm:p-5">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-sm font-semibold">热门标签</h2>
-                <span className="text-xs text-[var(--theme-text-secondary)]">{marketTags.length} 个标签</span>
-              </div>
-              <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-                <button
-                  aria-pressed={activeTab === "tags" && activeTags.length === 0}
-                  className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${
+                  className={`min-h-9 rounded-md border px-3 text-xs transition-colors ${
                     activeTab === "tags" && activeTags.length === 0
                       ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
-                      : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
+                      : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)]"
                   }`}
                   onClick={() => handleTag(null)}
                   type="button"
@@ -629,24 +525,44 @@ function AgentMarketCatalog({
                 {hotTags.map((tag) => (
                   <button
                     aria-pressed={activeTab === "tags" && activeTags.includes(tag)}
-                    className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${
+                    className={`flex min-h-9 max-w-full items-center gap-1 rounded-md border px-3 text-xs transition-colors ${
                       activeTab === "tags" && activeTags.includes(tag)
                         ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
-                        : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)] hover:text-[var(--theme-primary)]"
+                        : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)]"
                     }`}
                     key={tag}
                     onClick={() => handleTag(tag)}
                     type="button"
                   >
-                    {tag}
-                    <span className="tabular-nums opacity-70">{tagCounts.get(tag)}</span>
+                    <span className="truncate" title={tag}>{tag}</span> <span className="shrink-0 tabular-nums opacity-70">{tagCounts.get(tag)}</span>
                   </button>
                 ))}
+                {activeTags.filter((tag) => !hotTags.includes(tag)).map((tag) => (
+                  <button key={tag} aria-pressed={true} className="min-h-9 max-w-full truncate rounded-md border border-[var(--theme-primary)] bg-[var(--theme-primary)] px-3 text-xs text-white" onClick={() => handleTag(tag)} type="button">
+                    {tag}
+                  </button>
+                ))}
+                {marketTags.length > hotTags.length ? (
+                  <details className="max-w-full">
+                    <summary className="flex min-h-9 cursor-pointer items-center rounded-md border border-[var(--theme-border)] px-3 text-xs text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)]">更多标签</summary>
+                    <div className="mt-2 w-56 max-w-[calc(100vw-4rem)] rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-2 shadow-sm">
+                      <input aria-label="搜索标签" className="mb-2 h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-2 text-xs outline-none focus:border-[var(--theme-primary)]" onChange={(event) => setTagSearch(event.target.value)} placeholder="搜索标签" type="search" value={tagSearch} />
+                      <div className="max-h-48 space-y-1 overflow-y-auto">
+                        {filteredMarketTags.filter((tag) => !hotTags.includes(tag) && !activeTags.includes(tag)).map((tag) => (
+                          <button key={tag} aria-pressed={false} className="flex min-h-8 w-full items-center justify-between rounded-md px-2 text-left text-xs hover:bg-[var(--theme-hover)]" onClick={() => handleTag(tag)} type="button">
+                            <span className="truncate">{tag}</span><span className="ml-2 tabular-nums">{tagCounts.get(tag)}</span>
+                          </button>
+                        ))}
+                        {filteredMarketTags.every((tag) => hotTags.includes(tag) || activeTags.includes(tag)) ? <p className="p-2 text-xs text-[var(--theme-text-secondary)]">没有匹配标签</p> : null}
+                      </div>
+                    </div>
+                  </details>
+                ) : null}
+                <button className="ml-auto min-h-9 px-2 text-xs text-[var(--theme-text-secondary)] hover:text-[var(--theme-primary)]" onClick={handleClearFilters} type="button">重置筛选</button>
               </div>
-            </div>
 
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <div aria-label="排序方式" className="flex flex-wrap items-center gap-2" data-agent-market-sort role="group">
+              <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-[var(--theme-border)] pt-3">
+                <div aria-label="排序方式" className="flex flex-wrap items-center gap-2" data-agent-market-sort role="group">
                 <span className="text-xs text-[var(--theme-text-secondary)]">排序方式</span>
                 <button
                   data-agent-market-favorites
@@ -706,9 +622,11 @@ function AgentMarketCatalog({
                   </button>
                 </div>
               </div>
+              </div>
             </div>
 
-        {catalog.phase === "error" ? (
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            {catalog.phase === "error" ? (
           <CatalogError error={catalog.error ?? MARKET_CATALOG_LOAD_ERROR} refresh={handleRefresh} />
         ) : catalog.phase === "loading" ? (
           <p aria-live="polite" className="py-8 text-sm text-[var(--theme-text-secondary)]">
@@ -741,9 +659,9 @@ function AgentMarketCatalog({
             <section
               aria-label="已发布专家"
               data-agent-market-catalog
-              className={view === "grid" ? "mt-4 grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] gap-4" : "mt-4 flex flex-col gap-4"}
+              className={view === "grid" ? "mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5" : "mt-4 flex flex-col gap-3"}
             >
-              {paginatedProfiles.map((profile) => (
+              {visibleProfiles.map((profile) => (
                 <ExpertMarketCard
                   key={`${profile.agent_id}:${profile.expected_revision}`}
                   profile={profile}
@@ -765,16 +683,9 @@ function AgentMarketCatalog({
                 />
               ))}
             </section>
-            <div className="mt-6">
-              <Pagination
-                page={currentPage}
-                pageSize={MARKET_PAGE_SIZE}
-                total={visibleProfiles.length}
-                onChange={setPage}
-              />
-            </div>
           </>
         )}
+            </div>
           </section>
         </div>
       </div>

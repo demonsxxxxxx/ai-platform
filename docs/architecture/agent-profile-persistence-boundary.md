@@ -127,6 +127,14 @@ Historical tool calls do not restore current capabilities. Worker dispatch and
 Run replay reauthorize the exact profile pin against current principal, Agent,
 Skill, and MCP authority before execution.
 
+Executor reconciliation snapshots persist only the non-secret profile identity
+needed to bind recovery to the original admission: `agent_id`, immutable
+`revision` and `content_hash`, plus the resolved Skill version pins. They never
+persist private instructions or executable MCP configuration. Reconciliation
+validates that identity against the durable Run input, reloads the exact private
+profile from `AgentProfileAuthority`, and fails before executor dispatch if the
+snapshot, Run, or current authority no longer agrees.
+
 ## 6. Persistence Contract
 
 `app.agent_apps.infrastructure.postgres` is the sole SQL owner for:
@@ -158,6 +166,7 @@ an upgraded database exposes one write contract.
 - Skill and MCP identifiers are accepted only from the immutable authorized
   profile definition.
 - Conversation and Run pins cannot silently advance to another publication.
+- Recovery snapshots cannot substitute for private Profile reauthorization.
 - Database errors do not trigger alternate write paths.
 - Deployment applies the schema before starting application processes built for
   this contract.

@@ -96,7 +96,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                       const isActive = opt.value === value;
                       const optColor =
                         THINKING_LEVEL_COLOR[String(opt.value)] ??
-                        THINKING_LEVEL_COLOR.off;
+                        THINKING_LEVEL_COLOR.auto;
                       return (
                         <button
                           key={String(opt.value)}
@@ -187,9 +187,9 @@ export const AgentOptionButton = memo(function AgentOptionButton({
     };
 
     const ActiveIcon = IconComponent || Brain;
-    const isOff = String(value) === "off";
+    const isAuto = String(value) === "auto";
     const levelColor =
-      THINKING_LEVEL_COLOR[String(value)] ?? THINKING_LEVEL_COLOR.off;
+      THINKING_LEVEL_COLOR[String(value)] ?? THINKING_LEVEL_COLOR.auto;
 
     return (
       <div ref={dropdownRef}>
@@ -198,7 +198,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
           onClick={() => setShowDropdown(!showDropdown)}
           className="chat-tool-btn"
           style={
-            isOff
+            isAuto
               ? undefined
               : {
                   borderColor: levelColor.border,
@@ -245,7 +245,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                       const isActive = opt.value === value;
                       const optColor =
                         THINKING_LEVEL_COLOR[String(opt.value)] ??
-                        THINKING_LEVEL_COLOR.off;
+                        THINKING_LEVEL_COLOR.auto;
                       return (
                         <button
                           key={String(opt.value)}
