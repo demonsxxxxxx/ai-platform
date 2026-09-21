@@ -32,14 +32,14 @@ async def transaction():
     yield object()
 
 
-def authority():
+def authority(*, state="confirmed"):
     return StreamAuthority(
         "tenant-a",
         "run-a",
         "attempt-a",
         "scope-a",
         1,
-        "confirmed",
+        state,
         "sev-open",
         "{}",
         "digest",
@@ -458,6 +458,7 @@ async def test_v4_missing_authority_distinguishes_startup_from_terminal_run(
         monkeypatch,
         run={"id": "run-a", "session_id": "session-a", "status": run_status},
     )
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 0.001)
 
     async def missing_authority(conn, *, tenant_id, run_id):
         return None
@@ -471,7 +472,185 @@ async def test_v4_missing_authority_distinguishes_startup_from_terminal_run(
     assert error.headers == {
         "X-SSE-Error-Code": code,
         "X-SSE-Retryable": str(retryable).lower(),
+        **({"Retry-After": "1"} if run_status == "running" else {}),
     }
+
+
+@pytest.mark.asyncio
+async def test_v4_pending_authority_waits_before_acquiring_lease(monkeypatch):
+    patch_authority(monkeypatch)
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 1)
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_POLL_SECONDS", 0)
+    pending = authority(state="admission_pending")
+    states = [pending, authority()]
+    observed_states = []
+    acquire_calls = []
+
+    async def get_authority(conn, *, tenant_id, run_id):
+        current = states.pop(0)
+        observed_states.append(current.state)
+        return current
+
+    async def acquire(conn, **kwargs):
+        acquire_calls.append(kwargs)
+        assert observed_states[-1] == "confirmed"
+        return lease()
+
+    monkeypatch.setattr(route, "get_stream_authority", get_authority)
+    monkeypatch.setattr(route, "acquire_sse_authority_lease", acquire)
+
+    _, body = await connect(FakeBridge(terminal_rows()))
+
+    assert "event: stream.open\n" in body
+    assert observed_states == ["admission_pending", "confirmed"]
+    assert len(acquire_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_v4_pending_authority_timeout_is_retryable_with_retry_after(monkeypatch):
+    patch_authority(monkeypatch)
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 0.001)
+
+    async def pending_authority(conn, *, tenant_id, run_id):
+        return authority(state="admission_pending")
+
+    monkeypatch.setattr(route, "get_stream_authority", pending_authority)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request_for(FakeBridge([])),
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "sse_stream_not_confirmed",
+        "retryable": True,
+    }
+    assert exc_info.value.headers["Retry-After"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_v4_terminal_run_with_pending_authority_fails_closed(monkeypatch):
+    patch_authority(
+        monkeypatch,
+        run={"id": "run-a", "session_id": "session-a", "status": "succeeded"},
+    )
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 1)
+
+    async def pending_authority(conn, *, tenant_id, run_id):
+        return authority(state="admission_pending")
+
+    monkeypatch.setattr(route, "get_stream_authority", pending_authority)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request_for(FakeBridge([])),
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+
+    assert exc_info.value.detail == {
+        "code": "sse_run_already_terminal",
+        "retryable": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_v4_slow_lease_admission_respects_startup_deadline(monkeypatch):
+    patch_authority(monkeypatch)
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 0.001)
+    cancelled = False
+    completed = False
+
+    async def slow_acquire(conn, **kwargs):
+        nonlocal cancelled, completed
+        try:
+            await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        completed = True
+        return lease()
+
+    monkeypatch.setattr(route, "acquire_sse_authority_lease", slow_acquire)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request_for(FakeBridge([])),
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+
+    assert exc_info.value.detail == {
+        "code": "sse_stream_not_confirmed",
+        "retryable": True,
+    }
+    assert exc_info.value.headers["Retry-After"] == "1"
+    assert cancelled is True
+    assert completed is False
+
+
+@pytest.mark.asyncio
+async def test_v4_missing_authority_terminal_run_does_not_wait(monkeypatch):
+    patch_authority(
+        monkeypatch,
+        run={"id": "run-a", "session_id": "session-a", "status": "succeeded"},
+    )
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 1)
+
+    async def missing_authority(conn, *, tenant_id, run_id):
+        return None
+
+    monkeypatch.setattr(route, "get_stream_authority", missing_authority)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request_for(FakeBridge([])),
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+
+    assert exc_info.value.detail == {
+        "code": "sse_run_already_terminal",
+        "retryable": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_v4_missing_run_fails_closed_before_admission_wait(monkeypatch):
+    patch_authority(monkeypatch)
+
+    async def missing_run(conn, *, tenant_id, user_id, run_id):
+        return None
+
+    monkeypatch.setattr(route.repositories, "get_authorized_run", missing_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route.chat_session_stream(
+            "session-a",
+            "run-a",
+            request_for(FakeBridge([])),
+            principal=AuthPrincipal(
+                user_id="user-a", display_name="User", tenant_id="tenant-a"
+            ),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "run_not_found"
 
 
 @pytest.mark.asyncio
