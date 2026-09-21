@@ -156,14 +156,10 @@ export function MessagePartRenderer({
 
   // Summary block
   if (part.type === "summary") {
-    const panelKey = `summary:${part.agent_id || "root"}:${part.depth || 0}:${
-      part.summary_id || "default"
-    }`;
     return (
       <SummaryItem
         content={part.content}
         isStreaming={isStreaming && isLast && part.isStreaming}
-        panelKey={panelKey}
       />
     );
   }

@@ -14,7 +14,6 @@ test("classifies every work activity without hiding answers, artifacts, or actio
     "execution_step",
     "execution_process",
     "todo",
-    "summary",
   ] as const) {
     assert.equal(isWorkActivityPart({ type } as MessagePart), true, type);
   }
@@ -25,6 +24,7 @@ test("classifies every work activity without hiding answers, artifacts, or actio
     "artifact",
     "run_status",
     "tool_permission",
+    "summary",
   ] as const) {
     assert.equal(isWorkActivityPart({ type } as MessagePart), false, type);
   }

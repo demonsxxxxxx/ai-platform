@@ -23,6 +23,25 @@ test("keeps streaming text object identity stable without using mutable content 
   assert.doesNotMatch(secondKey, /first token|second token/);
 });
 
+test("renders public commentary inline instead of behind a work-details control", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      isStreaming: true,
+      part: {
+        type: "summary",
+        content: "正在检查授权输入。",
+        isStreaming: true,
+        summary_id: "summary-1",
+      } satisfies MessagePart,
+    }),
+  );
+
+  assert.match(markup, /data-message-commentary/);
+  assert.match(markup, /正在检查授权输入/);
+  assert.doesNotMatch(markup, /<button|aria-expanded/);
+});
+
 test("renders public tool metadata without raw arguments or results", () => {
   for (const [category, label, canonicalName] of [
     ["skill", "使用 Skill", "QA Review"],

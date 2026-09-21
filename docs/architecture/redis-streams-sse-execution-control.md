@@ -50,35 +50,36 @@ Runs owns business success. Optional files use `attach_file` and Artifact
 validation independently of text; neither a JSON object nor prose creates an
 artifact record.
 
-The existing adapter sends classified tool-using Assistant text as
-`commentary.delta`, with a stable summary identity. History preserves that
-projection, and the current UI folds it with work activity after completion.
-It does not enter the answer receipt. Hidden reasoning, raw tool arguments and
-results, private runtime values, credentials and approvals remain excluded.
+The current adapter sends every accepted Claude Assistant text fragment through
+`message.delta`; later Tool use does not reclassify or withdraw the text.
+Explicit platform-authored public summaries and retained history may still use
+`commentary.delta`, with a stable summary identity. The UI renders that summary
+inline while keeping Tool and execution activities foldable. Commentary does
+not enter the answer receipt. Hidden reasoning, raw tool arguments and results,
+private runtime values, credentials and approvals remain excluded.
 Intentional non-sensitive code and task references in Assistant prose are not
 raw tool data; apply the owning Chat content policy rather than a blanket path
 or JSON ban.
 
-There is an implementation gap: raw partial text can enter `message.delta`
-before later typed fragments establish a tool-using turn. A typed
-`AssistantMessage` can describe one block, not the entire turn. Waiting for a
-complete turn can prevent misclassification but delays visible text; it is not
-the desired product contract. The
-[message-parts proposal](../implementation/streaming-message-parts-design.md)
-separates immediate public text from final-answer selection. It is a versioned
-migration, not an already active v4 change or permission to bypass the gate.
+The raw projector treats `AssistantMessage` as a typed block observation, not a
+raw framing boundary, because it can precede the corresponding block stop.
+Text deltas pass the stateful public-answer gate immediately; typed TextBlock and
+`ResultMessage.result` only reconcile missing suffixes. The
+[streaming message design](../implementation/streaming-message-parts-design.md)
+defines this v4 behavior and the source exclusions that keep tool input, results
+and Thinking out of the body.
 
 Keep the current callback, schema, history and renderer tests for v4 consumers.
 New regression coverage must distinguish raw deltas, typed block observations,
 message stop, SDK result, exact answer receipt and platform Run terminal.
-The proposal owns replacement tests, resource bounds and the retirement of
-whole-turn buffering and mixed answer/narration semantics.
+Focused regression tests own raw/typed ordering, stateful redaction, resource
+bounds and the retirement of whole-turn buffering.
 
 The former structured-output-only commentary description is retired as current
 guidance; the anchor above remains for document links. Existing v4 event readers
-remain for their identified live and historical consumers until coordinated
-cutover. A documentation correction alone changes no runtime, schema or
-rollback behavior.
+remain for their identified live and historical consumers. This repair retires
+only Claude whole-turn buffering and tool-based text reclassification; it does
+not change the wire schema, storage migration or rollback authority.
 
 ## Change Contract: Compact terminal history hydration
 

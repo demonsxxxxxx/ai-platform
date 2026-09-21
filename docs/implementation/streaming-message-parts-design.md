@@ -1,50 +1,51 @@
-# Agent 流式消息与最终交付架构整改方案
+# Agent 流式消息与最终交付架构
 
-状态：待实现的产品与技术方案。本文不宣称协议已经升级、代码已经整改或运行时已经验收。
-现行 SSE v4 仍由 [wire contract](../architecture/redis-streams-sse-wire-protocol.md)
-定义；传输、授权和终态继续由 [execution control](../architecture/redis-streams-sse-execution-control.md)
-及 [ADR 0013](../adr/0013-redis-stream-only-sse.md) 负责。
-本文拥有下一版消息片段模型、迁移顺序和验收要求；实施时同步更新详细合同，避免两套规范并行生效。
+状态：PR #1562 的实现合同。本文描述代码应实现的 v4 行为，不代表该行为已经部署或经过真实浏览器验收。
+SSE envelope、授权、重放和终态分别继续由
+[wire contract](../architecture/redis-streams-sse-wire-protocol.md)、
+[execution control](../architecture/redis-streams-sse-execution-control.md) 和
+[ADR 0013](../adr/0013-redis-stream-only-sse.md) 负责。
 
-## 1. 产品决定
+## 1. 产品合同
 
 公开的 Assistant 文字应边生成边显示，包括计划、过程说明、阶段发现和最终回答。
-某段文字后面出现工具调用，不构成隐藏该文字的理由。
-“可以展示”“属于最终答复”“工具确实执行成功”“Run 成功”是四个不同判断。
+后续出现工具调用不改变已经公开文字的归属，也不构成延迟或隐藏该文字的理由。
 
 | 内容 | 普通用户看到什么 | 发布依据 |
 | --- | --- | --- |
-| Assistant 的公开文字 | 有序追加的文字，生成中即可阅读；结束后仍保留 | 已识别的公开文本来源，通过增量脱敏和持久化 |
-| 工具、Skill、MCP、子任务活动 | 类别、获准公开的名称、执行状态、进度、耗时；完成后可以折叠 | 平台验证的生命周期事件 |
-| 最终答复 | 保留在正文中，支持单独复制；不把前面所有文字都算入最终答复 | 经平台验证的最终片段选择 |
-| 文件 | 消息末尾的附件卡片，零个或多个 | Agent 显式 `attach_file`，平台验证、保存并授权 |
-| 执行脚本、命令参数、stdout/stderr、原始工具结果 | 不进入普通用户事件；必要结果由 Assistant 解释或显式文件交付 | 私有执行证据边界 |
-| 用户要求的代码、示例路径、JSON 示例 | 作为正常回答展示；不按代码围栏、后缀或关键词整体屏蔽 | 内容来源与具体敏感值判断 |
-| 隐藏模型推理、系统提示词、凭据、其他主体数据 | 不展示 | 既有权限和披露边界 |
+| Assistant 的公开文字 | 生成中有序追加，结束后保留在正文 | SDK text block，经增量脱敏和公共事件持久化 |
+| 平台生成的公开过程摘要 | 在正文中直接可见，不要求再点开面板 | 明确的 `commentary.delta` 生产者，经相同公开边界校验 |
+| 工具、Skill、MCP、子任务活动 | 获准公开的类别、名称、状态、进度和耗时；完成后可折叠 | 平台验证的生命周期事件 |
+| 文件 | 回复末尾零个或多个附件卡片 | Agent 显式 `attach_file`，平台验证、保存并授权 |
+| 脚本、命令参数、stdout/stderr、工具输入和原始结果 | 不进入普通用户文本事件 | 私有执行证据边界 |
+| 用户要求的代码、JSON 示例和非敏感路径 | 作为正常 Assistant 回答显示 | 内容来源与具体敏感值判断 |
+| Thinking、系统提示词、凭据和其他主体数据 | 不展示 | 既有权限和披露边界 |
 
-执行中工具详情展开，结束后可折叠工具活动。公开过程文字默认保留在对话正文中，
-不因完成、失败、取消或最终答复确定而消失。`ThinkingBlock` 不作为“过程说明”的来源。
-具体内网路径、私有 Skill 标识和密钥继续替换；不能用“出现斜杠就是泄漏”删除正常技术回答。
-拒绝原始工具事件是后端职责，不能只把这些字段放在前端折叠面板里。
+“用户可以看到文字”“工具执行成功”“Run 成功”“存在可下载文件”是不同事实。
+公开文字在失败或取消后仍可保留；工具和 Run 的真实状态单独展示。
+`ThinkingBlock` 不是公开过程说明来源。后端必须拒绝原始工具事件，不能把敏感字段送到前端后再依靠折叠隐藏。
+
+普通聊天不要求 `structured_output`。结构化输出适合机器消费的任务模式，不能作为普通文字流或附件清单的唯一来源。
+文件交付仍是按需能力：没有文件时不附带；有最终产物时由 Agent 显式调用 `attach_file`；工作目录扫描、Skill `output/` 目录和 JSON 临时文件都不能自动成为交付物。
 
 ## 2. 开源项目证据与采用边界
 
-以下为 2026-09-21 核验的一手文档及固定源码，不构成产品排名或本项目运行时证据。
+以下机制于 2026-09-21 从官方文档和固定源码核验。它们说明成熟 Agent 产品普遍把文字增量、工具生命周期和最终完成分开建模；它们不构成本项目的运行时验收。
 
-| 项目 | 已核实机制 | 本项目采用什么 |
+| 项目 | 已核实机制 | 本项目采用的原则 |
 | --- | --- | --- |
-| Vercel AI SDK | `text-start/delta/end` 共用文本 ID，step 和整条流完成分离，UIMessage 使用 parts | 稳定片段身份、增量文本、明确关闭边界 |
-| LangGraph | messages 流提供 token 与调用元数据；状态更新、工具/custom 事件分开；checkpointer 负责状态恢复 | 区分来源、文字和执行状态；不把 token 流当持久化保证 |
-| LibreChat | SSE 的 delta/content handler 在 final handler 前更新 message content；工具作为独立内容部分 | 中间文字先显示、结束后封存，实时与历史使用相同内容模型 |
-| OpenCode | 消息由 Text/Tool/File 等 part 组成，delta 按 messageID/partID 更新；step finish 独立 | 按身份追加与更新，附件独立，结束不重新拼整段正文 |
-| Claude Agent SDK | partial StreamEvent 提供文本增量；一个 AssistantMessage 可能只覆盖一个完成的 block；结构化结果在终态返回 | 适配真实 block 顺序，不把一个 typed fragment 当成完整 turn |
+| Vercel AI SDK | `text-start/delta/end` 使用同一文本 ID；step 和整条流完成分开 | 文本增量立即可见，结束事件只封存 |
+| LangGraph | messages 流提供 token；状态更新、工具和 custom 事件分开；checkpointer 负责恢复 | 文字、执行状态和持久化职责分离 |
+| LibreChat | delta/content handler 在 final handler 前更新消息；工具是独立内容部分 | 中间文字先显示，终态不重新覆盖整段正文 |
+| OpenCode | Text/Tool/File 等 part 分开；delta 按 message/part 身份更新 | 工具和附件不混入文本正文 |
+| Claude Agent SDK | partial StreamEvent 提供文本增量；typed AssistantMessage 可能在对应 block stop 前出现 | raw block 事件拥有 framing；typed 消息只用于补全和对账 |
 
 主要出处：
 
 - AI SDK：[流协议](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol)、
   [UIMessage](https://ai-sdk.dev/docs/reference/ai-sdk-core/ui-message)、
   [TextStreamPart 固定源码](https://github.com/vercel/ai/blob/c391be3192fd5cb74db4bc8225e50ff56925bd19/packages/ai/src/generate-text/stream-text-result.ts#L2129-L2337)。
-- LangGraph：[流模式与来源过滤](https://docs.langchain.com/oss/python/langgraph/streaming)、
+- LangGraph：[流模式](https://docs.langchain.com/oss/python/langgraph/streaming)、
   [持久化](https://docs.langchain.com/oss/python/langgraph/persistence)、
   [StreamPart 固定源码](https://github.com/langchain-ai/langgraph/blob/448a76377956534a85a56b7c2d8aed0e55d9ee44/libs/langgraph/langgraph/types.py#L2646-L2704)。
 - LibreChat：[useSSE](https://github.com/danny-avila/LibreChat/blob/86c5884c0f6c7ee50409d6b7abb27c569a275621/client/src/hooks/SSE/useSSE.ts#L122-L214)、
@@ -54,239 +55,123 @@
   [UI reducer](https://github.com/anomalyco/opencode/blob/70a24697ea0028e19f22712fd63059538cb4bee7/packages/app/src/context/global-sync/event-reducer.ts#L272-L388)。
 - Claude SDK：[官方消息时序及 streaming 限制](https://code.claude.com/docs/en/agent-sdk/streaming-output)。
 
-借鉴事件和内容模型，不复制它们的权限策略：某项目可展开原始工具结果或 reasoning，
-不意味着本项目普通用户应收到这些字段。LangGraph checkpoint 不是本项目的 SSE replay log；
-OpenCode 的 live-only delta 也不能替换本项目已提交公共事件的持久化约定。
-不新增 Agent 框架，不更换 Claude SDK，不为这次整改增加消息中间件。
+本项目只借鉴内容与事件分离原则。外部项目展示原始工具结果或 reasoning，不改变本项目的权限边界；LangGraph checkpoint 也不能替代本项目 PostgreSQL 公共账本和 Redis SSE replay。
 
-## 3. 当前问题与整改结论
+## 3. 当前 v4 方案
 
-代码锚点以下列符号为准；具体审核 SHA 和验证结果保留在任务或 PR 中。
-
-| 位置 | 当前问题 | 整改 |
-| --- | --- | --- |
-| `claude_agent_sdk_runner.py` 的 StreamEvent/AssistantMessage 分支 | 主线先把 partial 送入 answer，后来才知道该 turn 含工具；可能双投为 answer/commentary | 先作为有身份的公开 text part 发布，最终角色单独确定 |
-| `claude_stream_projection.py::AssistantAnswerTimeline` | 把多个来源拼接，再用前缀关系补全；内容相等不能证明同一来源 | source message/block 身份对账，Result 不重新拼整场对话 |
-| PR #1562 的 `queue_stream_turn` | 等 typed fragment，甚至等下一 message 或 Result 才 flush；修分类时牺牲了增量可见性 | 保留 block/turn 关联校验，移除“必须确定 final 才能公开 text”的前提 |
-| `ClaudeSdkAgentEventAdapter` 与 `v4.py` 的 answer receipt | 固定单一 message 的 `message.*` 被重建为答案；没有独立的最终片段引用 | 增加最终选择与对应 receipt，公开文字不自动成为最终答案 |
-| `protocol_v4.py`、schema、`TextPart` | 缺少独立 text part ID、关闭状态、最终选择 | 用有版本的 parts 协议协调升级 |
-| `eventProcessor.ts`、`SummaryItem.tsx`、`MessagePartRenderer.tsx` | commentary 进 summary，最终被收起；与持续可见的过程文字要求不同 | 文字留正文；折叠只作用于工具/执行活动 |
-| `historyLoader.ts` 与终态 hydrate | 依赖当前 message/summary 映射 | live/replay/history 共用 part reducer；按身份和水位对账 |
-| SSE execution-control、SDK upgrade 文档 | 整改前仍声明 structured_output 为答复和附件唯一来源 | 本次文档修正为普通文本 Result 与显式 attach_file，并标明迁移目标 |
-
-早前合成测试里的同 ID 冲突 stop reason、重复 block index、raw/typed ID 不一致，
-属于必须补齐的防御性校验；未取得真实 provider trace 时，不宣称其正常生产可达。
-PR #1562 的累计私有文本缓冲确实缺少局部上限；新方案采用有界增量投影，
-避免只给整轮缓冲再添加一个更大的上限。
-
-## 4. 目标边界与数据流
+这次整改继续使用闭合的公共协议 v4，不增加事件版本、数据库迁移或第二条流。
+现有 `message.started`、`message.delta`、`message.completed` 已能表达一个持续追加的公开 Assistant 正文；工具、公开摘要和附件已有独立事件。
 
 ```mermaid
 flowchart LR
-  SDK[Claude SDK 私有事件] --> N[SDK adapter: message/block 身份与类型]
-  N --> P[公开投影: 文本脱敏 / 工具状态 / 附件引用]
-  N --> E[私有能力执行证据]
-  P --> C[现有 callback: PostgreSQL 事件与 receipt]
-  C --> R[现有 Redis Stream]
+  SDK[Claude SDK 私有事件] --> F[raw block framing]
+  F -->|text delta| G[公开文本脱敏 gate]
+  F -->|thinking / tool JSON| X[丢弃公开文本候选]
+  G --> C[现有串行 callback]
+  C --> P[PostgreSQL 公共事件]
+  P --> R[Redis Stream]
   R --> S[API SSE]
-  S --> UI[统一 parts reducer]
-  C --> H[授权 history / hydrate]
-  H --> UI
-  E --> RUN[Runs 终态校验]
-  C --> RUN
+  S --> UI[前端 message parts]
+  SDK --> T[平台 tool hooks 与 receipts]
+  T --> C
+  SDK --> A[显式 attach_file]
+  A --> C
 ```
 
-- Execution owns SDK 适配、公开来源归属、脱敏、最终片段选择候选。
-- Streaming owns schema、公共事件顺序、现有投递和重放；不判断模型文字是不是结论。
-- Conversations owns 对话内容与最终答复的持久化引用；Runs 仍唯一拥有业务成功/失败。
-- Artifacts owns 显式选中文件的验证、存储和授权下载。
-- 前端仅按已验证身份归并、展示；不根据“总结如下”等文字或文件后缀猜 final。
+### 3.1 Claude SDK 适配
 
-保留 PostgreSQL 提交后 Redis 发布、精确 callback retry、Run/Attempt/lease fence、
-语义 event_id 去重、incarnation 与 Last-Event-ID 校验、gap/hydrate、授权撤销和
-terminal/end 顺序。没有第二条临时文本 SSE、浏览器私有 SDK 通道或后台发布队列。
+1. `include_partial_messages=True` 时，`ClaudeStreamProjector` 只验证 raw message/block framing。
+   它在精确的 text block 内立即返回 `text_delta`，不保存整轮原文，也不判断“过程”或“最终”。
+2. Thinking、tool input JSON、server tool input 和其他非 text block 只用于排除错误来源，其 delta 不进入公开正文。
+3. raw `message_start`、block index、block stop 和 `message_stop` 执行防御性校验。
+   显式 message 内不能重复使用已关闭的 block index；缺失 envelope 的旧测试/兼容序列仍按串行 block 校验。
+4. typed `AssistantMessage` 不是 raw framing 边界。官方顺序允许它先于对应 `content_block_stop` 到达，因此不能在 typed 消息到达时清空 projector。
+5. typed TextBlock 用于补足未观察到的安全后缀，并和已流出的前缀对账；ToolUseBlock 只登记工具身份和公开生命周期。
+6. `ResultMessage.result` 是终态补充观察。它只补充尚未公开的内容；如果它与已公开前缀不同，已显示文字不能回滚，Result 作为后续正文保留。
+7. 同一文本先由 raw delta、后由 typed TextBlock 或 Result 观察时，只发布一次。不同来源即使文字相同也不做全局字符串去重。
 
-## 5. 消息片段协议与最终选择
+所有 Assistant 公开文字统一进入 `message.delta`。后续出现 ToolUseBlock 不把早先正文改写成 `commentary.delta`。
+`commentary.delta` 继续保留给明确的、已经脱敏的公共摘要生产者和历史 v4 记录，不由 Claude turn 的工具分类推断产生。
 
-目标使用新版本公共协议（实施时定义 v5 schema）；SSE 传输方式不变。
-v4 是闭合 schema，不能把新字段塞进旧 envelope 后仍声称兼容。
-以下是待实现的语义，不是已经可发出的事件或手写 schema 的替代品。
+### 3.2 脱敏、失败和终态
 
-| 目标事件 | 核心字段与作用 |
-| --- | --- |
-| `message.started` | 一个 Run 的逻辑 Assistant 回复；与数据库消息 ID 的映射由平台持久化 |
-| `text.started` | `part_id`、公开 `turn_id`；默认未选为最终答复 |
-| `text.delta` | `part_id`、单调 chunk index、增量；仅追加到该 part |
-| `text.completed` | `part_id`、chunk 数、公开文本长度、内容摘要；不携带重复全文 |
-| `text.interrupted` | `part_id`、固定原因码；保留已接收内容，禁止后续追加 |
-| `answer.selected` | 同一回复内有序且已完成的 `part_ids`；不重复正文 |
-| `message.completed` | 关闭整个回复的内容生命周期；不是 Run 成功 |
-| 既有 tool/subagent/policy/artifact 语义 | 携带受控公开字段，独立于文本片段 |
-| `run.*`、`stream.end` | 继续由平台业务终态和传输终态分别负责 |
+`PublicAnswerStreamGate` 仍负责跨 chunk 私有 token、SDK call ID 和敏感后缀的有界处理。
+工具参数和原始结果从未成为输入候选；对普通技术回答不能按代码围栏、JSON 或路径形式整体删除。
 
-一个 part 状态只能 `open → completed` 或 `open → interrupted`，不能重开。
-`answer.selected` 只可一次有效选择；同身份同内容可幂等重放，冲突选择拒绝。
-运行途中保持角色未决不会阻塞显示。工具出现只表示相关 turn 不能被选为最终答复，
-不会撤回其已经公开的文字。
+一旦安全前缀已经提交到公共事件，就不能在工具失败、Run 失败或 Result 不一致时撤回。
+后续终态仍可因工具 receipt、callback ACK、权限或 Run 校验失败而 fail-close；这影响成功判定和附件交付，不伪造已经显示文字从未存在。
+未稳定的短后缀可以留到下一 delta 或终态释放，避免跨 chunk 泄漏，这不等同于整轮缓冲。
 
-内部 key 区分 tenant、Run、Attempt、incarnation、主/子调用命名空间、SDK message ID
-和 block index。公开 `part_id`/`turn_id` 使用平台持有密钥的确定性不透明映射；
-event ID 再绑定事件种类及 chunk index，不暴露内部字段或无密钥哈希。
-首个 part 事件与有界来源映射同事务提交；callback 重试复用原 ID、序号与原字节。
-恢复已有来源时读取已提交映射和水位，不能重新生成一个 part 冒充同一次输出。
+`message.completed` 关闭公开正文，不代表工具或 Run 成功。Worker 继续校验当前 Attempt 的 `AssistantAnswerReceipt`、工具证据和 terminal fence 后才能持久化成功结果。
+answer receipt 覆盖本次 v4 回复中实际提交的完整 Assistant 正文，包括公开过程说明和最终回答。
 
-SDK 缺少可用身份时，只为已验证的串行调用分配单调 source ordinal，分配事实随
-首个 part 提交。进程重启后仅当 SDK 恢复游标能够精确重建来源时才继续同一 part；
-仅有文本相同或本地计数从零开始不满足恢复条件。不能证明连续性时按现有 Attempt
-恢复规则中断旧来源，必要的重执行进入新 Attempt，保留既有公开内容并明确重试归属。
-无法判定归属时只停止该来源的后续文字，不把它绑到上一条或别的主体。
+## 4. 前端展示
 
-### Claude adapter 的处理
+前端继续使用现有 v4 reducer：
 
-1. 开启 `include_partial_messages`，按 `message_start`、block start/delta/stop、
-   message delta/stop 跟踪来源；text delta 经有状态脱敏后尽快提交。
-2. typed `AssistantMessage` 是 block 校验/补充，不一定是 turn 结束。
-   官方文档的顺序允许 typed block 在对应 `content_block_stop` 前到达；
-   因此不能收到 typed fragment 就清空整轮或封闭所有 block。
-3. 工具参数的 JSON delta、工具结果、Thinking 均不得进入 text 通道。
-   工具开始/结束必须来自平台 hook 与验证后的 receipt，
-   `tool_use` block 生成完不等于工具执行完。
-4. typed 完整 block 与 partial 使用同一来源对账，重复观察不再次发全文。
-   用增量计数/摘要核验；若需要补全差异，只在同源且确认前缀连续时追加后缀。
-   冲突不得重绑身份或重放已经拒绝的内容；公开流保留已确认前缀，关闭异常 part。
-5. 平台 adapter 将正确的根调用成功 `ResultMessage` 归一为 completion 候选。
-   子任务通知、message_stop、finish-step 都不等于 Run 结束；SDK 升级时用真实类型与
-   可复核时序 fixture 明确根调用边界，不能仅凭后台任务源码推断有多个根结果。
+- `message.delta` 追加为持续可见的 Markdown 正文；
+- `commentary.delta` 形成的 summary 直接在正文中显示，不再放入“工作详情”折叠面板；
+- tool、subagent、execution step/process 和 todo 属于工作活动，可在完成后折叠；
+- Thinking 和未授权的原始工具字段不渲染；
+- artifact 卡片按消息顺序显示在回复末尾，下载仍走授权接口。
 
-现行 v4 的全局 capability-active 文本闸门在迁移时替换为“来源归属 + block 类型 +
-披露规则”。工具的私有来源始终不发布；若并发消息无法证明属于公开 Assistant，
-停止该来源而不全局阻塞其他合法文字。工具授权、执行证据、外部副作用的成功判定保持原约束。
+实时、Redis 重放、PostgreSQL history 和 terminal hydrate 使用同一 v4 语义 reducer。
+浏览器断线只恢复公共事件和水位，不重新执行 Agent；旧 hydrate 不得覆盖更高水位的 text、tool 状态或附件。
 
-### 最终答复与 receipt
+当前产品不要求在一条回复中另建“仅复制最后一段”的最终片段选择协议。
+如果以后确实需要独立选择多个 final parts、局部复制或跨来源编辑，再以新协议版本协调升级 producer、账本、receipt、history decoder 和前端 reducer；不能把新字段偷偷加入 v4。
 
-`ResultMessage.result` 是普通对话的终态文本观察，不直接覆盖已提交正文，
-也不能单独宣布 Run 成功。adapter 先核验根调用与最后一个可选公开 turn 的身份关系，
-再用同一脱敏规则校验 Result 和已完成 parts 的内容；一致时提交 part 引用选择。
-同样的文本出现在两个不同 turn，仍是两个来源，不做全局字符串去重。
+## 5. 文件交付
 
-若 Result 提供独立最终文本，创建独立来源的 text part，按正常事件发布并关闭后再选择。
-先前文字仍留在原位置；不得把全部 narration 拼成答案或用 Result 替换整个消息。
-若身份/内容对不上，不猜测地提升旧 part 为 final：保留公开过程，明确报告最终内容不可用。
-SDK 只有完整 block/Result 时可以降级为 block 级交付，并标记能力限制，不能声称 token streaming。
+文本完成和文件交付互不依赖。普通成功回答可以没有附件；文件型任务可以有一个或多个显式附件。
 
-最终提交采用现有串行 callback 的 barrier：先确认所选 parts 的关闭事件已提交，
-再在同一当前 Attempt/lease 下，以一个有界 callback batch 原子提交
-`answer.selected`、`message.completed` 和该 batch 的 callback receipt。
-平台在事务内校验同源 completed parts、选择唯一性与最终计数；重复批次幂等，冲突 CAS 拒绝。
-该事务还保存可验证最终答复的引用清单，不能先发布选择再异步补完成记录。
-Redis 发布仍在事务后，ACK 仍遵循现行提交/投递约定；它不与数据库组成分布式事务。
+`attach_file` 接收工作区内受允许的路径及可选展示名、角色和描述。平台验证路径、Skill 边界、数量和传输预算后记录有序 descriptor。
+只有该清单中的文件进入 artifact 存储和前端卡片。下列内容不会自动交付：
 
-新 receipt 引用公共消息、选择事件、parts 的顺序、各 part 的计数/长度/摘要及最终事件边界。
-Worker 从同 Attempt 的已提交公共事实验证，排除 interrupted part、私有来源与未验证选择。
-一条长答复的持久化继续使用有界事件引用；不能为了 receipt 在多个进程保留全文副本。
-`message.completed`、SDK completion、内容选择、callback ACK 和 Run terminal 各自保留独立含义。
-Worker/Runs 在现有终态事务与当前 Attempt CAS 下，验证该 receipt 和必需执行证据后，
-才持久化最终消息关联并提交 Run 成功。公共内容已封存但终态未提交的崩溃窗口，
-由既有 executor terminal/reconciliation 所有者恢复；数据库已有完整选择不代表 SDK
-或工具成功，也不能绕过恢复授权。Redis 发布失败或进程中断仍可读取已提交正文，
-不能凭浏览器收到选择就伪造成功或启动另一个发布调度器。
-失败/取消不产生成功 receipt，但此前合法内容仍可回放；不能把显示过文字当作执行成功。
+- Skill 约定目录中未显式选择的文件；
+- 临时 JSON、缓存、日志、脚本和中间转换产物；
+- 因工作目录扫描发现的文件；
+- 终态校验失败后尚未完成授权发布的文件。
 
-普通对话不要求 `output_format` 或 `structured_output`。机器接口确需结构化结果时，
-由明确任务模式独立消费，不把 partial JSON 当默认聊天正文或附件清单。
-普通成功任务可以只有文本；显式文件交付也应支持附件为主、文字为空的成功结果，
-但必须有已验证完成且可访问的 artifact，不能把空 Result 当作任意成功。
+`structured_output` 可以用于其他机器接口，但不替代 `attach_file`，也不把文件路径自动提升为用户产物。
 
-## 6. 前端、历史与资源边界
+## 6. 被替换的设计与兼容性
 
-前端保存逻辑回复的有序 parts；正文文字、工具活动和附件分别渲染。
-text.delta 按 part 身份和 chunk index 追加，completed 只封存，answer.selected 只更新
-最终答复引用和复制范围。最终答复已有正文不再次创建一个气泡。附件在同一回复末尾排序。
-Markdown/code/link 使用现有受控渲染，不执行 HTML 或把本地路径变成未经授权的下载链接。
+PR #1562 早期实现曾缓存整个 SDK turn，等 typed fragment、下一 message 或 Result 后，再根据 tool use 把文本分类为 answer/commentary。该方案被替换，原因是：
 
-实时、Redis 重放、PostgreSQL history 和 terminal hydrate 共用语义 reducer。
-hydrate 携带同一数据快照下的 parts 与水位；应用时保留快照之后已接受的事件，
-不能因晚到的旧快照覆盖新 delta、取消状态或附件。恢复游标仍只取服务器验证的 Redis anchor，
-不能由数据库 seq 推算。浏览器断线不触发重新执行任务，缺失 Stream 仍走现有 gap/hydrate。
+- 首字必须等待整段边界，产品上不是真正流式；
+- 同一 provider message 可产生多个 typed fragment，typed fragment 也可能先于 raw block stop；
+- 一个后续 ToolUseBlock 会改变先前普通文字的展示位置；
+- `_text_parts` 按整轮累计原文，缺少自然的局部内存上限；
+- Result 前才 flush 会把 transport streaming 退化成终态批量显示。
 
-实现时将下列预算集中定义、验证并压测；数值是待验证的初始配置，不是当前 SLA：
+保留的兼容面：
 
-| 资源 | 初始目标及超限行为 |
-| --- | --- |
-| 单条公开 delta | 保持现行最多 8,192 code points；字节队列限制另算 |
-| 脱敏未决后缀 | 按最大获准敏感 token 长度推导；设显式字节上限，超限关闭该来源并清理 |
-| projector 等待验证的数据 | 每 Run 最多 256 KiB；只存必要尾部、计数和摘要，不累计整轮 |
-| 活跃 part 状态 | 每 Run 最多 64 个；已关闭状态提交后可逐出，异常并发拒绝并记录固定码 |
-| callback backlog | 继承现行事件数/字节/时长界限；新 text.delta 纳入相同 batching 和背压 |
-| UI 额外待绘制队列 | 按帧合并同一 part 的相邻 delta；有界积压时恢复快照，不无限囤积或丢字 |
+- v4 envelope、PostgreSQL/Redis 顺序、Last-Event-ID、gap/hydrate 和 answer receipt；
+- 旧 `commentary.delta` history 的读取与公开 summary 展示；
+- typed-only SDK 模式的完整 TextBlock/Result 补全；
+- 现有 tool/subagent/artifact 事件和显式文件交付。
 
-不能静默截断大答案。完成块的对账如不能在预算内完成，应使用已提交增量摘要与
-有界校验策略；暂存仅在私有、有上限且受生命周期清理的位置，不进入 artifact 收集。
-取消、异常、封闭 part 必须释放私有待定数据。
-测量 SDK 首个安全 delta、callback commit/ACK、SSE write、reducer apply 与浏览器 paint
-的独立时刻。确定性测试证明可见性不等待 typed/Result，真实 p95/p99 由压测建立。
+删除的 live 行为：
 
-## 7. 整改切片与退休清单
+- `ClaudeStreamTurn`、`queue_stream_turn` 和整轮文本缓冲；
+- 因 stop reason 或 ToolUseBlock 把 Claude Assistant 文字重新分类成 commentary；
+- 等 Result 才公开已经通过 raw framing 和脱敏 gate 的文字。
 
-各切片可分 PR 开发；涉及新 producer 的激活必须在配套 reader 和持久化可用后协调进行。
+## 7. 验收边界
 
-| 顺序 | 责任及改动面 | 完成判据 |
-| --- | --- | --- |
-| A：事实与合同 | 修正旧 structured-output 描述；记录真实 SDK block 时序 fixture；冻结 v5 schema/receipt | 全链路接受同一来源身份和结束语义 |
-| B：消息片段基础 | schema generator、Streaming validation、Conversations history、Worker receipt、前端 reducer | 新协议回放/快照/选择测试通过；此时不切 live producer |
-| C：SDK 增量投影 | runner 旁按责任拆 adapter；复用脱敏、公开 tool evidence、callback；退役 AnswerTimeline 全局拼接与整轮等待 | 工具之前和之后文字均在根 Result 前可见且只出现一次 |
-| D：展示与附件 | text 留正文、tool 折叠、final copy、按消息绑定附件；一致 hydrate | 断线、刷新、失败后内容和附件顺序不变 |
-| E：真实链路验收与切换 | pinned SDK、真实 PG/Redis、代理层、浏览器、多实例及取消故障注入 | 不同证据层分开报告，按既有发布 runbook 切换 |
-
-不要只把 #1562 的 `accept()` 返回值重新接回 answer 通道；那会恢复主线的分类污染。
-也不要把所有 partial 当 commentary，然后在终态把相同文字再追加到 answer；
-它会制造重复正文与不同步的历史。#1562 应围绕 parts 方案调整，不能把整轮等待作为最终产品设计。
-
-| 将退休的面 | 保留消费者及退出方式 |
-| --- | --- |
-| partial 直接成为最终答案、typed 再产生 commentary | 新 live producer 只写 text parts；保存旧 v4 只读解码供历史 |
-| 全局 AnswerTimeline 按文本前缀合并不同来源 | 新来源映射及 part 对账接管；旧行为测试换成身份/边界测试 |
-| 为分类长期保存整轮原文 | 有界 sanitizer/part state；超限、取消、异常清理测试 |
-| 新对话继续写 commentary.delta/summary | 新 live 只写 text parts；旧 summary 只读且不能凭文本猜成 final |
-| 固定 message_id 的旧 answer receipt | 按 protocol version 验证历史 v4；新版本只接受选择事件与 parts receipt |
-| 普通聊天强制 structured_output 的文档和遗留命名 | 当前普通文本/attach_file 合同；跨版本字段改名必须列出消费者后迁移 |
-
-### 升级与回退
-
-这是公共内容协议升级，不是替换 Redis 或重新设计 Run。新版本使用生成 schema，
-在现有 stream admission authority 固定不可变协议版本，并绑定 admitted Attempt、
-projection version 和规范 `stream.open`；优先扩展已有 design ID/projection 字段，
-不另建一个独立版本权威。API/Worker/Executor/frontend 从该绑定选择版本，
-不能从当前进程默认配置推断旧 Run 的协议。
-callback candidate、最终 receipt、Redis envelope/读取器、历史 decoder 均校验同一绑定；
-物理 key 的历史 `v3` 前缀不是版本选择器，同一 Run/incarnation 不混写或重新解释 v4/v5。
-未知版本在 producer admission 或 client handshake 阶段拒绝，不能消费一半再忽略新字段。
-历史 v4 decoder 仅用于旧记录和授权 hydrate，不成为第二个 live producer。
-
-切换前停止新 admission 并排空旧 active runs，或由既有 Run authority 明确终止；
-不把旧 cursor 挪到新协议流。数据库变更应可向前兼容并保留旧业务事实；新记录只能由
-认识新版本的 reader 读取。前端旧缓存检测版本不符时刷新客户端，不能静默忽略新事件。
-回退需保留能读新历史的兼容版本；一旦写入新事件，不得直接回到只识别 v4 的旧镜像。
-部署与数据恢复仍服从唯一 release runbook，本方案不新增发布控制器或审批流程。
-
-## 8. 可证伪验收
+确定性测试至少覆盖：
 
 | 场景 | 必须观察到的结果 |
 | --- | --- |
-| 慢速纯文本 | 首个安全 delta 后 UI 开始追加；typed block/Result 尚未到达 |
-| 文字 → Bash/Read → 文字 | 两段文字各出现一次；工具只显示获准公开状态，命令和结果不进公共帧 |
-| 同 message ID 多个 typed fragments | 真实顺序包含 AssistantMessage 先于 block stop；不错误关闭、错绑或重复发全文 |
-| 普通回答含代码/JSON/路径 | 合法示例保持完整；跨 chunk 凭据与私有配置标记仍被替换 |
-| 冲突 identity、index、stop metadata | 不跨来源归并；已有合法前缀保留，异常来源无法成为成功答案 |
-| 多个相同文本来源 | 不因字符串相等去重；只有同事件身份重试去重 |
-| Result 与当前公开 part 相同/不同/缺失 | 同源相同仅选择；独立最终文本单独交付；缺失不猜 final |
-| 无附件、一个附件、多个附件、附件为主 | 普通文字不要求附件；显式选择且存储成功才出现卡片；顺序稳定 |
-| 工具失败、Run 失败、取消 | 保留已确认文字与真实状态，未完成 part 标记 interrupted，不伪造成功 |
-| callback 回应丢失、慢 Redis、背压 | 相同事件/字节重试，无乱序、重复、无界内存或新 publication owner |
-| 首字后/工具中/终态前断线刷新 | 重放和 history 内容一致，旧 hydrate 不覆盖新 delta，不重新执行 |
-| Redis trim/过期、权限撤销 | 现有 gap/hydrate 或关闭语义，无伪造 cursor、越权或重建 Stream |
-| 超长生成、缺失 stop、取消 | 内存有界，队列施加背压，安全释放；无静默正文截断 |
+| 慢速纯文本 | 首个稳定安全 delta 在 typed TextBlock/Result 前进入公开消息 |
+| Thinking → text → tool | Thinking 和工具 JSON 不出现；text 在工具前可见且只出现一次 |
+| AssistantMessage 先于 block stop | projector 不被 typed 边界错误关闭，后续 raw 事件仍可校验 |
+| 文字 → 已验证工具 → 文字 | 两段文字在 Result 前有可见前缀；工具状态独立 |
+| private token 跨两个 delta | 前缀有界保留，最终替换后无原 token |
+| Result 相同、扩展或冲突 | 相同不重放；扩展只补后缀；冲突保留已公开前缀并追加终态观察 |
+| 工具失败、Run 失败、取消 | 已提交安全文字保留，终态和附件不伪造成功 |
+| 无附件、多个附件、Skill output 临时文件 | 只有显式 `attach_file` 清单成为附件，顺序稳定 |
+| SSE 断线、重放、hydrate | 正文、公开摘要、工具和附件顺序一致，不重新执行 |
 
-本地 fixture、生成 schema、reducer 测试验证协议逻辑；真实依赖验收记录原始公共 SSE 帧、
-PG/Redis 顺序与 receipt、浏览器录屏/paint 时刻、故障注入与资源清理。
-缺少实际运行证据时明确保留验收缺口，不能用 CI 全绿代替“用户确实看到流式输出”。
+本地单元测试和生成 schema 验证代码合同。真实 PostgreSQL、Redis、Claude provider、代理层和浏览器 paint 时序必须另做 External Acceptance；CI 通过不能写成已部署或用户端实测完成。

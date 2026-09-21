@@ -11,8 +11,8 @@ Runs/SSE/Chat contracts explicitly replace it. No dependency is changed here.
 The adapter mapping below reflects the current ordinary-text and optional
 `attach_file` contract. Earlier structured-output-only descriptions are retired;
 the upgrade history does not require every conversation to return JSON. The
-[message-parts proposal](../implementation/streaming-message-parts-design.md)
-records the next streaming migration; it is not implemented by this record.
+[streaming message design](../implementation/streaming-message-parts-design.md)
+records the current v4 projection and its compatibility boundary.
 
 ## Historical decision
 
@@ -53,9 +53,9 @@ types used by this adapter.
 | `query` | Keyword `prompt`, `options`, and optional `transport` remain available | The async iterator stays inside the runner adapter |
 | `ClaudeAgentOptions` | Existing model, system prompt, tools, hooks, session, limits, and stream fields remain available | Constructed only after platform admission and Skill-name validation |
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
-| Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` remain adapter inputs; a typed Assistant fragment need not close a whole turn | Ordinary text can be projected; classified tool-using text becomes commentary; Thinking is excluded; raw/typed source correlation needs the migration below |
+| Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` remain adapter inputs; a typed Assistant fragment need not close a whole turn | Raw text deltas stream into the public Assistant body; typed text reconciles missing suffixes; Thinking and non-text deltas are excluded |
 | Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Ordinary `result` text is executor completion input; committed public text and its receipt own streamed content; Runs owns business outcome; files are selected separately |
-| Partial streaming | `include_partial_messages=True` remains supported | Raw text currently feeds the public answer gate; later tool-turn classification exposes a known answer/commentary mismatch; waiting for the entire turn is not a token-streaming solution |
+| Partial streaming | `include_partial_messages=True` remains supported | Raw text feeds the public answer gate immediately; later tool use does not reclassify or withdraw accepted Assistant text |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
@@ -149,8 +149,8 @@ response are unchanged.
 - **Behavior:** every level uses adaptive thinking with `display=omitted`, so the
   model may reason internally without returning Thinking text. The runner does
   not publish returned `ThinkingBlock` text. Ordinary Assistant text feeds the
-  public projection; classified tool-using text may become disclosure-safe
-  `commentary.delta`. Ordinary chat consumes `ResultMessage.result`, while
+  public `message.delta` projection regardless of later tool use. Explicit
+  platform-authored public summaries may still use `commentary.delta`. Ordinary chat consumes `ResultMessage.result`, while
   persisted streamed content is governed by the acknowledged-text/receipt
   contract above. Optional `attach_file` selections are independent. Neither
   ordinary text nor commentary requires structured output. Both frontend

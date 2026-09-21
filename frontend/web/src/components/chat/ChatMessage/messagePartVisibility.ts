@@ -27,7 +27,6 @@ const WORK_ACTIVITY_TYPES: ReadonlySet<MessagePart["type"]> = new Set([
   "execution_step",
   "execution_process",
   "todo",
-  "summary",
 ]);
 
 export function isWorkActivityPart(part: MessagePart): boolean {

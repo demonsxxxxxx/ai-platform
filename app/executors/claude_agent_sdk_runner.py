@@ -52,7 +52,6 @@ from app.execution.api import ClaudeSdkAgentEventAdapter
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
     ClaudeStreamProjector,
-    ClaudeStreamTurn,
 )
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.required_tool_contract import (
@@ -2274,25 +2273,6 @@ async def run_claude_agent_sdk(
                 {call_id: replacement}
             )
 
-    def project_public_commentary(value: str) -> tuple[str, ...]:
-        commentary_replacements = dict(private_replacements)
-        commentary_replacements.update(
-            {
-                path: private_replacement
-                for path in {str(cwd), cwd.as_posix()}
-                if 1 < len(path) <= 512
-            }
-        )
-        gate = PublicAnswerStreamGate(
-            private_replacements=commentary_replacements,
-            sanitizer=sanitize_public_answer_text,
-        )
-        chunks = gate.accept(value)
-        finished = gate.finish(final_text=value, release=True)
-        if gate.failed or gate.projection_omissions:
-            return ()
-        return chunks + finished.chunks
-
     sdk_prompt = prompt
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
@@ -3353,76 +3333,6 @@ async def run_claude_agent_sdk(
         nonlocal last_public_stage, terminal_result_message
         answer_timeline = AssistantAnswerTimeline()
         terminal_answer_empty = False
-        pending_stream_turn: ClaudeStreamTurn | None = None
-        pending_stream_fallback_identity: str | None = None
-
-        async def publish_stream_turn(
-            turn: ClaudeStreamTurn,
-            *,
-            fallback_identity: str,
-        ) -> None:
-            nonlocal last_public_stage
-            if not turn.text:
-                return
-            identity = turn.message_id or fallback_identity
-            if turn.is_commentary:
-                if agent_event_adapter is None:
-                    return
-                last_public_stage = "message"
-                public_commentary = "".join(project_public_commentary(turn.text))
-                if public_commentary:
-                    await publish_agent_candidates(
-                        agent_event_adapter.accept_commentary_text(
-                            public_commentary,
-                            commentary_identity=identity,
-                            already_gated=True,
-                        )
-                    )
-                return
-            last_public_stage = "message"
-            for public_text in answer_stream_gate.accept(
-                answer_timeline.accept_assistant(turn.text)
-            ):
-                await publish_terminal_text(public_text)
-
-        async def flush_pending_stream_turn() -> None:
-            nonlocal pending_stream_turn, pending_stream_fallback_identity
-            if pending_stream_turn is None or pending_stream_fallback_identity is None:
-                return
-            turn = pending_stream_turn
-            fallback_identity = pending_stream_fallback_identity
-            pending_stream_turn = None
-            pending_stream_fallback_identity = None
-            await publish_stream_turn(turn, fallback_identity=fallback_identity)
-
-        async def queue_stream_turn(
-            turn: ClaudeStreamTurn,
-            *,
-            fallback_identity: str,
-        ) -> None:
-            nonlocal pending_stream_turn, pending_stream_fallback_identity
-            current_identity = turn.message_id or fallback_identity
-            if pending_stream_turn is None:
-                pending_stream_turn = turn
-                pending_stream_fallback_identity = fallback_identity
-                return
-            pending_identity = pending_stream_turn.message_id or (
-                pending_stream_fallback_identity or ""
-            )
-            if current_identity != pending_identity:
-                await flush_pending_stream_turn()
-                pending_stream_turn = turn
-                pending_stream_fallback_identity = fallback_identity
-                return
-            pending_stream_turn = ClaudeStreamTurn(
-                text=pending_stream_turn.text + turn.text,
-                message_id=turn.message_id or pending_stream_turn.message_id,
-                stop_reason=turn.stop_reason or pending_stream_turn.stop_reason,
-                parent_tool_use_id=(
-                    turn.parent_tool_use_id or pending_stream_turn.parent_tool_use_id
-                ),
-                has_tool_use=pending_stream_turn.has_tool_use or turn.has_tool_use,
-            )
 
         async for message in messages:
             mcp_registration.check_message(message)
@@ -3469,15 +3379,21 @@ async def run_claude_agent_sdk(
                         raw_stream_event["content_block"].get("id")
                     )
                 if stream_projector is not None:
-                    stream_projector.accept(
-                        raw_stream_event,
-                        parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
-                    )
+                    fragments = stream_projector.accept(raw_stream_event)
+                    for fragment in fragments:
+                        last_public_stage = "message"
+                        for public_text in answer_stream_gate.accept(
+                            answer_timeline.accept_delta(fragment)
+                        ):
+                            await publish_terminal_text(public_text)
                 continue
             if isinstance(message, AssistantMessage):
                 diagnostic_counters["assistant_messages"] += 1
                 assistant_message_id = getattr(message, "message_id", None)
-                if not isinstance(assistant_message_id, str) or not assistant_message_id:
+                if (
+                    not isinstance(assistant_message_id, str)
+                    or not assistant_message_id
+                ):
                     assistant_message_id = getattr(message, "uuid", None)
                 assistant_message_identity = (
                     assistant_message_id
@@ -3485,10 +3401,6 @@ async def run_claude_agent_sdk(
                     else f"assistant_{diagnostic_counters['assistant_messages']}"
                 )
                 assistant_text_blocks = []
-                contains_tool_use = any(
-                    type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}
-                    for block in message.content
-                )
                 for block_index, block in enumerate(message.content):
                     if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
                         register_dynamic_tool_call_id(getattr(block, "id", None))
@@ -3510,46 +3422,12 @@ async def run_claude_agent_sdk(
                     and all(isinstance(text, str) for text in assistant_text_blocks)
                     else None
                 )
-                if stream_projector is not None:
-                    stream_turn = stream_projector.finish_turn(
-                        message_id=assistant_message_id,
-                        stop_reason=getattr(message, "stop_reason", None),
-                        parent_tool_use_id=getattr(
-                            message, "parent_tool_use_id", None
-                        ),
-                        text=assistant_text if assistant_text is not None else "",
-                        has_tool_use=contains_tool_use,
-                    )
-                else:
-                    stream_turn = ClaudeStreamTurn(
-                        text=assistant_text or "",
-                        message_id=assistant_message_id
-                        if isinstance(assistant_message_id, str)
-                        else None,
-                        stop_reason=(
-                            getattr(message, "stop_reason", None)
-                            if isinstance(getattr(message, "stop_reason", None), str)
-                            else None
-                        ),
-                        parent_tool_use_id=(
-                            getattr(message, "parent_tool_use_id", None)
-                            if isinstance(
-                                getattr(message, "parent_tool_use_id", None), str
-                            )
-                            else None
-                        ),
-                        has_tool_use=contains_tool_use,
-                    )
-                if stream_projector is None:
-                    await publish_stream_turn(
-                        stream_turn,
-                        fallback_identity=assistant_message_identity,
-                    )
-                else:
-                    await queue_stream_turn(
-                        stream_turn,
-                        fallback_identity=assistant_message_identity,
-                    )
+                if assistant_text is not None:
+                    last_public_stage = "message"
+                    for public_text in answer_stream_gate.accept(
+                        answer_timeline.accept_assistant(assistant_text)
+                    ):
+                        await publish_terminal_text(public_text)
             elif isinstance(message, ResultMessage):
                 terminal_result_message = message
                 diagnostic_counters["result_messages"] += 1
@@ -3673,8 +3551,6 @@ async def run_claude_agent_sdk(
                         turn_diagnostics=turn_diagnostics(error_code),
                         capability_evidence=list(capability_evidence),
                     )
-                if stream_projector is not None:
-                    await flush_pending_stream_turn()
                 final_answer = str(message.result or "")
                 terminal_answer_empty = not final_answer.strip()
                 try:

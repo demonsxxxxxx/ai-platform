@@ -12,10 +12,10 @@ strict gap/end controls, and frontend cursor acceptance. Execution,
 authorization, direct committed-event publication, schema retirement, and release operations
 remain with their dedicated owners.
 
-The [message-parts migration](../implementation/streaming-message-parts-design.md)
-proposes separating incremental public text from final-answer selection. It is
-not an active v4 extension. The current implementation gap is recorded below;
-schema compatibility alone does not establish correct content or latency.
+The [streaming message design](../implementation/streaming-message-parts-design.md)
+defines how current v4 Assistant text, public summaries, Tool activity and
+artifacts compose in one reply. It does not extend the v4 schema; schema
+compatibility alone still does not establish correct content or latency.
 
 ## Generated protocol authority
 
@@ -48,8 +48,8 @@ they are not interchangeable:
 | SDK `ThinkingBlock` | Provider model-reasoning content | The current runner discards it and `thinking.display` is `omitted` |
 | `ResultMessage.result` | Ordinary-text SDK terminal observation | It cannot overwrite acknowledged public text, validate an artifact, or declare Run success; streamed persistence uses committed rows and an exact receipt |
 | `attach_file` | Optional platform-owned response-file selection action | It publishes zero or more validated deliverables independently of terminal answer text |
-| `message.delta` | Legacy v4 incremental Assistant body chunk, included in the answer receipt | It is rendered as answer text; the current producer can put provisional narration here before tool-turn classification |
-| `commentary.delta` | Disclosure-safe text classified as tool-using Assistant progress | It is rendered as work activity and excluded from the answer receipt; this classification is not a reason to delay all future public text |
+| `message.delta` | V4 incremental Assistant body chunk, included in the answer receipt | Every accepted Claude Assistant text fragment uses this body; later Tool use does not reclassify or withdraw it |
+| `commentary.delta` | Explicit disclosure-safe public summary from an authorized producer | It renders inline and remains excluded from the answer receipt; it is not inferred from a tool-using Claude turn |
 | `thinking.*` | Legacy public-reasoning compatibility events | The current runner does not emit them; retained readers do not make hidden model reasoning public |
 | `model.completed` | Model completion duration, turn-count, and stop-category metadata | It is neither answer content nor Run terminal authority |
 
@@ -80,9 +80,8 @@ most 8,192 code points, and this per-frame bound never becomes a cumulative
 answer cutoff. `message.completed` is metadata-only with
 `{delta_count,text_length}`; its `causation_event_id` identifies the last delta
 and the completion never carries full text. `commentary.delta` is separately
-bounded to 8,192 code points and carries a stable `summary_id`; it is work
-activity from a classified tool-using Assistant observation, not answer content or
-capability evidence. The SDK terminal result closes ordinary assistant text;
+bounded to 8,192 code points and carries a stable `summary_id`; it is an explicit
+public summary, not answer content or capability evidence. The SDK terminal result closes ordinary assistant text;
 optional final files are selected separately through `attach_file` and projected
 as ordered artifact parts after storage succeeds. Worker, API, and frontend
 support for this closed event is deployed release-atomically because older v4
@@ -171,8 +170,8 @@ not persisted publication state, and is stripped at the public boundary.
 The closed Agent-kernel application registry is:
 
 - `message.started`, `message.delta`, `message.completed`;
-- `commentary.delta` for sanitized tool-using Assistant progress rendered as
-  work activity, never terminal answer content;
+- `commentary.delta` for an explicit sanitized public summary rendered inline,
+  never terminal answer content;
 - `thinking.started`, `thinking.delta`, `thinking.completed`, `model.completed`;
 - `agent.progress` for fixed, server-owned execution-phase lifecycle;
 - `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;
@@ -399,24 +398,20 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
 
 ## Change Contract: progressive public Run timeline
 
-### Current implementation gap and proposed replacement
+### Current v4 implementation
 
-V4 has no independent text-part identity and no final-answer selection event.
-Its producer streams partial text into `message.delta` before a later typed
-Assistant fragment can establish tool use; the same turn can subsequently
-produce commentary. The receipt then includes the early narration because it
-was committed as answer text. Delaying all partial publication until typed
-turn completion avoids that path but fails the desired incremental display.
-Neither behavior proves this section's product goal has been reached.
+V4 uses one incremental Assistant body and has no independent final-part
+selection event. Every disclosure-safe Claude text block streams into
+`message.delta`; a later Tool block does not move the text into commentary or
+remove it from the answer receipt. `AssistantMessage` is a typed block
+observation and can precede its raw block-stop event, so only raw events own
+stream framing. Typed text and `ResultMessage.result` reconcile missing suffixes
+without replacing acknowledged public text.
 
-The [message-parts design](../implementation/streaming-message-parts-design.md)
-replaces the coupling through a coordinated future schema and receipt version:
-public text appears immediately after validation, while final selection is a
-separate fact. A text fragment that precedes a tool remains visible. An
-`AssistantMessage` can precede its block-stop event and must not be mistaken for
-the whole turn. The current v4 body/receipt and invocation-interval rules below
-remain compatibility constraints until implementation and cutover; do not
-silently change their meaning or claim the new parts contract is active.
+The [streaming message design](../implementation/streaming-message-parts-design.md)
+defines source exclusions, frontend presentation and file delivery. A future
+requirement for independently selectable final parts would need a coordinated
+schema and receipt version; it is not part of this v4 repair.
 
 ### Existing v4 constraints and acceptance targets
 
@@ -429,14 +424,13 @@ silently change their meaning or claim the new parts contract is active.
   this document, ADR 0012, and their focused tests. The Redis envelope, key,
   cursor, authorization and Run terminal authorities remain unchanged.
   Publication now follows ADR 0013 and the Stream-only execution contract.
-- **Public timeline invariant:** a disclosure-safe Assistant text prefix outside
-  an active Tool invocation becomes a durable `message.delta` without waiting
-  for an `AssistantMessage`, tool completion, or `ResultMessage`. Tool
-  authorization does not disable the SDK stream projector. The exact
-  `PreToolUse` to acknowledged terminal-hook interval remains closed for every
-  admitted read-only or effectful Tool so anomalous in-flight SDK text cannot
-  expose raw Tool output. A terminal receipt releases only the exact matching
-  capability kind, canonical identity, and invocation ID; unrelated or duplicate
+- **Public timeline invariant:** a disclosure-safe Assistant text prefix becomes
+  a durable `message.delta` without waiting for an `AssistantMessage`, tool
+  completion, or `ResultMessage`. Tool authorization and active lifecycle do not
+  disable the SDK stream projector; raw Tool input/result blocks are excluded by
+  source instead of by withholding all contemporaneous Assistant text. A terminal
+  receipt closes only the exact matching capability kind, canonical identity,
+  and invocation ID; unrelated or duplicate
   terminal receipts fail closed. A failed Assistant-body projection remains
   permanently closed, but does not invalidate that exact receipt or suppress the
   corresponding public Tool terminal event. An exact producer-attributed policy
@@ -449,17 +443,17 @@ silently change their meaning or claim the new parts contract is active.
   stream identities remain prohibited. A private Skill identity may project only
   to its catalog-authorized public name, with ASCII characters converted to
   non-colliding full-width forms; opaque and dynamic identities use a generic
-  non-ASCII marker. Exact invocation-interval text is not a public Assistant
-  source under the current v4 invocation gate. Intentional Assistant code and
-  non-sensitive task references follow the Chat content policy. `message.delta`
+  non-ASCII marker. Intentional Assistant code and non-sensitive task references
+  follow the Chat content policy. `message.delta`
   uses stateful cross-chunk sanitization and bounded
   per-frame validation; it has no cumulative answer shutdown. Strict callback
   validation, tool admission, capability receipts, and platform-owned
   terminalization remain fail closed.
 - **Ordering invariant:** public Tool lifecycle events bracket the actual
   invocation. A start commits before execution; a completion or failure commits
-  only after its verified receipt. Subsequent Assistant text commits later in
-  the same PostgreSQL Run-local sequence. The frontend may coalesce only
+  only after its verified receipt. Assistant text may appear before, between, or
+  after those lifecycle events and never serves as execution evidence. Every
+  event commits in the same PostgreSQL Run-local sequence. The frontend may coalesce only
   adjacent text and may advance sequence or cursor only after reducer or
   terminal-hydration acceptance.
 - **Gap recovery invariant:** active same-incarnation
@@ -500,9 +494,8 @@ silently change their meaning or claim the new parts contract is active.
 - **Falsifiable v4 regression target:** an effectful local Tool Run emits a safe
   `message.delta` before `ResultMessage`; a higher-sequence Tool or terminal
   event cannot erase an earlier received delta; and refreshing a failed V4-only
-  Run preserves that delta exactly once. This timing assertion alone does not
-  prove final-answer classification. The parts migration additionally proves
-  visible text before the typed block boundary and separate final selection.
+  Run preserves that delta exactly once. Raw/typed ordering tests additionally
+  prove visible text before the typed block boundary without duplicate replay.
 - **Evidence ceiling:** source and local/CI tests cannot prove real SDK timing,
   proxy flushing, Redis delivery, browser paint, or restart recovery. Those claims
   require an immutable candidate image on the controlled Linux environment and
