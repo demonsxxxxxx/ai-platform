@@ -27,6 +27,18 @@ class WorkerAnswerMaterialization:
     assistant_message_metadata: dict[str, Any]
 
 
+def assistant_artifact_metadata(
+    artifact_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Describe ordered message attachments without embedding links in text."""
+
+    return {
+        "artifact_count": len(artifact_records),
+        "artifact_ids": [artifact["id"] for artifact in artifact_records],
+        "artifact_delivery": "assistant_message_parts_v1",
+    }
+
+
 def sanitize_assistant_message(message: str) -> str:
     """Remove legacy local-path hints without mixing artifacts into answer text."""
 
@@ -143,6 +155,7 @@ async def materialize_worker_answer(
 __all__ = [
     "AnswerPersistenceLimits",
     "WorkerAnswerMaterialization",
+    "assistant_artifact_metadata",
     "materialize_worker_answer",
     "sanitize_assistant_message",
 ]

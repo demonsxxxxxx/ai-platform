@@ -906,21 +906,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             "display": "omitted",
         }
         assert options.effort == "high"
-        yield sdk.StreamEvent(
-            uuid="stream-1",
-            session_id="sdk-session",
-            event={"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
-        )
-        yield sdk.StreamEvent(
-            uuid="stream-2",
-            session_id="sdk-session",
-            event={"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "safe answer"}},
-        )
-        yield sdk.StreamEvent(
-            uuid="stream-3",
-            session_id="sdk-session",
-            event={"type": "content_block_stop", "index": 0},
-        )
         yield sdk.AssistantMessage(
             content=[
                 sdk.ThinkingBlock(
@@ -967,7 +952,6 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
-            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
@@ -1025,7 +1009,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
 
 @pytest.mark.asyncio
-async def test_runner_ignores_ordinary_stream_and_publishes_structured_terminal_answer(
+async def test_runner_streams_and_receipts_ordinary_result_text(
     monkeypatch,
 ):
     import claude_agent_sdk as sdk
@@ -1049,8 +1033,7 @@ async def test_runner_ignores_ordinary_stream_and_publishes_structured_terminal_
     )
     published: list[str] = []
     candidates = []
-    streamed_answer = "a " * 131_073
-    answer = "structured final answer"
+    answer = "ordinary final answer"
 
     async def query_fn(*, prompt, options):
         del prompt, options
@@ -1063,19 +1046,15 @@ async def test_runner_ignores_ordinary_stream_and_publishes_structured_terminal_
                 "content_block": {"type": "text"},
             },
         )
-        for index, offset in enumerate(range(0, len(streamed_answer), 4_096)):
-            yield sdk.StreamEvent(
-                uuid=f"stream-delta-{index}",
-                session_id="sdk-session",
-                event={
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {
-                        "type": "text_delta",
-                        "text": streamed_answer[offset : offset + 4_096],
-                    },
-                },
-            )
+        yield sdk.StreamEvent(
+            uuid="stream-delta",
+            session_id="sdk-session",
+            event={
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": answer},
+            },
+        )
         yield sdk.StreamEvent(
             uuid="stream-stop",
             session_id="sdk-session",
@@ -1089,8 +1068,8 @@ async def test_runner_ignores_ordinary_stream_and_publishes_structured_terminal_
             num_turns=1,
             session_id="sdk-session",
             stop_reason="end_turn",
-            result=streamed_answer,
-            structured_output={"answer": answer, "deliverables": []},
+            result=answer,
+            structured_output={"answer": "ignored legacy answer", "deliverables": []},
         )
 
     async def on_text(value: str) -> None:
@@ -1161,7 +1140,6 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
-            structured_output={"answer": answer, "deliverables": []},
         )
 
     async def on_text(value: str):
@@ -1236,7 +1214,6 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
-            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(
@@ -1300,7 +1277,6 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
-            structured_output={"answer": "safe answer", "deliverables": []},
         )
 
     task = asyncio.create_task(
@@ -1375,7 +1351,6 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
-            structured_output={"answer": answer, "deliverables": []},
         )
 
     task = asyncio.create_task(
@@ -1483,7 +1458,6 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
-            structured_output={"answer": answer, "deliverables": []},
         )
 
     result = await run_claude_agent_sdk(

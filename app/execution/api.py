@@ -55,6 +55,7 @@ from app.execution.application.stale_terminalization import (
 from app.execution.application.worker_answer_persistence import (
     AnswerPersistenceLimits,
     WorkerAnswerMaterialization,
+    assistant_artifact_metadata,
     materialize_worker_answer,
     sanitize_assistant_message,
 )
@@ -115,6 +116,7 @@ __all__ = [
     "ClaudeSdkAgentEventAdapter",
     "AnswerPersistenceLimits",
     "WorkerAnswerMaterialization",
+    "assistant_artifact_metadata",
     "materialize_worker_answer",
     "sanitize_assistant_message",
     "reconciliation_agent_profile_binding_matches",
