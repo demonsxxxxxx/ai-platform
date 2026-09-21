@@ -1806,6 +1806,7 @@ def _validate_executor_request_scope(
 
 def _context_retrieval_for_request(
     request: ExecutorTaskRequest,
+    workspace_root: Path,
 ) -> tuple[PlatformContextRetrievalClient | None, ScopedContextRetrievalIdentity | None, str | None]:
     manifest = request.config.get("context_manifest")
     if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
@@ -1829,6 +1830,7 @@ def _context_retrieval_for_request(
         callback_token=request.callback_token,
         attempt_id=request.attempt_id,
         scope=scope,
+        workspace_root=workspace_root,
     )
     identity = ScopedContextRetrievalIdentity(
         tenant_id=scope.tenant_id,
@@ -1895,7 +1897,10 @@ async def _default_executor_runner(
             "sdk_used": False,
             "executor_mode": "system_prompt_config_invalid",
         }
-    context_retrieval, context_retrieval_identity, context_retrieval_error = _context_retrieval_for_request(request)
+    context_retrieval, context_retrieval_identity, context_retrieval_error = _context_retrieval_for_request(
+        request,
+        workspace_root,
+    )
     if context_retrieval_error:
         return {
             "status": "failed",

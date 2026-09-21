@@ -51,7 +51,7 @@ export interface SessionRunsQuery {
 
 export interface SessionInputFile {
   file_id: string;
-  run_id: string;
+  run_id: string | null;
   name: string;
   mime_type: string;
   size_bytes: number;
@@ -281,6 +281,10 @@ export function buildSessionRunsUrl(
 
 export function buildSessionInputFilesUrl(sessionId: string): string {
   return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/files`;
+}
+
+export function buildProfileDriveImportUrl(sessionId: string): string {
+  return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/profile-drive-files`;
 }
 
 export function buildSessionArtifactFilesUrl(sessionId: string): string {
@@ -544,6 +548,17 @@ export const sessionApi = {
   /** Load the authoritative persistent input-file projection for a session. */
   async getInputFiles(sessionId: string): Promise<SessionInputFilesResponse> {
     return authFetch(buildSessionInputFilesUrl(sessionId));
+  },
+
+  /** Import one user-confirmed ProfileDrive file into the current session workspace. */
+  async importProfileDriveFile(
+    sessionId: string,
+    path: string,
+  ): Promise<SessionInputFile> {
+    return authFetch(buildProfileDriveImportUrl(sessionId), {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
   },
 
   /**

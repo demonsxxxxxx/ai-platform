@@ -183,9 +183,18 @@ execution time the Worker reuses the existing Capability Distribution and Tool
 Policy plan and reads the current JWT and encrypted Server target. The executor
 opens remote MCP sessions with static headers plus `JWT-Authorization`, then
 exposes only the authorized selected tools through the SDK's in-process MCP
-interface. SDK calls pass through that adapter to the original remote tool
-names. There is no separate MCP Broker capability or host Relay, and runtime
-connection material is removed from reconciliation persistence.
+interface. For ProfileDrive, an authorized `read_text_file` selection is mapped
+inside the governed sandbox to `stage_profile_drive_file_to_workspace`: the
+attempt-bound platform callback reads the current user's JWT, streams at most
+512 MiB from the fixed HTTPS connector upstream, and atomically places the file
+under the Run workspace. The tool result contains only the workspace-relative
+path and byte count; SMB credentials and file bytes never enter model messages.
+The connector's existing JSON `read_text_file` tool remains available only as a
+compatibility surface for non-AI-Platform consumers and is not exposed alongside
+the workspace staging tool in sandbox Runs. Other SDK calls pass through the
+adapter to their original remote tool names. There is no separate generic MCP
+Broker capability or model-selected upstream URL, and runtime connection
+material is removed from reconciliation persistence.
 
 The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selected-tool exposure, SDK alias mapping, HTTP/SSE transport limits, and runnable acceptance. Command/stdin (`sandbox`) configuration writes are rejected until a governed process adapter exists; existing rows remain readable but do not authorize command execution. Ordinary directory responses with `unavailable_reason` display unavailable state rather than an empty successful catalog.
 

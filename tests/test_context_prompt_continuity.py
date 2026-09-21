@@ -431,6 +431,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "read_session_messages" in captured["allowed_tools"]
     assert "stage_context_file_to_workspace" in captured["allowed_tools"]
     assert "stage_run_artifact_to_workspace" in captured["allowed_tools"]
+    assert "stage_profile_drive_file_to_workspace" not in captured["allowed_tools"]
     message_tool = server["tools"][0]
     denied_scope = await message_tool.handler(
         {"tenant_id": "tenant-b", "limit": 5, "offset": 0, "max_tokens": 20}

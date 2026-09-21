@@ -108,6 +108,20 @@ def test_private_upstream_urls_reject_invalid_base_urls(value):
         Settings(_env_file=None, existing_auth_base_url=value)
 
 
+def test_profile_drive_transfer_upstream_requires_https():
+    with pytest.raises(ValidationError, match="profile_drive_transfer_https_required"):
+        Settings(
+            _env_file=None,
+            profile_drive_transfer_upstream="http://profile-drive.internal",
+        )
+
+    settings = Settings(
+        _env_file=None,
+        profile_drive_transfer_upstream="https://profile-drive.internal",
+    )
+    assert settings.profile_drive_transfer_upstream == "https://profile-drive.internal"
+
+
 def test_stale_run_reconciliation_settings_accept_environment_overrides(monkeypatch):
     monkeypatch.setenv("STALE_RUN_RECONCILIATION_SECONDS", "1800")
     monkeypatch.setenv("STALE_RUN_RECONCILIATION_LIMIT", "7")

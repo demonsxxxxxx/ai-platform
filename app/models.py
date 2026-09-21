@@ -815,12 +815,12 @@ class FileDeletionResponse(BaseModel):
 
 
 class SessionInputFileResponse(BaseModel):
-    """Opaque public projection for one snapshot-authorized session input file."""
+    """Opaque public projection for one owned session file."""
 
     model_config = ConfigDict(extra="forbid")
 
     file_id: str
-    run_id: str
+    run_id: str | None = None
     name: str
     mime_type: str
     size_bytes: int

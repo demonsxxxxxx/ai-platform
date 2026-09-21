@@ -66,6 +66,10 @@ from app.required_tool_contract import (
     declaration_from_payload,
     with_sandbox_local_tool_capability_subjects,
 )
+from app.runtime.sandbox.contracts import (
+    PROFILE_DRIVE_READ_TEXT_IDENTITY,
+    PROFILE_DRIVE_STAGE_TOOL,
+)
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES,
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
@@ -125,8 +129,16 @@ def sandbox_runtime_tool_policy_subjects(
     *,
     sandbox_provider: str,
 ) -> list[dict[str, Any]]:
+    subjects = runtime_tool_policy_subjects(payload, context_manifest)
+    if PROFILE_DRIVE_READ_TEXT_IDENTITY in _canonical_tool_policy_subjects(subjects):
+        subjects = [
+            subject
+            for subject in subjects
+            if subject.get("identity") != PROFILE_DRIVE_READ_TEXT_IDENTITY
+        ]
+        subjects.extend(internal_context_tool_policy_subjects([PROFILE_DRIVE_STAGE_TOOL]))
     return with_sandbox_local_tool_capability_subjects(
-        runtime_tool_policy_subjects(payload, context_manifest),
+        subjects,
         sandbox_provider=sandbox_provider,
         required_declaration=declaration_from_input(payload.input),
     )
@@ -765,9 +777,12 @@ def _build_context_retrieval_mcp_server(
     create_server = getattr(sdk, "create_sdk_mcp_server", None)
     if sdk_tool is None or create_server is None:
         return None
+    default_tool_names = (
+        name for name in _SDK_INTERNAL_CONTEXT_TOOLS if name != PROFILE_DRIVE_STAGE_TOOL
+    )
     selected_tool_names = {
         name
-        for name in (tool_names or _SDK_INTERNAL_CONTEXT_TOOLS)
+        for name in (tool_names or default_tool_names)
         if name in _SDK_INTERNAL_CONTEXT_TOOLS
     }
     if not selected_tool_names:
@@ -784,7 +799,11 @@ def _build_context_retrieval_mcp_server(
             return _context_retrieval_tool_error(str(exc), action=audit_action)
         except ContextRetrievalDenied as exc:
             reason = str(exc) or "context_scope_denied"
-            if reason not in {"context_file_too_large", "context_file_size_required"}:
+            if reason not in {
+                "context_file_too_large",
+                "context_file_size_required",
+                "profile_drive_file_too_large",
+            }:
                 reason = "context_scope_denied"
             return _context_retrieval_tool_error(reason, action=audit_action)
         except Exception:  # noqa: BLE001
@@ -838,6 +857,14 @@ def _build_context_retrieval_mcp_server(
         return await _run("stage_run_artifact_to_workspace", args)
 
     @sdk_tool(
+        PROFILE_DRIVE_STAGE_TOOL,
+        "Copy any file type from the authenticated user's Profile Desktop into the current run workspace and return a workspace-relative path.",
+        {"path": str},
+    )
+    async def stage_profile_drive_file_to_workspace(args):
+        return await _run(PROFILE_DRIVE_STAGE_TOOL, args)
+
+    @sdk_tool(
         "search_memory",
         "Search active session-scoped memory records for the current ai-platform agent scope only.",
         {
@@ -859,6 +886,7 @@ def _build_context_retrieval_mcp_server(
                 read_run_artifact,
                 stage_context_file_to_workspace,
                 stage_run_artifact_to_workspace,
+                stage_profile_drive_file_to_workspace,
                 search_memory,
             )
             if tool.name in selected_tool_names
@@ -2025,7 +2053,11 @@ async def run_claude_agent_sdk(
             tool_names=(
                 requested_internal_context_tools
                 if tool_policy_subjects is not None
-                else list(_SDK_INTERNAL_CONTEXT_TOOLS)
+                else [
+                    name
+                    for name in _SDK_INTERNAL_CONTEXT_TOOLS
+                    if name != PROFILE_DRIVE_STAGE_TOOL
+                ]
             ),
         )
         if requested_internal_context_tools and context_retrieval_server is None:
@@ -2051,7 +2083,11 @@ async def run_claude_agent_sdk(
     if context_retrieval_server is None:
         internal_context_tools: set[str] = set()
     elif tool_policy_subjects is None:
-        internal_context_tools = set(_SDK_INTERNAL_CONTEXT_TOOLS)
+        internal_context_tools = {
+            name
+            for name in _SDK_INTERNAL_CONTEXT_TOOLS
+            if name != PROFILE_DRIVE_STAGE_TOOL
+        }
     else:
         internal_context_tools = set(requested_internal_context_tools)
     internal_context_subjects = (

@@ -6,8 +6,11 @@ import type {
 } from "../../../../services/api/session.ts";
 import type { ArtifactPart, Message } from "../../../../types/message.ts";
 import {
+  addSessionInputFile,
+  preservePendingSessionInputFiles,
   projectAssistantResponseFiles,
   projectSessionWorkspaceFiles,
+  sessionInputFileToWorkspaceFile,
   sessionWorkspaceFileToAttachment,
   sessionWorkspaceProjectionForRender,
 } from "../sessionWorkspaceFiles.ts";
@@ -64,6 +67,88 @@ const rejected = (reason: string): PromiseRejectedResult => ({
   status: "rejected",
   reason: new Error(reason),
 });
+
+test("adds an imported ProfileDrive file before it is bound to a Run", () => {
+  const imported: SessionInputFile = {
+    ...inputFile,
+    file_id: "file-profile",
+    run_id: null,
+    name: "profile-report.pdf",
+    preview_url:
+      "/api/ai/files/file-profile/preview?session_id=session-a",
+    download_url:
+      "/api/ai/files/file-profile/download?session_id=session-a",
+  };
+  const projection = addSessionInputFile(
+    projectSessionWorkspaceFiles(
+      "session-a",
+      fulfilledInputs("session-a", [inputFile]),
+    ),
+    imported,
+  );
+
+  assert.deepEqual(
+    projection.files.map((file) => file.key),
+    ["input:file-profile", "input:file-source"],
+  );
+  assert.equal(
+    sessionInputFileToWorkspaceFile(imported).preview_url,
+    imported.preview_url,
+  );
+});
+
+test("keeps a pending import when an older workspace hydration resolves", () => {
+  const imported: SessionInputFile = {
+    ...inputFile,
+    file_id: "file-profile",
+    run_id: null,
+    name: "profile-report.pdf",
+  };
+  const current = addSessionInputFile(
+    projectSessionWorkspaceFiles(
+      "session-a",
+      fulfilledInputs("session-a", []),
+    ),
+    imported,
+  );
+  const loaded = projectSessionWorkspaceFiles(
+    "session-a",
+    fulfilledInputs("session-a", [inputFile]),
+  );
+
+  const merged = preservePendingSessionInputFiles(loaded, current);
+
+  assert.deepEqual(
+    merged.inputFiles.map((file) => file.file_id),
+    ["file-source", "file-profile"],
+  );
+});
+
+
+test("keeps a pending import visible when an older workspace hydration rejects", () => {
+  const imported: SessionInputFile = {
+    ...inputFile,
+    file_id: "file-profile",
+    run_id: null,
+    name: "profile-report.pdf",
+  };
+  const current = addSessionInputFile(
+    projectSessionWorkspaceFiles(
+      "session-a",
+      fulfilledInputs("session-a", []),
+    ),
+    imported,
+  );
+
+  const merged = preservePendingSessionInputFiles(
+    projectSessionWorkspaceFiles("session-a", rejected("stale request failed")),
+    current,
+  );
+
+  assert.equal(merged.status, "partial");
+  assert.deepEqual(merged.files.map((file) => file.key), ["input:file-profile"]);
+});
+
 
 test("merges session inputs and structured assistant response files", () => {
   const report = artifact("artifact-report", "source.xlsx", "2026-08-02T10:00:00Z");

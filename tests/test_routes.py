@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 import base64
 import hashlib
 import io
@@ -22,8 +23,13 @@ from app.routes import lambchat_compat as lambchat_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
 from app.routes.files import (
+    ProfileDriveFileImportRequest,
+    _discard_profile_drive_import,
+    _download_profile_drive_file,
+    _put_profile_drive_import,
     download_artifact,
     download_input_file,
+    import_profile_drive_file,
     list_session_input_files,
     preview_artifact,
     preview_input_file,
@@ -1780,6 +1786,288 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_profile_drive_import_creates_an_owned_previewable_session_file(
+    monkeypatch,
+    tmp_path,
+):
+    raw = b"profile workspace preview"
+    source = tmp_path / "report.txt"
+    source.write_bytes(raw)
+    created = {}
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "session-a")
+        return {"id": session_id, "workspace_id": "workspace-a"}
+
+    class Upstream:
+        async def aclose(self):
+            return None
+
+    async def fake_open_profile_drive_file(**kwargs):
+        assert kwargs["path"] == "reports/report.txt"
+        return Upstream(), Upstream(), len(raw), "text/plain"
+
+    async def fake_download_profile_drive_file(**kwargs):
+        return str(source), hashlib.sha256(raw).hexdigest(), len(raw)
+
+    class FakeStorage:
+        def put_file(self, *, storage_key, source_path, content_type):
+            assert Path(source_path).read_bytes() == raw
+            assert content_type == "text/plain"
+            return SimpleNamespace(
+                storage_key=storage_key,
+                sha256=hashlib.sha256(raw).hexdigest(),
+                size_bytes=len(raw),
+            )
+
+        def delete_object(self, *, storage_key):
+            raise AssertionError(f"committed import must not be deleted: {storage_key}")
+
+    async def fake_run_storage_io(operation, *args, **kwargs):
+        kwargs.pop("timeout_seconds", None)
+        kwargs.pop("on_abandoned", None)
+        return operation(*args, **kwargs)
+
+    async def fake_usage(conn, **kwargs):
+        return {"stored_bytes": 0, "reserved_bytes": 0, "active_uploads": 0}
+
+    async def fake_claim(conn, **kwargs):
+        created["reservation"] = kwargs
+        return True
+
+    async def fake_reservation(conn, **kwargs):
+        reservation = created["reservation"]
+        return {
+            "state": "pending",
+            "storage_key": reservation["storage_key"],
+            "expected_size_bytes": len(raw),
+        }
+
+    async def fake_create_file(conn, **kwargs):
+        created["file"] = kwargs
+
+    async def fake_get_file(conn, *, tenant_id, file_id):
+        file_row = created["file"]
+        assert (tenant_id, file_id) == ("tenant-a", file_row["file_id"])
+        return {"id": file_id, "run_id": None, "created_at": None, **file_row}
+
+    async def noop(*args, **kwargs):
+        return None
+
+    ids = iter(["file_profile", "upload_profile", "upload_owner_profile"])
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files._cleanup_expired_upload_sessions", noop)
+    monkeypatch.setattr("app.routes.files._open_profile_drive_file", fake_open_profile_drive_file)
+    monkeypatch.setattr("app.routes.files._download_profile_drive_file", fake_download_profile_drive_file)
+    monkeypatch.setattr("app.routes.files.get_file_storage_usage", fake_usage)
+    monkeypatch.setattr("app.routes.files.claim_direct_file_upload_session", fake_claim)
+    monkeypatch.setattr("app.routes.files.get_authorized_file_upload_session", fake_reservation)
+    monkeypatch.setattr("app.routes.files.create_file", fake_create_file)
+    monkeypatch.setattr("app.routes.files.complete_file_upload_session", noop)
+    monkeypatch.setattr("app.routes.files.append_audit_log", noop)
+    monkeypatch.setattr("app.routes.files.get_file", fake_get_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.routes.files.run_storage_io", fake_run_storage_io)
+    monkeypatch.setattr(
+        "app.routes.files.get_settings",
+        lambda: SimpleNamespace(
+            file_upload_max_active_sessions=3,
+            file_storage_quota_bytes=1024,
+        ),
+    )
+    monkeypatch.setattr("app.routes.files.new_id", lambda _prefix: next(ids))
+
+    response = await import_profile_drive_file(
+        "session-a",
+        ProfileDriveFileImportRequest(path="reports/report.txt"),
+        principal=principal(permissions=["file:upload", "file:upload:document"]),
+    )
+    payload = response.model_dump()
+
+    assert created["file"]["session_id"] == "session-a"
+    assert created["file"]["original_name"] == "report.txt"
+    assert payload["run_id"] is None
+    assert payload["preview_url"] == (
+        "/api/ai/files/file_profile/preview?session_id=session-a"
+    )
+    assert payload["download_url"] == (
+        "/api/ai/files/file_profile/download?session_id=session-a"
+    )
+
+
+@pytest.mark.asyncio
+async def test_profile_drive_download_streams_to_a_closed_verified_temp_file():
+    raw = b"profile workspace preview"
+
+    class UpstreamResponse:
+        closed = False
+
+        async def aiter_raw(self):
+            yield raw[:8]
+            yield raw[8:]
+
+        async def aclose(self):
+            self.closed = True
+
+    class UpstreamClient:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    client = UpstreamClient()
+    response = UpstreamResponse()
+    temporary_path, sha256, size_bytes = await _download_profile_drive_file(
+        client=client,
+        response=response,
+        content_length=len(raw),
+    )
+    try:
+        assert Path(temporary_path).read_bytes() == raw
+        assert sha256 == hashlib.sha256(raw).hexdigest()
+        assert size_bytes == len(raw)
+        assert client.closed is True
+        assert response.closed is True
+    finally:
+        Path(temporary_path).unlink(missing_ok=True)
+
+
+def test_profile_drive_abandoned_put_removes_object_and_worker_owned_temp_file(tmp_path):
+    source = tmp_path / "profile-drive-import.tmp"
+    source.write_bytes(b"profile workspace preview")
+    deleted: list[str] = []
+
+    class Storage:
+        def put_file(self, *, storage_key, source_path, content_type):
+            assert Path(source_path).read_bytes() == b"profile workspace preview"
+            assert content_type == "text/plain"
+            return SimpleNamespace(storage_key=storage_key, sha256="sha-a", size_bytes=25)
+
+        def delete_object(self, *, storage_key):
+            deleted.append(storage_key)
+
+    stored = _put_profile_drive_import(
+        Storage(),
+        storage_key="private/profile-import",
+        source_path=str(source),
+        content_type="text/plain",
+        abandoned=SimpleNamespace(is_set=lambda: True),
+    )
+
+    assert stored.storage_key == "private/profile-import"
+    assert deleted == ["private/profile-import"]
+    assert not source.exists()
+
+
+@pytest.mark.asyncio
+async def test_profile_drive_import_cancellation_retains_in_flight_cleanup(
+    monkeypatch,
+    tmp_path,
+):
+    raw = b"profile data"
+    source = tmp_path / "profile-drive-cancel.tmp"
+    source.write_bytes(raw)
+    discarded = {}
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id, "workspace_id": "workspace-a"}
+
+    async def fake_open_profile_drive_file(**kwargs):
+        return SimpleNamespace(), SimpleNamespace(), len(raw), "text/plain"
+
+    async def fake_download(**kwargs):
+        return str(source), hashlib.sha256(raw).hexdigest(), len(raw)
+
+    async def fake_usage(conn, **kwargs):
+        return {"stored_bytes": 0, "reserved_bytes": 0, "active_uploads": 0}
+
+    async def fake_claim(conn, **kwargs):
+        return True
+
+    async def fake_run_storage(operation, *args, **kwargs):
+        return None
+
+    async def cancel_put(operation, *args, **kwargs):
+        kwargs["on_abandoned"]()
+        raise asyncio.CancelledError
+
+    async def fake_discard(**kwargs):
+        discarded.update(kwargs)
+
+    async def noop(*args, **kwargs):
+        return None
+
+    ids = iter(["file_profile", "upload_profile", "upload_owner_profile"])
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files._cleanup_expired_upload_sessions", noop)
+    monkeypatch.setattr("app.routes.files._open_profile_drive_file", fake_open_profile_drive_file)
+    monkeypatch.setattr("app.routes.files._download_profile_drive_file", fake_download)
+    monkeypatch.setattr("app.routes.files.get_file_storage_usage", fake_usage)
+    monkeypatch.setattr("app.routes.files.claim_direct_file_upload_session", fake_claim)
+    monkeypatch.setattr("app.routes.files._run_storage", fake_run_storage)
+    monkeypatch.setattr("app.routes.files.run_storage_io", cancel_put)
+    monkeypatch.setattr("app.routes.files._discard_profile_drive_import", fake_discard)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", object)
+    monkeypatch.setattr(
+        "app.routes.files.get_settings",
+        lambda: SimpleNamespace(
+            file_upload_max_active_sessions=3,
+            file_storage_quota_bytes=1024,
+        ),
+    )
+    monkeypatch.setattr("app.routes.files.new_id", lambda _prefix: next(ids))
+
+    with pytest.raises(asyncio.CancelledError):
+        await import_profile_drive_file(
+            "session-a",
+            ProfileDriveFileImportRequest(path="reports/report.txt"),
+            principal=principal(permissions=["file:upload", "file:upload:document"]),
+        )
+
+    assert discarded["upload_session_id"] == "upload_profile"
+    assert discarded["object_created"] is False
+    assert discarded["object_write_in_flight"] is True
+
+
+@pytest.mark.asyncio
+async def test_profile_drive_in_flight_discard_retains_expired_cleanup_record(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    async def fake_abort(conn, *, upload_session_id, state):
+        calls.append(("abort", state))
+
+    async def fake_retry(conn, *, upload_session_id, delay_seconds):
+        calls.append(("retry", f"{upload_session_id}:{delay_seconds}"))
+
+    async def forbidden_delete(conn, **kwargs):
+        raise AssertionError("in-flight cleanup record must not be deleted")
+
+    class Storage:
+        def delete_object(self, **kwargs):
+            raise AssertionError("in-flight writer owns object cleanup")
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.abort_file_upload_session", fake_abort)
+    monkeypatch.setattr("app.routes.files.retry_expired_file_upload_session", fake_retry)
+    monkeypatch.setattr("app.routes.files.delete_expired_file_upload_session", forbidden_delete)
+
+    await _discard_profile_drive_import(
+        upload_session_id="upload-profile",
+        storage=Storage(),
+        storage_key="private/profile-import",
+        object_created=False,
+        object_write_in_flight=True,
+    )
+
+    assert calls == [
+        ("abort", "expired"),
+        ("retry", "upload-profile:86400"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_session_input_file_projection_is_persistent_opaque_and_preview_allowlisted(monkeypatch):
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
         assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "session-a")
@@ -1821,7 +2109,7 @@ async def test_session_input_file_projection_is_persistent_opaque_and_preview_al
 
     monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.files.list_authorized_session_input_files", fake_list_files)
+    monkeypatch.setattr("app.routes.files.list_owned_session_files", fake_list_files)
 
     response = await list_session_input_files("session-a", principal=principal())
     payload = response.model_dump()
@@ -1860,7 +2148,7 @@ async def test_deleted_session_input_file_list_denies_before_projection_read(mon
         deleted_session_is_not_authorized,
     )
     monkeypatch.setattr(
-        "app.routes.files.list_authorized_session_input_files",
+        "app.routes.files.list_owned_session_files",
         forbidden_list_files,
     )
 
@@ -1906,6 +2194,54 @@ async def test_deleted_session_input_file_bytes_deny_before_scope_or_storage_rea
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "input_file_not_found"
+
+
+@pytest.mark.asyncio
+async def test_preview_session_owned_import_without_a_run_snapshot(monkeypatch):
+    raw = b"profile preview"
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id, "workspace_id": "workspace-a", "user_id": user_id}
+
+    async def fake_get_owned_session_file(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "file_id": "file-profile",
+        }
+        return {
+            "id": "file-profile",
+            "original_name": "report.txt",
+            "content_type": "text/plain",
+            "storage_key": "private/profile/report.txt",
+            "size_bytes": len(raw),
+        }
+
+    async def forbidden_snapshot_file(conn, **kwargs):
+        raise AssertionError("an unbound owned import must not claim a Run snapshot")
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            assert storage_key == "private/profile/report.txt"
+            return raw
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files.get_owned_session_file", fake_get_owned_session_file)
+    monkeypatch.setattr("app.routes.files.get_scoped_context_file", forbidden_snapshot_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+
+    response = await preview_input_file(
+        "file-profile",
+        session_id="session-a",
+        run_id=None,
+        principal=principal(),
+    )
+
+    assert response.body == raw
+    assert response.headers["x-input-file-id"] == "file-profile"
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,7 @@ export function mergeProjectedSessionFiles(
   if (files.length === 0) return messages;
   const filesByRun = new Map<string, SessionInputFile[]>();
   files.forEach((file) => {
+    if (!file.run_id) return;
     filesByRun.set(file.run_id, [...(filesByRun.get(file.run_id) ?? []), file]);
   });
   return messages.map((message) => {

@@ -47,6 +47,38 @@ def _storage(payload: bytes) -> tuple[ObjectStorage, _Body]:
     return storage, body
 
 
+def test_put_file_hashes_and_uploads_without_loading_the_whole_file(tmp_path):
+    source = tmp_path / "profile-drive-import.bin"
+    source.write_bytes(b"profile workspace preview")
+    uploads: list[tuple[str, str, str, dict[str, str]]] = []
+
+    class Client:
+        def upload_file(self, filename, bucket, key, ExtraArgs):
+            uploads.append((filename, bucket, key, ExtraArgs))
+
+    storage = ObjectStorage.__new__(ObjectStorage)
+    storage.bucket = "bucket"
+    storage.client = Client()
+    storage.ensure_bucket = lambda: None
+
+    stored = storage.put_file(
+        storage_key="private/profile-import",
+        source_path=str(source),
+        content_type="text/plain",
+    )
+
+    assert stored.size_bytes == len(b"profile workspace preview")
+    assert stored.sha256 == "d4079665fab6d775dc20697ff67ccf7c0a8feecc2c3c78a5d9933475c663f60e"
+    assert uploads == [
+        (
+            str(source),
+            "bucket",
+            "private/profile-import",
+            {"ContentType": "text/plain"},
+        )
+    ]
+
+
 def test_download_to_tempfile_writes_payload_and_closes_body(tmp_path, monkeypatch):
     storage, body = _storage(b"downloaded")
     monkeypatch.setattr("app.storage.tempfile.gettempdir", lambda: str(tmp_path))

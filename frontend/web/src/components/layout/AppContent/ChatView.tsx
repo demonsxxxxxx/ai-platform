@@ -100,7 +100,7 @@ import {
 import { clearSidebarHistory } from "../../chat/ChatMessage/items/sidebarHistoryStore";
 import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
-import { sessionApi } from "../../../services/api";
+import { sessionApi, type SessionInputFile } from "../../../services/api";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
 import type { ModelOption } from "../../../services/api/modelPublic";
 import { openAttachmentPreview } from "../../chat/attachmentPreviewStore";
@@ -110,8 +110,11 @@ import {
   createArtifactDownloadScopeContext,
 } from "../../chat/ChatMessage/items/artifactDownloadRegistry";
 import {
+  addSessionInputFile,
+  preservePendingSessionInputFiles,
   projectAssistantResponseFiles,
   projectSessionWorkspaceFiles,
+  sessionInputFileToWorkspaceFile,
   sessionWorkspaceFileToAttachment,
   sessionWorkspaceProjectionForRender,
   type SessionWorkspaceFile,
@@ -430,15 +433,16 @@ export function ChatView({
     void Promise.allSettled([sessionApi.getInputFiles(sessionId)]).then(
       ([inputResult]) => {
         if (!current) return;
-        setWorkspaceProjection(
-          projectSessionWorkspaceFiles(sessionId, inputResult),
+        const loaded = projectSessionWorkspaceFiles(sessionId, inputResult);
+        setWorkspaceProjection((projection) =>
+          preservePendingSessionInputFiles(loaded, projection),
         );
       },
     );
     return () => {
       current = false;
     };
-  }, [sessionId, attachments.length]);
+  }, [sessionId, currentRunId, attachments.length]);
 
   const displayMessages = useMemo(
     () =>
@@ -691,6 +695,19 @@ export function ChatView({
     [t],
   );
 
+  const handleProfileDriveFileImported = useCallback(
+    (file: SessionInputFile) => {
+      const workspaceFile = sessionInputFileToWorkspaceFile(file);
+      setWorkspaceProjection((current) =>
+        current.session_id === sessionId
+          ? addSessionInputFile(current, file)
+          : current,
+      );
+      handleOpenWorkspaceFile(workspaceFile);
+    },
+    [handleOpenWorkspaceFile, sessionId],
+  );
+
   const handleVirtuosoRangeChanged = useCallback(
     (range: ListRange) => {
       const current = visibleRangeRef.current;
@@ -835,10 +852,12 @@ export function ChatView({
 
   const rightPanel = (
     <WorkbenchRightPanel
+      sessionId={sessionId}
       files={visibleWorkspaceProjection.files}
       filesStatus={visibleWorkspaceProjection.status}
       onOpenFile={handleOpenWorkspaceFile}
       onDownloadFile={handleDownloadWorkspaceFile}
+      onProfileDriveFileImported={handleProfileDriveFileImported}
     />
   );
 

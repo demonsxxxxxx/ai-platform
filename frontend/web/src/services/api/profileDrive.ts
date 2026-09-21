@@ -8,6 +8,21 @@ export interface ProfileDriveConnectionStatus {
   lastUsedAtUtc: string | null;
 }
 
+export interface ProfileDriveFileEntry {
+  path: string;
+  name: string;
+  type: "file" | "directory";
+  size: number | null;
+  lastModifiedUtc: string;
+}
+
+export interface ProfileDriveListResult {
+  status: string;
+  path: string;
+  entries: ProfileDriveFileEntry[];
+  truncated: boolean;
+}
+
 export class ProfileDriveRequestError extends Error {
   constructor(
     readonly status: number,
@@ -18,7 +33,10 @@ export class ProfileDriveRequestError extends Error {
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function authorizedRequest(
+  path: string,
+  options: RequestInit = {},
+): Promise<Response> {
   const credential = await authApi.getCompanyCredentialForHandoff();
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
@@ -40,7 +58,56 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
         : "request_failed";
     throw new ProfileDriveRequestError(response.status, code);
   }
-  return (await response.json()) as T;
+  return response;
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  return (await authorizedRequest(path, options)).json() as Promise<T>;
+}
+
+function profileDriveListResult(value: unknown): ProfileDriveListResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProfileDriveRequestError(502, "invalid_response");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.status !== "string" ||
+    typeof record.path !== "string" ||
+    typeof record.truncated !== "boolean" ||
+    !Array.isArray(record.entries) ||
+    record.entries.length > 500
+  ) {
+    throw new ProfileDriveRequestError(502, "invalid_response");
+  }
+  const entries = record.entries.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ProfileDriveRequestError(502, "invalid_response");
+    }
+    const item = entry as Record<string, unknown>;
+    if (
+      typeof item.path !== "string" ||
+      typeof item.name !== "string" ||
+      !["file", "directory"].includes(String(item.type)) ||
+      (item.size !== null &&
+        (typeof item.size !== "number" || !Number.isSafeInteger(item.size) || item.size < 0)) ||
+      typeof item.lastModifiedUtc !== "string"
+    ) {
+      throw new ProfileDriveRequestError(502, "invalid_response");
+    }
+    return {
+      path: item.path,
+      name: item.name,
+      type: item.type as ProfileDriveFileEntry["type"],
+      size: item.size as number | null,
+      lastModifiedUtc: item.lastModifiedUtc,
+    };
+  });
+  return {
+    status: record.status,
+    path: record.path,
+    entries,
+    truncated: record.truncated,
+  };
 }
 
 export const profileDriveApi = {
@@ -55,5 +122,14 @@ export const profileDriveApi = {
     return request<ProfileDriveConnectionStatus>("/status", {
       cache: "no-store",
     });
+  },
+
+  async listFiles(path = "") {
+    return profileDriveListResult(
+      await request<unknown>("/files/list", {
+        method: "POST",
+        body: JSON.stringify({ path, maxEntries: 200 }),
+      }),
+    );
   },
 };

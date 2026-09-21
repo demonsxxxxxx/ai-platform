@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
+from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
 from app.tool_policy import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
@@ -14,6 +15,7 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_run_artifact",
     "stage_context_file_to_workspace",
     "stage_run_artifact_to_workspace",
+    PROFILE_DRIVE_STAGE_TOOL,
     "search_memory",
 )
 _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
@@ -26,12 +28,14 @@ _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
     "read_run_artifact": ("artifact_id", "max_bytes"),
     "stage_context_file_to_workspace": ("file_id", "max_bytes"),
     "stage_run_artifact_to_workspace": ("artifact_id", "max_bytes"),
+    PROFILE_DRIVE_STAGE_TOOL: ("path",),
     "search_memory": ("query", "limit", "max_tokens"),
 }
 _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
     "read_run_artifact": ("artifact_id",),
     "stage_context_file_to_workspace": ("file_id",),
     "stage_run_artifact_to_workspace": ("artifact_id",),
+    PROFILE_DRIVE_STAGE_TOOL: ("path",),
 }
 _SANDBOX_LOCAL_TOOL_IDENTITIES = frozenset(
     {"Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"}

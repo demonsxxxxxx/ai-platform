@@ -4051,6 +4051,59 @@ async def test_input_file_list_and_read_use_persisted_s1_after_later_s2(
 
 
 @pytest.mark.asyncio
+async def test_owned_session_file_queries_include_unbound_imports_and_bind_full_scope():
+    row = {
+        "id": "file-profile",
+        "run_id": None,
+        "original_name": "report.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 42,
+        "created_at": "now",
+    }
+    list_conn = SingleRowConnection(row)
+    get_conn = SingleRowConnection(row)
+
+    rows = await repositories.list_owned_session_files(
+        list_conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+    )
+    selected = await repositories.get_owned_session_file(
+        get_conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        file_id="file-profile",
+    )
+
+    assert rows == [row]
+    assert selected == row
+    for statement in (list_conn.sql, get_conn.sql):
+        assert "join sessions" in statement
+        assert "sessions.status = 'active'" in statement
+        assert "files.lifecycle_state = 'active'" in statement
+        assert "sessions.workspace_id = files.workspace_id" in statement
+        assert "sessions.user_id = files.user_id" in statement
+        assert "join runs" not in statement
+    assert list_conn.params == (
+        "tenant-a",
+        "workspace-a",
+        "user-a",
+        "session-a",
+    )
+    assert get_conn.params == (
+        "tenant-a",
+        "workspace-a",
+        "user-a",
+        "session-a",
+        "file-profile",
+    )
+
+
+@pytest.mark.asyncio
 async def test_session_context_candidates_bind_owner_scope_and_latest_successful_artifact_run():
     conn = RecordingConnection()
 

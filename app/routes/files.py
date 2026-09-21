@@ -4,15 +4,21 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import io
+import mimetypes
+import os
 import re
+import tempfile
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Event
 from urllib.parse import quote
 import zipfile
 
+import anyio
+import httpx
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.files.api import (
     MAX_UPLOAD_BYTES,
@@ -44,6 +50,7 @@ from app.file_preview_contracts import (
     xlsx_preview_identity_from_metadata,
     xlsx_preview_max_bytes,
 )
+from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.models import (
     FileDeletionResponse,
     SessionInputFileResponse,
@@ -62,8 +69,9 @@ from app.repositories import (
     get_authorized_run,
     get_authorized_session,
     get_file,
+    get_owned_session_file,
     get_scoped_context_file,
-    list_authorized_session_input_files,
+    list_owned_session_files,
     new_id,
     queue_unbound_file_for_deletion,
 )
@@ -192,6 +200,25 @@ class UploadFileResponse:
     size_bytes: int
 
 
+class ProfileDriveFileImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=1024)
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        normalized = value.replace("\\", "/")
+        parts = normalized.split("/")
+        if (
+            "\x00" in value
+            or normalized.startswith("/")
+            or any(part in {"", ".", ".."} for part in parts)
+        ):
+            raise ValueError("profile_drive_path_invalid")
+        return normalized
+
+
 def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
     granted = {item.strip() for item in principal.permissions if item.strip()}
     if is_ai_admin(principal):
@@ -311,11 +338,18 @@ async def _build_xlsx_preview_response(
     )
 
 
-def _input_file_url(*, file_id: str, session_id: str, run_id: str, action: str) -> str:
-    return (
+def _input_file_url(
+    *,
+    file_id: str,
+    session_id: str,
+    run_id: str | None,
+    action: str,
+) -> str:
+    url = (
         f"/api/ai/files/{quote(file_id, safe='')}/{action}"
-        f"?session_id={quote(session_id, safe='')}&run_id={quote(run_id, safe='')}"
+        f"?session_id={quote(session_id, safe='')}"
     )
+    return f"{url}&run_id={quote(run_id, safe='')}" if run_id else url
 
 
 def _input_file_response(
@@ -324,7 +358,7 @@ def _input_file_response(
     session_id: str,
 ) -> SessionInputFileResponse:
     file_id = str(file_row["id"])
-    run_id = str(file_row["run_id"])
+    run_id = str(file_row["run_id"]) if file_row.get("run_id") else None
     name = str(file_row.get("original_name") or file_id)
     content_type = _safe_response_content_type(file_row.get("content_type"))
     return SessionInputFileResponse(
@@ -357,13 +391,13 @@ async def _authorized_input_file(
     *,
     file_id: str,
     session_id: str,
-    run_id: str,
+    run_id: str | None,
     principal: AuthPrincipal,
 ) -> dict[str, object]:
     try:
         tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
         session_id = assert_safe_id(session_id, "session_id")
-        run_id = assert_safe_id(run_id, "run_id")
+        run_id = assert_safe_id(run_id, "run_id") if run_id else None
         file_id = assert_safe_id(file_id, "file_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -379,15 +413,25 @@ async def _authorized_input_file(
         workspace_id = str(session.get("workspace_id") or "")
         if not workspace_id:
             raise HTTPException(status_code=404, detail="input_file_not_found")
-        file_row = await get_scoped_context_file(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-            run_id=run_id,
-            file_id=file_id,
-        )
+        if run_id:
+            file_row = await get_scoped_context_file(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                run_id=run_id,
+                file_id=file_id,
+            )
+        else:
+            file_row = await get_owned_session_file(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                file_id=file_id,
+            )
     if file_row is None:
         raise HTTPException(status_code=404, detail="input_file_not_found")
     return dict(file_row)
@@ -398,6 +442,189 @@ async def _run_storage(operation, /, *args, **kwargs):
         return await run_storage_io(operation, *args, **kwargs)
     except (StorageIOBusyError, StorageIOTimeoutError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+async def _open_profile_drive_file(
+    *,
+    principal: AuthPrincipal,
+    path: str,
+) -> tuple[httpx.AsyncClient, httpx.Response, int, str]:
+    settings = get_settings()
+    upstream = settings.profile_drive_transfer_upstream.rstrip("/")
+    if not upstream:
+        raise HTTPException(status_code=503, detail="profile_drive_transfer_unavailable")
+    try:
+        jwt = await get_mcp_principal_jwt_store().get(principal)
+    except McpRuntimeContextError as exc:
+        raise HTTPException(status_code=409, detail="profile_drive_reauth_required") from exc
+
+    verify: bool | str = settings.profile_drive_transfer_ca_cert_file.strip() or True
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(None, connect=30.0),
+        follow_redirects=False,
+        trust_env=False,
+        verify=verify,
+    )
+    try:
+        response = await client.send(
+            client.build_request(
+                "POST",
+                f"{upstream}/api/profile-drive/files/content",
+                json={"path": path},
+                headers={
+                    "Authorization": f"Bearer {jwt}",
+                    "Accept": "application/octet-stream",
+                    "Accept-Encoding": "identity",
+                },
+            ),
+            stream=True,
+        )
+    except Exception as exc:
+        await client.aclose()
+        raise HTTPException(status_code=503, detail="profile_drive_transfer_failed") from exc
+
+    if response.status_code != 200:
+        upstream_status = response.status_code
+        await response.aclose()
+        await client.aclose()
+        status_code = (
+            413
+            if upstream_status == 413
+            else 409
+            if upstream_status in {401, 409}
+            else 404
+            if upstream_status == 404
+            else 403
+            if upstream_status in {400, 403, 422}
+            else 503
+        )
+        raise HTTPException(status_code=status_code, detail="profile_drive_transfer_denied")
+    if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+        await response.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=503, detail="profile_drive_transfer_invalid")
+    try:
+        content_length = int(response.headers["content-length"])
+    except (KeyError, TypeError, ValueError) as exc:
+        await response.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=503, detail="profile_drive_transfer_invalid") from exc
+    if content_length <= 0:
+        await response.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=400, detail="empty_file_not_supported")
+    if content_length > MAX_UPLOAD_BYTES:
+        await response.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=413, detail="file_too_large")
+
+    filename = path.rsplit("/", 1)[-1]
+    declared_content_type = _normalized_content_type(response.headers.get("content-type"))
+    guessed_content_type = mimetypes.guess_type(filename)[0]
+    content_type = guessed_content_type or (
+        declared_content_type
+        if SAFE_RESPONSE_CONTENT_TYPE_PATTERN.fullmatch(declared_content_type)
+        else "application/octet-stream"
+    )
+    return client, response, content_length, content_type
+
+
+async def _download_profile_drive_file(
+    *,
+    client: httpx.AsyncClient,
+    response: httpx.Response,
+    content_length: int,
+) -> tuple[str, str, int]:
+    file_descriptor, temporary_path = tempfile.mkstemp(prefix="ai-platform-profile-drive-")
+    os.close(file_descriptor)
+    digest = hashlib.sha256()
+    transferred = 0
+    try:
+        async with await anyio.open_file(temporary_path, "wb") as destination:
+            async for chunk in response.aiter_raw():
+                transferred += len(chunk)
+                if transferred > content_length or transferred > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="file_too_large")
+                digest.update(chunk)
+                await destination.write(chunk)
+        if transferred != content_length:
+            raise HTTPException(status_code=503, detail="profile_drive_transfer_invalid")
+        return temporary_path, digest.hexdigest(), transferred
+    except BaseException:
+        Path(temporary_path).unlink(missing_ok=True)
+        raise
+    finally:
+        await response.aclose()
+        await client.aclose()
+
+
+def _put_profile_drive_import(
+    storage: ObjectStorage,
+    *,
+    storage_key: str,
+    source_path: str,
+    content_type: str,
+    abandoned: Event,
+) -> StoredObject:
+    try:
+        stored = storage.put_file(
+            storage_key=storage_key,
+            source_path=source_path,
+            content_type=content_type,
+        )
+        if abandoned.is_set():
+            storage.delete_object(storage_key=storage_key)
+        return stored
+    finally:
+        Path(source_path).unlink(missing_ok=True)
+
+
+async def _discard_profile_drive_import(
+    *,
+    upload_session_id: str,
+    storage: ObjectStorage,
+    storage_key: str,
+    object_created: bool,
+    object_write_in_flight: bool = False,
+) -> None:
+    if object_write_in_flight:
+        async with transaction() as conn:
+            await abort_file_upload_session(
+                conn,
+                upload_session_id=upload_session_id,
+                state="expired",
+            )
+            await retry_expired_file_upload_session(
+                conn,
+                upload_session_id=upload_session_id,
+                delay_seconds=86_400,
+            )
+        return
+    if object_created:
+        try:
+            await _run_storage(storage.delete_object, storage_key=storage_key)
+        except Exception:
+            async with transaction() as conn:
+                await abort_file_upload_session(
+                    conn,
+                    upload_session_id=upload_session_id,
+                    state="expired",
+                )
+                await retry_expired_file_upload_session(
+                    conn,
+                    upload_session_id=upload_session_id,
+                )
+            return
+    async with transaction() as conn:
+        await abort_file_upload_session(
+            conn,
+            upload_session_id=upload_session_id,
+            state="expired",
+        )
+        await delete_expired_file_upload_session(
+            conn,
+            upload_session_id=upload_session_id,
+        )
 
 
 def _put_direct_upload(
@@ -621,6 +848,234 @@ def _validate_upload_file(*, filename: str, declared_content_type: str, path: Pa
         or sample.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"))
     ):
         _validate_zip_payload(path)
+
+
+@router.post(
+    "/chat/sessions/{session_id}/profile-drive-files",
+    response_model=SessionInputFileResponse,
+)
+async def import_profile_drive_file(
+    session_id: str,
+    request: ProfileDriveFileImportRequest,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> SessionInputFileResponse:
+    """Import one user-confirmed ProfileDrive file into an owned session workspace."""
+
+    _require_upload_permissions(principal)
+    try:
+        tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
+        session_id = assert_safe_id(session_id, "session_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async with transaction() as conn:
+        session = await get_authorized_session(
+            conn,
+            tenant_id=tenant_id,
+            user_id=principal.user_id,
+            session_id=session_id,
+        )
+    if session is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    workspace_id = str(session.get("workspace_id") or "")
+    if not workspace_id:
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    display_name = _normalize_upload_filename(request.path.rsplit("/", 1)[-1])
+    storage = ObjectStorage()
+    await _cleanup_expired_upload_sessions(storage)
+    client, upstream_response, content_length, content_type = await _open_profile_drive_file(
+        principal=principal,
+        path=request.path,
+    )
+
+    file_id = new_id("file")
+    upload_session_id = new_id("upload")
+    upload_id = f"direct_{new_id('upload_owner')}"
+    storage_key = direct_upload_storage_key(
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        file_id=file_id,
+        upload_id=upload_id,
+    )
+    try:
+        async with transaction() as conn:
+            usage = await get_file_storage_usage(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+            )
+            settings = get_settings()
+            if usage["active_uploads"] >= settings.file_upload_max_active_sessions:
+                raise HTTPException(status_code=429, detail="upload_session_limit_exceeded")
+            if (
+                usage["stored_bytes"] + usage["reserved_bytes"] + content_length
+                > settings.file_storage_quota_bytes
+            ):
+                raise HTTPException(status_code=413, detail="file_storage_quota_exceeded")
+            claimed = await claim_direct_file_upload_session(
+                conn,
+                upload_session_id=upload_session_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                file_id=file_id,
+                original_name=display_name,
+                content_type=content_type,
+                expected_size_bytes=content_length,
+                storage_key=storage_key,
+                upload_id=upload_id,
+            )
+        if not claimed:
+            raise HTTPException(status_code=409, detail="profile_drive_import_conflict")
+    except BaseException:
+        await upstream_response.aclose()
+        await client.aclose()
+        raise
+
+    temporary_path: str | None = None
+    abandoned_put: Event | None = None
+    object_created = False
+    committed = False
+    try:
+        temporary_path, transferred_sha256, transferred_bytes = await _download_profile_drive_file(
+            client=client,
+            response=upstream_response,
+            content_length=content_length,
+        )
+        await _run_storage(
+            _validate_upload_file,
+            filename=display_name,
+            declared_content_type=content_type,
+            path=Path(temporary_path),
+        )
+        abandoned_put = Event()
+        stored = await run_storage_io(
+            _put_profile_drive_import,
+            storage,
+            storage_key=storage_key,
+            source_path=temporary_path,
+            content_type=content_type,
+            abandoned=abandoned_put,
+            timeout_seconds=300.0,
+            on_abandoned=abandoned_put.set,
+        )
+        object_created = True
+        if (
+            stored.size_bytes != transferred_bytes
+            or stored.sha256.casefold() != transferred_sha256.casefold()
+        ):
+            raise HTTPException(status_code=409, detail="profile_drive_import_identity_mismatch")
+
+        async with transaction() as conn:
+            reservation = await get_authorized_file_upload_session(
+                conn,
+                upload_session_id=upload_session_id,
+                tenant_id=tenant_id,
+                user_id=principal.user_id,
+                for_update=True,
+            )
+            if (
+                reservation is None
+                or reservation.get("state") != "pending"
+                or str(reservation.get("storage_key") or "") != storage_key
+                or int(reservation.get("expected_size_bytes") or -1) != stored.size_bytes
+            ):
+                raise RepositoryNotFoundError("profile_drive_import_reservation_lost")
+            await create_file(
+                conn,
+                file_id=file_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                original_name=display_name,
+                content_type=content_type,
+                size_bytes=stored.size_bytes,
+                storage_key=stored.storage_key,
+                sha256=stored.sha256,
+            )
+            await complete_file_upload_session(
+                conn,
+                upload_session_id=upload_session_id,
+            )
+            await append_audit_log(
+                conn,
+                tenant_id=tenant_id,
+                user_id=principal.user_id,
+                action="profile_drive.file_imported",
+                target_type="file",
+                target_id=file_id,
+                trace_id=standard_trace_id(file_id),
+                payload_json={
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "file_id": file_id,
+                    "name": display_name,
+                    "size_bytes": stored.size_bytes,
+                },
+            )
+            file_row = await get_file(conn, tenant_id=tenant_id, file_id=file_id)
+        committed = True
+        if file_row is None:
+            raise RepositoryNotFoundError("profile_drive_import_missing")
+        return _input_file_response(file_row=dict(file_row), session_id=session_id)
+    except asyncio.CancelledError:
+        if not committed:
+            await asyncio.shield(
+                _discard_profile_drive_import(
+                    upload_session_id=upload_session_id,
+                    storage=storage,
+                    storage_key=storage_key,
+                    object_created=object_created,
+                    object_write_in_flight=(
+                        abandoned_put is not None and abandoned_put.is_set()
+                    ),
+                )
+            )
+        raise
+    except (StorageIOBusyError, StorageIOTimeoutError) as exc:
+        if not committed:
+            await _discard_profile_drive_import(
+                upload_session_id=upload_session_id,
+                storage=storage,
+                storage_key=storage_key,
+                object_created=object_created,
+                object_write_in_flight=(
+                    abandoned_put is not None and abandoned_put.is_set()
+                ),
+            )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except HTTPException:
+        if not committed:
+            await _discard_profile_drive_import(
+                upload_session_id=upload_session_id,
+                storage=storage,
+                storage_key=storage_key,
+                object_created=object_created,
+                object_write_in_flight=(
+                    abandoned_put is not None and abandoned_put.is_set()
+                ),
+            )
+        raise
+    except Exception as exc:
+        if not committed:
+            await _discard_profile_drive_import(
+                upload_session_id=upload_session_id,
+                storage=storage,
+                storage_key=storage_key,
+                object_created=object_created,
+                object_write_in_flight=(
+                    abandoned_put is not None and abandoned_put.is_set()
+                ),
+            )
+        raise HTTPException(status_code=503, detail="profile_drive_import_failed") from exc
+    finally:
+        if temporary_path and (abandoned_put is None or not abandoned_put.is_set()):
+            Path(temporary_path).unlink(missing_ok=True)
 
 
 @router.post("/files", response_model=UploadFileResponse)
@@ -1371,7 +1826,7 @@ async def list_session_input_files(
         workspace_id = str(session.get("workspace_id") or "")
         if not workspace_id:
             raise HTTPException(status_code=404, detail="session_not_found")
-        rows = await list_authorized_session_input_files(
+        rows = await list_owned_session_files(
             conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -1391,10 +1846,10 @@ async def list_session_input_files(
 async def preview_input_file(
     file_id: str,
     session_id: str,
-    run_id: str,
+    run_id: str | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> Response:
-    """Preview a passive input file authorized by one immutable run snapshot."""
+    """Preview a passive file authorized by exact session ownership and optional Run snapshot."""
 
     file_row = await _authorized_input_file(
         file_id=file_id,
@@ -1450,10 +1905,10 @@ async def preview_input_file(
 async def download_input_file(
     file_id: str,
     session_id: str,
-    run_id: str,
+    run_id: str | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> Response:
-    """Download an input file authorized by one immutable run snapshot."""
+    """Download a passive file authorized by exact session ownership and optional Run snapshot."""
 
     file_row = await _authorized_input_file(
         file_id=file_id,

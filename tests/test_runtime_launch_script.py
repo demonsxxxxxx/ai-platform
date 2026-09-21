@@ -468,6 +468,7 @@ def test_compose_exposes_sandbox_runtime_configuration():
     assert "${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}" in compose_text
     assert "${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}" in compose_text
     assert "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080" in compose_text
+    assert "AUTH_CONTEXT_COOKIE_SECURE: ${AUTH_CONTEXT_COOKIE_SECURE:-false}" in compose_text
     assert "SANDBOX_CONTAINER_PROVIDER" in compose_text
     assert "SANDBOX_EXECUTOR_IMAGE" in compose_text
     assert "SANDBOX_CALLBACK_BASE_URL" in compose_text
