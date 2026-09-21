@@ -1,12 +1,12 @@
 # Run 诊断字段治理技术方案
 
-状态：Issue #1485 的诊断可靠性候选批次；产品需求见 [PRD](run-diagnostics-prd.md)。当前分支在主分支既有 SDK/Sandbox、Runs 私有持久化和管理查询之上，补齐诊断写入隔离、入队/Worker 逃逸/工作区收集失败、标准异常链和逐观察管理投影。稳定父观察身份、runtime GET 只读迁移、真实构建版本和诊断包导出仍待后续批次。本文与本分支都不是已部署证明。
+状态：Issue #1485 的诊断可靠性候选批次；产品需求见 [PRD](run-diagnostics-prd.md)。当前分支在主分支既有 SDK/Sandbox、Runs 私有持久化和管理查询之上，补齐诊断写入隔离、入队/Worker 逃逸/工作区收集失败、标准异常链、逐观察管理投影、可读运行页面和有审计的单 Run 脱敏诊断包。稳定父观察身份、runtime GET 只读迁移、真实构建版本与正式环境故障语料仍待后续批次。本文与本分支都不是已部署证明。
 
 ## 1. 设计依据与决策
 
-候选实现核对基线：`b8e6e73a`。下列缺口用于约束 Issue #1485 的分批实现，不代表已复现正式环境故障；提交和验收仍以 PR 的精确 base/head 为准。
+候选实现核对基线：`4c24360a9d5f9c6a757b203dbf68d3ec270f2f64`。下列缺口用于约束 Issue #1485 的分批实现，不代表已复现正式环境故障；提交和验收仍以 PR 的精确 base/head 为准。
 
-主分支已具备 D01-D06 的核心链路；本批只修复诊断自身不能否决合法业务终态，并增加有实际来源的早期失败、异常链和逐观察投影。D07-D09、稳定父观察身份、真实 PostgreSQL/Redis 联调和导出不在本批完成声明中。
+主分支已具备 D01-D06 的核心链路；本批修复诊断自身不能否决合法业务终态，增加有实际来源的早期失败、异常链、逐观察投影、可读监控与同步单 Run 导出。D07-D09、稳定父观察身份、真实 PostgreSQL/Redis 联调和正式环境验收不在本批完成声明中。
 
 ### 已定位的缺口
 
@@ -62,7 +62,7 @@ flowchart LR
 | Identity | 现有 principal 与管理权限 | 引入页面本地的诊断权限真相 |
 | Bootstrap / Platform | 注入端口、技术日志和版本来源 | 在共享观测模块决定业务归因或保存领域事实 |
 
-当前实现文件为 `app/runs/domain/diagnostics.py`、`app/runs/application/diagnostics.py`、`app/runs/infrastructure/diagnostics_postgres.py` 和 `app/runs/transport/admin_diagnostics.py`。跨域只使用 `app/runs/api.py` 的窄接口。源码迁移遵循已有 frozen-file / bridge 权限；需要调整 authority 时先单独进入可信基线，不能在实现 PR 自我放行。
+当前实现文件为 `app/runs/domain/diagnostics.py`、`app/runs/application/diagnostics.py`、`app/runs/application/diagnostic_export.py` 和 `app/runs/infrastructure/diagnostics_postgres.py`；管理路由通过 `app/runs/api.py` 的窄接口访问 Runs 能力。源码迁移遵循已有 frozen-file / bridge 权限；需要调整 authority 时先单独进入可信基线，不能在实现 PR 自我放行。
 
 ## 3. 诊断契约
 
@@ -163,15 +163,17 @@ HTTP 错误响应有独立预算。首批保留现有 4 KiB body 解析上限：
 
 响应包括 Run 安全概览、诊断记录 revision、结构化观察、来源版本及完整性；无记录返回 `coverage=not_collected`，历史适配返回 `legacy_record`，不能返回语义含混的空对象。Run 不存在或不在授权范围沿用不可区分的 not-found 行为，非管理员 403。
 
+Run Monitor 的列表和详情概览从既有 Session、User、Workspace、Agent Profile 与 Skill 权威投影标题和名称，并按当前公共文本规则再次脱敏、有界截断。技术 ID 仍作为查询键和可折叠排障信息返回，但不作为默认视觉标题；该投影不新增一套名称或任务状态权威。
+
 单 Run 记录有界，首版直接获取一份快照；不引入另一套诊断事件流。前端在现有 RunMonitor 详情按需加载，运行中按现有有界轮询策略刷新；切换或关闭详情时递增请求序列并核对当前 Run，旧响应不会写入新详情。普通用户接口和 SSE 不加入私有观察。
 
 `GET /admin/runs/{run_id}` 内部恢复 `result.runtime_diagnostics` 的代码已删除；历史数据仅由独立诊断查询中的 Runs legacy reader 转换。已部署的外部客户端如仍消费旧字段，需要在发布前按第 8 节另行确认退出或提供只读形状适配。
 
 ### 5.2 导出接口
 
-S4 计划新增 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校验管理权限。当前候选没有注册该接口，也不把页面查询描述成可下载诊断包。实现时由一个短的 REPEATABLE READ 事务读取 Run/Attempt 摘要及诊断 revision/payload，生成唯一 `export_id` 并写导出请求审计；随后释放事务，在应用内生成 ZIP。此接口不执行任务或资源维护。
+当前候选已新增 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校验管理权限。接口由一个短的 REPEATABLE READ 事务读取 Run/Attempt 摘要及诊断 revision/payload，释放事务后在应用内生成 ZIP，再写导出响应审计；审计失败不返回包。此接口不执行任务或资源维护。
 
-同一包内所有数据库事实来自这次快照；manifest 区分执行时版本与导出服务当前版本。HTTP 返回前再次确认请求 principal 仍符合当前可验证的授权契约；遵循现有身份快照有效期，不声称即时上游权限撤销。
+同一包内所有数据库事实来自这次快照；manifest 分开记录快照已有的诊断版本与导出包 schema，未记录的实际组件构建版本保持未知。HTTP 返回沿用本次请求已经验证的 principal 和既有身份快照有效期，不声称即时感知上游权限撤销。
 
 审计只记录 export_id、操作者、范围、快照 revision、策略版本、结果类别与字节数。审计失败则不返回诊断包。下载开始后无法保证客户端完整接收；审计的 `response_started` 与 `generation_failed` 等结果不得伪称下载已送达。
 
@@ -303,7 +305,7 @@ S4 计划新增 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校
 | S1 异常与规范化 | 候选已完成：采集保真、观察链、预算与损失元数据 | D01/D02 新写路径已删除 | T01/T02/T03 聚焦测试通过 |
 | S2 保存与传输 | 主分支已有核心链路；本批增加诊断失败 savepoint/timeout 降级及入队、Worker 逃逸、工作区收集来源 | 删除 protocol-only 调用者事务特例；公共 Sandbox 映射保持兼容 | 聚焦单元测试；真实 PostgreSQL 选择器在配置 DSN 后验收 |
 | S3 管理查询与页面 | 主分支已有结构化详情；本批增加逐观察证据且保留旧汇总形状 | 同身份 handling 重复投影退出 | 后端多观察测试；前端依赖可用后运行挂载测试 |
-| S4 导出与治理工具 | 待实施：有审计的单 Run 快照包、完整性和性能 | D09 中被取代能力的迁移待实施 | T11/T12、性能目标、工具消费者回归待验 |
+| S4 导出与治理工具 | 候选已完成：固定三文件、有审计、512 KiB 未压缩预算、无存储公开链接的单 Run 快照包 | D09 中 readiness 契约仍保留；实际下载不再由 readiness 冒充 | 单元/API 权限与审计失败测试已覆盖；真实 PG 快照、并发性能和工具消费者回归待验 |
 | S5 发布与收口 | 待实施：打包迁移、授权环境故障语料、回滚演练 | D10 与达到退出证明的外部兼容项待实施 | T15/T16 和 PRD 全量验收待验 |
 
 主控负责范围、技术取舍、修改、集成与最终验证。只读子代理可并行核对互不重叠的 SDK/HTTP、持久化/身份、前端/测试、部署/兼容消费者，返回精确文件位置与证据；不得以探查结论代替完整实现验收。
@@ -318,4 +320,4 @@ S4 计划新增 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校
 - 发布操作继续使用既有迁移、readiness、不可变包和回滚入口；当前没有正式部署记录。
 - 观测契约和工具说明：区分真实单 Run 私有诊断下载与原 G9 公共 Trace/Audit 验收范围，保留后者尚未覆盖的要求。
 
-当前批次只有在聚焦测试、架构治理和 exact base/head 校验通过后才可提交。D07-D09、稳定父观察身份、真实 PostgreSQL/Redis、前端实跑、打包和正式环境故障语料仍需在具备对应基础设施与权限的后续批次分别验收。
+当前批次只有在聚焦测试、架构治理和 exact base/head 校验通过后才可提交。本地真实组件浏览器检查只证明页面层级、可读性与交互入口；D07-D09、稳定父观察身份、真实 PostgreSQL/Redis、部署包联调和正式环境故障语料仍需在具备对应基础设施与权限的后续批次分别验收。

@@ -5,7 +5,10 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleX,
+  Copy,
   Clock3,
+  Pause,
+  Play,
   RadioTower,
   RefreshCw,
   ServerCog,
@@ -35,6 +38,7 @@ import { RunDiagnosticsSection } from "./RunDiagnosticsSection";
 const RUN_LIMIT = 50;
 const PAGE_SIZE = 10;
 const DIAGNOSTIC_PAGE_SIZE = 20;
+const AUTO_REFRESH_INTERVAL_MS = 5_000;
 
 const STATUS_FILTERS = [
   { value: "all", label: "全部" },
@@ -89,6 +93,44 @@ function normalized(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? "";
 }
 
+function displayText(value: string | null | undefined): string {
+  return value?.trim() ?? "";
+}
+
+function runDisplayTitle(run: AdminRunSummary): string {
+  return (
+    displayText(run.session_title) ||
+    displayText(run.task_summary) ||
+    "未命名任务"
+  );
+}
+
+function userDisplayName(run: AdminRunSummary): string {
+  return displayText(run.user_display_name) || "未知用户";
+}
+
+function workspaceDisplayName(run: AdminRunSummary): string {
+  return displayText(run.workspace_name) || "默认工作区";
+}
+
+function agentDisplayName(run: AdminRunSummary): string {
+  return displayText(run.agent_name) || "未命名 Agent";
+}
+
+function skillDisplayName(run: AdminRunSummary): string {
+  return (
+    displayText(run.skill_name) ||
+    (run.execution_kind === "harness_chat" ? "通用对话" : "未命名 Skill")
+  );
+}
+
+function compactIdentifier(value: string | null | undefined): string {
+  const text = displayText(value);
+  if (!text) return "-";
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 8)}…${text.slice(-6)}`;
+}
+
 export function filterAdminRuns(
   runs: AdminRunSummary[],
   status: StatusFilter,
@@ -99,6 +141,12 @@ export function filterAdminRuns(
     if (status !== "all" && run.status !== status) return false;
     if (!normalizedQuery) return true;
     return [
+      run.session_title,
+      run.task_summary,
+      run.user_display_name,
+      run.workspace_name,
+      run.agent_name,
+      run.skill_name,
       run.run_id,
       run.session_id,
       run.user_id,
@@ -164,6 +212,38 @@ function durationMillisecondsLabel(value: number | null | undefined): string {
   const seconds = Math.round(value / 1_000);
   if (seconds < 60) return `${seconds} 秒`;
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+function tokenCountLabel(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "未记录";
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function estimatedCostLabel(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "未记录";
+  return `${new Intl.NumberFormat("zh-CN").format(value)} 最小计价单位`;
+}
+
+function diagnosticCoverageLabel(value: string): string {
+  return (
+    {
+      full: "完整采集",
+      partial: "部分采集",
+      not_collected: "未采集",
+      legacy_record: "历史记录",
+      unsupported_schema: "版本暂不支持",
+      transport_unavailable: "传输不可用",
+    }[value] ?? value
+  );
+}
+
+function elapsedBetween(
+  startedAt: string | null | undefined,
+  finishedAt: string | null | undefined,
+): string {
+  if (!startedAt || !finishedAt) return "耗时未知";
+  const duration = Date.parse(finishedAt) - Date.parse(startedAt);
+  return durationMillisecondsLabel(duration) || "耗时未知";
 }
 
 function byteSizeLabel(value: number): string {
@@ -258,15 +338,157 @@ function MetricTile({
 }
 
 function IdentityField({ label, value }: { label: string; value?: string | null }) {
+  const [copied, setCopied] = useState(false);
+  const copyValue = async () => {
+    if (!value || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      setCopied(false);
+    }
+  };
   return (
     <div className="min-w-0">
-      <dt className="text-[11px] font-medium text-[var(--theme-text-tertiary)]">
-        {label}
+      <dt className="flex items-center justify-between gap-2 text-[11px] font-medium text-[var(--theme-text-tertiary)]">
+        <span>{label}</span>
+        {value ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] hover:bg-[var(--theme-bg-sidebar)]"
+            onClick={() => void copyValue()}
+            aria-label={`复制${label}`}
+          >
+            <Copy size={11} />
+            {copied ? "已复制" : "复制"}
+          </button>
+        ) : null}
       </dt>
-      <dd className="mt-1 break-all font-mono text-xs leading-5 text-[var(--theme-text)]">
+      <dd className="mt-1 break-all font-mono text-xs leading-5 text-[var(--theme-text)]" title={value || undefined}>
         {value || "-"}
       </dd>
     </div>
+  );
+}
+
+function DiagnosticsOverview({
+  diagnostics,
+  loading,
+}: {
+  diagnostics: AdminRunDiagnosticsResponse | null;
+  loading: boolean;
+}) {
+  if (loading && !diagnostics) {
+    return <p className="mt-3 text-xs text-[var(--theme-text-secondary)]">正在读取诊断摘要…</p>;
+  }
+  if (!diagnostics) return null;
+  return (
+    <div className="mt-3 grid gap-2 sm:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3" data-run-diagnostics-overview>
+      <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5">
+        <p className="text-[11px] text-[var(--theme-text-tertiary)]">最早留存异常</p>
+        <p className="mt-1 break-words text-xs font-medium text-[var(--theme-text)]">
+          {diagnostics.root?.message || diagnostics.root?.error_code || "没有可展示的根异常"}
+        </p>
+        <p className="mt-1 text-[11px] text-[var(--theme-text-secondary)]">
+          {[diagnostics.root?.source, diagnostics.root?.stage].filter(Boolean).join(" · ") || "阶段未知"}
+        </p>
+      </div>
+      <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5">
+        <p className="text-[11px] text-[var(--theme-text-tertiary)]">最近处理</p>
+        <p className="mt-1 break-words text-xs font-medium text-[var(--theme-text)]">
+          {diagnostics.handling.at(-1)?.message || diagnostics.handling.at(-1)?.error_code || "没有后续处理观察"}
+        </p>
+        <p className="mt-1 text-[11px] text-[var(--theme-text-secondary)]">
+          {diagnostics.handling.length} 条处理观察
+        </p>
+      </div>
+      <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5">
+        <p className="text-[11px] text-[var(--theme-text-tertiary)]">证据完整性</p>
+        <p className="mt-1 text-xs font-medium text-[var(--theme-text)]">
+          {diagnosticCoverageLabel(diagnostics.coverage)}
+        </p>
+        <p className="mt-1 text-[11px] text-[var(--theme-text-secondary)]">
+          保留 {diagnostics.counts.retained_observations} 条 · 缺失/裁剪 {diagnostics.losses.length + diagnostics.counts.omitted_observations} 条
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function AttemptSection({ diagnostics }: { diagnostics: AdminRunDiagnosticsResponse | null }) {
+  const attempts = diagnostics?.attempts ?? [];
+  if (!attempts.length) return null;
+  const currentAttempt = attempts.at(-1)?.attempt_id;
+  return (
+    <section className="p-4" data-run-attempts>
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="text-xs font-semibold text-[var(--theme-text)]">执行尝试</h3>
+        <span className="text-[11px] text-[var(--theme-text-tertiary)]">共 {attempts.length} 次</span>
+      </div>
+      <ol className="mt-3 space-y-2">
+        {attempts.map((attempt) => (
+          <li key={attempt.attempt_id} className="rounded-md border border-[var(--theme-border)] p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-[var(--theme-text)]">
+                Attempt {attempt.ordinal}
+                {attempt.attempt_id === currentAttempt ? " · 当前" : ""}
+              </p>
+              <StatusBadge status={attempt.status} />
+            </div>
+            <p className="mt-1 text-[11px] text-[var(--theme-text-secondary)]">
+              {[attempt.owner_kind, elapsedBetween(attempt.started_at, attempt.finished_at), attempt.terminal_reason]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+            {attempt.error_code ? (
+              <p className="mt-1 break-words font-mono text-[11px] text-[var(--theme-danger)]">{attempt.error_code}</p>
+            ) : null}
+            <p className="mt-1 truncate font-mono text-[10px] text-[var(--theme-text-tertiary)]" title={attempt.attempt_id}>
+              {compactIdentifier(attempt.attempt_id)}
+            </p>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function SemanticTimeline({ items }: { items: AdminRunTimelineItem[] }) {
+  return (
+    <section className="p-4" data-run-semantic-timeline>
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="text-xs font-semibold text-[var(--theme-text)]">处理时间线</h3>
+        <span className="text-[11px] text-[var(--theme-text-tertiary)]">{items.length} 个语义阶段</span>
+      </div>
+      {items.length ? (
+        <ol className="mt-3 space-y-2">
+          {items.map((item) => (
+            <li key={item.id} className="grid grid-cols-[10px_minmax(0,1fr)] gap-3">
+              <span className={`mt-1.5 size-2 rounded-full ${timelineStatusTone(item.status)}`} />
+              <div className="min-w-0 rounded-md bg-[var(--theme-bg-sidebar)] p-2.5">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-xs font-medium text-[var(--theme-text)]">
+                    {item.label}{timelineCountLabel(item)}
+                  </span>
+                  <time dateTime={item.created_at ?? undefined} className="ml-auto text-[11px] text-[var(--theme-text-tertiary)]">
+                    {dateTime(item.created_at)}
+                  </time>
+                </div>
+                <p className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
+                  {[item.stage, durationMillisecondsLabel(item.duration_ms)].filter(Boolean).join(" · ") || "未记录阶段耗时"}
+                </p>
+                {item.detail ? (
+                  <p className="mt-1 text-[11px] leading-5 text-[var(--theme-text-secondary)]">{item.detail}</p>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-3 text-xs text-[var(--theme-text-tertiary)]">暂无可展示的处理阶段</p>
+      )}
+    </section>
   );
 }
 
@@ -285,6 +507,10 @@ function RunDetail({
   diagnosticsLoading,
   error,
   diagnosticsError,
+  diagnosticsExporting,
+  diagnosticsExportError,
+  onRetryDiagnostics,
+  onExportDiagnostics,
   onClose,
   fallbackFocusRef,
 }: {
@@ -294,6 +520,10 @@ function RunDetail({
   diagnosticsLoading: boolean;
   error: string | null;
   diagnosticsError: string | null;
+  diagnosticsExporting: boolean;
+  diagnosticsExportError: string | null;
+  onRetryDiagnostics: () => void;
+  onExportDiagnostics: () => void;
   onClose: () => void;
   fallbackFocusRef: RefObject<HTMLButtonElement | null>;
 }) {
@@ -394,17 +624,22 @@ function RunDetail({
       data-run-monitor-detail
       role="dialog"
       aria-modal="true"
+      aria-labelledby="run-monitor-detail-title"
       className="h-full min-w-0 overflow-y-auto rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_8px_24px_rgba(18,38,63,0.12)]"
-      aria-label="运行详情"
     >
       <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3">
         <div className="min-w-0">
           <p className="text-xs font-medium text-[var(--theme-text-secondary)]">
-            Worker 执行详情
+            运行详情
           </p>
-          <h2 className="truncate font-mono text-sm font-semibold text-[var(--theme-text)]">
-            {detail?.run.run_id ?? "正在读取"}
+          <h2 id="run-monitor-detail-title" className="truncate text-sm font-semibold text-[var(--theme-text)]">
+            {detail ? runDisplayTitle(detail.run) : "正在读取运行详情"}
           </h2>
+          {detail ? (
+            <p className="mt-1 truncate text-[11px] text-[var(--theme-text-tertiary)]">
+              {agentDisplayName(detail.run)} · 运行 {compactIdentifier(detail.run.run_id)}
+            </p>
+          ) : null}
         </div>
         <button
           ref={closeRef}
@@ -443,6 +678,10 @@ function RunDetail({
             <p className="mt-2 text-sm font-medium text-[var(--theme-text)]">
               {monitorView?.currentAction}
             </p>
+            <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
+              {userDisplayName(detail.run)} · {workspaceDisplayName(detail.run)} ·{" "}
+              {skillDisplayName(detail.run)}
+            </p>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
                 <span className="text-[var(--theme-text-tertiary)]">开始</span>
@@ -453,8 +692,16 @@ function RunDetail({
               <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
                 <span className="text-[var(--theme-text-tertiary)]">耗时</span>
                 <p className="mt-1 text-[var(--theme-text)]">
-                  {durationLabel(detail.run)}
+                  {durationMillisecondsLabel(detail.run.latency_ms) || durationLabel(detail.run)}
                 </p>
+              </div>
+              <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
+                <span className="text-[var(--theme-text-tertiary)]">Token</span>
+                <p className="mt-1 text-[var(--theme-text)]">{tokenCountLabel(detail.run.total_token_count)}</p>
+              </div>
+              <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2">
+                <span className="text-[var(--theme-text-tertiary)]">估算成本</span>
+                <p className="mt-1 text-[var(--theme-text)]">{estimatedCostLabel(detail.run.estimated_cost_minor)}</p>
               </div>
             </div>
             {detail.run.error_code ? (
@@ -465,20 +712,33 @@ function RunDetail({
                 ) : null}
               </div>
             ) : null}
+            <DiagnosticsOverview diagnostics={diagnostics} loading={diagnosticsLoading} />
             <details className="mt-4 rounded-md border border-[var(--theme-border)] px-3 py-2">
               <summary className="cursor-pointer text-xs font-medium text-[var(--theme-text-secondary)]">
-                请求与追踪信息
+                技术信息
               </summary>
+              <p className="mt-2 text-[11px] leading-5 text-[var(--theme-text-tertiary)]">
+                以下标识用于精确检索、跨系统关联和研发排查。
+              </p>
               <dl className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-                <IdentityField label="Chat / Session ID" value={detail.run.session_id} />
-                <IdentityField label="Trace ID" value={detail.run.trace_id} />
+                <IdentityField label="Run ID" value={detail.run.run_id} />
+                <IdentityField label="Session ID" value={detail.run.session_id} />
+                <IdentityField
+                  label={detail.run.trace_id_recorded ? "已记录 Trace ID" : "派生关联 ID"}
+                  value={detail.run.trace_id}
+                />
                 <IdentityField label="用户 ID" value={detail.run.user_id} />
-                <IdentityField label="工作区" value={detail.run.workspace_id} />
-                <IdentityField label="专家" value={detail.run.agent_id} />
-                <IdentityField label="Skill" value={detail.run.skill_id} />
+                <IdentityField label="工作区 ID" value={detail.run.workspace_id} />
+                <IdentityField label="Agent ID" value={detail.run.agent_id} />
+                <IdentityField label="Skill ID" value={detail.run.skill_id} />
+                <IdentityField label="来源 Run ID" value={detail.run.copied_from_run_id} />
               </dl>
             </details>
           </section>
+
+          <AttemptSection diagnostics={diagnostics} />
+
+          <SemanticTimeline items={monitorView?.recentActivity ?? []} />
 
           <section className="p-4" data-worker-execution-content>
             <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -587,13 +847,17 @@ function RunDetail({
                 diagnostics={diagnostics}
                 loading={diagnosticsLoading}
                 error={diagnosticsError}
+                exporting={diagnosticsExporting}
+                exportError={diagnosticsExportError}
+                onRetry={onRetryDiagnostics}
+                onExport={onExportDiagnostics}
               />
             </div>
           </details>
 
           <details className="p-4">
             <summary className="cursor-pointer text-xs font-semibold text-[var(--theme-text)]">
-              原始事件与关键阶段
+              事件协议细节
             </summary>
             <div className="mt-3">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -813,9 +1077,9 @@ function DesktopRunTable({
         <thead className="sticky top-0 z-[1] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]">
           <tr>
             <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">状态</th>
-            <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">Chat / Run</th>
+            <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">任务 / 运行</th>
             <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">用户 / 工作区</th>
-            <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">专家 / Skill</th>
+            <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">Agent / Skill</th>
             <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">时间</th>
             <th className="w-10 border-b border-[var(--theme-border)] px-2 py-2.5"><span className="sr-only">详情</span></th>
           </tr>
@@ -852,21 +1116,41 @@ function DesktopRunTable({
                     className="block w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-focus-ring)]"
                     aria-label={`查看 ${run.run_id}`}
                   >
-                    <span className="block truncate font-mono font-medium text-[var(--theme-text)]" title={run.session_id ?? ""}>
-                      {run.session_id ?? "无 Session"}
+                    <span
+                      className="block truncate font-medium text-[var(--theme-text)]"
+                      title={runDisplayTitle(run)}
+                    >
+                      {runDisplayTitle(run)}
                     </span>
-                    <span className="mt-1 block truncate font-mono text-[11px] text-[var(--theme-text-tertiary)]" title={run.run_id}>
-                      {run.run_id}
+                    <span
+                      className="mt-1 block truncate font-mono text-[11px] text-[var(--theme-text-tertiary)]"
+                      title={`Run ID: ${run.run_id}`}
+                    >
+                      运行 {compactIdentifier(run.run_id)}
                     </span>
                   </button>
                 </td>
                 <td className="max-w-[190px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
-                  <p className="truncate text-[var(--theme-text)]" title={run.user_id ?? ""}>{run.user_id}</p>
-                  <p className="mt-1 truncate text-[11px] text-[var(--theme-text-tertiary)]" title={run.workspace_id ?? ""}>{run.workspace_id ?? "default"}</p>
+                  <p className="truncate text-[var(--theme-text)]" title={userDisplayName(run)}>
+                    {userDisplayName(run)}
+                  </p>
+                  <p
+                    className="mt-1 truncate text-[11px] text-[var(--theme-text-tertiary)]"
+                    title={workspaceDisplayName(run)}
+                  >
+                    {workspaceDisplayName(run)}
+                  </p>
                 </td>
                 <td className="max-w-[210px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
-                  <p className="truncate text-[var(--theme-text)]" title={run.agent_id ?? ""}>{run.agent_id ?? "-"}</p>
-                  <p className="mt-1 truncate text-[11px] text-[var(--theme-text-tertiary)]" title={run.skill_id ?? ""}>{run.skill_id ?? "-"}</p>
+                  <p className="truncate text-[var(--theme-text)]" title={agentDisplayName(run)}>
+                    {agentDisplayName(run)}
+                  </p>
+                  <p
+                    className="mt-1 truncate text-[11px] text-[var(--theme-text-tertiary)]"
+                    title={skillDisplayName(run)}
+                  >
+                    {skillDisplayName(run)}
+                  </p>
                 </td>
                 <td className="whitespace-nowrap border-b border-[var(--theme-border)] px-3 py-3 align-top">
                   <p className="text-[var(--theme-text)]">{dateTime(run.started_at ?? run.queued_at ?? run.created_at)}</p>
@@ -914,11 +1198,11 @@ function MobileRunList({
         >
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="truncate font-mono text-xs font-medium text-[var(--theme-text)]">
-                {run.session_id ?? "无 Session"}
+              <p className="truncate text-xs font-medium text-[var(--theme-text)]">
+                {runDisplayTitle(run)}
               </p>
               <p className="mt-1 truncate font-mono text-[11px] text-[var(--theme-text-tertiary)]">
-                {run.run_id}
+                运行 {compactIdentifier(run.run_id)}
               </p>
             </div>
             <StatusBadge status={run.status} />
@@ -929,7 +1213,7 @@ function MobileRunList({
             </p>
           ) : null}
           <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-[var(--theme-text-secondary)]">
-            <span className="truncate">{run.user_id} · {run.agent_id ?? "-"}</span>
+            <span className="truncate">{userDisplayName(run)} · {agentDisplayName(run)}</span>
             <span className="shrink-0 tabular-nums">{durationLabel(run)}</span>
           </div>
         </button>
@@ -953,6 +1237,9 @@ export function RunMonitorPanel() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [diagnosticsExporting, setDiagnosticsExporting] = useState(false);
+  const [diagnosticsExportError, setDiagnosticsExportError] = useState<string | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [page, setPage] = useState(1);
   const listRequestSequence = useRef(0);
@@ -1040,12 +1327,43 @@ export function RunMonitorPanel() {
     void loadRuns(true);
   }, [loadRuns]);
 
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadRuns(false);
+    }, AUTO_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [autoRefresh, loadRuns]);
+
+  const exportDiagnostics = useCallback(async () => {
+    const runId = selectedRunIdRef.current;
+    if (!runId) return;
+    setDiagnosticsExporting(true);
+    setDiagnosticsExportError(null);
+    try {
+      const result = await adminRunsApi.exportDiagnostics(runId);
+      const objectUrl = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = result.filename;
+      anchor.rel = "noopener";
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    } catch (error) {
+      setDiagnosticsExportError(error instanceof Error ? error.message : "诊断包生成失败");
+    } finally {
+      setDiagnosticsExporting(false);
+    }
+  }, []);
 
   const selectRun = useCallback((runId: string) => {
     selectedRunIdRef.current = runId;
     setSelectedRunId(runId);
     setDetail(null);
     setDiagnostics(null);
+    setDiagnosticsExportError(null);
     void loadDetail(runId);
     void loadDiagnostics(runId);
   }, [loadDetail, loadDiagnostics]);
@@ -1059,6 +1377,8 @@ export function RunMonitorPanel() {
     setDiagnostics(null);
     setDetailError(null);
     setDiagnosticsError(null);
+    setDiagnosticsExportError(null);
+    setDiagnosticsExporting(false);
     setDetailLoading(false);
     setDiagnosticsLoading(false);
   }, []);
@@ -1086,17 +1406,28 @@ export function RunMonitorPanel() {
     : "尚未刷新";
 
   const headerActions = (
-    <button
-      ref={refreshButtonRef}
-      type="button"
-      className="btn-icon flex size-9 items-center justify-center rounded-md"
-      onClick={() => void loadRuns(false)}
-      disabled={isRefreshing}
-      aria-label="刷新最近运行"
-      title="刷新最近运行"
-    >
-      <RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} />
-    </button>
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        className="btn-icon flex size-9 items-center justify-center rounded-md"
+        onClick={() => setAutoRefresh((value) => !value)}
+        aria-label={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
+        title={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
+      >
+        {autoRefresh ? <Pause size={16} /> : <Play size={16} />}
+      </button>
+      <button
+        ref={refreshButtonRef}
+        type="button"
+        className="btn-icon flex size-9 items-center justify-center rounded-md"
+        onClick={() => void loadRuns(false)}
+        disabled={isRefreshing}
+        aria-label="刷新最近运行"
+        title="刷新最近运行"
+      >
+        <RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} />
+      </button>
+    </div>
   );
 
   if (isLoading && runs.length === 0) {
@@ -1133,15 +1464,15 @@ export function RunMonitorPanel() {
     >
       <PanelHeader
         title="运行监控"
-        subtitle="查看最近的 Chat、Run 与 Worker 生命周期状态"
+        subtitle="按任务、状态、执行动作和失败原因查看最近运行"
         icon={<Activity size={20} />}
         actions={headerActions}
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}
-        searchPlaceholder="搜索 Chat / Run / 用户 / 工作区"
+        searchPlaceholder="搜索任务 / Agent / 用户 / 运行编号"
         searchAccessory={
           <span className="hidden shrink-0 text-xs text-[var(--theme-text-tertiary)] sm:inline">
-            手动刷新 · {lastUpdatedLabel}
+            {autoRefresh ? "每 5 秒自动刷新" : "自动刷新已暂停"} · {lastUpdatedLabel}
           </span>
         }
       />
@@ -1277,6 +1608,10 @@ export function RunMonitorPanel() {
                 diagnosticsLoading={diagnosticsLoading}
                 error={detailError}
                 diagnosticsError={diagnosticsError}
+                diagnosticsExporting={diagnosticsExporting}
+                diagnosticsExportError={diagnosticsExportError}
+                onRetryDiagnostics={() => void loadDiagnostics(selectedRunId)}
+                onExportDiagnostics={() => void exportDiagnostics()}
                 onClose={closeDetail}
                 fallbackFocusRef={refreshButtonRef}
               />

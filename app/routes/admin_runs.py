@@ -1,7 +1,9 @@
 import logging
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -12,9 +14,12 @@ from app.runs.api import (
     AdminRunDetailResponse,
     AdminRunListResponse,
     AdminRunDiagnosticsResponse,
+    ADMIN_DIAGNOSTIC_EXPORT_SCHEMA_VERSION,
+    AdminDiagnosticExportTooLarge,
     RunCancellationUseCase,
     RunDiagnosticsService,
     build_admin_worker_execution,
+    build_admin_diagnostic_export,
 )
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
@@ -103,6 +108,17 @@ async def attach_live_queue_context(run: dict, *, tenant_id: str, queue_insight:
     enriched["execution_kind"] = enriched.get("execution_kind") or "skill"
     enriched.setdefault("queue_position", None)
     enriched.setdefault("queue_insight", None)
+    for field, limit in (
+        ("session_title", 240),
+        ("task_summary", 240),
+        ("user_display_name", 160),
+        ("workspace_name", 160),
+        ("agent_name", 160),
+        ("skill_name", 160),
+        ("model_value", 160),
+    ):
+        value = sanitize_public_text(enriched.get(field)).strip()
+        enriched[field] = value[:limit] or None
     enriched["error_code"] = sanitize_public_text(enriched.get("error_code")) or None
     enriched["error_message"] = sanitize_public_text(enriched.get("error_message"))
     status = enriched.get("status")
@@ -121,6 +137,7 @@ async def attach_live_queue_context(run: dict, *, tenant_id: str, queue_insight:
 
 @router.get("/admin/runs", response_model=AdminRunListResponse)
 async def admin_run_list(
+    request: Request,
     user_id: str | None = None,
     status: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
@@ -141,6 +158,12 @@ async def admin_run_list(
             status=status,
             limit=limit,
         )
+        metadata = await _require_run_diagnostics_service(request).read_admin_monitor_metadata(
+            conn,
+            tenant_id=principal.tenant_id,
+            run_ids=[str(row.get("run_id") or "") for row in rows],
+        )
+    rows = [{**row, **metadata.get(str(row.get("run_id") or ""), {})} for row in rows]
     queue_insight = await get_queue_insight(principal.tenant_id, include_user_breakdown=True) if any(
         row.get("status") in QUEUE_VISIBLE_STATUSES for row in rows
     ) else None
@@ -305,6 +328,7 @@ async def admin_run_cancel(
 @router.get("/admin/runs/{run_id}", response_model=AdminRunDetailResponse)
 async def admin_run_detail(
     run_id: str,
+    request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> AdminRunDetailResponse:
     if not is_ai_admin(principal):
@@ -316,12 +340,22 @@ async def admin_run_detail(
     try:
         async with transaction() as conn:
             detail = await repositories.get_admin_run_detail(conn, tenant_id=principal.tenant_id, run_id=run_id)
+            metadata = (
+                await _require_run_diagnostics_service(request).read_admin_monitor_metadata(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_ids=[run_id],
+                )
+                if detail is not None
+                else {}
+            )
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     detail = dict(detail)
     detail["run"] = dict(detail["run"])
+    detail["run"].update(metadata.get(run_id, {}))
     detail["worker_execution"] = build_admin_worker_execution(
         detail.get("events", []),
         sanitize_text=sanitize_public_text,
@@ -364,3 +398,97 @@ async def admin_run_diagnostics(
     if diagnostics is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     return diagnostics
+
+
+async def _record_diagnostic_export_audit(
+    *,
+    principal: AuthPrincipal,
+    run_id: str,
+    export_id: str,
+    diagnostics: dict[str, Any],
+    result: str,
+    size_bytes: int | None,
+) -> None:
+    async with transaction() as conn:
+        await repositories.append_audit_log(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action="run.diagnostics.export",
+            target_type="run",
+            target_id=run_id,
+            trace_id=diagnostics.get("run", {}).get("trace_id"),
+            payload_json={
+                "export_id": export_id,
+                "diagnostic_id": diagnostics.get("diagnostic_id"),
+                "diagnostic_revision": int(diagnostics.get("revision") or 0),
+                "coverage": diagnostics.get("coverage"),
+                "export_schema_version": ADMIN_DIAGNOSTIC_EXPORT_SCHEMA_VERSION,
+                "result": result,
+                "size_bytes": size_bytes,
+            },
+        )
+
+
+@router.post("/admin/runs/{run_id}/diagnostic-exports")
+async def admin_run_diagnostic_export(
+    run_id: str,
+    request: Request,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> Response:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    try:
+        run_id = assert_safe_id(run_id, "run_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async with transaction() as conn:
+        await conn.execute("set transaction isolation level repeatable read")
+        diagnostics = await _require_run_diagnostics_service(request).read_admin(
+            conn,
+            tenant_id=principal.tenant_id,
+            run_id=run_id,
+        )
+    if diagnostics is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+
+    export_id = repositories.new_id("rdiagexp")
+    generated_at = datetime.now(timezone.utc)
+    try:
+        package = build_admin_diagnostic_export(
+            diagnostics=diagnostics,
+            export_id=export_id,
+            generated_at=generated_at,
+        )
+    except AdminDiagnosticExportTooLarge as exc:
+        await _record_diagnostic_export_audit(
+            principal=principal,
+            run_id=run_id,
+            export_id=export_id,
+            diagnostics=diagnostics,
+            result="generation_failed",
+            size_bytes=None,
+        )
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    await _record_diagnostic_export_audit(
+        principal=principal,
+        run_id=run_id,
+        export_id=export_id,
+        diagnostics=diagnostics,
+        result="response_started",
+        size_bytes=len(package),
+    )
+    filename = f"run-diagnostics-{run_id}.zip"
+    return Response(
+        content=package,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+            "X-Diagnostic-Export-Id": export_id,
+        },
+    )

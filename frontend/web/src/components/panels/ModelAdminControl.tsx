@@ -81,6 +81,8 @@ export function ModelAdminControl({
     void modelAdminApi.get().then((next) => {
       if (current) {
         applyState(next);
+        setDiscoveredRevision(next.connection.revision);
+        setDiscovered(next.connection.configured && next.models.length > 0);
         onStateChange?.("ready");
       }
     }).catch((caught) => {

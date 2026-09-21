@@ -40,6 +40,14 @@ class RunDiagnosticsPersistence(Protocol):
         run_id: str,
     ) -> dict[str, Any] | None: ...
 
+    async def get_admin_monitor_metadata(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_ids: tuple[str, ...],
+    ) -> dict[str, dict[str, Any]]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class RunDiagnosticsService:
@@ -234,6 +242,28 @@ class RunDiagnosticsService:
         return _admin_projection(
             snapshot,
             normalize_runtime_diagnostics=self.normalize_runtime_diagnostics,
+        )
+
+    async def read_admin_monitor_metadata(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_ids: list[str] | tuple[str, ...],
+    ) -> dict[str, dict[str, Any]]:
+        bounded_run_ids = tuple(
+            dict.fromkeys(
+                run_id.strip()
+                for run_id in run_ids
+                if isinstance(run_id, str) and run_id.strip()
+            )
+        )[:100]
+        if not bounded_run_ids:
+            return {}
+        return await self.persistence.get_admin_monitor_metadata(
+            conn,
+            tenant_id=tenant_id,
+            run_ids=bounded_run_ids,
         )
 
 

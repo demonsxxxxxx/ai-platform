@@ -149,14 +149,7 @@ test("Model admin discovery is a draft and only publication changes the active c
 
   modelAdminApi.get = async () => {
     calls.get += 1;
-    return state({
-      connection: {
-        configured: false,
-        revision: null,
-        base_url: "https://gateway.example",
-        key_fingerprint: "",
-      },
-    });
+    return published;
   };
   modelAdminApi.discover = async (baseUrl, credential) => {
     calls.discover.push({ baseUrl, credential });
@@ -212,10 +205,41 @@ test("Model admin discovery is a draft and only publication changes the active c
       "admin view should omit explanatory and duplicate catalog surfaces",
     );
 
+    const publishButton = container.querySelectorAll("button")
+      .find((button) => button.getAttribute("data-model-admin-publish") !== null);
+    assert.ok(publishButton);
+    await React.act(async () => {
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "64000");
+    });
+    await React.act(async () => {
+      publishButton.dispatchEvent({ type: "click", bubbles: true });
+      await Promise.resolve();
+    });
+    await waitFor(
+      React,
+      () => calls.publish.length === 1,
+      "a loaded published catalog should accept token edits without redundant discovery",
+    );
+    assert.equal(calls.discover.length, 0);
+    assert.equal(calls.publish[0].expectedRevision, 4);
+    assert.equal(calls.publish[0].credential, undefined);
+    assert.equal(calls.publish[0].models[0].max_input_tokens, 64000);
+
     const keyInput = inputByLabel(container, "模型 API Key");
     await React.act(async () => {
       changeMountedInput(keyInput, "super-secret-key");
     });
+    const publishPropsKey = Object.keys(publishButton)
+      .find((key) => key.startsWith("__reactProps$"));
+    assert.ok(publishPropsKey);
+    const publishProps = (publishButton as unknown as Record<string, unknown>)[publishPropsKey] as {
+      disabled?: boolean;
+    };
+    assert.equal(
+      publishProps.disabled,
+      true,
+      "changing the connection must require discovery before publication",
+    );
     const discoverButton = container.querySelectorAll("button")
       .find((button) => button.getAttribute("data-model-admin-discover") !== null);
     assert.ok(discoverButton);
@@ -232,7 +256,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.deepEqual(calls.discover, [
       { baseUrl: "https://gateway.example", credential: "super-secret-key" },
     ]);
-    assert.equal(calls.publish.length, 0);
+    assert.equal(calls.publish.length, 1);
     assert.equal(inputByLabel(container, "模型 API Key").value, "super-secret-key");
 
     const statusSelect = selectByLabel(container, "筛选模型状态");
@@ -254,9 +278,6 @@ test("Model admin discovery is a draft and only publication changes the active c
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "32000");
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "2048");
     });
-    const publishButton = container.querySelectorAll("button")
-      .find((button) => button.getAttribute("data-model-admin-publish") !== null);
-    assert.ok(publishButton);
     assert.match(nodeText(publishButton), /发布到全员/);
     await React.act(async () => {
       publishButton.dispatchEvent({ type: "click", bubbles: true });
@@ -264,14 +285,14 @@ test("Model admin discovery is a draft and only publication changes the active c
     });
     await waitFor(
       React,
-      () => calls.publish.length === 1 && inputByLabel(container, "模型 API Key").value === "",
+      () => calls.publish.length === 2 && inputByLabel(container, "模型 API Key").value === "",
       "publication should apply the whole draft and clear the write-only key",
     );
-    assert.equal(calls.publish[0].expectedRevision, 3);
-    assert.equal(calls.publish[0].models[0].enabled, true);
-    assert.equal(calls.publish[0].models[0].is_default, true);
-    assert.equal(calls.publish[0].models[0].max_input_tokens, 32000);
-    assert.equal(calls.publish[0].models[0].max_output_tokens, 2048);
+    assert.equal(calls.publish[1].expectedRevision, 3);
+    assert.equal(calls.publish[1].models[0].enabled, true);
+    assert.equal(calls.publish[1].models[0].is_default, true);
+    assert.equal(calls.publish[1].models[0].max_input_tokens, 32000);
+    assert.equal(calls.publish[1].models[0].max_output_tokens, 2048);
     assert.match(nodeText(container), /已配置/);
     assert.doesNotMatch(renderedParagraphText(container), /super-secret-key/);
 
