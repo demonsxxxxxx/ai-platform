@@ -25,6 +25,27 @@ export interface RunPlaybackRun {
   error_message?: string | null;
 }
 
+export type RunPlaybackOutcomePhase =
+  | "not_started"
+  | "in_progress"
+  | "completed"
+  | "cancelled"
+  | "delivery_failed"
+  | "partially_completed"
+  | "failed";
+
+export interface RunPlaybackOutcome {
+  schema_version: "ai-platform.public-run-outcome.v1";
+  phase: RunPlaybackOutcomePhase;
+  detail_code: string;
+  what_happened: string;
+  retained: string;
+  next_action: string;
+  problem_number: string;
+  artifact_count?: number;
+  completed_step_count?: number;
+}
+
 export interface RunPlaybackTokenCounts {
   input?: number;
   output?: number;
@@ -136,6 +157,7 @@ export interface RunPlaybackResponse {
   after_sequence?: number | null;
   next_after_sequence?: number | null;
   run?: RunPlaybackRun;
+  outcome?: RunPlaybackOutcome;
   timeline: RunPlaybackTimelineEntry[];
   events: RunPlaybackEvent[];
   artifacts: RunPlaybackArtifact[];
@@ -292,6 +314,7 @@ export function normalizeRunPlayback(
     after_sequence: asNumberOrNull(source.after_sequence),
     next_after_sequence: asNumberOrNull(source.next_after_sequence),
     run: normalizeRun(source.run),
+    outcome: normalizeOutcome(source.outcome),
     timeline: normalizeTimeline(source.timeline),
     events: normalizeArray(source.events, normalizeEvent),
     artifacts: normalizeArray(source.artifacts, normalizeArtifact),
@@ -299,6 +322,60 @@ export function normalizeRunPlayback(
     context_ref: normalizeContextRef(source.context_ref),
   };
 }
+
+function normalizeOutcome(value: unknown): RunPlaybackOutcome | undefined {
+  const source = asRecord(value);
+  if (
+    !source ||
+    source.schema_version !== "ai-platform.public-run-outcome.v1"
+  ) {
+    return undefined;
+  }
+  const phase = asRunOutcomePhase(source.phase);
+  const detailCode = asSafeCode(source.detail_code);
+  const whatHappened = asBoundedText(source.what_happened);
+  const retained = asBoundedText(source.retained);
+  const nextAction = asBoundedText(source.next_action);
+  const problemNumber = asProblemNumber(source.problem_number);
+  if (
+    !phase ||
+    !detailCode ||
+    !whatHappened ||
+    !retained ||
+    !nextAction ||
+    !problemNumber
+  ) {
+    return undefined;
+  }
+  return compactObject({
+    schema_version: "ai-platform.public-run-outcome.v1" as const,
+    phase,
+    detail_code: detailCode,
+    what_happened: whatHappened,
+    retained,
+    next_action: nextAction,
+    problem_number: problemNumber,
+    artifact_count: asNonNegativeInteger(source.artifact_count),
+    completed_step_count: asNonNegativeInteger(source.completed_step_count),
+  });
+}
+
+function asRunOutcomePhase(value: unknown): RunPlaybackOutcomePhase | undefined {
+  const candidate = asSafeCode(value);
+  return candidate && RUN_OUTCOME_PHASES.has(candidate as RunPlaybackOutcomePhase)
+    ? (candidate as RunPlaybackOutcomePhase)
+    : undefined;
+}
+
+const RUN_OUTCOME_PHASES = new Set<RunPlaybackOutcomePhase>([
+  "not_started",
+  "in_progress",
+  "completed",
+  "cancelled",
+  "delivery_failed",
+  "partially_completed",
+  "failed",
+]);
 
 function appendQueryParam(
   searchParams: URLSearchParams,
@@ -626,6 +703,32 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function asSafeCode(value: unknown): string | undefined {
+  const candidate = asString(value)?.trim();
+  return candidate && /^[a-z][a-z0-9_]{0,63}$/.test(candidate)
+    ? candidate
+    : undefined;
+}
+
+function asBoundedText(value: unknown): string | undefined {
+  const candidate = asString(value)?.trim();
+  return candidate && candidate.length <= 500 ? candidate : undefined;
+}
+
+function asProblemNumber(value: unknown): string | undefined {
+  const candidate = asString(value)?.trim();
+  return candidate && /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/.test(candidate)
+    ? candidate
+    : undefined;
+}
+
+function asNonNegativeInteger(value: unknown): number | undefined {
+  const candidate = asNumber(value);
+  return candidate !== undefined && Number.isInteger(candidate) && candidate >= 0
+    ? candidate
+    : undefined;
 }
 
 function asNullableString(value: unknown): string | null | undefined {

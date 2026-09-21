@@ -132,6 +132,18 @@ def _safe_submission_code(value: object, fallback: str = "chat_submission_reject
     return value if isinstance(value, str) and _SAFE_SUBMISSION_CODE_PATTERN.fullmatch(value) else fallback
 
 
+def _capability_authorization_error_code(
+    exc: repositories.RepositoryAuthorizationError,
+) -> str:
+    denial = getattr(exc, "denial", None)
+    if (
+        (denial is not None and denial.capability_kind == "mcp_tool")
+        or str(exc) == "mcp_tool_not_available"
+    ):
+        return "mcp_tool_not_available"
+    return "capability_not_authorized"
+
+
 def _new_submission_diagnostic_id() -> str:
     return f"diag_{uuid4().hex[:16]}"
 
@@ -1472,12 +1484,7 @@ async def chat_stream(
         run_input = attach_required_tool_declaration(run_input)
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
-        denial = getattr(exc, "denial", None)
-        error_code = (
-            "mcp_tool_not_available"
-            if denial is not None and denial.capability_kind == "mcp_tool"
-            else "capability_not_authorized"
-        )
+        error_code = _capability_authorization_error_code(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
@@ -1519,38 +1526,9 @@ async def chat_stream(
         requested_skill_id = selected_skill_for_execution.skill_id
     if selected_mcp_tool_ids_for_execution is not None:
         run_input["mcp_tool_ids"] = list(selected_mcp_tool_ids_for_execution)
-        try:
-            async with transaction() as conn:
-                await authorize_selected_chat_mcp_tools(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    tool_ids=list(selected_mcp_tool_ids_for_execution),
-                    principal_department_id=principal.department_id,
-                    principal_roles=principal.roles,
-                    is_admin=is_ai_admin(principal),
-                    permissions=principal.permissions,
-                )
-        except repositories.RepositoryAuthorizationError as exc:
-            await _audit_capability_denial(principal, exc, source="chat_stream")
-            await _persist_pre_persistence_rejection(
-                principal=principal,
-                submission_id=submission_id,
-                request=request,
-                query_agent_id=query_agent_id,
-                workspace_id=request.workspace_id,
-                session_id=request.session_id,
-                code="mcp_tool_not_available",
-            )
-            if submission_id is not None:
-                raise _chat_submission_http_error(
-                    status_code=403,
-                    code="mcp_tool_not_available",
-                ) from exc
-            raise HTTPException(status_code=403, detail="mcp_tool_not_available") from exc
     pending_submission_response: ChatStreamResponse | None = None
     locked_skill_label: str | None = None
     effective_workspace_id = request.workspace_id
-    inherited_mcp_selection = False
     admitted_agent_profile = None
     try:
         async with transaction() as conn:
@@ -1725,13 +1703,15 @@ async def chat_stream(
                 )
                 if isinstance(prior_input, dict) and "mcp_tool_ids" in prior_input:
                     run_input["mcp_tool_ids"] = repositories.extract_run_mcp_tool_ids(prior_input)
-                    inherited_mcp_selection = True
 
-            if inherited_mcp_selection:
+            # Authorize the final execution selection exactly once, after
+            # explicit, inherited, and Agent-profile MCP sources have been
+            # resolved, but before any Session or Run write is allowed.
+            if "mcp_tool_ids" in run_input:
                 await authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=principal.tenant_id,
-                    tool_ids=list(run_input.get("mcp_tool_ids") or []),
+                    tool_ids=repositories.extract_run_mcp_tool_ids(run_input),
                     principal_department_id=principal.department_id,
                     principal_roles=principal.roles,
                     is_admin=is_ai_admin(principal),
@@ -2395,12 +2375,7 @@ async def chat_stream(
         raise
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
-        denial = getattr(exc, "denial", None)
-        error_code = (
-            "mcp_tool_not_available"
-            if denial is not None and denial.capability_kind == "mcp_tool"
-            else "capability_not_authorized"
-        )
+        error_code = _capability_authorization_error_code(exc)
         await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,

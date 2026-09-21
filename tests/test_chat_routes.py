@@ -4740,9 +4740,11 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     async def noop(*_args, **_kwargs):
         return None
 
-    async def authorize_empty_client_mcp_selection(*_args, **kwargs):
-        assert kwargs["tool_ids"] == []
-        return []
+    async def authorize_final_profile_mcp_selection(*_args, **kwargs):
+        assert transaction_depth == 1
+        assert kwargs["tool_ids"] == [profile_mcp_reference]
+        calls.append("mcp_auth")
+        return [{"tool_id": profile_mcp_reference}]
 
     async def fixed_profile_model(*_args, **kwargs):
         assert kwargs["selection"] is None
@@ -4774,7 +4776,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     )
     monkeypatch.setattr(
         "app.routes.chat.authorize_selected_chat_mcp_tools",
-        authorize_empty_client_mcp_selection,
+        authorize_final_profile_mcp_selection,
     )
     monkeypatch.setattr(
         "app.routes.chat.resolve_chat_model_selection",
@@ -4806,7 +4808,6 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
-    monkeypatch.setattr("app.routes.chat.authorize_selected_chat_mcp_tools", noop)
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", existing_queue_admission)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
@@ -4876,6 +4877,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             "user_lock",
             "principal",
             "profile_lock",
+            "mcp_auth",
             "skill_auth",
             "workspace_auth",
             "file_auth",
@@ -4907,6 +4909,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         "user_lock",
         "principal",
         "profile_lock",
+        "mcp_auth",
     ]
     expected_calls.extend(["skill_auth", "workspace_auth", "file_auth", "claim"])
     if restored_continuation:

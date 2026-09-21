@@ -137,6 +137,10 @@ from app.runs.domain.public_terminal import (
 from app.runs.domain.public_terminal import (
     public_terminal_projection as public_terminal_projection,
 )
+from app.runs.domain.public_outcome import (
+    PUBLIC_RUN_OUTCOME_SCHEMA_VERSION as PUBLIC_RUN_OUTCOME_SCHEMA_VERSION,
+)
+from app.runs.domain.public_outcome import public_run_outcome as public_run_outcome
 
 from app.runs.domain.terminalization import (
     RunTerminalEventFact as RunTerminalEventFact,

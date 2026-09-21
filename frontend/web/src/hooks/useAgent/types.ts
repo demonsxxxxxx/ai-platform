@@ -12,6 +12,7 @@ import type {
   RunControlCancelResult,
   RunControlLifecycle,
 } from "./runControlLifecycle";
+import type { FailureGuidance } from "../../types/failureGuidance";
 
 export type SubmissionOutcome =
   | { status: "accepted" }
@@ -628,6 +629,7 @@ export interface UseAgentReturn {
   isLoading: boolean;
   isLoadingHistory: boolean;
   error: string | null;
+  failureGuidance: FailureGuidance | null;
   sessionId: string | null;
   currentRunId: string | null;
   isReconnecting: boolean;

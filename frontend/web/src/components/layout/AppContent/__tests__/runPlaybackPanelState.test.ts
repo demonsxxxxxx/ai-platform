@@ -187,6 +187,7 @@ test("buildRunPlaybackPanelViewModel exposes only public display fields", () => 
     ],
     inputKeys: ["attachments", "message"],
   });
+  assert.equal(viewModel.failureGuidance, null);
 
   const serialized = JSON.stringify(viewModel);
   for (const field of dangerousFields) {
@@ -263,6 +264,7 @@ test("loading, error, and empty view models do not throw", () => {
     timeline: [],
     artifacts: [],
     contextProvenance: null,
+    failureGuidance: null,
     errorMessage: null,
   });
 
@@ -282,6 +284,12 @@ test("loading, error, and empty view models do not throw", () => {
       timeline: [],
       artifacts: [],
       contextProvenance: null,
+      failureGuidance: {
+        whatHappened: "无法刷新任务的最新状态。",
+        retained: "当前连接无法确认已完成内容；后台任务可能仍在继续。",
+        nextAction: "恢复网络后请先刷新或重新连接，确认状态前不要重复提交。",
+        problemNumber: "run-error",
+      },
       errorMessage: "Network failed",
     },
   );
@@ -298,4 +306,62 @@ test("loading, error, and empty view models do not throw", () => {
   assert.deepEqual(empty.timeline, []);
   assert.deepEqual(empty.artifacts, []);
   assert.equal(empty.contextProvenance, null);
+  assert.equal(empty.failureGuidance, null);
+});
+
+test("failed playback exposes the fixed four-part user guidance", () => {
+  const viewModel = buildRunPlaybackPanelViewModel({
+    run_id: "run-failed",
+    run: {
+      run_id: "run-failed",
+      status: "failed",
+      error_message: "任务执行已结束，但结果同步失败。",
+    },
+    outcome: {
+      schema_version: "ai-platform.public-run-outcome.v1",
+      phase: "delivery_failed",
+      detail_code: "terminal_reconciliation_failed",
+      what_happened: "任务执行已结束，但结果同步失败。",
+      retained: "已保留 1 个可查看文件。",
+      next_action: "可先下载文件，再刷新会话。",
+      problem_number: "run-failed",
+      artifact_count: 1,
+      completed_step_count: 0,
+    },
+    timeline: [],
+    events: [],
+    artifacts: [],
+    steps: [],
+  });
+
+  assert.equal(viewModel.state, "ready");
+  assert.deepEqual(viewModel.failureGuidance, {
+    whatHappened: "任务执行已结束，但结果同步失败。",
+    retained: "已保留 1 个可查看文件。",
+    nextAction: "可先下载文件，再刷新会话。",
+    problemNumber: "run-failed",
+  });
+});
+
+test("queued and running playback do not render failure guidance", () => {
+  for (const phase of ["not_started", "in_progress"] as const) {
+    const viewModel = buildRunPlaybackPanelViewModel({
+      run_id: `run-${phase}`,
+      outcome: {
+        schema_version: "ai-platform.public-run-outcome.v1",
+        phase,
+        detail_code: phase === "not_started" ? "run_queued" : "run_running",
+        what_happened: "任务仍在进行。",
+        retained: "任务请求已保留。",
+        next_action: "请继续等待。",
+        problem_number: `run-${phase}`,
+      },
+      timeline: [],
+      events: [],
+      artifacts: [],
+      steps: [],
+    });
+
+    assert.equal(viewModel.failureGuidance, null);
+  }
 });

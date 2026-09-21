@@ -77,6 +77,52 @@ test("normalizeRunPlayback handles empty responses as default playback data", ()
   assert.equal(normalized.context_ref, null);
 });
 
+test("normalizeRunPlayback keeps only the public four-part outcome contract", () => {
+  const normalized = normalizeRunPlayback({
+    outcome: {
+      schema_version: "ai-platform.public-run-outcome.v1",
+      phase: "delivery_failed",
+      detail_code: "terminal_reconciliation_failed",
+      what_happened: "结果同步失败。",
+      retained: "已保留 2 个可查看文件。",
+      next_action: "请刷新会话。",
+      problem_number: "run-safe-1",
+      artifact_count: 2,
+      completed_step_count: 1,
+      runtime_path: "/private/runtime",
+    },
+  } as unknown as RunPlaybackResponse);
+
+  assert.deepEqual(normalized.outcome, {
+    schema_version: "ai-platform.public-run-outcome.v1",
+    phase: "delivery_failed",
+    detail_code: "terminal_reconciliation_failed",
+    what_happened: "结果同步失败。",
+    retained: "已保留 2 个可查看文件。",
+    next_action: "请刷新会话。",
+    problem_number: "run-safe-1",
+    artifact_count: 2,
+    completed_step_count: 1,
+  });
+  assert.equal(JSON.stringify(normalized).includes("runtime_path"), false);
+});
+
+test("normalizeRunPlayback rejects unknown outcome phases", () => {
+  const normalized = normalizeRunPlayback({
+    outcome: {
+      schema_version: "ai-platform.public-run-outcome.v1",
+      phase: "secret_internal_phase",
+      detail_code: "run_failed",
+      what_happened: "失败。",
+      retained: "无。",
+      next_action: "联系管理员。",
+      problem_number: "run-safe-2",
+    },
+  } as unknown as RunPlaybackResponse);
+
+  assert.equal(normalized.outcome, undefined);
+});
+
 test("normalizeRunPlayback preserves safe context provenance and drops private fields", () => {
   const normalized = normalizeRunPlayback({
     context_ref: {

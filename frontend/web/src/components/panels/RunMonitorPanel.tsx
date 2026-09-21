@@ -34,6 +34,8 @@ import {
   type AdminRunTimelineItem,
 } from "./adminRunTimeline";
 import { RunDiagnosticsSection } from "./RunDiagnosticsSection";
+import { FailureGuidanceCard } from "../common/FailureGuidanceCard";
+import { buildAdminFailureGuidance } from "./runFailureGuidance";
 
 const RUN_LIMIT = 50;
 const PAGE_SIZE = 10;
@@ -607,6 +609,7 @@ function RunDetail({
     model: {},
   };
   const artifacts = detail?.artifacts ?? [];
+  const failureGuidance = detail ? buildAdminFailureGuidance(detail) : null;
   const eventDiagnostics = monitorView?.eventDiagnostics ?? [];
   const diagnosticPageCount = Math.max(
     1,
@@ -704,9 +707,16 @@ function RunDetail({
                 <p className="mt-1 text-[var(--theme-text)]">{estimatedCostLabel(detail.run.estimated_cost_minor)}</p>
               </div>
             </div>
+            {failureGuidance ? (
+              <FailureGuidanceCard
+                guidance={failureGuidance}
+                className="mt-3"
+              />
+            ) : null}
             {detail.run.error_code ? (
               <div className="mt-3 border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-xs text-[var(--theme-danger)]">
-                <p className="font-mono font-medium">{detail.run.error_code}</p>
+                <p className="font-medium">内部错误码</p>
+                <p className="mt-1 break-all font-mono">{detail.run.error_code}</p>
                 {detail.run.error_message ? (
                   <p className="mt-1 leading-5">{detail.run.error_message}</p>
                 ) : null}
