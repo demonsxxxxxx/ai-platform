@@ -14,15 +14,10 @@ import zipfile
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
-from app.files.infrastructure.profile_drive import (
-    ProfileDriveTransferError,
-    download_profile_drive_file,
-    open_profile_drive_file,
-)
-from app.files.transport.profile_drive import ProfileDriveFileImportRequest
-
 from app.files.api import (
     MAX_UPLOAD_BYTES,
+    ProfileDriveFileImportRequest,
+    ProfileDriveTransferError,
     abort_file_upload_session,
     activate_file_upload_session,
     claim_direct_file_upload_session,
@@ -33,9 +28,13 @@ from app.files.api import (
     expire_file_upload_sessions,
     get_authorized_file_upload_session,
     get_file_storage_usage,
+    get_owned_session_file,
     is_direct_file_upload_session,
+    list_owned_session_files,
+    open_profile_drive_file,
     parse_multipart_upload_complete_request,
     parse_multipart_upload_create_request,
+    download_profile_drive_file,
     retry_expired_file_upload_session,
 )
 from app.artifact_preview import artifact_preview_allowed
@@ -56,10 +55,6 @@ from app.models import (
     FileDeletionResponse,
     SessionInputFileResponse,
     SessionInputFilesResponse,
-)
-from app.context.file_continuity import (
-    get_owned_session_file,
-    list_owned_session_files,
 )
 from app.repositories import (
     FileDeletionBlockedError,

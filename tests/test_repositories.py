@@ -12,7 +12,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import agent_conversation_repository, repositories
-from app.context.file_continuity import get_owned_session_file, list_owned_session_files
+from app.files.api import get_owned_session_file, list_owned_session_files
 from app.execution.application import stale_terminalization
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence

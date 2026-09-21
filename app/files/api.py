@@ -15,6 +15,19 @@ from app.files.application.upload_sessions import (
     configure_file_upload_persistence,
     file_upload_persistence,
 )
+from app.files.application.session_files import (
+    get_owned_session_file,
+    list_owned_session_files,
+)
+from app.files.infrastructure.profile_drive import (
+    ProfileDriveTransferError,
+    download_profile_drive_file,
+    open_profile_drive_file,
+)
+from app.files.transport.profile_drive import (
+    ProfileDriveFileImportRequest,
+    profile_drive_streaming_response,
+)
 
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
@@ -164,6 +177,8 @@ async def abort_file_upload_session(conn: Any, **kwargs: Any) -> None:
 __all__ = [
     "MAX_UPLOAD_BYTES",
     "FileUploadPersistence",
+    "ProfileDriveFileImportRequest",
+    "ProfileDriveTransferError",
     "MultipartUploadCompleteRequest",
     "MultipartUploadCreateRequest",
     "MultipartUploadPart",
@@ -179,10 +194,15 @@ __all__ = [
     "direct_upload_storage_key",
     "expire_file_upload_sessions",
     "get_authorized_file_upload_session",
+    "get_owned_session_file",
     "get_file_storage_usage",
     "is_direct_file_upload_session",
+    "list_owned_session_files",
+    "open_profile_drive_file",
+    "download_profile_drive_file",
     "parse_multipart_upload_complete_request",
     "parse_multipart_upload_create_request",
+    "profile_drive_streaming_response",
     "retry_expired_file_upload_session",
     "xlsx_preview_image_extractor",
 ]

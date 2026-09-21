@@ -15,11 +15,11 @@ from app.context.retrieval import (
     ContextRetrievalInputError,
 )
 from app.db import transaction
-from app.files.infrastructure.profile_drive import (
+from app.files.api import (
     ProfileDriveTransferError,
     open_profile_drive_file,
+    profile_drive_streaming_response,
 )
-from app.files.transport.profile_drive import profile_drive_streaming_response
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
