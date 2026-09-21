@@ -12,6 +12,11 @@ strict gap/end controls, and frontend cursor acceptance. Execution,
 authorization, direct committed-event publication, schema retirement, and release operations
 remain with their dedicated owners.
 
+The [message-parts migration](../implementation/streaming-message-parts-design.md)
+proposes separating incremental public text from final-answer selection. It is
+not an active v4 extension. The current implementation gap is recorded below;
+schema compatibility alone does not establish correct content or latency.
+
 ## Generated protocol authority
 
 `schemas/public_run_stream.v4.schema.json` is the only definition source for the
@@ -39,12 +44,12 @@ they are not interchangeable:
 | --- | --- | --- |
 | `thinking_effort` | Canonical Run input control: `auto`, `low`, `medium`, or `high` | It changes provider effort, not SSE content visibility |
 | `agent_options.enable_thinking` | Legacy profile/Chat alias translated to `thinking_effort` at admission | Despite the name, it is not a boolean; legacy `off` means `auto` |
-| SDK `TextBlock` | Ordinary Assistant text from one complete provider message | Text from a tool-using turn may become `commentary.delta`; it is not terminal-answer authority |
+| SDK `TextBlock` | Ordinary Assistant text in a typed content-block observation | An `AssistantMessage` may be one fragment of a shared provider message; text is not evidence of a complete turn or final answer |
 | SDK `ThinkingBlock` | Provider model-reasoning content | The current runner discards it and `thinking.display` is `omitted` |
-| `ResultMessage.result` | Ordinary-text terminal answer authority | It does not include commentary, tool data, Thinking content, or file-publication metadata |
+| `ResultMessage.result` | Ordinary-text SDK terminal observation | It cannot overwrite acknowledged public text, validate an artifact, or declare Run success; streamed persistence uses committed rows and an exact receipt |
 | `attach_file` | Optional platform-owned response-file selection action | It publishes zero or more validated deliverables independently of terminal answer text |
-| `message.delta` | Public terminal-answer text chunk | It is rendered and copied as answer content |
-| `commentary.delta` | Disclosure-safe work-progress text from a complete tool-using Assistant turn | It is rendered as work activity and never appended to the answer or answer receipt |
+| `message.delta` | Legacy v4 incremental Assistant body chunk, included in the answer receipt | It is rendered as answer text; the current producer can put provisional narration here before tool-turn classification |
+| `commentary.delta` | Disclosure-safe text classified as tool-using Assistant progress | It is rendered as work activity and excluded from the answer receipt; this classification is not a reason to delay all future public text |
 | `thinking.*` | Legacy public-reasoning compatibility events | The current runner does not emit them; retained readers do not make hidden model reasoning public |
 | `model.completed` | Model completion duration, turn-count, and stop-category metadata | It is neither answer content nor Run terminal authority |
 
@@ -76,7 +81,7 @@ answer cutoff. `message.completed` is metadata-only with
 `{delta_count,text_length}`; its `causation_event_id` identifies the last delta
 and the completion never carries full text. `commentary.delta` is separately
 bounded to 8,192 code points and carries a stable `summary_id`; it is work
-activity from a complete tool-using Assistant turn, not answer content or
+activity from a classified tool-using Assistant observation, not answer content or
 capability evidence. The SDK terminal result closes ordinary assistant text;
 optional final files are selected separately through `attach_file` and projected
 as ordered artifact parts after storage succeeds. Worker, API, and frontend
@@ -182,9 +187,12 @@ The closed transport controls are `stream.open`, `stream.heartbeat`,
 `trace_ref`; they do not consume business order. `stream.gap` always requests
 `reload_durable_state`, and `stream.end` references the observed terminal event.
 
-Provider-internal reasoning, raw SDK objects, commands, arguments, outputs,
-credentials, paths, storage keys, private trace values, and unclassified objects
-are prohibited. The Claude SDK is configured with
+Provider-internal reasoning, raw SDK objects, execution commands, tool arguments
+and outputs, credentials, private runtime paths, storage keys, private trace
+values, and unclassified objects are prohibited. Intentional non-sensitive
+code, JSON examples and task-file references in Assistant prose follow the
+Chat content policy; their spelling alone does not make them tool data.
+The Claude SDK is configured with
 `thinking.display = omitted`, and the Runner excludes `ThinkingBlock` content
 from both the answer and callback projections. The current Runner does not emit
 `thinking.*`; an authenticated `claude_sdk_thinking_summary` callback remains
@@ -391,6 +399,27 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
 
 ## Change Contract: progressive public Run timeline
 
+### Current implementation gap and proposed replacement
+
+V4 has no independent text-part identity and no final-answer selection event.
+Its producer streams partial text into `message.delta` before a later typed
+Assistant fragment can establish tool use; the same turn can subsequently
+produce commentary. The receipt then includes the early narration because it
+was committed as answer text. Delaying all partial publication until typed
+turn completion avoids that path but fails the desired incremental display.
+Neither behavior proves this section's product goal has been reached.
+
+The [message-parts design](../implementation/streaming-message-parts-design.md)
+replaces the coupling through a coordinated future schema and receipt version:
+public text appears immediately after validation, while final selection is a
+separate fact. A text fragment that precedes a tool remains visible. An
+`AssistantMessage` can precede its block-stop event and must not be mistaken for
+the whole turn. The current v4 body/receipt and invocation-interval rules below
+remain compatibility constraints until implementation and cutover; do not
+silently change their meaning or claim the new parts contract is active.
+
+### Existing v4 constraints and acceptance targets
+
 - **Owner:** Streaming owns committed public-event order; the Engine adapter owns
   SDK normalization; Execution owns capability evidence; Runs owns business Run
   success; the frontend reducer owns applied sequence and cursor acceptance.
@@ -415,13 +444,15 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
   blocked/permission semantics; aggregate admission failures never synthesize
   Tool identity. `message.delta` is provisional user-visible narration; it is
   never evidence that a capability ran or that a Run succeeded.
-- **Safety invariant:** hidden reasoning, raw tool input or output, commands,
-  paths, credentials, storage keys, private Tool, Skill, MCP, task, Attempt, and
+- **Safety invariant:** hidden reasoning, raw tool input or output, execution commands,
+  private runtime paths, credentials, storage keys, private Tool, Skill, MCP, task, Attempt, and
   stream identities remain prohibited. A private Skill identity may project only
   to its catalog-authorized public name, with ASCII characters converted to
   non-colliding full-width forms; opaque and dynamic identities use a generic
   non-ASCII marker. Exact invocation-interval text is not a public Assistant
-    source. `message.delta` uses stateful cross-chunk sanitization and bounded
+  source under the current v4 invocation gate. Intentional Assistant code and
+  non-sensitive task references follow the Chat content policy. `message.delta`
+  uses stateful cross-chunk sanitization and bounded
   per-frame validation; it has no cumulative answer shutdown. Strict callback
   validation, tool admission, capability receipts, and platform-owned
   terminalization remain fail closed.
@@ -466,10 +497,12 @@ text or replace unrelated narration, Tool, process, or actionable status parts.
   reconnect, and failed-history behavior. Tests delay both animation-frame and
   React functional-updater execution where ordering depends on application.
   Serialized ordinary-user responses contain no internal marker or identity.
-- **Falsifiable regression proof:** an effectful local Tool Run emits a safe
+- **Falsifiable v4 regression target:** an effectful local Tool Run emits a safe
   `message.delta` before `ResultMessage`; a higher-sequence Tool or terminal
   event cannot erase an earlier received delta; and refreshing a failed V4-only
-  Run preserves that delta exactly once.
+  Run preserves that delta exactly once. This timing assertion alone does not
+  prove final-answer classification. The parts migration additionally proves
+  visible text before the typed block boundary and separate final selection.
 - **Evidence ceiling:** source and local/CI tests cannot prove real SDK timing,
   proxy flushing, Redis delivery, browser paint, or restart recovery. Those claims
   require an immutable candidate image on the controlled Linux environment and
