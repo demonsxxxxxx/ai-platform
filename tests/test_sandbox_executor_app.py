@@ -1030,6 +1030,49 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
 
 
 @pytest.mark.asyncio
+async def test_executor_passes_authorized_public_skill_metadata_to_sdk(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured.update(kwargs)
+        return sdk_result()
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        executor_app,
+        "run_claude_agent_sdk",
+        fake_run_claude_agent_sdk,
+    )
+    raw = task_payload()
+    raw["config"]["skill_ids"] = ["public-skill", "internal-helper"]
+    raw["config"]["public_skill_metadata"] = {
+        "public-skill": {
+            "name": "Public Skill",
+            "version": "version-a",
+            "availability": "available",
+        }
+    }
+    request = ExecutorTaskRequest.model_validate(raw)
+
+    async def emit_event(_event):
+        return True
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    assert captured["skills"] == ["public-skill", "internal-helper"]
+    assert captured["public_skill_metadata"] == raw["config"][
+        "public_skill_metadata"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_executor_fails_closed_if_run_model_capacity_is_not_bound(monkeypatch, tmp_path):
     async def forbidden_sdk(**_kwargs):
         raise AssertionError("SDK must not start without a strict Run capacity")

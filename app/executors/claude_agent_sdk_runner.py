@@ -2242,16 +2242,18 @@ async def run_claude_agent_sdk(
         if isinstance(value, str) and value
     )
     private_replacement = "\u2588"
+    private_skill_replacement = "【技能】"
     private_replacements = {
         token: private_replacement for token in private_capability_tokens
     }
     for kind, identity in capability_plan.available:
         if kind != "skill":
             continue
-        public_replacement = _public_skill_replacement(
-            identity, public_skill_metadata
+        public_replacement = (
+            _public_skill_replacement(identity, public_skill_metadata)
+            or private_skill_replacement
         )
-        if public_replacement is not None and not any(
+        if not any(
             token in public_replacement for token in private_capability_tokens
         ):
             private_replacements[identity] = public_replacement
