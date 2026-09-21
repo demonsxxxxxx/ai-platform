@@ -13,6 +13,7 @@ Design ID: `ai-platform.redis-streams-sse-event-channel.v4`.
 | Admission, committed callback/Run publication, authorization leases and terminal convergence | [Execution control](redis-streams-sse-execution-control.md) |
 | Gateway, cutover, deployed fault injection and acceptance | [Cutover acceptance](../operations/redis-streams-sse-cutover-acceptance.md) |
 | Cross-component convergence proposals | [Runtime convergence](runtime-convergence.md) |
+| Public Assistant text, Tool separation, and optional file delivery | [Streaming message design](../implementation/streaming-message-parts-design.md) |
 
 This page intentionally does not repeat the detailed invariants or acceptance
 lists. A requirement change belongs in its detailed owner, with generated
@@ -53,6 +54,8 @@ recreated under an issued incarnation, and there is no successor builder.
 SDK completion, Run completion, stream end, and final browser hydration remain
 distinct facts.
 
-See the wire contract for the progressive timeline and its exact tool-interval,
-sanitization, identity, body consistency, and final-hydration invariants. These
-constraints are retained, not relaxed by the documentation consolidation.
+See the wire contract for the progressive timeline, sanitization, identity,
+body consistency, and final-hydration invariants. The streaming message design
+uses the current v4 body, commentary, Tool and artifact events; it does not alter
+the transport above. A future text-part selection feature would require an
+explicit coordinated protocol version rather than silently extending v4.

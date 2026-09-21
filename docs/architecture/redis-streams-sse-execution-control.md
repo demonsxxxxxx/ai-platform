@@ -38,15 +38,48 @@ decision and supersession.
   authorization leases, backend publication, or generic-chat routing requires a
   revised contract.
 
-## Change Contract: Structured-run public commentary
+<a id="change-contract-structured-run-public-commentary"></a>
+## Current v4 public commentary and terminal text
 
-- **Owner:** Execution's Claude SDK adapter owns selecting and sanitizing user-visible commentary; Streaming owns the versioned public event; the existing frontend adapter/reducer owns its work-activity presentation.
-- **Bounded paths:** `app/execution/application/claude_agent_events.py`, `app/executors/claude_agent_sdk_runner.py`, `app/executors/claude/prompts.py`, `app/runtime/kernel_contracts.py`, `app/runtime/event_bridge.py`, `app/streaming/events.py`, `schemas/public_run_stream.v4.schema.json`, `tools/generate_sse_v4_contracts.py`, generated protocol files, `app/routes/lambchat_compat.py`, the existing frontend v4 adapter/reducer and work-activity renderer, their owning tests, and this contract.
-- **Invariants:** `ResultMessage.structured_output` remains the sole terminal answer and deliverable authority. Commentary comes only from ordinary `TextBlock` values in a complete Assistant message that also contains a tool-use block; raw partial structured JSON, thinking/reasoning, tool arguments/results, paths, runtime approvals, and private identifiers remain excluded. Commentary passes the existing fail-closed public-text gate and is never appended to final assistant answer content.
-- **Acceptance:** safe commentary is published before the terminal Result as schema-valid `commentary.delta`, delivered through the existing Redis Stream, rendered in the existing work-activity disclosure while the Run is active, restored through history, and collapsed with the other work activity after terminal convergence. A text-only structured-result message remains suppressed, and projection failure omits commentary without weakening terminal validation.
-- **Regression proof:** adapter and runner tests distinguish tool-using commentary from text-only structured output and private content; the callback registry/bridge test proves the event reaches the durable v4 adapter while generic thinking remains rejected; generated-contract tests cover valid and invalid commentary frames; frontend adapter/reducer tests prove commentary becomes a stable summary part without changing assistant answer text; compatibility-history tests preserve the same public projection.
-- **Retirement/compatibility:** the blanket suppression of every structured-mode Assistant `TextBlock` is replaced only for safe tool-using commentary. Structured terminal authority, legacy non-structured answer streaming, and all existing event types remain supported; no parallel transport or final-answer path is introduced. Because v4 rejects unknown events, Worker/API/frontend delivery of `commentary.delta` is release-atomic; an older frontend is not a compatibility target for a newer producer.
-- **Stop conditions:** do not parse or publish partial structured-output JSON, classify thinking as commentary, expose arbitrary executor payloads, or append commentary to final answer content. Any broader intermediate-text source requires a revised contract and disclosure review.
+Execution's Claude adapter selects and sanitizes public text. Streaming owns
+the closed event schema and the frontend owns presentation. Ordinary chat uses
+`ResultMessage.result`, not a required `structured_output.answer` object.
+The SDK result is a terminal text observation; for streamed answers the
+callback-acknowledged v4 rows and validated answer receipt own stored content.
+Runs owns business success. Optional files use `attach_file` and Artifact
+validation independently of text; neither a JSON object nor prose creates an
+artifact record.
+
+The current adapter sends every accepted Claude Assistant text fragment through
+`message.delta`; later Tool use does not reclassify or withdraw the text.
+Explicit platform-authored public summaries and retained history may still use
+`commentary.delta`, with a stable summary identity. The UI renders that summary
+inline while keeping Tool and execution activities foldable. Commentary does
+not enter the answer receipt. Hidden reasoning, raw tool arguments and results,
+private runtime values, credentials and approvals remain excluded.
+Intentional non-sensitive code and task references in Assistant prose are not
+raw tool data; apply the owning Chat content policy rather than a blanket path
+or JSON ban.
+
+The raw projector treats `AssistantMessage` as a typed block observation, not a
+raw framing boundary, because it can precede the corresponding block stop.
+Text deltas pass the stateful public-answer gate immediately; typed TextBlock and
+`ResultMessage.result` only reconcile missing suffixes. The
+[streaming message design](../implementation/streaming-message-parts-design.md)
+defines this v4 behavior and the source exclusions that keep tool input, results
+and Thinking out of the body.
+
+Keep the current callback, schema, history and renderer tests for v4 consumers.
+New regression coverage must distinguish raw deltas, typed block observations,
+message stop, SDK result, exact answer receipt and platform Run terminal.
+Focused regression tests own raw/typed ordering, stateful redaction, resource
+bounds and the retirement of whole-turn buffering.
+
+The former structured-output-only commentary description is retired as current
+guidance; the anchor above remains for document links. Existing v4 event readers
+remain for their identified live and historical consumers. This repair retires
+only Claude whole-turn buffering and tool-based text reclassification; it does
+not change the wire schema, storage migration or rollback authority.
 
 ## Change Contract: Compact terminal history hydration
 
@@ -136,10 +169,11 @@ strict event-specific projector. Message, thinking-state, model, tool,
 subagent, artifact, policy, cancellation, and Run-terminal events are ordered by
 the committed Run-local `seq`; transport controls consume no business sequence.
 
-Raw SDK values, commands, tool arguments/results, hidden reasoning, paths,
-credentials, runtime approval payloads, and executor-selected arbitrary labels
-never enter canonical public bytes. Engine-specific values terminate at the
-adapter boundary.
+Raw SDK values, execution commands, tool arguments/results, hidden reasoning,
+private runtime paths, credentials, runtime approval payloads, and
+executor-selected arbitrary activity labels never enter canonical public bytes.
+Intentional Assistant prose follows the Chat content policy. Engine-specific
+values terminate at the adapter boundary.
 
 ## Publication bounds and backpressure
 

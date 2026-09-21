@@ -34,7 +34,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | Immutable execution input and attempt ownership | [ExecutionSpec and RunAttempt](architecture/execution-spec-and-attempt-lifecycle.md) |
 | Provider resource lifecycle and callback authority | [Sandbox Runtime](architecture/sandbox-runtime-control-layer.md) |
 | Model credentials and governed egress | [Credential boundary](architecture/opensandbox-ephemeral-model-credentials.md) |
-| MCP catalog, references, transport, and selected execution surface | [MCP execution](architecture/mcp-tool-execution.md); public directory [API contract](../frontend/skills-marketplace-public-api.md) |
+| MCP catalog, references, transport, and selected execution surface | [MCP execution](architecture/mcp-tool-execution.md); public directory [API contract](frontend/skills-marketplace-public-api.md) |
 | Data ownership, schema changes, and deletion | [Data lifecycle](architecture/single-enterprise-data-lifecycle.md) |
 | SSE navigation and supersession | [SSE index](architecture/redis-streams-sse-event-channel.md) |
 | SSE bytes, identity, replay, and client acceptance | [SSE wire](architecture/redis-streams-sse-wire-protocol.md) |
@@ -69,6 +69,13 @@ Its public-projection failure constraints remain binding through the current
 Chat and SSE contracts until explicitly replaced.
 
 ## Delivery and operations
+
+[Agent 流式消息与最终交付方案](implementation/streaming-message-parts-design.md)
+compares primary open-source evidence and defines a proposed migration to
+incremental public text parts with separate final-answer selection and optional
+attachments. It records the v4 classification gap, SDK block boundaries,
+frontend/history consistency, protocol cutover and falsifiable acceptance.
+It is not an active schema, completed implementation or runtime acceptance claim.
 
 [State authority implementation plan](implementation/state-authority-convergence.md)
 turns the fixed-source Yuxi comparison into bounded cleanup and recovery slices,

@@ -8,6 +8,12 @@ limits come from settings and effective deployment configuration. See
 Preserve the public-projection failure contract below until its current owning
 Runs/SSE/Chat contracts explicitly replace it. No dependency is changed here.
 
+The adapter mapping below reflects the current ordinary-text and optional
+`attach_file` contract. Earlier structured-output-only descriptions are retired;
+the upgrade history does not require every conversation to return JSON. The
+[streaming message design](../implementation/streaming-message-parts-design.md)
+records the current v4 projection and its compatibility boundary.
+
 ## Historical decision
 
 Pin `claude-agent-sdk==0.2.130`, set the process worker profile and global
@@ -47,9 +53,9 @@ types used by this adapter.
 | `query` | Keyword `prompt`, `options`, and optional `transport` remain available | The async iterator stays inside the runner adapter |
 | `ClaudeAgentOptions` | Existing model, system prompt, tools, hooks, session, limits, and stream fields remain available | Constructed only after platform admission and Skill-name validation |
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
-| Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` retain the consumed shapes | Structured mode ignores partial text, can project complete tool-using `TextBlock` content as commentary, and never projects `ThinkingBlock` content |
-| Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Structured `ResultMessage` is executor completion evidence; Runs owns the durable business terminal outcome; abnormal reasons fail closed |
-| Partial streaming | `include_partial_messages=True` remains supported | Partial events register Tool identities and feed only the non-structured answer fallback; structured answer publication waits for `ResultMessage` |
+| Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` remain adapter inputs; a typed Assistant fragment need not close a whole turn | Raw text deltas stream into the public Assistant body; typed text reconciles missing suffixes; Thinking and non-text deltas are excluded |
+| Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Ordinary `result` text is executor completion input; committed public text and its receipt own streamed content; Runs owns business outcome; files are selected separately |
+| Partial streaming | `include_partial_messages=True` remains supported | Raw text feeds the public answer gate immediately; later tool use does not reclassify or withdraw accepted Assistant text |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
@@ -142,12 +148,13 @@ response are unchanged.
   unchanged.
 - **Behavior:** every level uses adaptive thinking with `display=omitted`, so the
   model may reason internally without returning Thinking text. The runner does
-  not publish returned `ThinkingBlock` text. In structured mode, a complete
-  tool-using Assistant `TextBlock` may become disclosure-safe
-  `commentary.delta`, while `ResultMessage.structured_output.answer` remains
-  terminal-answer authority. In the non-structured fallback only, ordinary
-  Assistant text feeds the answer projection. Both frontend rendering paths
-  exclude legacy thinking parts.
+  not publish returned `ThinkingBlock` text. Ordinary Assistant text feeds the
+  public `message.delta` projection regardless of later tool use. Explicit
+  platform-authored public summaries may still use `commentary.delta`. Ordinary chat consumes `ResultMessage.result`, while
+  persisted streamed content is governed by the acknowledged-text/receipt
+  contract above. Optional `attach_file` selections are independent. Neither
+  ordinary text nor commentary requires structured output. Both frontend
+  rendering paths exclude legacy thinking parts.
 - **Compatibility and retirement:** no new wire or schema field is added. The
   misleading `public summarized-thinking text` prompt instruction is retired;
   it has no persisted or client compatibility surface. `claude_sdk_thinking_summary`

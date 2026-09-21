@@ -21,7 +21,6 @@ from app.executors.claude.capability_policy import (
     internal_context_tool_policy_subjects,
 )
 from app.platform.public_payload import (
-    sanitize_public_answer_text,
     sanitize_public_event_candidate,
 )
 from app.required_tool_contract import (
@@ -1043,7 +1042,7 @@ async def test_sandbox_effectful_tool_preserves_inflight_text_without_terminal_l
 
 
 @pytest.mark.asyncio
-async def test_sandbox_effectful_tool_streams_before_and_after_verified_lifecycle(
+async def test_sandbox_effectful_tool_streams_safe_text_across_verified_lifecycle(
     monkeypatch,
     tmp_path,
 ):
@@ -2807,7 +2806,9 @@ def _actual_mcp_steps(outcome, subjects, text, probe):
         "multiple_failed",
     ],
 )
-async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
+async def test_sdk_actual_mcp_streams_public_text_without_waiting_for_receipt(
+    monkeypatch, tmp_path, outcome
+):
     captured, acknowledged, deltas, sealed_probe = {}, [], [], []
     first = _subject()
     subjects = [
@@ -2860,6 +2861,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
         assert sealed_probe == []
     else:
         assert sealed_probe
+        assert deltas[: len(sealed_probe)] == sealed_probe
     if outcome in {"success", "multiple_completed"}:
         assert result.error is None
         assert result.message
@@ -2896,7 +2898,7 @@ async def test_sdk_actual_mcp_publication_gate(monkeypatch, tmp_path, outcome):
             assert result.error is None
             assert result.message == text
             assert "".join(deltas) == text
-            assert "".join(sealed_probe) == text
+            assert text.startswith("".join(sealed_probe))
         elif outcome in {"stale", "duplicate"}:
             assert (result.error, result.message, deltas) == (expected, "", [])
         else:
@@ -2951,8 +2953,11 @@ async def test_sdk_reconciles_complete_assistant_suffix_once(
     )
 
     assert published_before_hook
-    assert "".join(published_before_hook) == "Before \u2588"
-    assert len(published_before_terminal) > len(published_before_hook)
+    assert "Before \u2588.".startswith("".join(published_before_hook))
+    assert published_before_terminal
+    assert "Before \u2588. After \u2588.".startswith(
+        "".join(published_before_terminal)
+    )
     assert "".join(deltas) == "Before \u2588. After \u2588."
     assert "".join(deltas).count("\u2588.") == 2
     assert result.error is None
@@ -3016,7 +3021,7 @@ async def test_unmatched_capability_terminal_cannot_reopen_active_invocation(
 
 
 @pytest.mark.asyncio
-async def test_sdk_converges_live_and_terminal_body_when_assistant_text_differs(
+async def test_sdk_preserves_visible_delta_when_complete_assistant_body_differs(
     monkeypatch,
     tmp_path,
 ):
@@ -3050,7 +3055,7 @@ async def test_sdk_converges_live_and_terminal_body_when_assistant_text_differs(
 
 
 @pytest.mark.asyncio
-async def test_sdk_verified_effectful_mcp_keeps_only_published_text_on_failed_terminal(
+async def test_sdk_keeps_already_published_safe_prefix_on_failed_terminal(
     monkeypatch,
     tmp_path,
 ):
@@ -3089,9 +3094,8 @@ async def test_sdk_verified_effectful_mcp_keeps_only_published_text_on_failed_te
 
     assert result.error is not None
     assert result.message == ""
-    published = "".join(deltas)
-    assert published
-    assert "provisional answer must not escape".startswith(published)
+    assert deltas
+    assert "provisional answer must not escape".startswith("".join(deltas))
 
 
 @pytest.mark.asyncio
@@ -3138,6 +3142,7 @@ async def test_sdk_preserves_pre_capability_terminal_text(
 
     expected_text = sealed_pre_capability_text + verified_answer
     assert observed_before_result
+    assert expected_text.startswith("".join(observed_before_result))
     assert "".join(deltas) == expected_text
     assert result.error is None
     assert result.message == expected_text
@@ -3437,7 +3442,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
         ),
     ],
 )
-async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
+async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
     monkeypatch,
     tmp_path,
     optional_skill,
@@ -3538,12 +3543,8 @@ async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
         "invocation_requested",
         "failed",
     ]
-    assert public_text.startswith("Using ")
-    assert public_text.endswith(". ")
+    assert public_text == f"Using {expected_replacement}. "
     assert result.message == public_text
-    assert expected_replacement in public_text
-    assert "\u2588" not in public_text
-    assert optional_skill not in public_text
 
 
 @pytest.mark.asyncio
@@ -3680,9 +3681,8 @@ async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_bou
         thinking_effort="high",
     )
 
-    assert observed_before_result
-    assert text.startswith("".join(observed_before_result))
     assert result.error is None
+    assert observed_before_result == []
     assert "".join(deltas) == text
     event_types = [
         candidate.event_type
@@ -3796,6 +3796,7 @@ async def test_sdk_selected_skill_preserves_pre_capability_terminal_text(
 
     expected_text = sealed_pre_capability_text + verified_answer
     assert observed_before_result
+    assert expected_text.startswith("".join(observed_before_result))
     assert "".join(deltas) == expected_text
     assert result.error is None
     assert result.message == expected_text
@@ -4295,7 +4296,176 @@ async def test_sdk_empty_result_is_not_a_successful_terminal(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_sdk_tool_turn_publishes_safe_commentary_before_result(
+async def test_sdk_streams_split_assistant_text_before_later_tool_block(
+    monkeypatch, tmp_path
+):
+    captured, candidates, deltas = {}, [], []
+    observed_after_thinking = []
+    observed_after_text = []
+    shared_message_id = "sdk-message-1"
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class ThinkingBlock:
+        def __init__(self, thinking):
+            self.thinking = thinking
+
+    class ToolUseBlock:
+        id = "tool-1"
+        name = "Read"
+        input = {"file_path": "input.txt"}
+
+    class AssistantMessage:
+        def __init__(self, content):
+            self.content = content
+            self.message_id = shared_message_id
+            self.uuid = f"uuid-{shared_message_id}"
+            self.stop_reason = (
+                "tool_use"
+                if any(type(block).__name__ == "ToolUseBlock" for block in content)
+                else None
+            )
+            self.parent_tool_use_id = None
+
+    class StreamEvent:
+        def __init__(self, event):
+            self.event = event
+            self.parent_tool_use_id = None
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = None
+        model_usage = None
+        result = "Final user answer"
+        is_error = False
+        errors = None
+        stop_reason = "end_turn"
+        terminal_reason = "completed"
+        num_turns = 1
+        permission_denials = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    def acknowledge(batch):
+        candidates.extend(batch)
+        return True
+
+    async def query(*, prompt, options):
+        del prompt, options
+        yield StreamEvent(
+            {
+                "type": "message_start",
+                "message": {"id": shared_message_id, "stop_reason": None},
+            }
+        )
+        yield StreamEvent(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking"},
+            }
+        )
+        yield StreamEvent(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "private reasoning"},
+            }
+        )
+        yield AssistantMessage([ThinkingBlock("private reasoning")])
+        observed_after_thinking.extend(candidate.event_type for candidate in candidates)
+        yield StreamEvent({"type": "content_block_stop", "index": 0})
+        yield StreamEvent(
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "text"},
+            }
+        )
+        yield StreamEvent(
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "Checking before the next step."},
+            }
+        )
+        yield AssistantMessage([TextBlock("Checking before the next step.")])
+        observed_after_text.extend(candidate.event_type for candidate in candidates)
+        yield StreamEvent({"type": "content_block_stop", "index": 1})
+        yield StreamEvent(
+            {
+                "type": "content_block_start",
+                "index": 2,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "tool-1",
+                    "name": "Read",
+                },
+            }
+        )
+        yield AssistantMessage([ToolUseBlock()])
+        yield StreamEvent({"type": "content_block_stop", "index": 2})
+        yield StreamEvent(
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+        )
+        yield StreamEvent({"type": "message_stop"})
+        yield ResultMessage()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _client_sdk(
+            types.SimpleNamespace(
+                AssistantMessage=AssistantMessage,
+                ClaudeAgentOptions=ClaudeAgentOptions,
+                ResultMessage=ResultMessage,
+                StreamEvent=StreamEvent,
+                TextBlock=TextBlock,
+                ThinkingBlock=ThinkingBlock,
+                ToolUseBlock=ToolUseBlock,
+                query=query,
+            ),
+            captured,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+        on_agent_event=acknowledge,
+        run_id="run-split-turn",
+        attempt_id="attempt-split-turn",
+    )
+
+    commentary_text = "".join(
+        str(candidate.payload["delta"])
+        for candidate in candidates
+        if candidate.event_type == "commentary.delta"
+    )
+    expected_text = "Checking before the next step.\n\nFinal user answer"
+    assert observed_after_thinking == []
+    assert "message.delta" in observed_after_text
+    assert commentary_text == ""
+    assert "".join(
+        str(candidate.payload["delta"])
+        for candidate in candidates
+        if candidate.event_type == "message.delta"
+    ) == expected_text
+    assert "".join(deltas) == expected_text
+    assert result.error is None
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
+async def test_sdk_tool_turn_publishes_safe_assistant_text_before_result(
     monkeypatch, tmp_path
 ):
     captured, candidates, observed_before_result, deltas = {}, [], [], []
@@ -4381,18 +4551,16 @@ async def test_sdk_tool_turn_publishes_safe_commentary_before_result(
         if candidate.event_type == "commentary.delta"
     ]
     assert observed_before_result
-    assert set(observed_before_result) == {"commentary.delta"}
-    assert len(commentary) == len(observed_before_result)
-    commentary_text = "".join(
-        str(candidate.payload["delta"]) for candidate in commentary
+    assert set(observed_before_result) == {"message.started", "message.delta"}
+    assert commentary == []
+    public_text = "".join(deltas)
+    assert private_call_id not in public_text
+    assert str(tmp_path) in public_text
+    assert public_text == (
+        f"Checking \u2588 in {tmp_path} before the next step.\n\nFinal user answer"
     )
-    assert private_call_id not in commentary_text
-    assert str(tmp_path) not in commentary_text
-    assert commentary_text == "Checking \u2588 in \u2588 before the next step."
-    assert "Checking" not in "".join(deltas)
-    assert "".join(deltas) == "Final user answer"
     assert result.error is None
-    assert result.message == "Final user answer"
+    assert result.message == public_text
 
 
 @pytest.mark.asyncio
@@ -4463,21 +4631,12 @@ async def test_sdk_structured_output_does_not_control_plain_text_terminal(
 
 
 @pytest.mark.asyncio
-async def test_sdk_candidate_projection_failure_skips_batch_and_keeps_successful_terminal(
+async def test_sdk_projects_answer_candidates_before_turn_boundary(
     monkeypatch, tmp_path
 ):
-    captured, candidates, deltas = {}, [], []
+    captured, candidates, deltas, observed_before_result = {}, [], [], []
     omitted = "omit this fragment "
     delivered = "Saved at /tmp/visible-result.txt."
-    omitted_calls = 0
-
-    def fail_one_answer_candidate(value):
-        nonlocal omitted_calls
-        if value == omitted:
-            omitted_calls += 1
-            if omitted_calls == 3:
-                raise RuntimeError("synthetic candidate projection failure")
-        return sanitize_public_answer_text(value)
 
     monkeypatch.setitem(
         sys.modules,
@@ -4487,6 +4646,7 @@ async def test_sdk_candidate_projection_failure_skips_batch_and_keeps_successful
             [
                 *_stream_steps(omitted, index=0),
                 *_stream_steps(delivered, index=1),
+                ("probe", lambda: observed_before_result.extend(deltas)),
             ],
             result_text=omitted + delivered,
         ),
@@ -4495,11 +4655,6 @@ async def test_sdk_candidate_projection_failure_skips_batch_and_keeps_successful
         "app.executors.claude_agent_sdk_runner.get_settings",
         _sandbox_brokered_settings,
     )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_sdk_runner.sanitize_public_answer_text",
-        fail_one_answer_candidate,
-    )
-
     result = await run_claude_agent_sdk(
         prompt="answer",
         cwd=tmp_path,
@@ -4518,30 +4673,34 @@ async def test_sdk_candidate_projection_failure_skips_batch_and_keeps_successful
     ]
     assert result.error is None
     assert result.message == ""
-    assert "".join(deltas) == delivered
-    assert [event.event_type for event in message_events] == [
-        "message.started",
-        "message.delta",
-        "message.delta",
-        "message.completed",
-    ]
+    assert observed_before_result
+    assert (omitted + delivered).startswith("".join(observed_before_result))
+    assert "".join(deltas) == omitted + delivered
+    assert message_events[0].event_type == "message.started"
+    assert message_events[-1].event_type == "message.completed"
+    assert all(
+        event.event_type == "message.delta" for event in message_events[1:-1]
+    )
     assert "".join(
         event.payload["delta"]
         for event in message_events
         if event.event_type == "message.delta"
-    ) == delivered
+    ) == omitted + delivered
+    delta_events = [
+        event for event in message_events if event.event_type == "message.delta"
+    ]
     assert message_events[-1].payload == {
-        "delta_count": 2,
-        "text_length": len(delivered),
+        "delta_count": len(delta_events),
+        "text_length": len(omitted + delivered),
     }
     assert result.answer_receipt == {
         "schema_version": "ai-platform.assistant-answer-receipt.v1",
         "message_id": message_events[0].message_id,
-        "delta_count": 2,
-        "text_length": len(delivered),
-        "last_delta_event_id": message_events[-2].event_id,
+        "delta_count": len(delta_events),
+        "text_length": len(omitted + delivered),
+        "last_delta_event_id": delta_events[-1].event_id,
     }
-    assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
+    assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 0
 
 
 @pytest.mark.asyncio
@@ -4906,7 +5065,7 @@ async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(
 
 
 @pytest.mark.asyncio
-async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(
+async def test_sandbox_stream_duplicate_stop_preserves_visible_prefix(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -4943,7 +5102,7 @@ async def test_sandbox_stream_duplicate_stop_never_replays_terminal_result(
 
 
 @pytest.mark.asyncio
-async def test_sdk_keeps_successful_terminal_body_after_stream_failure(
+async def test_sdk_keeps_visible_prefix_and_terminal_body_after_stream_failure(
     monkeypatch, tmp_path
 ):
     captured = {}

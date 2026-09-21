@@ -22,8 +22,12 @@ and message projection semantics.
 
 Assistant narration and final answers are content facts, independent of Tool
 admission, active invocations, completion evidence and Run outcome. Tool lifecycle
-state MUST NOT suppress ordinary Assistant text. A failed or cancelled Run keeps
-its already accepted safe content; its outcome is presented separately.
+state is not a product-level reason to hide ordinary Assistant text. A failed or
+cancelled Run keeps its already accepted safe content; its outcome is presented
+separately. Current v4 projects disclosure-safe SDK text blocks incrementally
+into the Assistant body and keeps raw tool blocks, results and Thinking outside
+that source. The [streaming message design](../implementation/streaming-message-parts-design.md)
+owns the detailed adapter and compatibility rules.
 
 ### Ordinary-user execution presentation
 
@@ -34,11 +38,17 @@ them into one summary that the user may reopen. The display contract is:
 | Surface | Ordinary-user presentation | Allowed content |
 | --- | --- | --- |
 | Assistant answer, artifacts, permission requests, failures, and cancellation | Visible outside the work-details fold | Accepted answer text, authorized artifact labels/actions, and fixed actionable status copy |
-| `commentary.delta` | Visible inside work details | Sanitized work-progress commentary from a complete tool-using Assistant turn |
+| `commentary.delta` | Visible inline outside the work-details fold | Explicit sanitized public summary from an authorized producer; it is not inferred from a tool-using Claude turn |
 | Tool lifecycle | Visible inside work details | Fixed public category label and canonical name derived from the allowlisted category (`skill`, `mcp`, `read`, `write`, `edit`, `search`, or `execute`); `skill` alone may use its sanitized, authorized v4 `display_name`; lifecycle status; and bounded duration |
 | Execution, Sandbox, Todo, and subagent lifecycle | Visible inside work details | Fixed or allowlisted phase/category labels, status, bounded progress/duration, and an explicitly safe file basename when the public execution contract supplies one |
 | Routine queue, context, intent, heartbeat, and model-completion metadata | Hidden from the transcript unless separately actionable | No ordinary-user card |
-| Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, prompt, command, path, query, file content, diff, Tool/MCP/Skill arguments or results, private identifier, storage key, credential, trace, or executor payload |
+| Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, private prompt, executed command/arguments, private runtime path, raw query/file/diff/Tool/MCP/Skill result, private identifier, storage key, credential, trace, or executor payload |
+
+The table describes existing v4 rendering. All accepted public Assistant prose
+remains visible in message order, including work-progress text; only tool and
+execution activities fold after completion. User-requested code, JSON examples
+and non-sensitive task references are ordinary Assistant content. A script executed internally and the same
+syntax intentionally supplied as an answer have different sources and policies.
 
 Final files are optional ordered parts of the Run's single assistant response.
 The answer remains ordinary text. A file card appears only after the Agent

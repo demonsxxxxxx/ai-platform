@@ -49,7 +49,10 @@ from app.executors.claude.prompts import (
     translation_target_language as _prompt_translation_target_language,
 )
 from app.execution.api import ClaudeSdkAgentEventAdapter
-from app.executors.claude_stream_projection import AssistantAnswerTimeline, ClaudeStreamProjector
+from app.executors.claude_stream_projection import (
+    AssistantAnswerTimeline,
+    ClaudeStreamProjector,
+)
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.required_tool_contract import (
     MCP_EXECUTION_OUTCOME_UNKNOWN,
@@ -2306,25 +2309,6 @@ async def run_claude_agent_sdk(
                 {call_id: replacement}
             )
 
-    def project_public_commentary(value: str) -> tuple[str, ...]:
-        commentary_replacements = dict(private_replacements)
-        commentary_replacements.update(
-            {
-                path: private_replacement
-                for path in {str(cwd), cwd.as_posix()}
-                if 1 < len(path) <= 512
-            }
-        )
-        gate = PublicAnswerStreamGate(
-            private_replacements=commentary_replacements,
-            sanitizer=sanitize_public_answer_text,
-        )
-        chunks = gate.accept(value)
-        finished = gate.finish(final_text=value, release=True)
-        if gate.failed or gate.projection_omissions:
-            return ()
-        return chunks + finished.chunks
-
     sdk_prompt = prompt
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
@@ -3385,6 +3369,7 @@ async def run_claude_agent_sdk(
         nonlocal last_public_stage, terminal_result_message
         answer_timeline = AssistantAnswerTimeline()
         terminal_answer_empty = False
+
         async for message in messages:
             mcp_registration.check_message(message)
             if isinstance(message, MirrorErrorMessage):
@@ -3423,33 +3408,37 @@ async def run_claude_agent_sdk(
                     isinstance(raw_stream_event, dict)
                     and raw_stream_event.get("type") == "content_block_start"
                     and isinstance(raw_stream_event.get("content_block"), dict)
-                    and raw_stream_event["content_block"].get("type") == "tool_use"
+                    and raw_stream_event["content_block"].get("type")
+                    in {"tool_use", "server_tool_use"}
                 ):
                     register_dynamic_tool_call_id(
                         raw_stream_event["content_block"].get("id")
                     )
-                if stream_projector is None:
-                    continue
-                for text in stream_projector.accept(raw_stream_event):
-                    for public_text in answer_stream_gate.accept(
-                        answer_timeline.accept_delta(text)
-                    ):
-                        await publish_terminal_text(public_text)
+                if stream_projector is not None:
+                    fragments = stream_projector.accept(raw_stream_event)
+                    for fragment in fragments:
+                        last_public_stage = "message"
+                        for public_text in answer_stream_gate.accept(
+                            answer_timeline.accept_delta(fragment)
+                        ):
+                            await publish_terminal_text(public_text)
                 continue
             if isinstance(message, AssistantMessage):
-                if stream_projector is not None:
-                    stream_projector.finish_message()
                 diagnostic_counters["assistant_messages"] += 1
+                assistant_message_id = getattr(message, "message_id", None)
+                if (
+                    not isinstance(assistant_message_id, str)
+                    or not assistant_message_id
+                ):
+                    assistant_message_id = getattr(message, "uuid", None)
                 assistant_message_identity = (
-                    f"assistant_{diagnostic_counters['assistant_messages']}"
+                    assistant_message_id
+                    if isinstance(assistant_message_id, str) and assistant_message_id
+                    else f"assistant_{diagnostic_counters['assistant_messages']}"
                 )
                 assistant_text_blocks = []
-                contains_tool_use = any(
-                    type(block).__name__ == "ToolUseBlock"
-                    for block in message.content
-                )
                 for block_index, block in enumerate(message.content):
-                    if type(block).__name__ == "ToolUseBlock":
+                    if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
                         register_dynamic_tool_call_id(getattr(block, "id", None))
                     if agent_event_adapter is not None:
                         await publish_agent_candidates(
@@ -3469,20 +3458,7 @@ async def run_claude_agent_sdk(
                     and all(isinstance(text, str) for text in assistant_text_blocks)
                     else None
                 )
-                if contains_tool_use and assistant_text and agent_event_adapter is not None:
-                    last_public_stage = "message"
-                    public_commentary = "".join(
-                        project_public_commentary(assistant_text)
-                    )
-                    if public_commentary:
-                        await publish_agent_candidates(
-                            agent_event_adapter.accept_commentary_text(
-                                public_commentary,
-                                commentary_identity=assistant_message_identity,
-                                already_gated=True,
-                            )
-                        )
-                elif not contains_tool_use:
+                if assistant_text is not None:
                     last_public_stage = "message"
                     for public_text in answer_stream_gate.accept(
                         answer_timeline.accept_assistant(assistant_text)
