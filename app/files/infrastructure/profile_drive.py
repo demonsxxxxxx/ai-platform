@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import mimetypes
 import os
@@ -12,14 +11,7 @@ from typing import Any
 import anyio
 import httpx
 
-
-@dataclass(frozen=True, slots=True)
-class ProfileDriveTransferError(Exception):
-    status_code: int
-    detail: str
-
-    def __str__(self) -> str:
-        return self.detail
+from app.files.application.profile_drive import ProfileDriveTransferError
 
 
 _SAFE_CONTENT_TYPE_PATTERN = re.compile(
@@ -142,3 +134,11 @@ async def download_profile_drive_file(
     finally:
         await response.aclose()
         await client.aclose()
+
+
+class ProfileDriveTransferAdapter:
+    async def open_profile_drive_file(self, **kwargs: Any) -> tuple[Any, Any, int, str]:
+        return await open_profile_drive_file(**kwargs)
+
+    async def download_profile_drive_file(self, **kwargs: Any) -> tuple[str, str, int]:
+        return await download_profile_drive_file(**kwargs)

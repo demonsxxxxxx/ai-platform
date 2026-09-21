@@ -13,9 +13,10 @@ from fastapi import HTTPException
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
-from app.bootstrap.files import configure_file_preview_services
+from app.bootstrap.files import configure_file_preview_services, configure_file_upload_services
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.file_preview_contracts import XlsxPreviewResponse
+from app.files.api import ProfileDriveFileImportRequest
 from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
 from app.repositories import RepositoryConflictError
 from app.runs.api import RunTerminalizationProgress
@@ -23,7 +24,6 @@ from app.routes import lambchat_compat as lambchat_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
 from app.routes.files import (
-    ProfileDriveFileImportRequest,
     _discard_profile_drive_import,
     _download_profile_drive_file,
     _put_profile_drive_import,
@@ -1898,6 +1898,7 @@ async def test_profile_drive_import_creates_an_owned_previewable_session_file(
 
 @pytest.mark.asyncio
 async def test_profile_drive_download_streams_to_a_closed_verified_temp_file():
+    configure_file_upload_services()
     raw = b"profile workspace preview"
 
     class UpstreamResponse:

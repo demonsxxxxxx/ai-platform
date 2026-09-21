@@ -16,7 +16,6 @@ from fastapi.responses import JSONResponse
 
 from app.files.api import (
     MAX_UPLOAD_BYTES,
-    ProfileDriveFileImportRequest,
     ProfileDriveTransferError,
     abort_file_upload_session,
     activate_file_upload_session,
@@ -34,6 +33,7 @@ from app.files.api import (
     open_profile_drive_file,
     parse_multipart_upload_complete_request,
     parse_multipart_upload_create_request,
+    parse_profile_drive_file_import_request,
     download_profile_drive_file,
     retry_expired_file_upload_session,
 )
@@ -764,10 +764,15 @@ def _validate_upload_file(*, filename: str, declared_content_type: str, path: Pa
 )
 async def import_profile_drive_file(
     session_id: str,
-    request: ProfileDriveFileImportRequest,
+    request: dict[str, object] = Body(...),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> SessionInputFileResponse:
     """Import one user-confirmed ProfileDrive file into an owned session workspace."""
+
+    try:
+        request = parse_profile_drive_file_import_request(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     _require_upload_permissions(principal)
     try:
