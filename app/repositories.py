@@ -21,10 +21,8 @@ from app.capability_distribution import (
 )
 from app.context.file_continuity import (
     compatible_reusable_file_ids,
-    get_owned_session_file as get_owned_session_file,
     has_file_input_mode,
     list_authorized_session_input_files as list_authorized_session_input_files,
-    list_owned_session_files as list_owned_session_files,
 )
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,

@@ -4353,10 +4353,11 @@ def test_sandbox_runtime_maps_authorized_profile_drive_read_to_workspace_staging
     )
 
     assert [subject["identity"] for subject in subjects] == [
-        "mcp__ai-platform-context__stage_profile_drive_file_to_workspace"
+        "mcp__ai-platform-response__attach_file",
+        "mcp__ai-platform-context__stage_profile_drive_file_to_workspace",
     ]
-    assert subjects[0]["allowed_parameter_keys"] == ["path"]
-    assert subjects[0]["required_parameter_keys"] == ["path"]
+    assert subjects[1]["allowed_parameter_keys"] == ["path"]
+    assert subjects[1]["required_parameter_keys"] == ["path"]
 
     profile_drive_read["parameters_authorized"] = False
     denied_payload = types.SimpleNamespace(

@@ -4,9 +4,7 @@ import logging
 from types import SimpleNamespace
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
 
 from app import repositories
 from app.context import api as context_api
@@ -17,6 +15,11 @@ from app.context.retrieval import (
     ContextRetrievalInputError,
 )
 from app.db import transaction
+from app.files.infrastructure.profile_drive import (
+    ProfileDriveTransferError,
+    open_profile_drive_file,
+)
+from app.files.transport.profile_drive import profile_drive_streaming_response
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
@@ -621,7 +624,7 @@ async def executor_callback(
 
 async def _profile_drive_file_response(
     request: ExecutorContextRetrievalRequest,
-) -> StreamingResponse:
+) -> Any:
     arguments = request.arguments
     path = arguments.get("path") if set(arguments) == {"path"} else None
     if (
@@ -646,9 +649,6 @@ async def _profile_drive_file_response(
         user_id = str(run_identity.get("user_id") or "")
 
     settings = get_settings()
-    upstream = str(getattr(settings, "profile_drive_transfer_upstream", "") or "").rstrip("/")
-    if not upstream:
-        raise HTTPException(status_code=503, detail="profile_drive_transfer_unavailable")
     try:
         jwt = await get_mcp_principal_jwt_store().get(
             SimpleNamespace(tenant_id=tenant_id, user_id=user_id)
@@ -656,59 +656,21 @@ async def _profile_drive_file_response(
     except McpRuntimeContextError as exc:
         raise HTTPException(status_code=409, detail="profile_drive_reauth_required") from exc
 
-    verify: bool | str = str(
-        getattr(settings, "profile_drive_transfer_ca_cert_file", "") or ""
-    ).strip() or True
-    client = httpx.AsyncClient(
-        timeout=httpx.Timeout(None, connect=30.0),
-        follow_redirects=False,
-        trust_env=False,
-        verify=verify,
-    )
     try:
-        upstream_request = client.build_request(
-            "POST",
-            f"{upstream}/api/profile-drive/files/content",
-            json={"path": path},
-            headers={
-                "Authorization": f"Bearer {jwt}",
-                "Accept": "application/octet-stream",
-                "Accept-Encoding": "identity",
-            },
+        client, upstream_response, content_length, _content_type = await open_profile_drive_file(
+            upstream=str(getattr(settings, "profile_drive_transfer_upstream", "") or ""),
+            ca_cert_file=str(
+                getattr(settings, "profile_drive_transfer_ca_cert_file", "") or ""
+            ),
+            jwt=jwt,
+            path=path,
+            max_bytes=PROFILE_DRIVE_STAGE_MAX_BYTES,
+            require_nonempty=False,
+            not_found_status=403,
+            too_large_detail="profile_drive_file_too_large",
         )
-        upstream_response = await client.send(upstream_request, stream=True)
-    except Exception as exc:
-        await client.aclose()
-        raise HTTPException(status_code=503, detail="profile_drive_transfer_failed") from exc
-
-    if upstream_response.status_code != 200:
-        upstream_status = upstream_response.status_code
-        await upstream_response.aclose()
-        await client.aclose()
-        status_code = (
-            413
-            if upstream_status == 413
-            else 409
-            if upstream_status in {401, 409}
-            else 403
-            if upstream_status in {400, 403, 404, 422}
-            else 503
-        )
-        raise HTTPException(status_code=status_code, detail="profile_drive_transfer_denied")
-    if upstream_response.headers.get("content-encoding", "identity").strip().lower() != "identity":
-        await upstream_response.aclose()
-        await client.aclose()
-        raise HTTPException(status_code=503, detail="profile_drive_transfer_invalid")
-    try:
-        content_length = int(upstream_response.headers["content-length"])
-    except (KeyError, TypeError, ValueError) as exc:
-        await upstream_response.aclose()
-        await client.aclose()
-        raise HTTPException(status_code=503, detail="profile_drive_transfer_invalid") from exc
-    if content_length < 0 or content_length > PROFILE_DRIVE_STAGE_MAX_BYTES:
-        await upstream_response.aclose()
-        await client.aclose()
-        raise HTTPException(status_code=413, detail="profile_drive_file_too_large")
+    except ProfileDriveTransferError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     try:
         async with transaction() as conn:
@@ -750,13 +712,9 @@ async def _profile_drive_file_response(
             await upstream_response.aclose()
             await client.aclose()
 
-    return StreamingResponse(
+    return profile_drive_streaming_response(
         stream_file(),
-        media_type="application/octet-stream",
-        headers={
-            "Cache-Control": "private, no-store",
-            "Content-Length": str(content_length),
-        },
+        content_length=content_length,
     )
 
 

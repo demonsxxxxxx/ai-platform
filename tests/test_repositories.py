@@ -12,6 +12,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import agent_conversation_repository, repositories
+from app.context.file_continuity import get_owned_session_file, list_owned_session_files
 from app.execution.application import stale_terminalization
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
@@ -4063,14 +4064,14 @@ async def test_owned_session_file_queries_include_unbound_imports_and_bind_full_
     list_conn = SingleRowConnection(row)
     get_conn = SingleRowConnection(row)
 
-    rows = await repositories.list_owned_session_files(
+    rows = await list_owned_session_files(
         list_conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
         user_id="user-a",
         session_id="session-a",
     )
-    selected = await repositories.get_owned_session_file(
+    selected = await get_owned_session_file(
         get_conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",

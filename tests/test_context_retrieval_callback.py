@@ -382,7 +382,7 @@ def test_profile_drive_callback_streams_only_for_attempt_authorized_lease(monkey
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return "company.jwt"
 
-    monkeypatch.setattr(callbacks.httpx, "AsyncClient", client_factory)
+    monkeypatch.setattr("app.files.infrastructure.profile_drive.httpx.AsyncClient", client_factory)
     monkeypatch.setattr(callbacks, "get_mcp_principal_jwt_store", lambda: JwtStore())
     monkeypatch.setattr(
         callbacks,

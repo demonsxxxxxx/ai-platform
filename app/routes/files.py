@@ -4,21 +4,22 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import io
-import mimetypes
-import os
 import re
-import tempfile
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Event
 from urllib.parse import quote
 import zipfile
 
-import anyio
-import httpx
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.files.infrastructure.profile_drive import (
+    ProfileDriveTransferError,
+    download_profile_drive_file,
+    open_profile_drive_file,
+)
+from app.files.transport.profile_drive import ProfileDriveFileImportRequest
 
 from app.files.api import (
     MAX_UPLOAD_BYTES,
@@ -56,6 +57,10 @@ from app.models import (
     SessionInputFileResponse,
     SessionInputFilesResponse,
 )
+from app.context.file_continuity import (
+    get_owned_session_file,
+    list_owned_session_files,
+)
 from app.repositories import (
     FileDeletionBlockedError,
     ObjectDeletionStateError,
@@ -69,9 +74,7 @@ from app.repositories import (
     get_authorized_run,
     get_authorized_session,
     get_file,
-    get_owned_session_file,
     get_scoped_context_file,
-    list_owned_session_files,
     new_id,
     queue_unbound_file_for_deletion,
 )
@@ -198,25 +201,6 @@ class UploadFileResponse:
     name: str
     sha256: str
     size_bytes: int
-
-
-class ProfileDriveFileImportRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path: str = Field(min_length=1, max_length=1024)
-
-    @field_validator("path")
-    @classmethod
-    def validate_path(cls, value: str) -> str:
-        normalized = value.replace("\\", "/")
-        parts = normalized.split("/")
-        if (
-            "\x00" in value
-            or normalized.startswith("/")
-            or any(part in {"", ".", ".."} for part in parts)
-        ):
-            raise ValueError("profile_drive_path_invalid")
-        return normalized
 
 
 def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
@@ -448,114 +432,43 @@ async def _open_profile_drive_file(
     *,
     principal: AuthPrincipal,
     path: str,
-) -> tuple[httpx.AsyncClient, httpx.Response, int, str]:
+) -> tuple[object, object, int, str]:
     settings = get_settings()
-    upstream = settings.profile_drive_transfer_upstream.rstrip("/")
-    if not upstream:
-        raise HTTPException(status_code=503, detail="profile_drive_transfer_unavailable")
     try:
         jwt = await get_mcp_principal_jwt_store().get(principal)
     except McpRuntimeContextError as exc:
         raise HTTPException(status_code=409, detail="profile_drive_reauth_required") from exc
-
-    verify: bool | str = settings.profile_drive_transfer_ca_cert_file.strip() or True
-    client = httpx.AsyncClient(
-        timeout=httpx.Timeout(None, connect=30.0),
-        follow_redirects=False,
-        trust_env=False,
-        verify=verify,
-    )
     try:
-        response = await client.send(
-            client.build_request(
-                "POST",
-                f"{upstream}/api/profile-drive/files/content",
-                json={"path": path},
-                headers={
-                    "Authorization": f"Bearer {jwt}",
-                    "Accept": "application/octet-stream",
-                    "Accept-Encoding": "identity",
-                },
-            ),
-            stream=True,
+        return await open_profile_drive_file(
+            upstream=settings.profile_drive_transfer_upstream,
+            ca_cert_file=settings.profile_drive_transfer_ca_cert_file,
+            jwt=jwt,
+            path=path,
+            max_bytes=MAX_UPLOAD_BYTES,
+            require_nonempty=True,
+            not_found_status=404,
+            too_large_detail="file_too_large",
         )
-    except Exception as exc:
-        await client.aclose()
-        raise HTTPException(status_code=503, detail="profile_drive_transfer_failed") from exc
-
-    if response.status_code != 200:
-        upstream_status = response.status_code
-        await response.aclose()
-        await client.aclose()
-        status_code = (
-            413
-            if upstream_status == 413
-            else 409
-            if upstream_status in {401, 409}
-            else 404
-            if upstream_status == 404
-            else 403
-            if upstream_status in {400, 403, 422}
-            else 503
-        )
-        raise HTTPException(status_code=status_code, detail="profile_drive_transfer_denied")
-    if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
-        await response.aclose()
-        await client.aclose()
-        raise HTTPException(status_code=503, detail="profile_drive_transfer_invalid")
-    try:
-        content_length = int(response.headers["content-length"])
-    except (KeyError, TypeError, ValueError) as exc:
-        await response.aclose()
-        await client.aclose()
-        raise HTTPException(status_code=503, detail="profile_drive_transfer_invalid") from exc
-    if content_length <= 0:
-        await response.aclose()
-        await client.aclose()
-        raise HTTPException(status_code=400, detail="empty_file_not_supported")
-    if content_length > MAX_UPLOAD_BYTES:
-        await response.aclose()
-        await client.aclose()
-        raise HTTPException(status_code=413, detail="file_too_large")
-
-    filename = path.rsplit("/", 1)[-1]
-    declared_content_type = _normalized_content_type(response.headers.get("content-type"))
-    guessed_content_type = mimetypes.guess_type(filename)[0]
-    content_type = guessed_content_type or (
-        declared_content_type
-        if SAFE_RESPONSE_CONTENT_TYPE_PATTERN.fullmatch(declared_content_type)
-        else "application/octet-stream"
-    )
-    return client, response, content_length, content_type
+    except ProfileDriveTransferError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 async def _download_profile_drive_file(
     *,
-    client: httpx.AsyncClient,
-    response: httpx.Response,
+    client: object,
+    response: object,
     content_length: int,
 ) -> tuple[str, str, int]:
-    file_descriptor, temporary_path = tempfile.mkstemp(prefix="ai-platform-profile-drive-")
-    os.close(file_descriptor)
-    digest = hashlib.sha256()
-    transferred = 0
     try:
-        async with await anyio.open_file(temporary_path, "wb") as destination:
-            async for chunk in response.aiter_raw():
-                transferred += len(chunk)
-                if transferred > content_length or transferred > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="file_too_large")
-                digest.update(chunk)
-                await destination.write(chunk)
-        if transferred != content_length:
-            raise HTTPException(status_code=503, detail="profile_drive_transfer_invalid")
-        return temporary_path, digest.hexdigest(), transferred
-    except BaseException:
-        Path(temporary_path).unlink(missing_ok=True)
-        raise
-    finally:
-        await response.aclose()
-        await client.aclose()
+        return await download_profile_drive_file(
+            client=client,
+            response=response,
+            content_length=content_length,
+            max_bytes=MAX_UPLOAD_BYTES,
+            too_large_detail="file_too_large",
+        )
+    except ProfileDriveTransferError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 def _put_profile_drive_import(
