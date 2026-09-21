@@ -321,6 +321,30 @@ async def record_agent_profile_withdrawal(
         raise RepositoryConflictError("agent_profile_revision_stale")
 
 
+async def retire_agent_profile_identity(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+) -> None:
+    """Deactivate one profile identity while preserving revisions and runtime evidence."""
+
+    cursor = await conn.execute(
+        """
+        update agents
+        set status = 'inactive'
+        where tenant_id = %s
+          and id = %s
+          and agent_type = 'profile'
+          and status = 'active'
+        returning id
+        """,
+        (tenant_id, agent_id),
+    )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("agent_profile_revision_stale")
+
+
 async def get_agent_profile_aggregate(
     conn: AsyncConnection,
     *,

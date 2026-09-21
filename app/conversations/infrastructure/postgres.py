@@ -184,6 +184,9 @@ async def list_authorized_sessions(
         left join agents session_agent
           on session_agent.tenant_id = sessions.tenant_id
          and session_agent.id = sessions.agent_id
+        left join agent_profiles current_profile
+          on current_profile.tenant_id = sessions.tenant_id
+         and current_profile.agent_id = sessions.agent_id
         left join agent_profile_revisions profile
           on profile.tenant_id = sessions.tenant_id
          and profile.agent_id = sessions.agent_id
@@ -193,6 +196,13 @@ async def list_authorized_sessions(
         where sessions.tenant_id = %s
           and sessions.user_id = %s
           and sessions.status = 'active'
+          and (
+            session_agent.agent_type is distinct from 'profile'
+            or (
+              session_agent.status = 'active'
+              and current_profile.lifecycle_status = 'published'
+            )
+          )
         order by sessions.updated_at desc, sessions.created_at desc
         limit 100
         """,
@@ -527,6 +537,15 @@ async def list_authorized_agent_conversations(
          and profile.agent_id = sessions.agent_id
          and profile.revision = sessions.admitted_agent_profile_revision
          and profile.content_hash = sessions.admitted_agent_profile_hash
+        join agent_profiles current_profile
+          on current_profile.tenant_id = sessions.tenant_id
+         and current_profile.agent_id = sessions.agent_id
+         and current_profile.lifecycle_status = 'published'
+        join agents current_agent
+          on current_agent.tenant_id = sessions.tenant_id
+         and current_agent.id = sessions.agent_id
+         and current_agent.agent_type = 'profile'
+         and current_agent.status = 'active'
         {_LEGACY_AGENT_SESSION_TITLE_JOIN_SQL}
         where sessions.tenant_id = %s
           and sessions.user_id = %s

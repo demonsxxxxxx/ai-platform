@@ -152,6 +152,7 @@ snapshot, Run, or current authority no longer agrees.
 - `record_agent_profile_draft`
 - `record_agent_profile_publication`
 - `record_agent_profile_withdrawal`
+- `retire_agent_profile_identity`
 
 The schema stores only the canonical profile fields listed in section 3. The final
 schema operation drops superseded Agent Profile columns and trigger functions so
@@ -170,6 +171,28 @@ an upgraded database exposes one write contract.
 - Database errors do not trigger alternate write paths.
 - Deployment applies the schema before starting application processes built for
   this contract.
+
+### Change Contract: Profile retirement and conversation navigation
+
+- **Owner:** `AgentProfileAuthority` owns profile retirement; Conversations owns
+  ordinary-user history projection.
+- **Scope:** an administrator may retire only an exact clean draft or withdrawn
+  profile revision. A published profile must be withdrawn first. Retirement
+  changes the durable `agents` identity from active to inactive; it does not
+  delete immutable revisions, Sessions, Runs, messages, or audit rows.
+- **Preserved invariants:** tenant and administrator checks remain server-owned;
+  the lifecycle advisory lock and expected revision fence every retirement;
+  retired IDs cannot be reused; current publication and admission remain the
+  only execution authorities; direct access to an owned historical Session may
+  remain read-only for audit, but ordinary history lists expose only currently
+  published active profiles.
+- **Acceptance:** a successful retirement removes the profile from the admin
+  directory and both ordinary history navigation queries; published, stale,
+  cross-tenant, and non-admin requests fail before identity mutation; an audit
+  receipt records the retired revision and prior lifecycle status.
+- **Stop conditions:** stop if the change requires deleting immutable evidence,
+  weakening Session ownership, permitting ID reuse, or allowing a retired or
+  withdrawn profile to admit new execution.
 
 ## 8. Verification
 

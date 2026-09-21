@@ -804,6 +804,52 @@ class AgentProfileAuthority:
         )
         return _admin_projection({**row, "published_revision": None}), audit_id
 
+    async def retire(
+        self,
+        conn,
+        *,
+        principal: AuthPrincipal,
+        agent_id: str,
+        expected_revision: int,
+    ) -> str:
+        """Retire one non-published identity without erasing immutable evidence."""
+
+        self._require_admin(principal)
+        await self._ensure_principal_user(conn, principal=principal)
+        await agent_profile_repository.acquire_agent_profile_lifecycle_lock(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+        )
+        aggregate = await agent_profile_repository.get_agent_profile_aggregate(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+            for_update=True,
+        )
+        if aggregate is None or int(aggregate.get("latest_revision") or 0) != expected_revision:
+            raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+        lifecycle_status = str(aggregate.get("lifecycle_status") or "")
+        if lifecycle_status == "published":
+            raise HTTPException(status_code=409, detail="agent_profile_must_be_unpublished")
+        if lifecycle_status not in {"draft", "withdrawn"}:
+            raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
+        await agent_profile_repository.retire_agent_profile_identity(
+            conn,
+            tenant_id=principal.tenant_id,
+            agent_id=agent_id,
+        )
+        return await repositories.append_audit_log(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            action="agent_profile.retired",
+            target_type="agent_profile",
+            target_id=agent_id,
+            trace_id=standard_trace_id(agent_id),
+            payload_json={"revision": expected_revision, "previous_status": lifecycle_status},
+        )
+
     async def validate_draft(
         self,
         conn,

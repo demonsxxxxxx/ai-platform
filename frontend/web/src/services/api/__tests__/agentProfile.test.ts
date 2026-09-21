@@ -335,14 +335,12 @@ test("uses the current admin profile contract without retired file-type transpor
       if (typeof body.name === "string") draftWriteBodies.push(body);
     }
     const isList = !init?.method || init.method === "GET";
-    return new Response(
-      JSON.stringify(
-        isList
-          ? { agent_profiles: [adminProfile] }
-          : { agent_profile: adminProfile, audit_id: "audit-a" },
-      ),
-      { status: 200 },
-    );
+    const responseBody = init?.method === "DELETE"
+      ? { agent_id: "agt_support", audit_id: "audit-retire" }
+      : isList
+        ? { agent_profiles: [adminProfile] }
+        : { agent_profile: adminProfile, audit_id: "audit-a" };
+    return new Response(JSON.stringify(responseBody), { status: 200 });
   }) as typeof fetch;
 
   try {
@@ -352,6 +350,10 @@ test("uses the current admin profile contract without retired file-type transpor
     await agentProfileApi.saveDraft({ ...draft, expected_draft_revision: 7 }, "agt_support");
     await agentProfileApi.publish("agt_support", 7);
     await agentProfileApi.unpublish("agt_support", 7);
+    assert.deepEqual(await agentProfileApi.retire("agt_support", 8), {
+      agent_id: "agt_support",
+      audit_id: "audit-retire",
+    });
 
     assert.deepEqual(calls, [
       {
@@ -382,6 +384,11 @@ test("uses the current admin profile contract without retired file-type transpor
       {
         url: "/api/ai/admin/agent-profiles/agt_support/unpublish",
         method: "POST",
+        schema: null,
+      },
+      {
+        url: "/api/ai/admin/agent-profiles/agt_support",
+        method: "DELETE",
         schema: null,
       },
     ]);

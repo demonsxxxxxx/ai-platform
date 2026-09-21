@@ -1,5 +1,6 @@
 import {
   agentProfileApi,
+  type AgentProfileRetirementResponse,
   type AgentProfileTrialRunResponse,
 } from "../../services/api/agentProfile";
 import { ApiRequestError } from "../../services/api/fetch";
@@ -28,6 +29,7 @@ export interface AgentBuilderProfileApi {
   ) => Promise<AgentProfileMutationResponse>;
   publish: (agentId: string, expectedRevision: number) => Promise<AgentProfileMutationResponse>;
   unpublish?: (agentId: string, expectedRevision: number) => Promise<AgentProfileMutationResponse>;
+  retire?: (agentId: string, expectedRevision: number) => Promise<AgentProfileRetirementResponse>;
   runTest?: (
     agentId: string,
     expectedRevision: number,
@@ -42,21 +44,29 @@ export interface AgentBuilderSafeError {
   code?: string;
 }
 
+export type AgentBuilderMutationAction =
+  | "save"
+  | "publish"
+  | "unpublish"
+  | "delete"
+  | "test";
+
 export type AgentBuilderMutationState =
   | { phase: "idle" }
   | { phase: "saving" }
   | { phase: "publishing" }
   | { phase: "unpublishing" }
+  | { phase: "deleting" }
   | { phase: "testing" }
   | {
       phase: "success";
-      action: "save" | "publish" | "unpublish" | "test";
+      action: AgentBuilderMutationAction;
       revision: number;
       trialRun?: AgentProfileTrialRunResponse;
     }
   | {
       phase: "error";
-      action: "save" | "publish" | "unpublish" | "test";
+      action: AgentBuilderMutationAction;
       error: AgentBuilderSafeError;
     };
 
@@ -73,7 +83,7 @@ export interface AgentBuilderControllerState {
 const SAFE_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 
 function safeErrorCopy(
-  action: "load" | "save" | "publish" | "unpublish" | "test",
+  action: "load" | AgentBuilderMutationAction,
   status?: number,
   code?: string,
 ) {
@@ -89,6 +99,9 @@ function safeErrorCopy(
   if (code === "agent_profile_capability_not_available") {
     return "所选 Skill 或 MCP 工具已不可用，请刷新目录后重新选择。";
   }
+  if (code === "agent_profile_must_be_unpublished") {
+    return "请先下架当前专家，再执行删除。";
+  }
   if (code === "not_ai_admin" || status === 403) {
     return "当前账号没有管理专家的权限。";
   }
@@ -99,12 +112,13 @@ function safeErrorCopy(
   if (action === "save") return "暂时无法保存专家草稿，请稍后重试。";
   if (action === "publish") return "暂时无法发布专家草稿，请稍后重试。";
   if (action === "unpublish") return "暂时无法下架当前专家，请稍后重试。";
+  if (action === "delete") return "暂时无法删除当前专家，请稍后重试。";
   return "暂时无法创建受控测试运行，请稍后重试。";
 }
 
 /** Project only a typed HTTP status and bounded code; never surface raw detail. */
 export function projectAgentBuilderError(
-  action: "load" | "save" | "publish" | "unpublish" | "test",
+  action: "load" | AgentBuilderMutationAction,
   error: unknown,
 ): AgentBuilderSafeError {
   if (!(error instanceof ApiRequestError)) {
@@ -193,6 +207,7 @@ export class AgentBuilderController {
     return this.stateValue.mutation.phase === "saving" ||
       this.stateValue.mutation.phase === "publishing" ||
       this.stateValue.mutation.phase === "unpublishing" ||
+      this.stateValue.mutation.phase === "deleting" ||
       this.stateValue.mutation.phase === "testing";
   }
 
@@ -438,6 +453,7 @@ export class AgentBuilderController {
   ): Promise<AgentBuilderControllerState> {
     const editor = this.stateValue.activeEditor;
     if (
+      this.stateValue.destructiveReloadPending ||
       this.hasActiveMutation() ||
       !this.api.unpublish ||
       !editor?.agentId ||
@@ -447,7 +463,14 @@ export class AgentBuilderController {
       return this.stateValue;
     }
     const generation = ++this.mutationGeneration;
-    this.commit({ ...this.stateValue, mutation: { phase: "unpublishing" } });
+    this.loadGeneration += 1;
+    this.commit({
+      ...this.stateValue,
+      listPhase: this.stateValue.listPhase === "loading"
+        ? (this.stateValue.profiles.length > 0 ? "ready" : "idle")
+        : this.stateValue.listPhase,
+      mutation: { phase: "unpublishing" },
+    });
     try {
       const response = await this.api.unpublish(editor.agentId, publishedRevision);
       if (generation !== this.mutationGeneration) return this.stateValue;
@@ -470,6 +493,58 @@ export class AgentBuilderController {
           phase: "error",
           action: "unpublish",
           error: projectAgentBuilderError("unpublish", error),
+        },
+      });
+    }
+  }
+
+  /** Retire one clean non-published profile and remove it from the active directory. */
+  async retireActiveProfile(): Promise<AgentBuilderControllerState> {
+    const editor = this.stateValue.activeEditor;
+    if (
+      this.stateValue.destructiveReloadPending ||
+      this.hasActiveMutation() ||
+      !this.api.retire ||
+      !editor?.agentId ||
+      !editor.revision ||
+      editor.publishedRevision !== null ||
+      isAgentProfileEditorDirty(editor)
+    ) {
+      return this.stateValue;
+    }
+    const generation = ++this.mutationGeneration;
+    this.loadGeneration += 1;
+    this.commit({
+      ...this.stateValue,
+      listPhase: this.stateValue.listPhase === "loading"
+        ? (this.stateValue.profiles.length > 0 ? "ready" : "idle")
+        : this.stateValue.listPhase,
+      mutation: { phase: "deleting" },
+    });
+    try {
+      await this.api.retire(editor.agentId, editor.revision);
+      if (generation !== this.mutationGeneration) return this.stateValue;
+      const profiles = this.stateValue.profiles.filter(
+        (profile) => profile.agent_id !== editor.agentId,
+      );
+      return this.commit({
+        ...this.stateValue,
+        profiles,
+        activeEditor: profiles[0] ? hydrateAgentProfileEditor(profiles[0]) : null,
+        mutation: {
+          phase: "success",
+          action: "delete",
+          revision: editor.revision,
+        },
+      });
+    } catch (error) {
+      if (generation !== this.mutationGeneration) return this.stateValue;
+      return this.commit({
+        ...this.stateValue,
+        mutation: {
+          phase: "error",
+          action: "delete",
+          error: projectAgentBuilderError("delete", error),
         },
       });
     }

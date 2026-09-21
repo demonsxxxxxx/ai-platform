@@ -462,3 +462,38 @@ async def test_authorize_run_capabilities_rejects_disabled_mcp_backed_skill(monk
         ("tool", "ragflow-knowledge-search"),
         ("distribution", "mcp_server", "ragflow-server"),
     ]
+
+
+def test_admin_retire_agent_profile_requires_admin_and_exact_revision(monkeypatch):
+    calls: list[tuple[str, int]] = []
+
+    async def retire(_conn, *, principal, agent_id, expected_revision):
+        assert (principal.tenant_id, principal.user_id) == ("default", "user-a")
+        calls.append((agent_id, expected_revision))
+        return "aud-profile-retired"
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.retire", retire)
+    client = TestClient(create_app())
+
+    forbidden = client.request(
+        "DELETE",
+        "/api/ai/admin/agent-profiles/agt_support",
+        headers=auth_headers(),
+        json={"expected_revision": 9},
+    )
+    retired = client.request(
+        "DELETE",
+        "/api/ai/admin/agent-profiles/agt_support",
+        headers=auth_headers(roles="admin"),
+        json={"expected_revision": 9},
+    )
+
+    assert forbidden.status_code == 403
+    assert retired.status_code == 200
+    assert retired.json() == {
+        "agent_id": "agt_support",
+        "audit_id": "aud-profile-retired",
+    }
+    assert calls == [("agt_support", 9)]

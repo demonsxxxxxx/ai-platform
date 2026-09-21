@@ -456,6 +456,45 @@ test("confirmed destructive reload fences edits and navigation until its respons
   assert.equal(controller.state.activeEditor?.name, "服务端新版本");
 });
 
+test("confirmed destructive reload rejects unpublish and retire until it resolves", async () => {
+  for (const action of ["unpublish", "retire"] as const) {
+    let resolveReload: ((value: { agent_profiles: AgentProfileAdminProjection[] }) => void) | undefined;
+    let listCalls = 0;
+    let lifecycleCalls = 0;
+    const activeProfile = action === "unpublish"
+      ? profile({ status: "draft", published_revision: 7 })
+      : profile({ status: "withdrawn", published_revision: null });
+    const controller = new AgentBuilderController(fakeApi({
+      listAdmin: () => {
+        listCalls += 1;
+        if (listCalls === 1) return Promise.resolve({ agent_profiles: [activeProfile] });
+        return new Promise((resolve) => {
+          resolveReload = resolve;
+        });
+      },
+      unpublish: async () => {
+        lifecycleCalls += 1;
+        return { agent_profile: activeProfile, audit_id: "audit-unpublish" };
+      },
+      retire: async () => {
+        lifecycleCalls += 1;
+        return { agent_id: activeProfile.agent_id, audit_id: "audit-retire" };
+      },
+    }));
+    await controller.loadProfiles();
+
+    const reload = controller.loadProfiles(true);
+    if (action === "unpublish") await controller.unpublishActiveProfile();
+    else await controller.retireActiveProfile();
+
+    assert.equal(lifecycleCalls, 0);
+    assert.equal(controller.state.destructiveReloadPending, true);
+    resolveReload?.({ agent_profiles: [activeProfile] });
+    await reload;
+    assert.equal(controller.state.destructiveReloadPending, false);
+  }
+});
+
 test("late list results cannot replace a newer refresh", async () => {
   let resolveFirst: ((value: { agent_profiles: AgentProfileAdminProjection[] }) => void) | undefined;
   const responses = [
@@ -605,16 +644,25 @@ test("busy publish rejects a later refresh and adopts the published response", a
   assert.equal(controller.state.activeEditor?.status, "published");
 });
 
-test("unpublish fences the exact published revision and adopts immutable withdrawn history", async () => {
+test("unpublish fences the exact revision and an older directory response", async () => {
   const calls: Array<{ agentId: string; revision: number }> = [];
+  const beforeUnpublish = profile({
+    revision: 10,
+    status: "draft",
+    published_revision: 9,
+  });
+  let listCalls = 0;
+  let resolveRefresh: ((value: { agent_profiles: AgentProfileAdminProjection[] }) => void) | undefined;
   const controller = new AgentBuilderController(fakeApi({
-    listAdmin: async () => ({
-      agent_profiles: [profile({
-        revision: 10,
-        status: "draft",
-        published_revision: 9,
-      })],
-    }),
+    listAdmin: () => {
+      listCalls += 1;
+      if (listCalls === 1) {
+        return Promise.resolve({ agent_profiles: [beforeUnpublish] });
+      }
+      return new Promise((resolve) => {
+        resolveRefresh = resolve;
+      });
+    },
     unpublish: async (agentId, revision) => {
       calls.push({ agentId, revision });
       return {
@@ -629,9 +677,13 @@ test("unpublish fences the exact published revision and adopts immutable withdra
   }));
   await controller.loadProfiles();
 
+  const staleRefresh = controller.loadProfiles();
   await controller.unpublishActiveProfile();
+  resolveRefresh?.({ agent_profiles: [beforeUnpublish] });
+  await staleRefresh;
 
   assert.deepEqual(calls, [{ agentId: "agt_document_review", revision: 9 }]);
+  assert.equal(controller.state.listPhase, "ready");
   assert.equal(controller.state.activeEditor?.revision, 11);
   assert.equal(controller.state.activeEditor?.status, "withdrawn");
   assert.deepEqual(controller.state.mutation, {
@@ -639,6 +691,71 @@ test("unpublish fences the exact published revision and adopts immutable withdra
     action: "unpublish",
     revision: 11,
   });
+});
+
+test("retire removes a clean withdrawn profile and fences an older directory response", async () => {
+  const retired = profile({
+    agent_id: "agt_retired",
+    revision: 11,
+    status: "withdrawn",
+  });
+  const remaining = profile({ agent_id: "agt_remaining", name: "保留专家" });
+  const calls: Array<{ agentId: string; revision: number }> = [];
+  let listCalls = 0;
+  let resolveRefresh: ((value: { agent_profiles: AgentProfileAdminProjection[] }) => void) | undefined;
+  const controller = new AgentBuilderController(fakeApi({
+    listAdmin: () => {
+      listCalls += 1;
+      if (listCalls === 1) {
+        return Promise.resolve({ agent_profiles: [retired, remaining] });
+      }
+      return new Promise((resolve) => {
+        resolveRefresh = resolve;
+      });
+    },
+    retire: async (agentId, revision) => {
+      calls.push({ agentId, revision });
+      return { agent_id: agentId, audit_id: "audit-retire" };
+    },
+  }));
+  await controller.loadProfiles();
+
+  const staleRefresh = controller.loadProfiles();
+  await controller.retireActiveProfile();
+  resolveRefresh?.({ agent_profiles: [retired, remaining] });
+  await staleRefresh;
+
+  assert.deepEqual(calls, [{ agentId: "agt_retired", revision: 11 }]);
+  assert.deepEqual(controller.state.profiles.map(({ agent_id }) => agent_id), [
+    "agt_remaining",
+  ]);
+  assert.equal(controller.state.listPhase, "ready");
+  assert.equal(controller.state.activeEditor?.agentId, "agt_remaining");
+  assert.deepEqual(controller.state.mutation, {
+    phase: "success",
+    action: "delete",
+    revision: 11,
+  });
+});
+
+test("retire refuses a profile with any published revision before calling the API", async () => {
+  let retireCalls = 0;
+  const controller = new AgentBuilderController(fakeApi({
+    listAdmin: async () => ({
+      agent_profiles: [profile({ status: "draft", published_revision: 7 })],
+    }),
+    retire: async () => {
+      retireCalls += 1;
+      return { agent_id: "agt_document_review", audit_id: "audit-retire" };
+    },
+  }));
+  await controller.loadProfiles();
+
+  await controller.retireActiveProfile();
+
+  assert.equal(retireCalls, 0);
+  assert.equal(controller.state.activeEditor?.status, "draft");
+  assert.equal(controller.state.activeEditor?.publishedRevision, 7);
 });
 
 test("real Builder test creates one controlled test submission for the exact published revision", async () => {

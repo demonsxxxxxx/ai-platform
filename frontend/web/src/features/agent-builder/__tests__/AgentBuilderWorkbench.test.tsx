@@ -26,6 +26,10 @@ const avatarPickerSource = readFileSync(
   join(process.cwd(), "src/features/agent-builder/AgentAvatarPicker.tsx"),
   "utf8",
 );
+const lifecycleSource = readFileSync(
+  join(process.cwd(), "src/features/agent-builder/AgentBuilderLifecycle.tsx"),
+  "utf8",
+);
 
 function skill(
   name: string,
@@ -115,8 +119,16 @@ test("real lifecycle controls use the profile authority without fake handoff pat
   assert.doesNotMatch(featureProductionSource, /sessionApi|sendMessage|onHandoffReady/);
   assert.match(workbenchSource, /controller\.runActiveProfileTest\(message\)/);
   assert.match(workbenchSource, /controller\.unpublishActiveProfile\(publishedRevision\)/);
+  assert.match(workbenchSource, /controller\.retireActiveProfile\(\)/);
   assert.match(controllerSource, /this\.api\.runTest\(/);
   assert.match(controllerSource, /this\.api\.unpublish\(/);
+  assert.match(controllerSource, /this\.api\.retire\(/);
+  assert.match(lifecycleSource, /title="删除专家？"/);
+  assert.match(lifecycleSource, /editor\.publishedRevision === null/);
+  assert.match(lifecycleSource, /descriptionId="agent-profile-retire-warning"/);
+  assert.match(controllerSource, /editor\.publishedRevision !== null/);
+  assert.match(lifecycleSource, /专家 ID 不可复用/);
+  assert.match(lifecycleSource, /历史运行、会话和审计记录仍会保留/);
   assert.doesNotMatch(featureProductionSource, /deactivate|handoff/i);
 });
 

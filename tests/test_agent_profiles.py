@@ -689,6 +689,8 @@ def test_agent_profile_mutation_routes_map_repository_conflicts_to_one_safe_stal
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.agent_profiles._authority.save_draft", conflict)
     monkeypatch.setattr("app.routes.agent_profiles._authority.publish_draft", conflict)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.unpublish", conflict)
+    monkeypatch.setattr("app.routes.agent_profiles._authority.retire", conflict)
     client = TestClient(create_app())
 
     responses = [
@@ -707,9 +709,22 @@ def test_agent_profile_mutation_routes_map_repository_conflicts_to_one_safe_stal
             headers=admin_headers(),
             json={"expected_revision": 4},
         ),
+        client.post(
+            "/api/ai/admin/agent-profiles/agt_support/unpublish",
+            headers=admin_headers(),
+            json={"expected_revision": 4},
+        ),
+        client.request(
+            "DELETE",
+            "/api/ai/admin/agent-profiles/agt_support",
+            headers=admin_headers(),
+            json={"expected_revision": 4},
+        ),
     ]
 
     assert [(response.status_code, response.json()) for response in responses] == [
+        (409, {"detail": "agent_profile_revision_stale"}),
+        (409, {"detail": "agent_profile_revision_stale"}),
         (409, {"detail": "agent_profile_revision_stale"}),
         (409, {"detail": "agent_profile_revision_stale"}),
         (409, {"detail": "agent_profile_revision_stale"}),
@@ -855,6 +870,36 @@ async def test_agent_profile_repository_list_is_tenant_scoped():
     assert "where agent_profile_revisions.tenant_id = %s" in sql
     assert "agents.tenant_id = agent_profile_revisions.tenant_id" in sql
     assert params == ("tenant-a", "published")
+
+
+async def test_agent_profile_retirement_deactivates_only_the_tenant_profile_identity():
+    from app.agent_apps.infrastructure.postgres import retire_agent_profile_identity
+
+    class Cursor:
+        async def fetchone(self):
+            return {"id": "agt_support"}
+
+    class RecordingConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()).lower(), params))
+            return Cursor()
+
+    conn = RecordingConnection()
+    await retire_agent_profile_identity(
+        conn,
+        tenant_id="tenant-a",
+        agent_id="agt_support",
+    )
+
+    sql, params = conn.calls[-1]
+    assert "update agents set status = 'inactive'" in sql
+    assert "tenant_id = %s" in sql
+    assert "agent_type = 'profile'" in sql
+    assert "status = 'active'" in sql
+    assert params == ("tenant-a", "agt_support")
 
 
 def test_agent_profile_schema_has_one_current_storage_contract():

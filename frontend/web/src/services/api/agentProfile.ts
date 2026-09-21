@@ -32,6 +32,11 @@ export interface AgentConversationListOptions {
   limit?: number;
 }
 
+export interface AgentProfileRetirementResponse {
+  agent_id: string;
+  audit_id: string;
+}
+
 export interface AgentProfileTrialRunResponse {
   session_id: string;
   run_id: string;
@@ -105,6 +110,20 @@ function projectMutationResponse(value: unknown): AgentProfileMutationResponse {
     agent_profile: validateAgentProfileAdminProjection(record.agent_profile),
     audit_id: record.audit_id,
   };
+}
+
+function projectRetirementResponse(value: unknown): AgentProfileRetirementResponse {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid_agent_profile_retirement_response");
+  }
+  const record = value as { agent_id?: unknown; audit_id?: unknown };
+  if (typeof record.agent_id !== "string" || !record.agent_id) {
+    throw new Error("invalid_agent_profile_retirement_response");
+  }
+  if (typeof record.audit_id !== "string" || !record.audit_id) {
+    throw new Error("invalid_agent_profile_retirement_response");
+  }
+  return { agent_id: record.agent_id, audit_id: record.audit_id };
 }
 
 export function buildAgentConversationListUrl(
@@ -215,6 +234,17 @@ export const agentProfileApi = {
       },
     );
     return projectMutationResponse(response);
+  },
+
+  async retire(agentId: string, expectedRevision: number): Promise<AgentProfileRetirementResponse> {
+    const response = await authFetch<unknown>(
+      `${API_BASE}/api/ai/admin/agent-profiles/${encodeURIComponent(agentId)}`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ expected_revision: expectedRevision }),
+      },
+    );
+    return projectRetirementResponse(response);
   },
 
   runTest(

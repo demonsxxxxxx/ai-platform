@@ -1902,6 +1902,120 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
     assert audit_id == "aud_profile_withdrawn"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifecycle_status", ["draft", "withdrawn"])
+async def test_retire_deactivates_only_a_non_published_profile_identity(
+    monkeypatch,
+    lifecycle_status,
+):
+    from app.agent_apps import AgentProfileAuthority
+
+    observed: list[tuple[str, object]] = []
+
+    async def ensure_user(*_args, **_kwargs):
+        observed.append(("user", None))
+
+    async def lock_profile(*_args, **kwargs):
+        observed.append(("lock", kwargs))
+
+    async def aggregate(*_args, **kwargs):
+        observed.append(("aggregate", kwargs))
+        return {
+            "tenant_id": "tenant-a",
+            "agent_id": "agt_support",
+            "lifecycle_status": lifecycle_status,
+            "latest_revision": 9,
+            "published_revision": None,
+        }
+
+    async def retire_identity(*_args, **kwargs):
+        observed.append(("retire", kwargs))
+
+    async def audit(*_args, **kwargs):
+        observed.append(("audit", kwargs))
+        return "aud_profile_retired"
+
+    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
+    monkeypatch.setattr(
+        "app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock",
+        lock_profile,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.agent_profile_repository.get_agent_profile_aggregate",
+        aggregate,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.agent_profile_repository.retire_agent_profile_identity",
+        retire_identity,
+    )
+    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+
+    audit_id = await AgentProfileAuthority().retire(
+        object(),
+        principal=_principal(roles=["admin"]),
+        agent_id="agt_support",
+        expected_revision=9,
+    )
+
+    assert audit_id == "aud_profile_retired"
+    assert [name for name, _ in observed] == ["user", "lock", "aggregate", "retire", "audit"]
+    assert observed[3][1] == {"tenant_id": "tenant-a", "agent_id": "agt_support"}
+    assert observed[4][1]["action"] == "agent_profile.retired"
+    assert observed[4][1]["payload_json"] == {
+        "revision": 9,
+        "previous_status": lifecycle_status,
+    }
+
+
+@pytest.mark.asyncio
+async def test_retire_requires_unpublish_before_deactivation(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+
+    async def no_user_write(*_args, **_kwargs):
+        return None
+
+    async def no_lock(*_args, **_kwargs):
+        return None
+
+    async def published_aggregate(*_args, **_kwargs):
+        return {
+            "lifecycle_status": "published",
+            "latest_revision": 7,
+            "published_revision": 7,
+        }
+
+    async def forbidden_retire(*_args, **_kwargs):
+        raise AssertionError("published profile must not be retired")
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        no_user_write,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock",
+        no_lock,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.agent_profile_repository.get_agent_profile_aggregate",
+        published_aggregate,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.agent_profile_repository.retire_agent_profile_identity",
+        forbidden_retire,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await AgentProfileAuthority().retire(
+            object(),
+            principal=_principal(roles=["admin"]),
+            agent_id="agt_support",
+            expected_revision=7,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "agent_profile_must_be_unpublished"
+
+
 def test_profile_bound_continuation_rejects_client_execution_overrides():
     from app.agent_apps.authority import AgentProfileAuthority
     from app.models import ChatStreamRequest, SelectedSkillRequest
