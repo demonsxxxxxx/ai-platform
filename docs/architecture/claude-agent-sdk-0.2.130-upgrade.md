@@ -53,7 +53,7 @@ types used by this adapter.
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
-| Automatic compaction | Bundled CLI `2.1.222` owns ongoing auto-compaction and accepts `--autocompact` windows from 100k through 1M | The runner targets 80% of the immutable Run input ceiling, bounds it to the public CLI range, and does not issue `/compact` when opening or resuming a session |
+| Automatic compaction | Bundled CLI `2.1.222` owns ongoing auto-compaction and accepts the platform's `--autocompact` window | The runner sets the window to 80% of the immutable Run input ceiling, caps it at 1M, and does not issue `/compact` when opening or resuming a session |
 | Process context | `cwd` and `env` remain supported | The runner supplies the governed workspace and an allowlisted environment |
 | Abort/cancel | `query` has no explicit interrupt method; task cancellation closes iterator/subprocess work | Outer cancellation propagates; SDK abort terminal reasons map to cancellation |
 
@@ -64,17 +64,15 @@ instantiates the stream and terminal message types.
 
 ## SDK-native automatic compaction
 
-Execution computes an automatic-compaction target at 80% of the immutable Run
+Execution computes an automatic-compaction target as 80% of the immutable Run
 `max_input_tokens` and passes the result through
-`ClaudeAgentOptions.extra_args["autocompact"]`. The target is bounded to the
-CLI's public 100k-1M range. Claude Code still owns its output reserve and safety
+`ClaudeAgentOptions.extra_args["autocompact"]`. The target is capped at 1M, with
+no platform-imposed minimum. Claude Code still owns its output reserve and safety
 buffer, so its actual compaction point may be earlier than the platform target.
-Targets below 100k use the CLI minimum and depend on the hard model proxy gate's
-Anthropic-shaped prompt-too-long response for reactive compaction; targets
-above 1M compact conservatively at 1M. `CLAUDE_CODE_MAX_OUTPUT_TOKENS`
-continues to carry the independent output ceiling. The inherited
-`CLAUDE_CODE_MAX_CONTEXT_TOKENS` remains scrubbed because the platform does not
-own a separate raw total-context value.
+`CLAUDE_CODE_MAX_OUTPUT_TOKENS` continues to carry the independent output ceiling.
+The inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` remains scrubbed because the
+platform's governed context-input window is the Run's `max_input_tokens`; there is
+no separate raw total-context value.
 
 This replaces the runner-authored resume preflight that inspected context usage
 and issued `/compact` before the business query. That preflight, its private

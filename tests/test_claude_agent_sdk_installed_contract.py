@@ -59,7 +59,7 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         permission_mode="dontAsk",
         env={"PATH": ""},
         cli_path="synthetic-claude",
-        extra_args={"autocompact": "100000"},
+        extra_args={"autocompact": "76000"},
         skills=["qa-review"],
         session_id="session-a",
         session_store=session_store,
@@ -115,10 +115,10 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
 
     assert options.include_partial_messages is True
     assert options.setting_sources == ["project"]
-    assert options.extra_args == {"autocompact": "100000"}
+    assert options.extra_args == {"autocompact": "76000"}
     assert command[autocompact_index : autocompact_index + 2] == [
         "--autocompact",
-        "100000",
+        "76000",
     ]
     assert options.session_store is session_store
     assert options.session_store_flush == "eager"
