@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -102,6 +103,8 @@ _SSE_API_INSTANCE_ID = f"api_{uuid.uuid4().hex}"
 _SSE_RETRYABLE_STARTUP_CODES = frozenset(
     {"sse_stream_not_admitted", "sse_stream_not_confirmed"}
 )
+_SSE_STARTUP_ADMISSION_WAIT_SECONDS = 5.0
+_SSE_STARTUP_ADMISSION_POLL_SECONDS = 0.1
 _SSE_EXIT_REASONS = frozenset(
     {
         "terminal_completed",
@@ -117,16 +120,136 @@ def _safe_sse_correlation(value: object) -> str:
     return str(value or "")[:12]
 
 
-def _sse_conflict(code: str) -> HTTPException:
+def _sse_conflict(code: str, *, retry_after: int | None = None) -> HTTPException:
     retryable = code in _SSE_RETRYABLE_STARTUP_CODES
+    headers = {
+        "X-SSE-Error-Code": code,
+        "X-SSE-Retryable": "true" if retryable else "false",
+    }
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
     return HTTPException(
         status_code=409,
         detail={"code": code, "retryable": retryable},
-        headers={
-            "X-SSE-Error-Code": code,
-            "X-SSE-Retryable": "true" if retryable else "false",
+        headers=headers,
+    )
+
+
+def _sse_admission_timeout(
+    code: str,
+    *,
+    run_id: str,
+    authority: Any,
+    wait_seconds: float,
+) -> HTTPException:
+    logger.info(
+        "sse_stream_admission_wait_timeout",
+        extra={
+            "reason": code,
+            "run_id_prefix": _safe_sse_correlation(run_id),
+            "attempt_id_prefix": _safe_sse_correlation(
+                authority.attempt_id if authority is not None else ""
+            ),
+            "wait_ms": int(wait_seconds * 1000),
         },
     )
+    return _sse_conflict(code, retry_after=1)
+
+
+async def _await_sse_admission(
+    *,
+    session_id: str,
+    run_id: str,
+    principal: AuthPrincipal,
+    api_instance_id: str,
+    connection_id: str,
+) -> tuple[dict[str, Any], Any, Any]:
+    """Wait for the existing Worker admission to become leaseable."""
+
+    deadline = time.monotonic() + _SSE_STARTUP_ADMISSION_WAIT_SECONDS
+    startup_code = "sse_stream_not_admitted"
+    while True:
+        initial_run = None
+        authority = None
+        lease = None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _sse_admission_timeout(
+                startup_code,
+                run_id=run_id,
+                authority=authority,
+                wait_seconds=_SSE_STARTUP_ADMISSION_WAIT_SECONDS,
+            )
+        try:
+            async with asyncio.timeout(remaining):
+                async with transaction() as conn:
+                    initial_run = await repositories.get_authorized_run(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        run_id=run_id,
+                    )
+                    if initial_run is not None and initial_run.get("session_id") == session_id:
+                        authority = await get_stream_authority(
+                            conn, tenant_id=principal.tenant_id, run_id=run_id
+                        )
+                        if authority is not None:
+                            startup_code = "sse_stream_not_confirmed"
+                        if authority is not None and authority.state != "admission_pending":
+                            lease = await acquire_sse_authority_lease(
+                                conn,
+                                tenant_id=principal.tenant_id,
+                                run_id=run_id,
+                                api_instance_id=api_instance_id,
+                                connection_id=connection_id,
+                                lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
+                            )
+        except TimeoutError:
+            raise _sse_admission_timeout(
+                startup_code,
+                run_id=run_id,
+                authority=authority,
+                wait_seconds=_SSE_STARTUP_ADMISSION_WAIT_SECONDS,
+            ) from None
+        except SseAuthorityConflictError as exc:
+            raise _sse_conflict(str(exc)) from exc
+        if initial_run is None or initial_run.get("session_id") != session_id:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        if authority is None or authority.state == "admission_pending":
+            if str(initial_run.get("status") or "") in runs_api.TERMINAL_RUN_STATUSES:
+                raise _sse_conflict("sse_run_already_terminal")
+        if lease is not None:
+            if time.monotonic() >= deadline:
+                try:
+                    async with transaction() as conn:
+                        await close_sse_authority_lease(
+                            conn,
+                            lease_id=lease.lease_id,
+                            reason="startup_admission_timeout",
+                        )
+                except Exception:
+                    pass
+                raise _sse_admission_timeout(
+                    startup_code,
+                    run_id=run_id,
+                    authority=authority,
+                    wait_seconds=_SSE_STARTUP_ADMISSION_WAIT_SECONDS,
+                )
+            return initial_run, authority, lease
+        if authority is None:
+            startup_code = "sse_stream_not_admitted"
+        else:
+            startup_code = "sse_stream_not_confirmed"
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _sse_admission_timeout(
+                startup_code,
+                run_id=run_id,
+                authority=authority,
+                wait_seconds=_SSE_STARTUP_ADMISSION_WAIT_SECONDS,
+            )
+        await asyncio.sleep(min(_SSE_STARTUP_ADMISSION_POLL_SECONDS, remaining))
 
 
 def _json_default(value: Any) -> str:
@@ -1881,39 +2004,13 @@ async def chat_session_stream(
 ) -> StreamingResponse:
     last_event_id = last_event_id if isinstance(last_event_id, str) else None
     connection_id = f"sse_{uuid.uuid4().hex}"
-    authority = None
-    lease = None
-    async with transaction() as conn:
-        initial_run = await repositories.get_authorized_run(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-        )
-        if initial_run is not None and initial_run.get("session_id") == session_id:
-            try:
-                authority = await get_stream_authority(
-                    conn, tenant_id=principal.tenant_id, run_id=run_id
-                )
-                if authority is not None:
-                    lease = await acquire_sse_authority_lease(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        run_id=run_id,
-                        api_instance_id=_SSE_API_INSTANCE_ID,
-                        connection_id=connection_id,
-                        lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
-                    )
-            except SseAuthorityConflictError as exc:
-                raise _sse_conflict(str(exc)) from exc
-    if initial_run is None or initial_run.get("session_id") != session_id:
-        raise HTTPException(status_code=404, detail="run_not_found")
-    if authority is None:
-        if str(initial_run.get("status") or "") in runs_api.TERMINAL_RUN_STATUSES:
-            raise _sse_conflict("sse_run_already_terminal")
-        raise _sse_conflict("sse_stream_not_admitted")
-    if lease is None:
-        raise _sse_conflict("sse_authority_lease_unavailable")
+    initial_run, authority, lease = await _await_sse_admission(
+        session_id=session_id,
+        run_id=run_id,
+        principal=principal,
+        api_instance_id=_SSE_API_INSTANCE_ID,
+        connection_id=connection_id,
+    )
 
     async def release_lease(*, reason: str) -> bool:
         try:
