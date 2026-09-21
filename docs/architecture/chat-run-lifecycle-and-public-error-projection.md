@@ -61,10 +61,14 @@ Search, Skill, MCP, browser, and future tool categories; allowing every detail
 except Bash and Read would bypass the public projection boundary. Opaque operation
 identities may support reducer correlation but are not user-facing labels. A
 sanitized `skill` `display_name` sourced from current authorized Skill metadata
-is presentation authority and is retained in a dedicated public field. Other
-Tool `display_name` values and all subagent `display_name` values remain protocol
-facts but are not presentation authority in compatibility-shaped parts; ordinary
-chat derives their fixed labels from the allowlisted category and subagent kind.
+is presentation authority and is retained in a dedicated public field. The same
+authority applies when accepted answer text names an authorized Skill: the answer
+gate substitutes the sanitized public display name, while an authorized internal
+Skill without public metadata receives only the fixed Skill category label. Other
+private capability identifiers remain redacted. Other Tool `display_name` values
+and all subagent `display_name` values remain protocol facts but are not
+presentation authority in compatibility-shaped parts; ordinary chat derives their
+fixed labels from the allowlisted category and subagent kind.
 Unknown categories, malformed public identities, unknown lifecycle states, or
 activities without the required public identity fail closed. Current Sandbox
 readiness remains visible through the v4 public execution timeline; legacy

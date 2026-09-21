@@ -778,6 +778,7 @@ class SandboxRuntime:
                 "browser_enabled": request.browser_enabled,
                 "resource_limits": request.resource_limits,
                 "skill_ids": request.skill_ids,
+                "public_skill_metadata": request.public_skill_metadata,
                 "mcp_tool_ids": request.mcp_tool_ids,
                 "tool_policy_subjects": request.tool_policy_subjects,
                 "input_files": request.file_ids,

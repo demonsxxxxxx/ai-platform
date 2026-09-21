@@ -2330,6 +2330,9 @@ async def _default_executor_runner(
             "on_tool_lifecycle": on_tool_lifecycle,
             "tool_policy_subjects": _task_tool_policy_subjects(request),
             "execution_policy": "sandbox_brokered",
+            "public_skill_metadata": dict(
+                request.config.get("public_skill_metadata") or {}
+            ),
             "thinking_effort": normalize_thinking_effort(
                 request.config.get("thinking_effort")
             ),

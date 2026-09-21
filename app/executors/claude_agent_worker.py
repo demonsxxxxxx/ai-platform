@@ -1259,6 +1259,7 @@ class ClaudeAgentWorkerAdapter:
             "run_payload": execution_api.sandbox_reconciliation_payload(payload),
             "adapter_context": adapter_reconciliation_context,
         }
+        runtime_skill_ids = _runtime_request_skill_ids(payload, prepared)
         request = SandboxRuntimeRequest(
             tenant_id=payload.tenant_id,
             workspace_id=payload.workspace_id,
@@ -1267,7 +1268,12 @@ class ClaudeAgentWorkerAdapter:
             run_id=payload.run_id,
             attempt_id=payload.attempt_id,
             agent_id=payload.agent_id,
-            skill_ids=_runtime_request_skill_ids(payload, prepared),
+            skill_ids=runtime_skill_ids,
+            public_skill_metadata={
+                skill_id: dict(prepared.public_skill_metadata[skill_id])
+                for skill_id in runtime_skill_ids
+                if skill_id in prepared.public_skill_metadata
+            },
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
             tool_policy_subjects=_sandbox_runtime_tool_policy_subjects(
                 payload,

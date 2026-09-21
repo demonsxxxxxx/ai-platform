@@ -1937,6 +1937,57 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_sandbox_runtime_request_carries_prepared_public_skill_metadata(
+    monkeypatch,
+    tmp_path,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: current_settings,
+    )
+    runtime_requests = install_sandbox_runtime(monkeypatch, status="accepted")
+    metadata = {
+        "public-skill": {
+            "name": "Public Skill",
+            "version": "version-a",
+            "availability": "available",
+        },
+        "unrelated-visible-skill": {
+            "name": "Unrelated visible Skill",
+            "version": "version-b",
+            "availability": "available",
+        },
+    }
+    prepared = PreparedSdkRun(
+        workspace=tmp_path / "workspace",
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["public-skill", "internal-helper"],
+        staged_skill_names=["public-skill", "internal-helper"],
+        prompt="use the selected skill",
+        public_skill_metadata=metadata,
+    )
+
+    result = await adapter._submit_prepared_run_to_sandbox_runtime(
+        payload(
+            agent_id="general-agent",
+            skill_id="public-skill",
+            file_ids=[],
+            input={"message": "use the selected skill"},
+        ),
+        prepared,
+    )
+
+    assert result.run_id == "run_1"
+    assert runtime_requests[0].public_skill_metadata == {
+        "public-skill": metadata["public-skill"]
+    }
+
+
+@pytest.mark.asyncio
 async def test_sandbox_runtime_accepts_only_proven_controlled_skill_use(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills")

@@ -37,6 +37,57 @@ _TRUSTED_CALLBACK_HOSTS = {
 }
 _TRUSTED_CALLBACK_SUFFIXES = (".test", ".localhost", ".invalid", ".internal")
 _TRUSTED_CALLBACK_PORTS = {80, 443, 8000, 8020, 18043, 18443}
+_PUBLIC_SKILL_METADATA_FIELDS = {"name", "version", "availability"}
+_PUBLIC_SKILL_AVAILABILITIES = {
+    "available",
+    "unavailable_dependency",
+    "unavailable_materialization",
+}
+
+
+def _validated_public_skill_metadata(
+    value: object,
+    *,
+    skill_ids: object,
+) -> dict[str, dict[str, str]]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("public_skill_metadata_invalid")
+    authorized_skill_ids = {
+        item for item in skill_ids if isinstance(item, str)
+    } if isinstance(skill_ids, list) else set()
+    validated: dict[str, dict[str, str]] = {}
+    for raw_skill_id, raw_metadata in value.items():
+        if not isinstance(raw_skill_id, str):
+            raise ValueError("public_skill_metadata_invalid")
+        skill_id = assert_safe_id(raw_skill_id, "public_skill_metadata")
+        if skill_id not in authorized_skill_ids or not isinstance(raw_metadata, dict):
+            raise ValueError("public_skill_metadata_invalid")
+        if set(raw_metadata) != _PUBLIC_SKILL_METADATA_FIELDS:
+            raise ValueError("public_skill_metadata_invalid")
+        name = raw_metadata.get("name")
+        version = raw_metadata.get("version")
+        availability = raw_metadata.get("availability")
+        if (
+            not isinstance(name, str)
+            or not name
+            or not name.isprintable()
+            or len(name.encode("utf-8")) > 256
+            or not isinstance(version, str)
+            or not version
+            or not version.isprintable()
+            or len(version.encode("utf-8")) > 128
+            or not isinstance(availability, str)
+            or availability not in _PUBLIC_SKILL_AVAILABILITIES
+        ):
+            raise ValueError("public_skill_metadata_invalid")
+        validated[skill_id] = {
+            "name": name,
+            "version": version,
+            "availability": availability,
+        }
+    return validated
 
 
 def executor_callback_receipt_event_count(*, input_event_count: int) -> int:
@@ -218,6 +269,7 @@ class SandboxRuntimeRequest(BaseModel):
     attempt_id: str
     agent_id: str
     skill_ids: list[str] = Field(default_factory=list)
+    public_skill_metadata: dict[str, dict[str, str]] = Field(default_factory=dict)
     mcp_tool_ids: list[str] = Field(default_factory=list)
     tool_policy_subjects: list[dict[str, Any]] = Field(default_factory=list)
     input_message: str
@@ -257,6 +309,14 @@ class SandboxRuntimeRequest(BaseModel):
     @classmethod
     def validate_list_ids(cls, values: list[str], info):
         return [assert_safe_id(value, info.field_name) for value in values]
+
+    @field_validator("public_skill_metadata", mode="before")
+    @classmethod
+    def validate_public_skill_metadata(cls, value: object, info):
+        return _validated_public_skill_metadata(
+            value,
+            skill_ids=info.data.get("skill_ids", []),
+        )
 
     @field_validator("mcp_tool_ids")
     @classmethod
@@ -449,6 +509,12 @@ class ExecutorTaskRequest(BaseModel):
                 ModelTokenLimits.model_validate(value["model_token_limits"])
             except Exception as exc:
                 raise ValueError("model_token_limits_invalid") from exc
+        if "public_skill_metadata" in value:
+            value = dict(value)
+            value["public_skill_metadata"] = _validated_public_skill_metadata(
+                value["public_skill_metadata"],
+                skill_ids=value.get("skill_ids", []),
+            )
         return value
 
     @field_validator("sdk_session_id")

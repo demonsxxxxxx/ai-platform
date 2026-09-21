@@ -11,7 +11,13 @@ import pytest
 from app.repositories import RepositoryConflictError
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import FakeContainerProvider
-from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, SandboxRuntimeRequest, StopResult
+from app.runtime.sandbox.contracts import (
+    ContainerLease,
+    ExecutorTaskRequest,
+    SandboxRuntimeRequest,
+    StopResult,
+    WorkspaceLease,
+)
 from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
@@ -84,6 +90,87 @@ def test_sandbox_system_prompt_uses_the_same_character_limit_as_profile_admissio
     assert accepted.system_prompt == "界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
     with pytest.raises(ValueError):
         request(system_prompt="界" * (MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS + 1))
+
+
+def test_sandbox_request_rejects_invalid_public_skill_metadata():
+    with pytest.raises(ValueError, match="public_skill_metadata_invalid"):
+        request(
+            public_skill_metadata={
+                "private-helper": {
+                    "name": "Private helper",
+                    "version": "version-a",
+                    "availability": "available",
+                }
+            }
+        )
+    with pytest.raises(ValueError, match="public_skill_metadata_invalid"):
+        request(
+            public_skill_metadata={
+                "general-chat": {
+                    "name": "General chat",
+                    "version": "version-a",
+                    "availability": ["available"],
+                }
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_dispatches_public_skill_metadata_to_executor(monkeypatch):
+    sent = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_egress_proof_signing_key = (
+            "runtime-test-proof-key-with-enough-entropy-2026"
+        )
+        sandbox_lease_ttl_seconds = 1800
+
+    async def execute(executor_url, task_request):
+        sent.append((executor_url, task_request))
+        return {
+            "status": "accepted",
+            "session_id": task_request.session_id,
+            "run_id": task_request.run_id,
+        }
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    runtime = SandboxRuntime(
+        workspace_root="unused",
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+        record_lease=noop_lease,
+        release_lease=noop_lease,
+    )
+    monkeypatch.setattr(
+        runtime.workspace_manager,
+        "prepare",
+        lambda _request: WorkspaceLease(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            host_root="unused",
+            workspace_host_path="unused/workspace",
+            inputs_host_path="unused/inputs",
+            logs_host_path="unused/logs",
+        ),
+    )
+    metadata = {
+        "general-chat": {
+            "name": "General chat",
+            "version": "version-a",
+            "availability": "available",
+        }
+    }
+
+    result = await runtime.submit(request(public_skill_metadata=metadata))
+
+    assert result.status == "accepted"
+    assert sent[0][1].config["public_skill_metadata"] == metadata
 
 
 @pytest.mark.asyncio
@@ -161,6 +248,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "browser_enabled": True,
         "resource_limits": {"max_seconds": 120, "max_tool_calls": 20},
         "skill_ids": ["general-chat"],
+        "public_skill_metadata": {},
         "mcp_tool_ids": ["gateway::knowledge.search"],
         "tool_policy_subjects": [],
         "input_files": ["file-a"],

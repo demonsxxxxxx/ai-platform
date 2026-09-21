@@ -3385,21 +3385,54 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("optional_skill", "stream_parts", "shared_mcp", "call_id"),
+    (
+        "optional_skill",
+        "stream_parts",
+        "shared_mcp",
+        "call_id",
+        "public_name",
+        "expected_replacement",
+    ),
     [
         (
             "reference-search",
             ("Using reference-", "search. "),
             False,
             "skill-call-reference",
+            "Reference Search",
+            "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】",
         ),
-        ("capability", ("Using cap", "ability. "), False, "capability"),
-        ("tool", ("Using to", "ol. "), False, "tool"),
+        (
+            "capability",
+            ("Using cap", "ability. "),
+            False,
+            "capability",
+            "Reference Search",
+            "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】",
+        ),
+        (
+            "tool",
+            ("Using to", "ol. "),
+            False,
+            "tool",
+            "Reference Search",
+            "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】",
+        ),
         (
             "mcp__tenant-server__search",
             ("Using mcp__tenant-", "server__search. "),
             True,
             "mcp__tenant-server__search",
+            "Reference Search",
+            "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】",
+        ),
+        (
+            "internal-reference-helper",
+            ("Using internal-reference-", "helper. "),
+            False,
+            "skill-call-private",
+            None,
+            "【技能】",
         ),
     ],
 )
@@ -3410,6 +3443,8 @@ async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
     stream_parts,
     shared_mcp,
     call_id,
+    public_name,
+    expected_replacement,
 ):
     captured, deltas = {}, []
     skill_input = {
@@ -3482,13 +3517,17 @@ async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
         tool_policy_subjects=tool_policy_subjects,
         on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
-        public_skill_metadata={
-            optional_skill: {
-                "name": "Reference Search",
-                "version": "1.0.0",
-                "availability": "available",
+        public_skill_metadata=(
+            {
+                optional_skill: {
+                    "name": public_name,
+                    "version": "1.0.0",
+                    "availability": "available",
+                }
             }
-        },
+            if public_name is not None
+            else {}
+        ),
     )
 
     public_text = "".join(deltas)
@@ -3500,7 +3539,9 @@ async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
     ]
     assert public_text.startswith("Using ")
     assert public_text.endswith(". ")
-    assert "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】" in public_text
+    assert result.message == public_text
+    assert expected_replacement in public_text
+    assert "\u2588" not in public_text
     assert optional_skill not in public_text
 
 
