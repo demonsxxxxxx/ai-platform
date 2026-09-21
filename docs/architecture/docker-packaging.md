@@ -78,7 +78,13 @@ attestation permission. The post-publish assembly job has `contents: read` plus
 `packages: read` solely so a default/private GHCR subject can be resolved during
 local-bundle verification; it has neither OIDC nor attestation API permission.
 Action dependencies are fixed to reviewed 40-hex commits, and all jobs use
-unprivileged GitHub-hosted runners.
+unprivileged GitHub-hosted runners. Release-hosted Syft, Cosign, and GitHub CLI
+assets use fixed versions, fixed asset URLs, reviewed SHA-256 digests, and
+bounded retries for transient download failures. A successful download is still
+rejected unless its digest and executable-reported version match. Retries cover
+only side-effect-free downloads; attestations, signatures, and Release creation
+remain single-attempt fail-closed operations because an interrupted remote write
+can have an unknown result.
 
 The publisher emits exactly two repository-owned subjects:
 

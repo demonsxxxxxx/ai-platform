@@ -223,27 +223,93 @@ def test_syft_scans_the_immutable_subject_via_explicit_registry_linux_amd64():
     configure = next(
         step for step in steps if step.get("name") == "Configure explicit registry SBOM source"
     )
+    install = next(step for step in steps if step.get("name") == "Install pinned Syft")
     generate = next(step for step in steps if step.get("name") == "Generate SPDX SBOM")
 
     assert names.index("Resolve authenticated linux/amd64 producer digest") < names.index(
         "Configure explicit registry SBOM source"
-    ) < names.index("Generate SPDX SBOM")
+    ) < names.index("Install pinned Syft") < names.index("Generate SPDX SBOM")
     assert configure["run"] == (
         "set -euo pipefail\n"
         'printf \'%s\\n\' \'platform: linux/amd64\' > '
         '"$RUNNER_TEMP/syft-registry-linux-amd64.yaml"\n'
     )
-    assert generate["with"]["image"] == (
-        "registry:${{ matrix.subject }}@${{ steps.build.outputs.digest }}"
+    assert install["env"] == {
+        "SYFT_TARBALL_SHA256": (
+            "bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788"
+        ),
+        "SYFT_VERSION": "1.50.0",
+    }
+    assert (
+        'release_url="https://github.com/anchore/syft/releases/download/'
+        'v${SYFT_VERSION}"' in install["run"]
     )
-    assert generate["with"]["config"] == (
-        "${{ runner.temp }}/syft-registry-linux-amd64.yaml"
+    assert (
+        'printf \'%s  %s\\n\' "$SYFT_TARBALL_SHA256" "$archive_path" | '
+        'sha256sum -c -' in install["run"]
     )
-    assert "registry-username" not in generate["with"]
-    assert "registry-password" not in generate["with"]
+    assert 'test "$actual_version" = "$SYFT_VERSION"' in install["run"]
+    assert generate["env"] == {
+        "SYFT_BIN": "${{ env.SYFT_BIN }}",
+        "SYFT_CHECK_FOR_APP_UPDATE": "false",
+    }
+    assert (
+        '"registry:${{ matrix.subject }}@${{ steps.build.outputs.digest }}"'
+        in generate["run"]
+    )
+    assert '--config "$RUNNER_TEMP/syft-registry-linux-amd64.yaml"' in generate["run"]
+    assert '--output spdx-json > "sbom-${{ matrix.role }}.spdx.json"' in generate["run"]
+    assert "registry-username" not in generate["run"]
+    assert "registry-password" not in generate["run"]
     assert "github.token" not in str(configure)
+    assert "github.token" not in str(install)
     assert "github.token" not in str(generate)
-    assert "docker:" not in str(generate["with"]["image"])
+    assert "docker:" not in generate["run"]
+
+
+def test_release_tool_downloads_are_checksum_verified_with_bounded_retries():
+    workflow = _workflow()
+    publish_steps = workflow["jobs"]["publish"]["steps"]
+    release_steps = workflow["jobs"]["release-manifest"]["steps"]
+    install_syft = next(
+        step for step in publish_steps if step.get("name") == "Install pinned Syft"
+    )
+    install_cosign = next(
+        step for step in publish_steps if step.get("name") == "Install cosign"
+    )
+    install_gh = next(
+        step for step in publish_steps if step.get("name") == "Install pinned GitHub CLI"
+    )
+    install_assembly_gh = next(
+        step
+        for step in release_steps
+        if step.get("name") == "Install pinned GitHub CLI for assembly"
+    )
+
+    for step in (install_syft, install_cosign, install_gh, install_assembly_gh):
+        for required_flag in (
+            "--retry 6",
+            "--retry-all-errors",
+            "--retry-max-time 300",
+            "--connect-timeout 20",
+            "--max-time 120",
+            "--remove-on-error",
+        ):
+            assert required_flag in step["run"]
+        assert "continue-on-error" not in step
+        assert "latest" not in step["run"].lower()
+
+    assert install_cosign["env"] == {
+        "COSIGN_BINARY_SHA256": (
+            "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+        ),
+        "COSIGN_VERSION": "3.1.3",
+    }
+    assert (
+        'printf \'%s  %s\\n\' "$COSIGN_BINARY_SHA256" "$cosign_bin" | '
+        'sha256sum -c -' in install_cosign["run"]
+    )
+    assert 'test "$actual_version" = "v$COSIGN_VERSION"' in install_cosign["run"]
 
 
 def test_frontend_dockerfile_consumes_sop_secret_only_during_build():
@@ -331,11 +397,11 @@ def test_publish_build_uses_secret_mount_and_all_evidence_precedes_ready_manifes
     assert scan["with"]["version"] == "v0.70.0"
     assert "trivy-version" not in inventory["with"]
     assert "trivy-version" not in scan["with"]
-    assert sbom["with"]["syft-version"] == "v1.50.0"
-    assert cosign["with"]["cosign-release"] == "v3.1.3"
+    assert "SYFT_CHECK_FOR_APP_UPDATE" in sbom["env"]
+    assert cosign["env"]["COSIGN_VERSION"] == "3.1.3"
     assert buildx["with"]["version"] == "v0.36.1"
-    assert "cosign verify \\" in verify["run"]
-    assert "cosign verify-attestation \\" in verify["run"]
+    assert '"$COSIGN_BIN" verify \\' in verify["run"]
+    assert '"$COSIGN_BIN" verify-attestation \\' in verify["run"]
     assert '--cert-identity "$CERTIFICATE_IDENTITY"' in verify["run"]
     assert '--source-digest "$SOURCE_COMMIT"' in verify["run"]
     assert "--source-ref refs/heads/main" in verify["run"]
