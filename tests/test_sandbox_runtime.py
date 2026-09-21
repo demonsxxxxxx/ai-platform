@@ -1623,7 +1623,24 @@ async def test_runtime_persists_explicit_internal_test_opensandbox_evidence_with
 ):
     from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
 
-    runtime_request = request(sandbox_mode="ephemeral", browser_enabled=False)
+    runtime_request = request(
+        sandbox_mode="ephemeral",
+        browser_enabled=False,
+        tool_policy_subjects=[
+            {
+                "identity": "mcp__ai-platform-context__stage_profile_drive_file_to_workspace",
+                "mcp_server": "ai-platform-context",
+                "mcp_tool": "stage_profile_drive_file_to_workspace",
+                "registered": True,
+                "declared": True,
+                "active": True,
+                "distributed": True,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": True,
+            }
+        ],
+    )
     captured: list[dict[str, Any]] = []
     image = "registry.example/ai-platform@sha256:" + "a" * 64
     digest = "sha256:" + "a" * 64
@@ -1669,7 +1686,10 @@ async def test_runtime_persists_explicit_internal_test_opensandbox_evidence_with
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
     monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    runtime = SandboxRuntime(workspace_root=tmp_path, provider=FakeContainerProvider())
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=FakeContainerProvider(),
+    )
     workspace = runtime.workspace_manager.prepare(runtime_request)
 
     lease_id = await runtime._record_runtime_lease(lease, runtime_request, workspace)
@@ -1677,6 +1697,7 @@ async def test_runtime_persists_explicit_internal_test_opensandbox_evidence_with
     assert lease_id == "lease-internal-test"
     payload = captured[0]["lease_payload_json"]
     assert payload["security_profile"] == "internal-test"
+    assert payload["profile_drive_file_staging_authorized"] is True
     assert payload["labels"]["ai-platform.internal_test.profile"] == "official-opensandbox-direct-v1"
     assert payload["requested_image"] == image
     assert payload["requested_image_digest"] == digest

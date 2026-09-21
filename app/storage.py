@@ -134,6 +134,28 @@ class ObjectStorage:
             size_bytes=len(content),
         )
 
+    def put_file(self, *, storage_key: str, source_path: str, content_type: str) -> StoredObject:
+        """Upload one local file without holding its complete content in memory."""
+
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with open(source_path, "rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+                size_bytes += len(chunk)
+        self.ensure_bucket()
+        self.client.upload_file(
+            source_path,
+            self.bucket,
+            storage_key,
+            ExtraArgs={"ContentType": content_type},
+        )
+        return StoredObject(
+            storage_key=storage_key,
+            sha256=digest.hexdigest(),
+            size_bytes=size_bytes,
+        )
+
     def get_bytes(self, *, storage_key: str) -> bytes:
         response = self.client.get_object(Bucket=self.bucket, Key=storage_key)
         body = response["Body"]

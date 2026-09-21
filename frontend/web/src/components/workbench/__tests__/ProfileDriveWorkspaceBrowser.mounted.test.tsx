@@ -1,0 +1,212 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+// jsdom is the pinned mounted-test runtime and does not ship declarations here.
+// @ts-expect-error jsdom runtime import.
+import { JSDOM } from "jsdom";
+
+function buttonByText(root: ParentNode, label: string): HTMLButtonElement {
+  const button = Array.from(root.querySelectorAll("button")).find((candidate) =>
+    candidate.textContent?.includes(label),
+  );
+  assert.ok(button, `Missing button: ${label}`);
+  return button as HTMLButtonElement;
+}
+
+async function flush() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+test("navigates ProfileDrive and imports a file into the current workspace", async () => {
+  const dom = new JSDOM(
+    "<!doctype html><html><body><div id='root'></div></body></html>",
+    { url: "http://localhost/chat/session-a", pretendToBeVisual: true },
+  );
+  const globalValues: Record<string, unknown> = {
+    window: dom.window,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    HTMLElement: dom.window.HTMLElement,
+    Node: dom.window.Node,
+    Event: dom.window.Event,
+    MouseEvent: dom.window.MouseEvent,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const previousDescriptors = new Map(
+    Object.keys(globalValues).map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+  );
+  for (const [key, value] of Object.entries(globalValues)) {
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      writable: true,
+      value,
+    });
+  }
+
+  const [{ act, createElement }, { createRoot }, { ProfileDriveWorkspaceBrowser }] =
+    await Promise.all([
+      import("react"),
+      import("react-dom/client"),
+      import("../ProfileDriveWorkspaceBrowser"),
+    ]);
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  let importRequestCount = 0;
+  const pendingImport: { release?: () => void } = {};
+  globalThis.fetch = (async (input, init = {}) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url.endsWith("/api/ai/auth/company-credential-handoff")) {
+      return new Response(JSON.stringify({ credential: "handoff-jwt" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.endsWith("/api/profile-drive/status")) {
+      return new Response(
+        JSON.stringify({
+          status: "connected",
+          connected: true,
+          reauthRequired: false,
+          connectedAtUtc: "2026-09-21T00:00:00Z",
+          lastUsedAtUtc: "2026-09-21T00:00:00Z",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url.endsWith("/api/profile-drive/files/list")) {
+      const body = JSON.parse(String(init.body)) as { path: string };
+      const entries =
+        body.path === ""
+          ? [
+              {
+                path: "reports",
+                name: "reports",
+                type: "directory",
+                size: null,
+                lastModifiedUtc: "2026-09-21T00:00:00Z",
+              },
+            ]
+          : [
+              {
+                path: "reports/report.pdf",
+                name: "report.pdf",
+                type: "file",
+                size: 42,
+                lastModifiedUtc: "2026-09-21T00:00:00Z",
+              },
+            ];
+      return new Response(
+        JSON.stringify({
+          status: "success",
+          path: body.path,
+          entries,
+          truncated: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url.endsWith("/api/ai/chat/sessions/session-a/profile-drive-files")) {
+      importRequestCount += 1;
+      if (importRequestCount === 2) {
+        await new Promise<void>((resolve) => {
+          pendingImport.release = resolve;
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          file_id: "file-profile",
+          run_id: null,
+          name: "report.pdf",
+          mime_type: "application/pdf",
+          size_bytes: 42,
+          preview_url: "/api/ai/files/file-profile/preview?session_id=session-a",
+          download_url: "/api/ai/files/file-profile/download?session_id=session-a",
+          created_at: "2026-09-21T00:00:00Z",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }) as typeof fetch;
+
+  const container = dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  const imported: Array<{ file_id: string; preview_url: string | null }> = [];
+
+  try {
+    await act(async () => {
+      root.render(
+        createElement(ProfileDriveWorkspaceBrowser, {
+          sessionId: "session-a",
+          onImported: (file) => imported.push(file),
+        }),
+      );
+      await flush();
+      await flush();
+    });
+
+    await act(async () => {
+      buttonByText(container, "reports").dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    assert.match(container.textContent ?? "", /report\.pdf/);
+
+    await act(async () => {
+      buttonByText(container, "report.pdf").dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    assert.equal(imported[0]?.file_id, "file-profile");
+    assert.equal(
+      imported[0]?.preview_url,
+      "/api/ai/files/file-profile/preview?session_id=session-a",
+    );
+    const importRequest = requests.find((request) =>
+      request.url.endsWith("/api/ai/chat/sessions/session-a/profile-drive-files"),
+    );
+    assert.ok(importRequest);
+    assert.equal(importRequest.init.credentials, "include");
+    assert.equal(new Headers(importRequest.init.headers).get("Authorization"), null);
+    assert.deepEqual(JSON.parse(String(importRequest.init.body)), {
+      path: "reports/report.pdf",
+    });
+
+    await act(async () => {
+      buttonByText(container, "report.pdf").dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    assert.ok(pendingImport.release);
+    await act(async () => {
+      root.render(
+        createElement(ProfileDriveWorkspaceBrowser, {
+          key: "session-b",
+          sessionId: "session-b",
+          onImported: (file) => imported.push(file),
+        }),
+      );
+      await flush();
+    });
+    pendingImport.release();
+    await act(flush);
+    assert.equal(imported.length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.fetch = originalFetch;
+    for (const [key, descriptor] of previousDescriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    dom.window.close();
+  }
+});

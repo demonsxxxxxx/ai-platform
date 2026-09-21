@@ -1,4 +1,5 @@
 import { Download, FileText } from "lucide-react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { formatFileSize } from "../components/documents/utils";
 import { workbenchSurface } from "../components/workbench/workbenchSurface";
@@ -12,6 +13,7 @@ export interface LibreChatSidePanelProps {
   filesStatus?: SessionWorkspaceFilesStatus;
   onOpenFile?: (file: SessionWorkspaceFile) => void;
   onDownloadFile?: (file: SessionWorkspaceFile) => void;
+  additionalSections?: ReactNode;
 }
 
 function SessionFilesList({
@@ -113,6 +115,7 @@ export function LibreChatSidePanel({
   filesStatus = "idle",
   onOpenFile,
   onDownloadFile,
+  additionalSections,
 }: LibreChatSidePanelProps) {
   const { t } = useTranslation();
 
@@ -171,6 +174,7 @@ export function LibreChatSidePanel({
             />
           </div>
         </section>
+        {additionalSections}
       </section>
     </aside>
   );

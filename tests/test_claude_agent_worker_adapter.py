@@ -4327,6 +4327,54 @@ def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
     ]
 
 
+def test_sandbox_runtime_maps_authorized_profile_drive_read_to_workspace_staging():
+    profile_drive_read = {
+        "identity": "mcp__ProfileDriveMCPServer__read_text_file",
+        "mcp_server": "ProfileDriveMCPServer",
+        "mcp_tool": "read_text_file",
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": "low",
+        "write_capable": False,
+        "parameter_delegation": "external_mcp",
+    }
+    payload = types.SimpleNamespace(
+        input={"_runtime_tool_policy_subjects": [profile_drive_read]}
+    )
+
+    subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+        payload,
+        sandbox_provider="opensandbox",
+    )
+
+    assert [subject["identity"] for subject in subjects] == [
+        "mcp__ai-platform-response__attach_file",
+        "mcp__ai-platform-context__stage_profile_drive_file_to_workspace",
+    ]
+    assert subjects[1]["allowed_parameter_keys"] == ["path"]
+    assert subjects[1]["required_parameter_keys"] == ["path"]
+
+    profile_drive_read["parameters_authorized"] = False
+    denied_payload = types.SimpleNamespace(
+        input={"_runtime_tool_policy_subjects": [profile_drive_read]}
+    )
+    denied_subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+        denied_payload,
+        sandbox_provider="opensandbox",
+    )
+
+    assert all(
+        subject["identity"]
+        != "mcp__ai-platform-context__stage_profile_drive_file_to_workspace"
+        for subject in denied_subjects
+    )
+
+
 def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt():
     payload = types.SimpleNamespace(
         input={

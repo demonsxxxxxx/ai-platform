@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -14,6 +15,12 @@ from app.context.retrieval import (
     ContextRetrievalInputError,
 )
 from app.db import transaction
+from app.files.api import (
+    ProfileDriveTransferError,
+    open_profile_drive_file,
+    profile_drive_streaming_response,
+)
+from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
@@ -27,6 +34,9 @@ from app.runtime.sandbox.callback_tokens import (
 )
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.runtime.sandbox.contracts import (
+    PROFILE_DRIVE_STAGE_LEASE_FLAG,
+    PROFILE_DRIVE_STAGE_MAX_BYTES,
+    PROFILE_DRIVE_STAGE_TOOL,
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
     ProviderSessionCallbackRequest,
@@ -612,11 +622,107 @@ async def executor_callback(
     )
 
 
+async def _profile_drive_file_response(
+    request: ExecutorContextRetrievalRequest,
+) -> Any:
+    arguments = request.arguments
+    path = arguments.get("path") if set(arguments) == {"path"} else None
+    if (
+        not isinstance(path, str)
+        or not path
+        or len(path) > 1024
+        or "\x00" in path
+    ):
+        raise HTTPException(status_code=422, detail="context_retrieval_parameters_invalid")
+
+    async with transaction() as conn:
+        run_identity, lease = await _lock_current_runtime_attempt_then_run(
+            conn,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            session_id=request.session_id,
+        )
+        lease_payload = lease.get("lease_payload_json") if isinstance(lease, dict) else None
+        if not isinstance(lease_payload, dict) or lease_payload.get(PROFILE_DRIVE_STAGE_LEASE_FLAG) is not True:
+            raise HTTPException(status_code=403, detail="context_retrieval_not_authorized")
+        tenant_id = str(run_identity.get("tenant_id") or "")
+        user_id = str(run_identity.get("user_id") or "")
+
+    settings = get_settings()
+    try:
+        jwt = await get_mcp_principal_jwt_store().get(
+            SimpleNamespace(tenant_id=tenant_id, user_id=user_id)
+        )
+    except McpRuntimeContextError as exc:
+        raise HTTPException(status_code=409, detail="profile_drive_reauth_required") from exc
+
+    try:
+        client, upstream_response, content_length, _content_type = await open_profile_drive_file(
+            upstream=str(getattr(settings, "profile_drive_transfer_upstream", "") or ""),
+            ca_cert_file=str(
+                getattr(settings, "profile_drive_transfer_ca_cert_file", "") or ""
+            ),
+            jwt=jwt,
+            path=path,
+            max_bytes=PROFILE_DRIVE_STAGE_MAX_BYTES,
+            require_nonempty=False,
+            not_found_status=403,
+            too_large_detail="profile_drive_file_too_large",
+        )
+    except ProfileDriveTransferError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    try:
+        async with transaction() as conn:
+            await _require_current_runtime_attempt(
+                conn,
+                tenant_id=tenant_id,
+                run_id=request.run_id,
+                attempt_id=request.attempt_id,
+            )
+            await repositories.append_event(
+                conn,
+                tenant_id=tenant_id,
+                run_id=request.run_id,
+                event_type="context_retrieved",
+                stage="context",
+                message="Sandbox context retrieval admitted",
+                payload={
+                    "action": PROFILE_DRIVE_STAGE_TOOL,
+                    "result": "allowed",
+                    "visible_to_user": False,
+                },
+            )
+    except Exception:
+        await upstream_response.aclose()
+        await client.aclose()
+        raise
+
+    async def stream_file():
+        transferred = 0
+        try:
+            async for chunk in upstream_response.aiter_raw():
+                transferred += len(chunk)
+                if transferred > content_length or transferred > PROFILE_DRIVE_STAGE_MAX_BYTES:
+                    raise RuntimeError("profile_drive_transfer_size_mismatch")
+                yield chunk
+            if transferred != content_length:
+                raise RuntimeError("profile_drive_transfer_size_mismatch")
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
+
+    return profile_drive_streaming_response(
+        stream_file(),
+        content_length=content_length,
+    )
+
+
 @router.post("/runtime/callbacks/context-retrieval")
 async def executor_context_retrieval_callback(
     request: ExecutorContextRetrievalRequest,
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
-) -> dict[str, object]:
+) -> Any:
     """Broker one exact snapshot-authorized retrieval without exposing backend credentials."""
 
     _require_valid_callback_token(
@@ -625,6 +731,8 @@ async def executor_context_retrieval_callback(
         run_id=request.run_id,
         attempt_id=request.attempt_id,
     )
+    if request.action == PROFILE_DRIVE_STAGE_TOOL:
+        return await _profile_drive_file_response(request)
     async with transaction() as conn:
         run_identity, _lease = await _lock_current_runtime_attempt_then_run(
             conn,

@@ -1,7 +1,10 @@
 import base64
 import hashlib
 import hmac
+import json
+from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -13,7 +16,10 @@ from app.context.retrieval import (
 from tests.support.context_retrieval import InMemoryContextRetrievalRepository
 from app.main import create_app
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
-from app.runtime.sandbox.contracts import ContextRetrievalScope
+from app.runtime.sandbox.contracts import (
+    PROFILE_DRIVE_STAGE_MAX_BYTES,
+    ContextRetrievalScope,
+)
 
 
 def _token(secret: str, token_id: str = "cbt:run-a:attempt-a") -> str:
@@ -49,6 +55,7 @@ def _patch_route(
     action_result=None,
     lease_attempt="attempt-a",
     active_lease=True,
+    profile_authorized=False,
 ):
     import app.routes.runtime_callbacks as callbacks
 
@@ -93,7 +100,10 @@ def _patch_route(
     async def list_current_leases(conn, *, tenant_id, run_id, attempt_id):
         if not active_lease:
             return []
-        return [{"lease_payload_json": {"attempt_id": lease_attempt}}]
+        lease_payload = {"attempt_id": lease_attempt}
+        if profile_authorized:
+            lease_payload["profile_drive_file_staging_authorized"] = True
+        return [{"lease_payload_json": lease_payload}]
 
     async def run_action(action, identity, arguments):
         if "tenant_id" in arguments:
@@ -328,6 +338,177 @@ def test_context_retrieval_callback_rejects_stale_or_released_attempt_before_act
     assert response.status_code == 409
     assert response.json() == {"detail": detail}
     assert calls == []
+
+
+def test_profile_drive_callback_rejects_lease_without_staging_authority(monkeypatch):
+    _patch_route(monkeypatch)
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers={"X-AI-Platform-Callback-Token": _token("secret")},
+        json=_payload(
+            action="stage_profile_drive_file_to_workspace",
+            arguments={"path": "S24/source.pdf"},
+        ),
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "context_retrieval_not_authorized"}
+
+
+def test_profile_drive_callback_streams_only_for_attempt_authorized_lease(monkeypatch):
+    import app.routes.runtime_callbacks as callbacks
+
+    calls = _patch_route(monkeypatch, profile_authorized=True)
+    binary = b"%PDF-\x00\xff-profile-drive"
+    captured = {}
+    real_async_client = httpx.AsyncClient
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        captured["payload"] = request.content
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(len(binary)), "Content-Type": "application/octet-stream"},
+            stream=httpx.ByteStream(binary),
+        )
+
+    transport = httpx.MockTransport(upstream)
+
+    def client_factory(**kwargs):
+        return real_async_client(transport=transport, **kwargs)
+
+    class JwtStore:
+        async def get(self, principal):
+            assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
+            return "company.jwt"
+
+    monkeypatch.setattr("app.files.infrastructure.profile_drive.httpx.AsyncClient", client_factory)
+    monkeypatch.setattr(callbacks, "get_mcp_principal_jwt_store", lambda: JwtStore())
+    monkeypatch.setattr(
+        callbacks,
+        "get_settings",
+        lambda: SimpleNamespace(
+            sandbox_callback_token="secret",
+            profile_drive_transfer_upstream="https://profile-drive.test",
+            profile_drive_transfer_ca_cert_file="",
+        ),
+    )
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers={"X-AI-Platform-Callback-Token": _token("secret")},
+        json=_payload(
+            action="stage_profile_drive_file_to_workspace",
+            arguments={"path": "S24/source.pdf"},
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.content == binary
+    assert response.headers["cache-control"] == "private, no-store"
+    assert captured["authorization"] == "Bearer company.jwt"
+    assert json.loads(captured["payload"]) == {"path": "S24/source.pdf"}
+    assert any(call[0] == "event" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_platform_context_client_streams_profile_drive_file_to_workspace(tmp_path, monkeypatch):
+    binary = b"PK\x03\x04\x00\xff-arbitrary-file"
+    real_async_client = httpx.AsyncClient
+
+    def callback(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["action"] == "stage_profile_drive_file_to_workspace"
+        assert payload["arguments"] == {"path": "S24/source.docx"}
+        return httpx.Response(200, headers={"Content-Length": str(len(binary))}, content=binary)
+
+    transport = httpx.MockTransport(callback)
+
+    def client_factory(**kwargs):
+        return real_async_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.context_retrieval_client.httpx.AsyncClient",
+        client_factory,
+    )
+    scope = ContextRetrievalScope(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="agent-a",
+    )
+    retrieval = PlatformContextRetrievalClient(
+        callback_url="http://platform.test/api/ai/runtime/callbacks/context-retrieval",
+        callback_token_id="cbt:run-a:attempt-a",
+        callback_token="secret",
+        attempt_id="attempt-a",
+        scope=scope,
+        workspace_root=tmp_path,
+    )
+
+    result = await retrieval.execute(
+        "stage_profile_drive_file_to_workspace",
+        SimpleNamespace(**scope.model_dump()),
+        {"path": "S24/source.docx"},
+    )
+
+    staged = tmp_path / result["workspace_path"]
+    assert staged.read_bytes() == binary
+    assert result["workspace_path"].endswith("/source.docx")
+    assert list(staged.parent.glob("*.part")) == []
+    assert result["redaction"] == {"source_path_removed": True}
+
+
+@pytest.mark.asyncio
+async def test_platform_context_client_rejects_oversized_profile_drive_file_without_writing(
+    tmp_path,
+    monkeypatch,
+):
+    real_async_client = httpx.AsyncClient
+
+    def callback(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(PROFILE_DRIVE_STAGE_MAX_BYTES + 1)},
+            stream=httpx.ByteStream(b""),
+        )
+
+    transport = httpx.MockTransport(callback)
+
+    def client_factory(**kwargs):
+        return real_async_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.context_retrieval_client.httpx.AsyncClient",
+        client_factory,
+    )
+    scope = ContextRetrievalScope(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="agent-a",
+    )
+    retrieval = PlatformContextRetrievalClient(
+        callback_url="http://platform.test/api/ai/runtime/callbacks/context-retrieval",
+        callback_token_id="cbt:run-a:attempt-a",
+        callback_token="secret",
+        attempt_id="attempt-a",
+        scope=scope,
+        workspace_root=tmp_path,
+    )
+
+    with pytest.raises(ContextRetrievalDenied, match="profile_drive_file_too_large"):
+        await retrieval.execute(
+            "stage_profile_drive_file_to_workspace",
+            SimpleNamespace(**scope.model_dump()),
+            {"path": "S24/source.pdf"},
+        )
+
+    assert not any(path.is_file() for path in tmp_path.rglob("*"))
 
 
 @pytest.mark.asyncio

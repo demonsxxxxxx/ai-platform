@@ -53,8 +53,14 @@ test("hydrates a persisted user card only from files bound to that message run",
     },
   ];
 
-  const merged = mergeProjectedSessionFiles(messages, [xlsx]);
+  const imported: SessionInputFile = {
+    ...xlsx,
+    file_id: "file-profile-drive",
+    run_id: null,
+  };
+  const merged = mergeProjectedSessionFiles(messages, [xlsx, imported]);
 
+  assert.equal(merged[0].attachments?.length, 1);
   assert.equal(merged[0].attachments?.[0]?.id, "file-xlsx");
   assert.equal(merged[1].attachments, undefined);
 });

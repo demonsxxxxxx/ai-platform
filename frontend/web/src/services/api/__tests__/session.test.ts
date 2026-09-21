@@ -10,6 +10,7 @@ import {
   buildAuthoritativeChatSessionUrl,
   buildAuthoritativeChatSessionListUrl,
   projectAuthoritativeSessionList,
+  buildProfileDriveImportUrl,
   buildSessionInputFilesUrl,
   buildSessionRunsUrl,
   buildChatSubmissionUrl,
@@ -222,6 +223,13 @@ test("builds the default session runs url", () => {
   assert.equal(
     buildSessionRunsUrl("session-1"),
     "/api/sessions/session-1/runs",
+  );
+});
+
+test("builds the ProfileDrive workspace import url with an opaque session id", () => {
+  assert.equal(
+    buildProfileDriveImportUrl("session/a"),
+    "/api/ai/chat/sessions/session%2Fa/profile-drive-files",
   );
 });
 

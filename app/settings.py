@@ -145,6 +145,11 @@ class Settings(BaseSettings):
     mcp_encryption_keys_json: str = Field(default="", repr=False)
     mcp_encryption_current_key_id: str = Field(default="current")
 
+    # Trusted server-side ProfileDrive transfer path. The agent receives neither
+    # this upstream nor the user's company JWT.
+    profile_drive_transfer_upstream: str = Field(default="")
+    profile_drive_transfer_ca_cert_file: str = Field(default="")
+
     llm_gateway_provider: str = Field(default="openai_compatible")
     openai_base_url: str = Field(default="")
     openai_api_key: str = Field(default="")
@@ -209,6 +214,7 @@ class Settings(BaseSettings):
     @field_validator(
         "existing_auth_base_url",
         "existing_user_info_base_url",
+        "profile_drive_transfer_upstream",
         mode="before",
     )
     @classmethod
@@ -235,6 +241,13 @@ class Settings(BaseSettings):
         ):
             raise ValueError("private_upstream_url_invalid")
         return candidate
+
+    @field_validator("profile_drive_transfer_upstream")
+    @classmethod
+    def require_https_profile_drive_transfer(cls, value: str) -> str:
+        if value and urlsplit(value).scheme.lower() != "https":
+            raise ValueError("profile_drive_transfer_https_required")
+        return value
 
     @model_validator(mode="after")
     def validate_single_enterprise_identity_boundary(self) -> "Settings":
