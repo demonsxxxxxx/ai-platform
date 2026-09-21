@@ -57,6 +57,7 @@ import { WorkbenchShell } from "../../workbench/WorkbenchShell";
 import { CHAT_AGENT_OPTION_DEFINITIONS } from "../../../types/agentOptions";
 import { shouldShowMessageOutline } from "./messageOutline";
 import { RunPlaybackPanel } from "./RunPlaybackPanel";
+import { FailureGuidanceCard } from "../../common/FailureGuidanceCard";
 import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
 import { agentProfileApi } from "../../../services/api/agentProfile";
 import { sessionApi } from "../../../services/api/session";
@@ -479,6 +480,7 @@ export function ChatAppContent({
     isLoading,
     isLoadingHistory,
     connectionStatus,
+    failureGuidance,
     newlyCreatedSession,
     sendMessage,
     canRetryPendingSubmission,
@@ -1361,6 +1363,11 @@ export function ChatAppContent({
             data-agent-conversation-loading
           >
             正在校验会话身份…
+          </div>
+        ) : null}
+        {failureGuidance ? (
+          <div className="border-b border-[var(--theme-border)] px-4 py-3">
+            <FailureGuidanceCard guidance={failureGuidance} />
           </div>
         ) : null}
         <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>

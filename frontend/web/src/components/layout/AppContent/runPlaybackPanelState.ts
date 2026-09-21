@@ -6,6 +6,7 @@ import type {
   RunPlaybackStep,
   RunPlaybackTimelineEntry,
 } from "../../../services/api/runPlayback";
+import type { FailureGuidance } from "../../../types/failureGuidance";
 
 export type RunPlaybackPanelState = "loading" | "error" | "empty" | "ready";
 
@@ -73,6 +74,7 @@ export interface RunPlaybackPanelViewModel {
   timeline: RunPlaybackTimelineItem[];
   artifacts: RunPlaybackArtifactItem[];
   contextProvenance: RunPlaybackContextProvenanceViewModel | null;
+  failureGuidance: FailureGuidance | null;
   errorMessage: string | null;
 }
 
@@ -99,6 +101,7 @@ export function buildRunPlaybackLoadingViewModel(
     timeline: [],
     artifacts: [],
     contextProvenance: null,
+    failureGuidance: null,
     errorMessage: null,
   };
 }
@@ -114,6 +117,12 @@ export function buildRunPlaybackErrorViewModel(
     timeline: [],
     artifacts: [],
     contextProvenance: null,
+    failureGuidance: {
+      whatHappened: "无法刷新任务的最新状态。",
+      retained: "当前连接无法确认已完成内容；后台任务可能仍在继续。",
+      nextAction: "恢复网络后请先刷新或重新连接，确认状态前不要重复提交。",
+      problemNumber: runId || null,
+    },
     errorMessage,
   };
 }
@@ -125,10 +134,12 @@ export function buildRunPlaybackPanelViewModel(
   const timeline = buildTimelineItems(response);
   const artifacts = buildArtifactItems(response);
   const contextProvenance = buildContextProvenanceViewModel(response?.context_ref);
+  const failureGuidance = buildFailureGuidance(response);
   const hasContent =
     timeline.length > 0 ||
     artifacts.length > 0 ||
-    contextProvenance !== null;
+    contextProvenance !== null ||
+    failureGuidance !== null;
 
   return {
     state: hasContent ? "ready" : "empty",
@@ -136,7 +147,28 @@ export function buildRunPlaybackPanelViewModel(
     timeline,
     artifacts,
     contextProvenance,
+    failureGuidance,
     errorMessage: null,
+  };
+}
+
+function buildFailureGuidance(
+  response: RunPlaybackResponse | null | undefined,
+): FailureGuidance | null {
+  const outcome = response?.outcome;
+  if (
+    !outcome ||
+    outcome.phase === "not_started" ||
+    outcome.phase === "in_progress" ||
+    outcome.phase === "completed"
+  ) {
+    return null;
+  }
+  return {
+    whatHappened: outcome.what_happened,
+    retained: outcome.retained,
+    nextAction: outcome.next_action,
+    problemNumber: outcome.problem_number || null,
   };
 }
 

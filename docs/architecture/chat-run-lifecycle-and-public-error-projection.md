@@ -175,6 +175,59 @@ upstream failure according to the owning code mapping.
 
 Public-answer projection remains fail-closed for secrets, concrete Skill implementation/source details, structured executor or storage fields, and model Thinking content. Ordinary paths in intentional answer text are allowed as user-visible project context; pre-release thinking events may retain status compatibility but their body is not rendered. A rejected public projection is not a model or Run execution failure: the executor preserves its authoritative terminal status and omits the unsafe answer from ordinary-user projections. Historical records with the retired projection-failure code are presented as the generic fixed `run_failed` terminal state.
 
+## Public outcome summary and pre-Run admission
+
+Run playback includes `ai-platform.public-run-outcome.v1` as an additive
+ordinary-user projection. It always answers four questions: what
+happened, what completed work was durably retained, what the user can do next,
+and the copyable problem number. Controlled `phase` and `detail_code` support
+presentation but do not create another Run state machine.
+
+The projection derives retained work only from authoritative Run status, the
+approved public terminal taxonomy, completed database step rows and registered
+artifact rows. Physical Sandbox files, private diagnostics, arbitrary exception
+messages and browser-local observations are not proof that work was retained.
+Consequently a delivery/projection failure can report completed work and
+registered files without claiming the Run never started. An SSE or HTTP
+disconnect is a transport fact: the frontend says the background Run may still
+continue, keeps any accepted content, and does not automatically resubmit.
+
+Before Session/Run persistence, Chat admission validates the current identity,
+Agent Profile, model selection, attachment access, required input and the final
+MCP tool set. Explicit, inherited and Profile-injected MCP selections are
+resolved first and authorized once in the admission transaction. A deterministic
+denial therefore creates no Run and consumes no queued execution. Worker
+authorization before the actual Tool call remains mandatory for policy changes
+and time-of-check/time-of-use protection. Runtime credential issuance, endpoint
+and network reachability, file retrieval/content and Tool outcome remain runtime
+facts; moving them into admission would require side effects or provide false
+certainty.
+
+## Change Contract: public outcomes and final capability admission
+
+- **Owner and scope:** Runs owns `ai-platform.public-run-outcome.v1`; Chat owns
+  deterministic pre-persistence admission. Existing Run/Attempt, queue, SSE,
+  artifact and Worker authorization authorities remain unchanged.
+- **Reached invariants:** every projected failure answers the same four user
+  questions; retained claims require database facts; transport failure does not
+  become Run failure; explicit, inherited and Profile-injected MCP tools pass
+  one final-set authorization before Run creation.
+- **Acceptance:** projection contract tests cover start/partial/delivery/file/
+  permission states; frontend tests cover copyable identifiers and uncertain
+  transport; Chat route tests prove denial rollback and Profile-tool admission.
+- **Evidence ceiling:** local tests and browser checks do not prove external MCP
+  reachability, real PostgreSQL/Redis behavior, deployment or production
+  acceptance.
+- **Compatibility and retirement:** the public response adds an optional field.
+  The separate explicit-tool authorization pass is replaced by final-set
+  admission; Worker reauthorization is retained. Rollback can stop emitting the
+  optional projection and restore the prior admission call shape without data
+  migration.
+- **Stop conditions:** unknown status, unregistered artifacts, unsafe error text,
+  ambiguous Tool outcome or an authorization storage failure must fail closed;
+  they cannot be converted into a success, a retained-file claim or a blind
+  retry instruction.
+
 ## Change Contract: executor terminal protocol evidence
 
 - **Owner:** Runs owns the bounded private diagnostic record and platform-admin

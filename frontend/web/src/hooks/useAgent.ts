@@ -111,6 +111,7 @@ import {
   type RunControlOwner,
   type RunControlParentIdentity,
 } from "./useAgent/runControlLifecycle";
+import type { FailureGuidance } from "../types/failureGuidance";
 
 function getSelectedSkillRecoverableCode(
   error: unknown,
@@ -185,6 +186,43 @@ function formatChatSubmissionError(error: unknown): string {
         "chat.sendFailed",
       )
     : i18n.t("chat.sendFailed");
+}
+
+export function buildChatSubmissionFailureGuidance({
+  error,
+  message,
+  problemNumber,
+  persistedRunPossible,
+}: {
+  error: unknown;
+  message: string;
+  problemNumber: string;
+  persistedRunPossible: boolean;
+}): FailureGuidance {
+  const apiError = error instanceof ApiRequestError ? error : null;
+  const code = apiError?.code ?? "";
+  const permissionCodes = new Set([
+    "capability_not_authorized",
+    "mcp_tool_not_available",
+    "tool_permission_denied",
+    "required_capability_unavailable",
+  ]);
+  const permissionFailure =
+    apiError?.status === 401 ||
+    apiError?.status === 403 ||
+    permissionCodes.has(code);
+  return {
+    whatHappened: message,
+    retained: persistedRunPossible
+      ? "当前连接无法确认任务终态；任务可能已经创建，后台也可能仍在继续。"
+      : "任务未创建，也未进入执行队列；没有消耗一次完整运行。",
+    nextAction: persistedRunPossible
+      ? "请先刷新历史或重新连接，确认状态前不要重复提交。"
+      : permissionFailure
+        ? "请重新登录后再试；仍无权限时，请联系管理员并提供问题编号。"
+        : "请按提示修正输入后重试；如问题持续，请联系管理员并提供问题编号。",
+    problemNumber: apiError?.diagnosticId ?? problemNumber,
+  };
 }
 
 function parseChatSubmissionResolution(
@@ -670,6 +708,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionAgentId, setSessionAgentId] = useState(DEFAULT_CHAT_AGENT_ID);
   const [error, setError] = useState<string | null>(null);
+  const [failureGuidance, setFailureGuidance] =
+    useState<FailureGuidance | null>(null);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -1636,6 +1676,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setIsLoading(true);
       setMessageSnapshot({ messagesRef, setMessages }, []);
       setError(null);
+      setFailureGuidance(null);
       setCurrentRunId(null);
       currentRunIdRef.current = null;
 
@@ -2218,6 +2259,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setMessages(optimisticMessages);
       setIsLoading(true);
       setError(null);
+      setFailureGuidance(null);
       let finalAssistantMessageId = assistantMessageId;
       let admissionAccepted = false;
 
@@ -2578,6 +2620,16 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             ? getSelectedSkillRecoverableCode(err)
             : null;
           if (recoverableCode) {
+            const errorMessage = formatChatSubmissionError(err);
+            setError(errorMessage);
+            setFailureGuidance(
+              buildChatSubmissionFailureGuidance({
+                error: err,
+                message: errorMessage,
+                problemNumber: submissionId,
+                persistedRunPossible: false,
+              }),
+            );
             setConnectionStatus("disconnected");
             setIsInitializingSandbox(false);
             setIsLoading(false);
@@ -2586,6 +2638,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           }
           const errorMessage = formatChatSubmissionError(err);
           setError(errorMessage);
+          setFailureGuidance(
+            buildChatSubmissionFailureGuidance({
+              error: err,
+              message: errorMessage,
+              problemNumber: submissionId,
+              persistedRunPossible: false,
+            }),
+          );
           toast.error(errorMessage);
         } else if (!admissionAccepted) {
           const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
@@ -2603,10 +2663,26 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             requireCurrentToken: true,
           });
           setError(statusUnavailable);
+          setFailureGuidance(
+            buildChatSubmissionFailureGuidance({
+              error: err,
+              message: statusUnavailable,
+              problemNumber: submissionId,
+              persistedRunPossible: true,
+            }),
+          );
           toast.error(statusUnavailable);
         } else {
           const errorMessage = formatChatSubmissionError(err);
           setError(errorMessage);
+          setFailureGuidance(
+            buildChatSubmissionFailureGuidance({
+              error: err,
+              message: errorMessage,
+              problemNumber: currentRunIdRef.current ?? submissionId,
+              persistedRunPossible: true,
+            }),
+          );
           setMessageSnapshot({ messagesRef, setMessages }, (prev) =>
             prev.map((m) =>
               m.id === finalAssistantMessageId
@@ -2687,6 +2763,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
     setError(null);
+    setFailureGuidance(null);
     setCurrentRunId(null);
     setNewlyCreatedSession(null);
     setIsLoading(false);
@@ -3179,6 +3256,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     isLoading,
     isLoadingHistory,
     error,
+    failureGuidance,
     sessionId,
     currentRunId,
     isReconnecting:

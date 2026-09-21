@@ -32,6 +32,7 @@
 2. Execution/SDK 与 Sandbox 各在自己的边界采集并转换，内部通过明确类型传递；包装只增加关联观察，不覆盖已有异常事实。
 3. 诊断不再依附 `runs.result_json` 作为新记录的存储权威。新 Run 从独立私有记录读取；旧记录通过一个只读适配器解释。
 4. 每批实现同时退役对应的旧覆盖、拼装、占位或兼容路径，更新测试与文档。
+5. 普通用户结果卡片由 Runs 依据安全终态分类和持久事实生成；Chat 在写入 Run 前对最终请求能力集合做一次确定性授权。
 
 [源码架构](../architecture/source-code-architecture.md)、[Run/Attempt](../architecture/execution-spec-and-attempt-lifecycle.md)、[Sandbox Runtime](../architecture/sandbox-runtime-control-layer.md)、[公共投影](../architecture/chat-run-lifecycle-and-public-error-projection.md)和[数据生命周期](../architecture/single-enterprise-data-lifecycle.md)仍是各自详细规则的拥有者。激活方案时更新它们的相关条款。
 
@@ -41,6 +42,8 @@
 
 ```mermaid
 flowchart LR
+    REQ[Chat 请求] --> ADM0[最终确定性提交检查]
+    ADM0 --> RUN[既有 Run 业务事实]
     SDK[SDK 与工具边界] --> EX[Execution 适配器]
     EX --> TR[受信 HTTP 与回调边界]
     WK[Worker 与调和处理] --> API[Runs 诊断应用接口]
@@ -49,7 +52,7 @@ flowchart LR
     DB --> ADM[授权管理投影]
     ADM --> UI[现有 Run 管理页面]
     ADM --> ZIP[脱敏诊断包]
-    RUN[既有 Run 业务事实] --> PUB[既有公共错误投影]
+    RUN --> PUB[公共结果摘要]
     PUB --> CHAT[普通用户界面]
 ```
 
@@ -58,6 +61,7 @@ flowchart LR
 | Execution | SDK 类型转换、模型/工具异常、HTTP 异常载体和已测耗时 | 私有错误提前缩成公共消息；SDK 类型泄漏到 Runs |
 | Sandbox | 可信 lease/Attempt 绑定、回调回执、运行资源处理观察 | 用后续资源/回调错误覆盖执行原异常 |
 | Runs | 诊断记录、身份校验、预算与合并、管理查询/导出授权 | Run 结果、管理路由和 Worker 分别维护诊断规则 |
+| Chat admission | 在 Session/Run 写入前解析身份、Agent、模型、附件、必要输入和最终 MCP 集合并授权 | 先创建/入队，再暴露可提前确定的拒绝；只校验显式工具而遗漏 Profile 注入工具 |
 | Streaming | 现有安全事件投影和传输 | 从私有诊断生成普通用户文本 |
 | Identity | 现有 principal 与管理权限 | 引入页面本地的诊断权限真相 |
 | Bootstrap / Platform | 注入端口、技术日志和版本来源 | 在共享观测模块决定业务归因或保存领域事实 |
@@ -118,6 +122,12 @@ HTTP 错误响应有独立预算。首批保留现有 4 KiB body 解析上限：
 应用合并器对紧凑 JSON 强制 128 KiB 产品预算；数据库 `payload_json::text` 的 144 KiB check 只为 JSONB 文本重排后的空白开销预留 16 KiB，不扩大发布接口或单 Run 的可用额度。Repository 在每次 insert/update 前仍按 128 KiB 检查紧凑表示。
 
 首版诊断随 Run 保留，不新增一个尚无清理实现的 retention 环境变量。新增表不使用隐式级联删除；将来执行既有 Run 物理删除时，由 Runs 在同一授权事务显式处理诊断。单 Run 有界不代表数据库总量有界，发布容量评估须计算 Run 量与保留周期。新增独立 TTL/清除能力需先完善数据生命周期契约与删除审计。
+
+### 3.5 普通用户结果摘要与提交前检查
+
+`ai-platform.public-run-outcome.v1` 固定输出四项用户事实：`what_happened`、`retained`、`next_action` 和可复制的 `problem_number`，并带有受控 `phase` / `detail_code`。投影只读取 Run 业务状态、安全公共终态分类、数据库中已登记的 artifact 和已完成步骤；Sandbox 文件、私有诊断、任意后端异常文本和仅在浏览器观察到的状态都不能成为“已保留”的依据。浏览器连接中断只说明传输状态未知，页面提示后台可能继续且不得自动重交任务。
+
+Chat admission 先解析显式、继承及 Agent Profile 注入的 MCP 工具，得到最终集合后在同一 admission 事务中授权一次，再写 Session/Run 并入队。身份、Agent 可用性、模型、附件权限和必要输入沿用同一写入前边界。Worker 的调用前重新授权继续保留，用于覆盖策略变化和 TOCTOU；MCP 凭据签发、端点连通性、网络、实际文件下载/内容以及工具执行结果需要运行时资源或副作用，不由提交前检查伪装成已验证。
 
 ## 4. 持久化与事务
 
@@ -209,6 +219,8 @@ Run Monitor 的列表和详情概览从既有 Session、User、Workspace、Agent
 | T14 | 打开、刷新诊断、runtime overview 与 containers | 不执行清理/停止/重试；维护职责迁移后仍被调度 | 路由/前端集成；PRD-12 |
 | T15 | 新旧记录、重复迁移、应用版本不匹配 | 读取矩阵、schema readiness、可用的回滚边界全部成立 | 迁移/打包验收；PRD-09/11 |
 | T16 | 删除清单及直接/动态/外部消费者 | 私有废弃符号无残留，必要兼容有实证，测试/配置/当前文档同步 | 架构与引用审计；PRD-14 |
+| T17 | 未开始、部分完成、整理失败、文件已登记但正文缺失、权限不足、浏览器断线 | 四项固定字段与持久事实一致；问题编号可复制；断线不触发重交 | Runs 投影 + 前端行为；PRD-15 |
+| T18 | 显式/继承/Profile MCP，身份/Agent/模型/附件/输入拒绝及入队失败 | 确定性拒绝发生在 Session/Run 写入前；最终 MCP 集合只授权一次；Worker 重新授权仍在 | Chat 路由事务与回归；PRD-16 |
 
 后端按仓库要求使用 `tools/run_test_stage.py` 运行拥有该行为的聚焦测试；前端复用现有测试入口。T06/T08 等并发语义需要真实服务，不能用返回固定字典替代。性能按 PRD 场景记录精确构建、数据量与机器；只有跑过的项目才标为通过。
 
@@ -303,8 +315,8 @@ Run Monitor 的列表和详情概览从既有 Session、User、Workspace、Agent
 | --- | --- | --- | --- |
 | S0 契约与盘点 | 候选已完成：固定 source、字段血缘、消费者、锁序和拥有者 | 已从清单剔除主分支既有 env 清理，未另建治理平台 | 文档和引用审计；提交前重验 exact base/head |
 | S1 异常与规范化 | 候选已完成：采集保真、观察链、预算与损失元数据 | D01/D02 新写路径已删除 | T01/T02/T03 聚焦测试通过 |
-| S2 保存与传输 | 主分支已有核心链路；本批增加诊断失败 savepoint/timeout 降级及入队、Worker 逃逸、工作区收集来源 | 删除 protocol-only 调用者事务特例；公共 Sandbox 映射保持兼容 | 聚焦单元测试；真实 PostgreSQL 选择器在配置 DSN 后验收 |
-| S3 管理查询与页面 | 主分支已有结构化详情；本批增加逐观察证据且保留旧汇总形状 | 同身份 handling 重复投影退出 | 后端多观察测试；前端依赖可用后运行挂载测试 |
+| S2 保存与传输 | 主分支已有核心链路；本批增加诊断失败 savepoint/timeout 降级、最终 MCP 集合提交前授权及入队、Worker 逃逸、工作区收集来源 | 删除显式工具提前授权与最终集合授权的重复路径；Worker 调用前授权和公共 Sandbox 映射保持兼容 | 聚焦单元测试；真实 PostgreSQL 选择器在配置 DSN 后验收 |
+| S3 管理查询与页面 | 主分支已有结构化详情；本批增加逐观察证据、普通用户四项结果摘要且保留旧汇总形状 | 同身份 handling 重复投影退出 | 后端投影/多观察测试；前端类型、状态和挂载测试 |
 | S4 导出与治理工具 | 候选已完成：固定三文件、有审计、512 KiB 未压缩预算、无存储公开链接的单 Run 快照包 | D09 中 readiness 契约仍保留；实际下载不再由 readiness 冒充 | 单元/API 权限与审计失败测试已覆盖；真实 PG 快照、并发性能和工具消费者回归待验 |
 | S5 发布与收口 | 待实施：打包迁移、授权环境故障语料、回滚演练 | D10 与达到退出证明的外部兼容项待实施 | T15/T16 和 PRD 全量验收待验 |
 
@@ -314,7 +326,7 @@ Run Monitor 的列表和详情概览从既有 Session、User、Workspace、Agent
 
 ## 10. 需随实现协调的当前文档
 
-- 公共投影文档：本候选已将私有诊断改为 Runs 独立记录，并保留公共安全分类与预算要求。
+- 公共投影文档：本候选已将私有诊断改为 Runs 独立记录，并补充普通用户四项结果摘要、持久事实边界与提交前确定性检查。
 - 数据生命周期文档：本候选已增加私有诊断表、schema/readiness、容量和显式删除规则；Redis 仍只负责实时与重放传输。
 - Run/Attempt 与 Sandbox 文档：本候选已补充诊断写入接缝、receipt 原子性和晚到观察限制，不改写状态权威。
 - 发布操作继续使用既有迁移、readiness、不可变包和回滚入口；当前没有正式部署记录。

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { LoadingSpinner } from "../../common";
 import type { CollapsibleStatus } from "../../common";
+import { FailureGuidanceCard } from "../../common/FailureGuidanceCard";
 import {
   buildRunPlaybackErrorViewModel,
   buildRunPlaybackLoadingViewModel,
@@ -78,6 +79,11 @@ export function RunPlaybackPanel({ lifecycle, panelKey }: RunPlaybackPanelProps)
     >
       <SummaryBlock summary={viewModel.summary} />
       <RunControlActions lifecycle={lifecycle} snapshot={snapshot} />
+      {viewModel.failureGuidance ? (
+        <div className="shrink-0 border-b border-[var(--theme-border)] px-3 py-3 dark:border-stone-800 sm:px-4">
+          <FailureGuidanceCard guidance={viewModel.failureGuidance} />
+        </div>
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
         {viewModel.state === "loading" && <LoadingBlock />}
@@ -281,11 +287,6 @@ function SummaryBlock({ summary }: { summary: RunPlaybackPanelSummary }) {
           </div>
         ))}
       </div>
-      {summary.errorMessage && (
-        <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-          {summary.errorMessage}
-        </div>
-      )}
     </div>
   );
 }

@@ -25,7 +25,12 @@ from app.models import (
     RunControlResponse,
     RunResponse,
 )
-from app.runs.api import bind_run_model, inherit_run_model, run_retry_block_reason
+from app.runs.api import (
+    bind_run_model,
+    inherit_run_model,
+    public_run_outcome,
+    run_retry_block_reason,
+)
 from app.product_events import initial_run_event_specs
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import (
@@ -2067,6 +2072,19 @@ async def get_run_playback(
         "after_sequence": after_sequence,
         "next_after_sequence": next_after_sequence,
         "run": run_playback_summary(run, principal),
+        "outcome": public_run_outcome(
+            run_id=run_id,
+            status=run.get("status"),
+            error_code=run.get("error_code"),
+            artifacts=artifacts,
+            steps=steps,
+            answer_available=(
+                normalize_run_status(str(run.get("status") or "")) == "succeeded"
+                and isinstance(run.get("result_json"), dict)
+                and isinstance(run["result_json"].get("message"), str)
+                and bool(run["result_json"]["message"].strip())
+            ),
+        ),
         "timeline": run_playback_timeline(events=projected_events, artifacts=artifact_cards),
         "events": projected_events,
         "artifacts": artifact_cards,
