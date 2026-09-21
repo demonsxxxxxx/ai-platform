@@ -2065,6 +2065,129 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
     assert "qa-word-review" not in str(answer_payloads)
 
 
+def test_lambchat_history_keeps_explicit_assistant_file_order():
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-file-order",
+        "trace_id": "trace-file-order",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "result_json": {},
+    }
+    artifacts = [
+        {
+            "id": "artifact-second",
+            "trace_id": "trace-file-order",
+            "artifact_type": "report_txt",
+            "label": "第二个.txt",
+            "content_type": "text/plain",
+            "size_bytes": 2,
+            "manifest_json": {
+                "delivery_scope": "assistant_response",
+                "delivery_position": 1,
+            },
+            "created_at": "2026-09-20T00:00:00Z",
+        },
+        {
+            "id": "artifact-first",
+            "trace_id": "trace-file-order",
+            "artifact_type": "report_txt",
+            "label": "第一个.txt",
+            "content_type": "text/plain",
+            "size_bytes": 1,
+            "manifest_json": {
+                "delivery_scope": "assistant_response",
+                "delivery_position": 0,
+            },
+            "created_at": "2026-09-20T00:00:00Z",
+        },
+        {
+            "id": "artifact-working-json",
+            "trace_id": "trace-file-order",
+            "artifact_type": "data_json",
+            "label": "working.json",
+            "content_type": "application/json",
+            "size_bytes": 3,
+            "manifest_json": {"delivery_scope": "process"},
+            "created_at": "2026-09-20T00:00:00Z",
+        },
+    ]
+
+    records = _compatibility_events_for_run(
+        run,
+        [],
+        artifacts,
+        principal,
+        include_terminal=False,
+    )
+
+    assert [
+        record.stream_data["artifact_id"]
+        for record in records
+        if record.stream_event_type == "artifact_card"
+    ] == ["artifact-first", "artifact-second"]
+
+
+def test_lambchat_history_uses_legacy_result_artifact_ids_as_allowlist():
+    from app.auth import AuthPrincipal
+    from app.routes.lambchat_compat import _compatibility_events_for_run
+
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-legacy-file-selection",
+        "trace_id": "trace-legacy-file-selection",
+        "status": "succeeded",
+        "result_json": {
+            "message": "done",
+            "artifacts": [{"id": "artifact-final"}],
+        },
+    }
+    artifacts = [
+        {
+            "id": "artifact-working",
+            "artifact_type": "data_json",
+            "label": "working.json",
+            "content_type": "application/json",
+            "manifest_json": {},
+        },
+        {
+            "id": "artifact-final",
+            "artifact_type": "document",
+            "label": "report.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "manifest_json": {},
+        },
+    ]
+
+    records = _compatibility_events_for_run(
+        run,
+        [],
+        artifacts,
+        principal,
+        include_terminal=False,
+    )
+
+    assert [
+        record.stream_data["artifact_id"]
+        for record in records
+        if record.stream_event_type == "artifact_card"
+    ] == ["artifact-final"]
+
+
 def test_lambchat_history_fold_preserves_split_identifier_across_pages():
     from app.auth import AuthPrincipal
     from app.routes.lambchat_compat import (

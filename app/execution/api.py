@@ -55,8 +55,9 @@ from app.execution.application.stale_terminalization import (
 from app.execution.application.worker_answer_persistence import (
     AnswerPersistenceLimits,
     WorkerAnswerMaterialization,
-    append_artifact_links,
+    assistant_artifact_metadata,
     materialize_worker_answer,
+    sanitize_assistant_message,
 )
 from app.execution.application.artifact_storage import (
     artifact_content_type,
@@ -115,8 +116,9 @@ __all__ = [
     "ClaudeSdkAgentEventAdapter",
     "AnswerPersistenceLimits",
     "WorkerAnswerMaterialization",
-    "append_artifact_links",
+    "assistant_artifact_metadata",
     "materialize_worker_answer",
+    "sanitize_assistant_message",
     "reconciliation_agent_profile_binding_matches",
     "runtime_terminal_payload",
     "RunModelSelection",

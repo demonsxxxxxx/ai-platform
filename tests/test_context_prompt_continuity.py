@@ -105,8 +105,9 @@ def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payl
     assert "Available context retrieval tools: stage_context_file_to_workspace" in prompt
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
-    assert "list only final user deliverables in `deliverables`" in prompt
-    assert "temporary, intermediate, cache, log, or diagnostic files" in prompt
+    assert "Return the final response as ordinary assistant text" in prompt
+    assert "call the available `attach_file` tool" in prompt
+    assert "Do not attach temporary" in prompt
 
 
 def test_skill_prompt_injects_complete_ordered_conversation_once():

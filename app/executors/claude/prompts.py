@@ -40,10 +40,11 @@ _PUBLIC_LANGUAGE_INSTRUCTION = (
 
 
 _RESPONSE_FILES_INSTRUCTION = (
-    "Return the final response through the configured structured output. Put the user-facing "
-    "answer in `answer` and list only final user deliverables in `deliverables`. Each "
-    "`source_path` must be relative to the workspace. Do not list temporary, intermediate, "
-    "cache, log, or diagnostic files. Files omitted from `deliverables` stay private.\n"
+    "Return the final response as ordinary assistant text. If a generated file is a final "
+    "user deliverable, call the available `attach_file` tool once for that workspace-relative "
+    "path before the final response. You may attach zero or more files. Do not attach temporary, "
+    "intermediate, cache, log, diagnostic, or machine-readable working files unless the user "
+    "explicitly requested them. Files not attached stay private.\n"
 )
 
 

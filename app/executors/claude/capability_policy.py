@@ -207,7 +207,12 @@ def internal_response_tool_policy_subjects() -> list[dict[str, Any]]:
             "parameters_authorized": True,
             "risk_level": "medium",
             "write_capable": True,
-            "allowed_parameter_keys": ["path"],
+            "allowed_parameter_keys": [
+                "path",
+                "display_name",
+                "role",
+                "description",
+            ],
             "required_parameter_keys": ["path"],
         }
     ]

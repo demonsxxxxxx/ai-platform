@@ -963,6 +963,7 @@ def test_collect_workspace_artifacts_accepts_only_authorized_skill_output_delive
     assert artifacts[0].label == "年度报告.txt"
     assert artifacts[0].manifest["delivery_role"] == "primary"
     assert artifacts[0].manifest["delivery_description"] == "最终报告"
+    assert artifacts[0].manifest["delivery_position"] == 0
     assert artifacts[0].manifest["workspace_output"] == (
         ".claude/skills/reporting/output/report.txt"
     )
@@ -4242,7 +4243,9 @@ def test_sandbox_runtime_does_not_mint_tools_without_worker_authority():
         sandbox_provider="opensandbox",
     )
 
-    assert subjects == []
+    assert [subject["identity"] for subject in subjects] == [
+        "mcp__ai-platform-response__attach_file"
+    ]
 
 
 def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
@@ -4267,6 +4270,7 @@ def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
     )
 
     assert [subject["identity"] for subject in subjects] == [
+        "mcp__ai-platform-response__attach_file",
         "Bash",
         "Write",
     ]
@@ -4303,9 +4307,16 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
         "Skill",
         "mcp__ai-platform-context__read_run_artifact",
         "mcp__ai-platform-context__stage_run_artifact_to_workspace",
+        "mcp__ai-platform-response__attach_file",
     ]
     assert subjects[1]["allowed_parameter_keys"] == ["artifact_id", "max_bytes"]
     assert subjects[2]["write_capable"] is True
+    assert subjects[3]["allowed_parameter_keys"] == [
+        "path",
+        "display_name",
+        "role",
+        "description",
+    ]
 
 
 

@@ -40,6 +40,20 @@ them into one summary that the user may reopen. The display contract is:
 | Routine queue, context, intent, heartbeat, and model-completion metadata | Hidden from the transcript unless separately actionable | No ordinary-user card |
 | Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, prompt, command, path, query, file content, diff, Tool/MCP/Skill arguments or results, private identifier, storage key, credential, trace, or executor payload |
 
+Final files are optional ordered parts of the Run's single assistant response.
+The answer remains ordinary text. A file card appears only after the Agent
+explicitly selected that file with `attach_file` and the platform validated,
+copied, and persisted it as an immutable artifact. History and terminal
+hydration preserve the attachment order recorded in each artifact manifest.
+Neither the backend nor the frontend infers deliverables from answer text or
+enumerates the workspace. Compatibility Run artifacts remain the storage owner
+while the one-final-message-per-Run invariant binds them to the assistant part.
+For older successful Runs, the persisted `result_json.artifacts` identifiers are
+the compatibility allowlist and the old generated `输出文件` link suffix is
+removed from answer text. Unclassified artifacts from failed historical Runs
+remain visible for recovery; any explicit non-response `delivery_scope` is
+always excluded.
+
 `Bash`/execute and Read therefore remain visible as coarse lifecycle activities,
 but their command, arguments, paths, read query, file body, stdout, stderr, and
 result do not render. The same raw-data prohibition applies to Write, Edit,

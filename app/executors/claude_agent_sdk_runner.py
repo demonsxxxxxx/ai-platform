@@ -41,6 +41,7 @@ from app.executors.claude.capability_policy import (
     _mcp_server_options,
     _parameters_match_subject,
     internal_context_tool_policy_subjects,
+    internal_response_tool_policy_subjects,
 )
 from app.executors.claude.prompts import (
     build_skill_prompt as build_skill_prompt,
@@ -84,7 +85,7 @@ from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     SKILL_WORKSPACE_CONTRACT_VERSION,
 )
-from app.tool_policy import ToolPolicyDecision, evaluate_tool_policy
+from app.tool_policy import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
 _translation_target_language = _prompt_translation_target_language
@@ -114,6 +115,7 @@ def runtime_tool_policy_subjects(
             available_context_retrieval_tools(context_manifest)
         )
     )
+    subjects.extend(internal_response_tool_policy_subjects())
     return subjects
 
 
@@ -210,53 +212,6 @@ _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS = 255
 _DELIVERY_MANIFEST_MAX_DESCRIPTION_CHARS = 2_000
 
 
-def _delivery_output_format() -> dict[str, Any]:
-    return {
-        "type": "json_schema",
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["answer", "deliverables"],
-            "properties": {
-                "answer": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 200_000,
-                },
-                "deliverables": {
-                    "type": "array",
-                    "maxItems": _DELIVERY_MANIFEST_MAX_FILES,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["source_path"],
-                        "properties": {
-                            "source_path": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": _DELIVERY_MANIFEST_MAX_PATH_CHARS,
-                            },
-                            "display_name": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS,
-                            },
-                            "role": {
-                                "type": "string",
-                                "enum": ["primary", "supporting"],
-                            },
-                            "description": {
-                                "type": "string",
-                                "maxLength": _DELIVERY_MANIFEST_MAX_DESCRIPTION_CHARS,
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    }
-
-
 def _sdk_run_timeout_seconds(
     settings: object,
     *,
@@ -284,11 +239,12 @@ class ClaudeAgentSdkRunResult:
     session_id: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
-    # ResultMessage.stop_reason is meaningful only on a structured, non-error
-    # SDK terminal result.  Keep it separate from the failure text.
+    # ResultMessage.stop_reason is meaningful only on a non-error SDK terminal
+    # result. Keep it separate from the failure text.
     terminal_reason: str | None = None
-    # A successful stream is valid only after the SDK supplies this structured
-    # non-error ResultMessage.  Assistant chunks are progress, not completion.
+    # Wire-compatibility name retained for mixed-version executors. True means
+    # that the SDK supplied a non-error terminal ResultMessage; the response no
+    # longer has to use SDK structured output.
     received_structured_terminal: bool = False
     used_skills: list[str] = field(default_factory=list)
     used_skills_source: str = ""
@@ -961,69 +917,145 @@ def _response_file_path(
     return canonical.as_posix()
 
 
-def _delivery_manifest(
+def _response_file_descriptor(
     value: object,
     *,
     workspace: Path,
     allowed_skill_names: set[str] | frozenset[str],
-) -> tuple[str, list[dict[str, str]]]:
-    if not isinstance(value, dict) or set(value) != {"answer", "deliverables"}:
-        raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
-    answer = value.get("answer")
-    deliverables = value.get("deliverables")
+) -> dict[str, str]:
+    allowed_keys = {"path", "display_name", "role", "description"}
     if (
-        not isinstance(answer, str)
-        or not answer.strip()
-        or len(answer) > 200_000
-        or not isinstance(deliverables, list)
-        or len(deliverables) > _DELIVERY_MANIFEST_MAX_FILES
+        not isinstance(value, dict)
+        or "path" not in value
+        or not set(value).issubset(allowed_keys)
     ):
         raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
-    normalized: list[dict[str, str]] = []
-    seen_paths: set[str] = set()
-    allowed_keys = {"source_path", "display_name", "role", "description"}
-    for raw in deliverables:
-        if not isinstance(raw, dict) or not set(raw).issubset(allowed_keys):
+    source_path = _response_file_path(
+        workspace,
+        value.get("path"),
+        allowed_skill_names=allowed_skill_names,
+    )
+    if source_path is None:
+        raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
+    descriptor: dict[str, str] = {"source_path": source_path}
+    display_name = value.get("display_name")
+    if display_name is not None:
+        if (
+            not isinstance(display_name, str)
+            or not display_name.strip()
+            or len(display_name) > _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS
+            or "\x00" in display_name
+            or "/" in display_name
+            or "\\" in display_name
+            or display_name.strip() in {".", ".."}
+        ):
             raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
-        source_path = _response_file_path(
-            workspace,
-            raw.get("source_path"),
-            allowed_skill_names=allowed_skill_names,
+        descriptor["display_name"] = display_name.strip()
+    role = value.get("role")
+    if role is not None:
+        if not isinstance(role, str) or role not in {"primary", "supporting"}:
+            raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
+        descriptor["role"] = role
+    description = value.get("description")
+    if description is not None:
+        if (
+            not isinstance(description, str)
+            or len(description) > _DELIVERY_MANIFEST_MAX_DESCRIPTION_CHARS
+            or "\x00" in description
+        ):
+            raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
+        if description.strip():
+            descriptor["description"] = description.strip()
+    return descriptor
+
+
+def _build_response_mcp_server(
+    sdk: object,
+    *,
+    workspace: Path,
+    allowed_skill_names: set[str] | frozenset[str],
+    attached_files: list[dict[str, str]],
+):
+    sdk_tool = getattr(sdk, "tool", None)
+    create_server = getattr(sdk, "create_sdk_mcp_server", None)
+    if sdk_tool is None or create_server is None:
+        return None
+
+    @sdk_tool(
+        "attach_file",
+        (
+            "Attach one existing workspace file to the final assistant response. "
+            "Use only for a final user deliverable; do not attach working files."
+        ),
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["path"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": _DELIVERY_MANIFEST_MAX_PATH_CHARS,
+                },
+                "display_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS,
+                },
+                "role": {
+                    "type": "string",
+                    "enum": ["primary", "supporting"],
+                },
+                "description": {
+                    "type": "string",
+                    "maxLength": _DELIVERY_MANIFEST_MAX_DESCRIPTION_CHARS,
+                },
+            },
+        },
+    )
+    async def attach_file(args):
+        try:
+            descriptor = _response_file_descriptor(
+                args,
+                workspace=workspace,
+                allowed_skill_names=allowed_skill_names,
+            )
+        except ValueError:
+            return _context_retrieval_tool_error(
+                "response_file_invalid",
+                action="response.attach_file",
+            )
+        existing_index = next(
+            (
+                index
+                for index, item in enumerate(attached_files)
+                if item["source_path"] == descriptor["source_path"]
+            ),
+            None,
         )
-        if source_path is None or source_path in seen_paths:
-            raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
-        descriptor: dict[str, str] = {"source_path": source_path}
-        display_name = raw.get("display_name")
-        if display_name is not None:
-            if (
-                not isinstance(display_name, str)
-                or not display_name.strip()
-                or len(display_name) > _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS
-                or "\x00" in display_name
-                or "/" in display_name
-                or "\\" in display_name
-                or display_name.strip() in {".", ".."}
-            ):
-                raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
-            descriptor["display_name"] = display_name.strip()
-        role = raw.get("role")
-        if role is not None:
-            if role not in {"primary", "supporting"}:
-                raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
-            descriptor["role"] = str(role)
-        description = raw.get("description")
-        if description is not None:
-            if (
-                not isinstance(description, str)
-                or len(description) > _DELIVERY_MANIFEST_MAX_DESCRIPTION_CHARS
-                or "\x00" in description
-            ):
-                raise ValueError(_SDK_DELIVERY_MANIFEST_INVALID)
-            if description.strip():
-                descriptor["description"] = description.strip()
-        seen_paths.add(source_path)
-        normalized.append(descriptor)
-    return answer, normalized
+        if existing_index is None:
+            if len(attached_files) >= _DELIVERY_MANIFEST_MAX_FILES:
+                return _context_retrieval_tool_error(
+                    "response_file_limit_exceeded",
+                    action="response.attach_file",
+                )
+            attached_files.append(descriptor)
+            position = len(attached_files) - 1
+        else:
+            attached_files[existing_index] = descriptor
+            position = existing_index
+        return _context_retrieval_tool_response(
+            {
+                "attached": True,
+                "position": position,
+            }
+        )
+
+    return create_server(
+        "ai-platform-response",
+        version="1.0.0",
+        tools=[attach_file],
+    )
 
 
 _WORKSPACE_PATH_PARAMETER = {
@@ -1793,24 +1825,6 @@ async def run_claude_agent_sdk(
         ToolPermissionContext = getattr(sdk, "ToolPermissionContext", ())
         TextBlock = sdk.TextBlock
         HookMatcher = getattr(sdk, "HookMatcher", None)
-        sdk_structured_output_supported = bool(
-            "structured_output" in getattr(ResultMessage, "__annotations__", {})
-            or "structured_output" in getattr(
-                ResultMessage, "__dataclass_fields__", {}
-            )
-            or hasattr(ResultMessage, "structured_output")
-        )
-
-        def is_sdk_internal_structured_output_tool(
-            tool_name: object,
-            tool_input: object,
-        ) -> bool:
-            return (
-                sdk_structured_output_supported
-                and tool_name == "StructuredOutput"
-                and isinstance(tool_input, dict)
-                and set(tool_input) == {"answer", "deliverables"}
-            )
 
         client_factory = client_fn or getattr(sdk, "ClaudeSDKClient", None)
         if client_factory is None:
@@ -1924,11 +1938,32 @@ async def run_claude_agent_sdk(
         and identity.removeprefix(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX)
         in _SDK_INTERNAL_CONTEXT_TOOLS
     ]
-    # Final deliverables come exclusively from ResultMessage.structured_output.
+    requested_internal_response_tools = [
+        identity.removeprefix(_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+        for identity in authorized_subjects
+        if identity.startswith(_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+    ]
+    if sandbox_brokered and requested_internal_response_tools and HookMatcher is None:
+        error_code = _SDK_TOOL_ADMISSION_FAILED
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True,
+            error=error_code,
+            turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code,
+                failure_source="sdk_configuration",
+                sdk_errors="response_tool_lifecycle_hooks_unavailable",
+            ),
+        )
+    # Internal platform MCP servers are constructed in-process below. Never
+    # accept caller-provided transport configuration for those identities.
     if sandbox_brokered:
         for identity in list(authorized_subjects):
             if identity.startswith(
-                (_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX, _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX)
+                (
+                    _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
+                    _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX,
+                )
             ):
                 authorized_subjects.pop(identity, None)
     full_access = _full_access_requested(settings) and not sandbox_brokered
@@ -2033,7 +2068,38 @@ async def run_claude_agent_sdk(
         if context_retrieval_server is not None
         else {}
     )
-    internal_platform_subjects = dict(internal_context_subjects)
+    try:
+        response_server = _build_response_mcp_server(
+            sdk,
+            workspace=cwd,
+            allowed_skill_names=allowed_skill_names,
+            attached_files=response_file_descriptors,
+        )
+    except Exception:  # noqa: BLE001 - optional response attachments stay unavailable.
+        response_server = None
+    internal_response_subjects = (
+        {
+            str(subject["identity"]): subject
+            for subject in internal_response_tool_policy_subjects()
+        }
+        if response_server is not None
+        else {}
+    )
+    if requested_internal_response_tools and response_server is None:
+        error_code = _SDK_TOOL_ADMISSION_FAILED
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True,
+            error=error_code,
+            turn_diagnostics=turn_diagnostics(error_code),
+            runtime_diagnostics=runtime_diagnostics(
+                error_code,
+                failure_source="response_file_registration",
+            ),
+        )
+    internal_platform_subjects = {
+        **internal_context_subjects,
+        **internal_response_subjects,
+    }
     if sandbox_brokered:
         for identity in internal_platform_subjects:
             if identity not in allowed_tools:
@@ -2042,6 +2108,9 @@ async def run_claude_agent_sdk(
         for tool_name in internal_context_tools:
             if tool_name not in allowed_tools:
                 allowed_tools.append(tool_name)
+    if response_server is not None and not sandbox_brokered:
+        if "attach_file" not in allowed_tools:
+            allowed_tools.append("attach_file")
     disallowed_tools = (
         []
         if sandbox_brokered
@@ -2075,6 +2144,8 @@ async def run_claude_agent_sdk(
         not sandbox_brokered or internal_context_subjects
     ):
         mcp_servers["ai-platform-context"] = context_retrieval_server
+    if response_server is not None:
+        mcp_servers["ai-platform-response"] = response_server
     capability_plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         tool_policy_subjects,
         available_skill_identities=allowed_skill_names,
@@ -2118,7 +2189,7 @@ async def run_claude_agent_sdk(
     read_only_tool_lifecycle_names = (
         sandbox_tool_lifecycle_names & SANDBOX_READ_ONLY_TOOL_IDENTITIES
     )
-    if sandbox_brokered and internal_context_subjects:
+    if sandbox_brokered and internal_platform_subjects:
         strict_tool_lifecycle_names.add("MCP")
     sandbox_bash_lifecycle_governed = "Bash" in strict_tool_lifecycle_names
     governed_builtin_lifecycle_rejected = False
@@ -2517,6 +2588,8 @@ async def run_claude_agent_sdk(
             (
                 f"mcp__ai-platform-context__{tool_name}"
                 if tool_name in internal_context_tools
+                else f"mcp__ai-platform-response__{tool_name}"
+                if tool_name == "attach_file" and response_server is not None
                 else tool_name
             )
             for tool_name in allowed_tools
@@ -2527,20 +2600,13 @@ async def run_claude_agent_sdk(
 
     def adapter_identity(tool_name: object) -> str:
         value = str(tool_name or "")
-        contextual_identity = f"mcp__ai-platform-context__{value}"
-        if contextual_identity in declared_tool_identities:
-            return contextual_identity
+        for server_id in ("ai-platform-context", "ai-platform-response"):
+            internal_identity = f"mcp__{server_id}__{value}"
+            if internal_identity in declared_tool_identities:
+                return internal_identity
         return mcp_registration.canonical_identity(value)
 
     def policy_for_tool(tool_name: object, tool_input: object):
-        if is_sdk_internal_structured_output_tool(tool_name, tool_input):
-            return ToolPolicyDecision(
-                outcome="allow",
-                reason="sdk_internal_structured_output_allowed",
-                canonical_identity="StructuredOutput",
-                risk_level="low",
-                write_capable=False,
-            )
         identity = adapter_identity(tool_name)
         selected_skills = (
             _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
@@ -2719,16 +2785,6 @@ async def run_claude_agent_sdk(
             "permissionDecision": decision.outcome,
             "permissionDecisionReason": decision.reason,
         }
-        if decision.allowed and is_sdk_internal_structured_output_tool(
-            tool_name, hook_input.get("tool_input")
-        ):
-            record_runtime_tool_stage(
-                tool_name=tool_name,
-                invocation_id=resolved_tool_call_id,
-                stage="protocol_allowed",
-                tool_input=hook_input.get("tool_input"),
-            )
-            return {"hookSpecificOutput": output}
         if decision.allowed:
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
@@ -3011,9 +3067,6 @@ async def run_claude_agent_sdk(
             if (
                 tool_name.lower() == "skill"
                 or identity.startswith("mcp__")
-                or is_sdk_internal_structured_output_tool(
-                    tool_name, hook_input.get("tool_input")
-                )
             ):
                 return {}
             call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
@@ -3159,12 +3212,10 @@ async def run_claude_agent_sdk(
         hooks=hooks,
         include_partial_messages=sandbox_partial_streaming,
         setting_sources=["project"],
-        output_format=_delivery_output_format(),
         **provider_session_options,
         **thinking_options,
     )
 
-    structured_result_text = ""
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
@@ -3297,8 +3348,9 @@ async def run_claude_agent_sdk(
 
     async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
-        nonlocal last_public_stage, structured_result_text, terminal_result_message
+        nonlocal last_public_stage, terminal_result_message
         answer_timeline = AssistantAnswerTimeline()
+        terminal_answer_empty = False
         async for message in messages:
             mcp_registration.check_message(message)
             if isinstance(message, MirrorErrorMessage):
@@ -3342,10 +3394,12 @@ async def run_claude_agent_sdk(
                     register_dynamic_tool_call_id(
                         raw_stream_event["content_block"].get("id")
                     )
-                if stream_projector is None or sdk_structured_output_supported:
+                if stream_projector is None:
                     continue
                 for text in stream_projector.accept(raw_stream_event):
-                    for public_text in answer_stream_gate.accept(answer_timeline.accept_delta(text)):
+                    for public_text in answer_stream_gate.accept(
+                        answer_timeline.accept_delta(text)
+                    ):
                         await publish_terminal_text(public_text)
                 continue
             if isinstance(message, AssistantMessage):
@@ -3381,12 +3435,7 @@ async def run_claude_agent_sdk(
                     and all(isinstance(text, str) for text in assistant_text_blocks)
                     else None
                 )
-                if (
-                    sdk_structured_output_supported
-                    and contains_tool_use
-                    and assistant_text
-                    and agent_event_adapter is not None
-                ):
+                if contains_tool_use and assistant_text and agent_event_adapter is not None:
                     last_public_stage = "message"
                     public_commentary = "".join(
                         project_public_commentary(assistant_text)
@@ -3399,7 +3448,7 @@ async def run_claude_agent_sdk(
                                 already_gated=True,
                             )
                         )
-                elif not sdk_structured_output_supported:
+                elif not contains_tool_use:
                     last_public_stage = "message"
                     for public_text in answer_stream_gate.accept(
                         answer_timeline.accept_assistant(assistant_text)
@@ -3528,53 +3577,56 @@ async def run_claude_agent_sdk(
                         turn_diagnostics=turn_diagnostics(error_code),
                         capability_evidence=list(capability_evidence),
                     )
-                structured_output = getattr(message, "structured_output", None)
-                if sdk_structured_output_supported and structured_output is not None:
-                    try:
-                        final_answer, declared_files = _delivery_manifest(
-                            structured_output,
+                final_answer = str(message.result or "")
+                terminal_answer_empty = not final_answer.strip()
+                try:
+                    response_file_descriptors[:] = [
+                        _response_file_descriptor(
+                            {
+                                "path": descriptor["source_path"],
+                                **{
+                                    key: descriptor[key]
+                                    for key in ("display_name", "role", "description")
+                                    if key in descriptor
+                                },
+                            },
                             workspace=cwd,
                             allowed_skill_names=allowed_skill_names,
                         )
-                    except ValueError:
-                        answer_stream_gate.finish(final_text="", release=False)
-                        seal_agent_candidates("delivery_manifest_invalid")
-                        return ClaudeAgentSdkRunResult(
-                            used_sdk=True,
-                            message="",
-                            session_id=result_session_id,
-                            usage=usage,
-                            error=_SDK_DELIVERY_MANIFEST_INVALID,
+                        for descriptor in response_file_descriptors
+                    ]
+                except (KeyError, ValueError):
+                    answer_stream_gate.finish(final_text="", release=False)
+                    seal_agent_candidates("attached_file_invalid")
+                    return ClaudeAgentSdkRunResult(
+                        used_sdk=True,
+                        message="",
+                        session_id=result_session_id,
+                        usage=usage,
+                        error=_SDK_DELIVERY_MANIFEST_INVALID,
+                        terminal_reason=resolved_terminal_reason,
+                        received_structured_terminal=False,
+                        used_skills=list(used_skill_names),
+                        used_skills_source=(
+                            "executor_hook" if used_skill_names else ""
+                        ),
+                        turn_diagnostics=turn_diagnostics(
+                            _SDK_DELIVERY_MANIFEST_INVALID
+                        ),
+                        runtime_diagnostics=runtime_diagnostics(
+                            _SDK_DELIVERY_MANIFEST_INVALID,
+                            failure_source="sdk_attached_file",
+                            result_subtype=getattr(message, "subtype", None),
+                            stop_reason=getattr(message, "stop_reason", None),
                             terminal_reason=resolved_terminal_reason,
-                            received_structured_terminal=False,
-                            used_skills=list(used_skill_names),
-                            used_skills_source=(
-                                "executor_hook" if used_skill_names else ""
-                            ),
-                            turn_diagnostics=turn_diagnostics(
-                                _SDK_DELIVERY_MANIFEST_INVALID
-                            ),
-                            runtime_diagnostics=runtime_diagnostics(
-                                _SDK_DELIVERY_MANIFEST_INVALID,
-                                failure_source="sdk_delivery_manifest",
-                                result_subtype=getattr(message, "subtype", None),
-                                stop_reason=getattr(message, "stop_reason", None),
-                                terminal_reason=resolved_terminal_reason,
-                            ),
-                            capability_evidence=list(capability_evidence),
-                        )
-                    response_file_descriptors[:] = declared_files
-                    response_files[:] = [
-                        item["source_path"] for item in declared_files
-                    ]
-                else:
-                    final_answer = str(message.result or "")
-                    response_file_descriptors[:] = [
-                        {"source_path": path} for path in response_files
-                    ]
+                        ),
+                        capability_evidence=list(capability_evidence),
+                    )
+                response_files[:] = [
+                    item["source_path"] for item in response_file_descriptors
+                ]
                 received_structured_terminal = True
                 answer_timeline.accept_result(final_answer)
-                structured_result_text = answer_timeline.text
                 stop_reason = getattr(message, "stop_reason", None)
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
@@ -3612,6 +3664,8 @@ async def run_claude_agent_sdk(
             completion_error = capability_completion_error()
             if completion_error is not None:
                 terminal_error = mcp_execution_receipt_error() or completion_error
+        if terminal_error is None and terminal_answer_empty:
+            terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL
         finished_answer = answer_stream_gate.finish(
             final_text=answer_timeline.text,
             release=True,
@@ -3658,14 +3712,14 @@ async def run_claude_agent_sdk(
             if terminal_error is None and sandbox_brokered and agent_event_adapter is not None
             else None
         )
-        public_structured_result_text = (
+        public_final_result_text = (
             ""
             if terminal_error == "agent_event_callback_not_acknowledged"
             else delivered_final_text if not answer_stream_gate.failed else ""
         )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
-            message="" if answer_receipt is not None else public_structured_result_text,
+            message="" if answer_receipt is not None else public_final_result_text,
             answer_receipt=answer_receipt,
             session_id=result_session_id,
             usage=usage,

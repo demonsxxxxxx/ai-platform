@@ -828,6 +828,28 @@ def test_successful_terminal_projection_without_answer_is_result_unavailable():
     assert "任务完成" not in str(projection)
 
 
+def test_successful_terminal_projection_strips_legacy_artifact_link_suffix():
+    projection = public_chat_terminal_projection(
+        {
+            "id": "run-legacy-artifact-links",
+            "status": "succeeded",
+            "result_json": {
+                "message": (
+                    "交付已完成。\n\n"
+                    "输出文件:\n"
+                    "- 报告.docx: /api/ai/artifacts/art-report/download\n"
+                    "- 数据.xlsx: /api/ai/artifacts/art-data/download"
+                )
+            },
+        }
+    )
+
+    assert projection is not None
+    assert projection["event_type"] == "message:chunk"
+    assert projection["message"] == "交付已完成。"
+    assert "/api/ai/artifacts/" not in str(projection)
+
+
 def test_live_delta_and_terminal_final_converge_to_same_public_text():
     run = {
         "id": "run-a",

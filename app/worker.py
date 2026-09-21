@@ -46,7 +46,7 @@ from app.db import transaction
 from app.execution.api import (
     WorkerAttemptLifecycle,
     WorkerExecutorReconciliation,
-    WorkerQueueLease, WorkerRunCancelled, AnswerPersistenceLimits, append_artifact_links,
+    WorkerQueueLease, WorkerRunCancelled, AnswerPersistenceLimits, assistant_artifact_metadata, sanitize_assistant_message,
     bind_worker_attempt_lifecycle,
     build_artifact_execution_owner,
     build_artifact_records,
@@ -2729,7 +2729,7 @@ async def process_run_payload(
     result_payload = {
         **public_result,
         **observability,
-        "message": append_artifact_links(str(result.result.get("message") or ""), artifact_records),
+        "message": sanitize_assistant_message(str(result.result.get("message") or "")),
         "artifacts": [
             {
                 "id": item["id"],
@@ -2975,7 +2975,7 @@ async def process_run_payload(
                              if assistant_message_for_persistence is not None
                              else str(result_payload.get("message") or "")),
                     metadata_json={
-                        "artifact_count": len(result.artifacts),
+                        **assistant_artifact_metadata(artifact_records),
                         "executor_type": result.executor_type,
                         "adapter_version": result.adapter_version,
                         **assistant_message_metadata,

@@ -2411,7 +2411,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
-    assert len(messages) == 1 and messages[0].startswith("done\n\n输出文件:\n- Result:")
+    assert messages == ["done"]
     assert ("complete", "run-a") in calls
     assert ("attempt_fence", "worker-original", "qat-attempt-a") in calls
     assert ("attempt_terminal", "rat-attempt-a", "succeeded") in calls
@@ -9743,8 +9743,9 @@ def test_explicit_empty_adapter_registry_does_not_fall_back_to_defaults():
 
 
 @pytest.mark.asyncio
-async def test_worker_adds_artifact_links_to_success_result_message(monkeypatch):
+async def test_worker_keeps_artifacts_out_of_success_message_text(monkeypatch):
     calls = []
+    persisted_messages = []
 
     class LocalPathAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -9786,12 +9787,16 @@ async def test_worker_adds_artifact_links_to_success_result_message(monkeypatch)
         calls.append(("complete", result_json))
         return True
 
+    async def append_message(conn, **kwargs):
+        persisted_messages.append(kwargs)
+        return "msg-a"
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     generated_ids = iter(["art_reviewed"])
     monkeypatch.setattr("app.worker.repositories.new_id", lambda prefix: next(generated_ids))
 
@@ -9799,12 +9804,21 @@ async def test_worker_adds_artifact_links_to_success_result_message(monkeypatch)
 
     assert outcome.status == "succeeded"
     complete_payload = next(item[1] for item in calls if item[0] == "complete")
-    assert "/tmp/workspace" not in complete_payload["message"]
-    assert "审核 Word: /api/ai/artifacts/art_reviewed/download" in complete_payload["message"]
+    assert complete_payload["message"] == "文件审核"
+    assert "/api/ai/artifacts/" not in complete_payload["message"]
     assert complete_payload["artifacts"][0]["id"] == "art_reviewed"
     assert complete_payload["artifacts"][0]["download_url"] == "/api/ai/artifacts/art_reviewed/download"
     assert "storage_key" not in complete_payload["artifacts"][0]
     assert "tenants/" not in str(complete_payload)
+    assert persisted_messages[0]["content"] == "文件审核"
+    assert persisted_messages[0]["metadata_json"]["artifact_ids"] == [
+        "art_reviewed"
+    ]
+    assert persisted_messages[0]["metadata_json"]["artifact_count"] == 1
+    assert (
+        persisted_messages[0]["metadata_json"]["artifact_delivery"]
+        == "assistant_message_parts_v1"
+    )
 
 
 @pytest.mark.asyncio
