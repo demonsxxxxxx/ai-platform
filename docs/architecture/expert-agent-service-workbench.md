@@ -94,6 +94,18 @@ manufacture private instructions, model, Skill, ACL, or capability authority.
 Publishing may continue to surface quality guidance without moving authority to
 the browser.
 
+### Expert administration
+
+1. A published expert must be withdrawn before deletion is enabled.
+2. Delete retires the active profile identity and removes it from the admin
+   directory; it does not erase immutable revisions, Sessions, Runs, messages,
+   or audit evidence, and the retired Agent ID cannot be reused.
+3. Ordinary global and expert-scoped history navigation lists only conversations
+   whose profile identity remains active and whose current lifecycle is
+   published. An owner may retain read-only access through an existing exact
+   Session link for audit continuity.
+4. The confirmation states the retained evidence and irreversible ID retirement.
+
 ### Skill administration
 
 1. Destructive copy and icons use “Archive”, not “Delete”.

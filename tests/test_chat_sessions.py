@@ -82,7 +82,7 @@ async def test_list_sessions_returns_authorized_rows(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ordinary_session_repository_lists_pinned_agent_conversations():
+async def test_ordinary_session_repository_filters_even_unpinned_profile_conversations():
     captured = {}
 
     class Cursor:
@@ -103,6 +103,11 @@ async def test_ordinary_session_repository_lists_pinned_agent_conversations():
     assert "left join lateral" in normalized
     assert "sessions.title_source = 'initial'" in normalized
     assert "sessions.title = profile.name" in normalized
+    assert "left join agent_profiles current_profile" in normalized
+    assert "session_agent.agent_type is distinct from 'profile'" in normalized
+    assert "current_profile.lifecycle_status = 'published'" in normalized
+    assert "sessions.admitted_agent_profile_revision is null" not in normalized
+    assert "session_agent.status = 'active'" in normalized
     assert "messages.tenant_id = sessions.tenant_id" in normalized
     assert "messages.session_id = sessions.id" in normalized
     assert "messages.role = 'user'" in normalized
@@ -167,6 +172,11 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
     assert "profile.agent_id = sessions.agent_id" in normalized
     assert "profile.revision = sessions.admitted_agent_profile_revision" in normalized
     assert "profile.content_hash = sessions.admitted_agent_profile_hash" in normalized
+    assert "join agent_profiles current_profile" in normalized
+    assert "current_profile.lifecycle_status = 'published'" in normalized
+    assert "join agents current_agent" in normalized
+    assert "current_agent.status = 'active'" in normalized
+    assert "current_profile.lifecycle_status = 'published'" not in detail_normalized
     assert (
         "profile.skill_set @> '[{\"skill_id\": \"baoyu-translate\"}]'::jsonb)"
         " as agent_profile_has_retired_skill"
@@ -405,7 +415,7 @@ def test_retired_session_projection_detects_non_primary_profile_skill():
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_preserves_owned_history_without_current_publication(
+async def test_list_sessions_delegates_current_publication_filtering_to_repository(
     monkeypatch,
 ):
     calls: list[tuple[object, ...]] = []

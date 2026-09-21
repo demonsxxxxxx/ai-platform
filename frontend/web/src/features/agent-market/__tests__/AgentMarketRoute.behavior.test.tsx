@@ -1337,7 +1337,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
   }
 });
 
-test("a withdrawn Agent keeps its owned pinned conversation visible and read-only", async () => {
+test("a withdrawn or retired Agent direct link stays read-only without navigation history", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
@@ -1366,18 +1366,7 @@ test("a withdrawn Agent keeps its owned pinned conversation visible and read-onl
   agentProfileApi.listConversations = async (selection) => {
     historySelections.push(selection);
     return {
-      sessions: [
-        {
-          session_id: "session-v4",
-          workspace_id: "default",
-          agent_id: "agt_support",
-          title: "V4 历史会话",
-          purpose: "conversation",
-          created_at: "2026-08-03T01:00:00Z",
-          updated_at: "2026-08-04T01:00:00Z",
-          agent_conversation: historicalIdentity,
-        },
-      ],
+      sessions: [],
       next_cursor: null,
     };
   };
@@ -1433,6 +1422,7 @@ test("a withdrawn Agent keeps its owned pinned conversation visible and read-onl
     ]);
     assert.deepEqual(conversationSelections, []);
     assert.match(container.textContent, /已下架支持助手 V4/);
+    assert.doesNotMatch(container.textContent, /V4 历史会话/);
     const composer = container.querySelector("textarea");
     assert.ok(composer, "the historical transcript keeps its composer frame");
     assert.equal(composer.hasAttribute("disabled"), true);

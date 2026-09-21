@@ -8,6 +8,7 @@ def test_agent_profile_authority_exposes_one_deep_lifecycle_interface():
         "save_draft",
         "publish_draft",
         "unpublish",
+        "retire",
         "validate_draft",
         "list_public",
         "get_public",

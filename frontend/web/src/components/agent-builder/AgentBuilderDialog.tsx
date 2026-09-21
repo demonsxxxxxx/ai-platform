@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 interface AgentBuilderDialogProps {
   isOpen: boolean;
   title: string;
+  descriptionId?: string;
   onClose: () => void;
   children: React.ReactNode;
 }
@@ -21,6 +22,7 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 export function AgentBuilderDialog({
   isOpen,
   title,
+  descriptionId,
   onClose,
   children,
 }: AgentBuilderDialogProps) {
@@ -91,6 +93,7 @@ export function AgentBuilderDialog({
       />
       <div
         ref={dialogRef}
+        aria-describedby={descriptionId}
         aria-modal="true"
         aria-label={title}
         role="dialog"

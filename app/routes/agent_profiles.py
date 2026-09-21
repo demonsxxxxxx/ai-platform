@@ -2,6 +2,8 @@ import unicodedata
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
+from pydantic import BaseModel, ConfigDict, Field
+
 from app import repositories
 from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -39,6 +41,14 @@ _DEDICATED_OVERRIDE_HEADERS = frozenset(
         "x-mcp-tool-ids",
     }
 )
+
+
+class AgentProfileRetireRequest(BaseModel):
+    """Optimistic lock for retiring one non-published profile identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
 
 
 def configure_agent_profile_favorites(*, favorite_ids_loader, favorite_setter) -> None:
@@ -445,3 +455,30 @@ async def unpublish_agent_profile(
     except repositories.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
+
+
+@router.delete("/admin/agent-profiles/{agent_id}")
+async def retire_agent_profile(
+    agent_id: str,
+    request: AgentProfileRetireRequest,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, str]:
+    """Retire one draft or withdrawn profile while preserving immutable evidence."""
+
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    try:
+        safe_agent_id = assert_safe_id(agent_id, "agent_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="agent_id_invalid") from exc
+    try:
+        async with transaction() as conn:
+            audit_id = await _authority.retire(
+                conn,
+                principal=principal,
+                agent_id=safe_agent_id,
+                expected_revision=request.expected_revision,
+            )
+    except repositories.RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
+    return {"agent_id": safe_agent_id, "audit_id": audit_id}

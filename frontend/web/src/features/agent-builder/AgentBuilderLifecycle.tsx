@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { Archive, FlaskConical, History, RefreshCw } from "lucide-react";
+import { Archive, CircleAlert, FlaskConical, History, RefreshCw, Trash2 } from "lucide-react";
+
+import { AgentBuilderDialog } from "../../components/agent-builder/AgentBuilderDialog";
 
 import { agentProfileApi } from "../../services/api/agentProfile";
 import type { AgentProfileAdminProjection } from "../../types";
@@ -12,18 +14,21 @@ export function AgentBuilderLifecycle({
   mutation,
   onRunTest,
   onUnpublish,
+  onRetire,
 }: {
   disabled: boolean;
   editor: AgentBuilderEditor;
   mutation: AgentBuilderMutationState;
   onRunTest: (message: string) => void;
   onUnpublish: (publishedRevision: number) => void;
+  onRetire: () => void;
 }) {
   const [history, setHistory] = useState<AgentProfileAdminProjection[]>([]);
   const [historyState, setHistoryState] = useState<"idle" | "loading" | "ready" | "error">(
     "idle",
   );
   const [testMessage, setTestMessage] = useState("");
+  const [retireConfirmationOpen, setRetireConfirmationOpen] = useState(false);
 
   useEffect(() => {
     const agentId = editor.agentId;
@@ -60,6 +65,12 @@ export function AgentBuilderLifecycle({
   const publishedRevision = editor.publishedRevision ?? historyPublishedRevision;
   const canUnpublish = Boolean(
     editor.agentId && publishedRevision && !isAgentProfileEditorDirty(editor),
+  );
+  const canRetire = Boolean(
+    editor.agentId &&
+      editor.revision &&
+      editor.publishedRevision === null &&
+      !isAgentProfileEditorDirty(editor),
   );
   const trialRun = mutation.phase === "success" && mutation.action === "test"
     ? mutation.trialRun
@@ -133,7 +144,7 @@ export function AgentBuilderLifecycle({
         <p className="text-sm text-[var(--theme-text-secondary)]">保存后显示不可变版本历史</p>
       )}
 
-      <div className="mt-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-end">
+      <div className="mt-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-end">
         <label className="flex min-w-0 flex-col gap-2">
           <span className="text-sm font-medium">测试消息</span>
           <input
@@ -171,6 +182,21 @@ export function AgentBuilderLifecycle({
           )}
           {mutation.phase === "unpublishing" ? "下架中" : "下架"}
         </button>
+        <button
+          aria-label={editor.publishedRevision ? "删除当前专家，请先下架" : "删除当前专家"}
+          className="btn-secondary inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger)] disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={disabled || !canRetire}
+          onClick={() => setRetireConfirmationOpen(true)}
+          title={editor.publishedRevision ? "请先下架当前专家" : "删除当前专家"}
+          type="button"
+        >
+          {mutation.phase === "deleting" ? (
+            <RefreshCw aria-hidden="true" className="animate-spin" size={16} />
+          ) : (
+            <Trash2 aria-hidden="true" size={16} />
+          )}
+          {mutation.phase === "deleting" ? "删除中" : "删除"}
+        </button>
       </div>
 
       {trialRun ? (
@@ -189,6 +215,46 @@ export function AgentBuilderLifecycle({
           </div>
         </dl>
       ) : null}
+
+      <AgentBuilderDialog
+        descriptionId="agent-profile-retire-warning"
+        isOpen={retireConfirmationOpen}
+        onClose={() => setRetireConfirmationOpen(false)}
+        title="删除专家？"
+      >
+        <div className="flex items-start gap-3">
+          <CircleAlert
+            aria-hidden="true"
+            className="mt-0.5 shrink-0 text-[var(--theme-warning)]"
+            size={19}
+          />
+          <p
+            className="text-sm leading-6 text-[var(--theme-text-secondary)]"
+            id="agent-profile-retire-warning"
+          >
+            删除后，该专家会从管理目录和用户历史导航中移除，且专家 ID 不可复用。不可变版本、历史运行、会话和审计记录仍会保留。
+          </p>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            className="btn-secondary"
+            onClick={() => setRetireConfirmationOpen(false)}
+            type="button"
+          >
+            取消
+          </button>
+          <button
+            className="btn-secondary border-[var(--theme-danger)] text-[var(--theme-danger)]"
+            onClick={() => {
+              setRetireConfirmationOpen(false);
+              onRetire();
+            }}
+            type="button"
+          >
+            确认删除
+          </button>
+        </div>
+      </AgentBuilderDialog>
     </section>
   );
 }

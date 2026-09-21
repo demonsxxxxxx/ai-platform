@@ -510,6 +510,57 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
   }
 });
 
+test("mounted delete confirms retained evidence and removes a draft profile", async () => {
+  const document = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  const retireCalls: unknown[][] = [];
+  agentProfileApi.listAdmin = async () => ({ agent_profiles: [profile()] });
+  agentProfileApi.retire = async (...args) => {
+    retireCalls.push(args);
+    return { agent_id: "agt_support", audit_id: "audit-retire" };
+  };
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container as never);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog(),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+
+    await React.act(async () => {
+      await reactProps(findButton(container, "删除")).onClick?.({} as never);
+      await Promise.resolve();
+    });
+    assert.match(document.body.textContent, /专家 ID 不可复用/);
+    assert.match(document.body.textContent, /历史运行、会话和审计记录仍会保留/);
+    const confirmation = document.body.querySelector('[role="dialog"]');
+    assert.equal(
+      confirmation?.getAttribute("aria-describedby"),
+      "agent-profile-retire-warning",
+    );
+    assert.ok(document.body.querySelector('[id="agent-profile-retire-warning"]'));
+
+    await React.act(async () => {
+      await reactProps(findButton(document.body, "确认删除")).onClick?.({} as never);
+      await flush();
+    });
+
+    assert.deepEqual(retireCalls, [["agt_support", 4]]);
+    assert.match(container.textContent, /当前没有服务端专家/);
+    assert.match(container.textContent, /专家已删除，历史运行和审计记录仍保留/);
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
 test("mounted starter prompts preserve separators while editing and normalize on blur", async () => {
   const document = installDom();
   const ReactDOM = await import("react-dom/client");

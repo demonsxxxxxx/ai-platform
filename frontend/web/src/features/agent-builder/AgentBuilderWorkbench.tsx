@@ -123,6 +123,7 @@ export function AgentBuilderWorkbench({
     workbench.mutation.phase === "saving" ||
     workbench.mutation.phase === "publishing" ||
     workbench.mutation.phase === "unpublishing" ||
+    workbench.mutation.phase === "deleting" ||
     workbench.mutation.phase === "testing";
   const interactionBusy = mutationBusy || workbench.destructiveReloadPending;
   const skillCatalogResolved = catalog.skillsResolved && catalog.effectivePermissionsKnown;
@@ -151,7 +152,9 @@ export function AgentBuilderWorkbench({
               ? "发布成功，发布版本已更新。"
               : workbench.mutation.action === "unpublish"
                 ? "已下架，发布版本未新增。"
-                : "受控测试运行已创建。",
+                : workbench.mutation.action === "delete"
+                  ? "专家已删除，历史运行和审计记录仍保留。"
+                  : "受控测试运行已创建。",
         }
       : null;
   const canRecoverServerRevision = workbench.mutation.phase === "error" &&
@@ -475,6 +478,12 @@ export function AgentBuilderWorkbench({
                 <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">
                   从专家目录选择一位专家，或新建专家。
                 </p>
+                {workbench.mutation.phase === "success" &&
+                workbench.mutation.action === "delete" ? (
+                  <p className="mt-3 text-sm text-[var(--theme-success)]" role="status">
+                    专家已删除，历史运行和审计记录仍保留。
+                  </p>
+                ) : null}
               </div>
             </div>
           ) : (
@@ -770,6 +779,7 @@ export function AgentBuilderWorkbench({
                 onRunTest={(message) => void controller.runActiveProfileTest(message)}
                 onUnpublish={(publishedRevision) =>
                   void controller.unpublishActiveProfile(publishedRevision)}
+                onRetire={() => void controller.retireActiveProfile()}
               />
             </div>
           )}
