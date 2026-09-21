@@ -47,9 +47,9 @@ types used by this adapter.
 | `query` | Keyword `prompt`, `options`, and optional `transport` remain available | The async iterator stays inside the runner adapter |
 | `ClaudeAgentOptions` | Existing model, system prompt, tools, hooks, session, limits, and stream fields remain available | Constructed only after platform admission and Skill-name validation |
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
-| Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` retain the consumed shapes | Structured mode ignores partial text, can project complete tool-using `TextBlock` content as commentary, and never projects `ThinkingBlock` content |
+| Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` retain the consumed shapes | Structured mode keeps SDK message identity, typed block kind, `stop_reason`, and parent-tool identity through the turn buffer; safe text from a tool-use turn becomes commentary and `ThinkingBlock` content is never projected |
 | Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Structured `ResultMessage` is executor completion evidence; Runs owns the durable business terminal outcome; abnormal reasons fail closed |
-| Partial streaming | `include_partial_messages=True` remains supported | Partial events register Tool identities and feed only the non-structured answer fallback; structured answer publication waits for `ResultMessage` |
+| Partial streaming | `include_partial_messages=True` remains supported | Partial events register Tool identities and remain executor-private until a typed Assistant turn boundary; tool-use text is projected only through commentary, while terminal `ResultMessage` remains the final answer authority |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |

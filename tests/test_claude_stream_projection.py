@@ -55,7 +55,7 @@ def _stop(index=0):
     "text", ["没有标点的中文", "，继续输出", "x" * 4097, "中" * 262_145],
     ids=["chinese", "comma", "former-lexical-limit", "long-fragment"],
 )
-def test_projector_forwards_text_before_stop_without_a_lexical_or_length_gate(text):
+def test_projector_collects_text_before_stop_without_a_lexical_or_length_gate(text):
     projector = _projector()
     assert projector.accept(_start()) == ()
     assert projector.accept(_text_delta(text)) == (text,)
@@ -65,7 +65,33 @@ def test_projector_forwards_text_before_stop_without_a_lexical_or_length_gate(te
     assert projector.partial_emitted is True
 
 
-def test_parser_output_passes_the_public_gate_for_cross_chunk_redaction():
+def test_projector_preserves_sdk_turn_identity_and_stop_reason_until_finish():
+    projector = _projector()
+    projector.accept(
+        {
+            "type": "message_start",
+            "message": {"id": "sdk-message", "stop_reason": None},
+        },
+        parent_tool_use_id="parent-tool",
+    )
+    projector.accept(_start())
+    projector.accept(_text_delta("progress"))
+    projector.accept(_stop())
+    projector.accept(
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        parent_tool_use_id="parent-tool",
+    )
+
+    turn = projector.finish_turn()
+
+    assert turn.text == "progress"
+    assert turn.message_id == "sdk-message"
+    assert turn.stop_reason == "tool_use"
+    assert turn.parent_tool_use_id == "parent-tool"
+    assert turn.has_tool_use is False
+    assert turn.is_commentary is True
+
+
     from app.executors.public_answer_stream import PublicAnswerStreamGate
 
     parser = _projector()
