@@ -173,7 +173,6 @@ _SDK_EXECUTION_RECEIPT_INCOMPLETE = "claude_agent_sdk_execution_receipt_incomple
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
 _SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
 _SDK_AUTOCOMPACT_TARGET_PERCENT = 80
-_SDK_AUTOCOMPACT_MIN_TOKENS = 100_000
 _SDK_AUTOCOMPACT_MAX_TOKENS = 1_000_000
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
 _MAX_TURN_DIAGNOSTIC_COUNTER = 1_000_000
@@ -636,10 +635,7 @@ def _sdk_autocompact_window(model_max_input_tokens: int | None) -> int | None:
     if model_max_input_tokens is None:
         return None
     target = model_max_input_tokens * _SDK_AUTOCOMPACT_TARGET_PERCENT // 100
-    return min(
-        _SDK_AUTOCOMPACT_MAX_TOKENS,
-        max(_SDK_AUTOCOMPACT_MIN_TOKENS, target),
-    )
+    return min(_SDK_AUTOCOMPACT_MAX_TOKENS, target)
 
 
 def build_sdk_env(*, cwd: Path | None = None, model_max_output_tokens: int | None = None) -> dict[str, str]:
