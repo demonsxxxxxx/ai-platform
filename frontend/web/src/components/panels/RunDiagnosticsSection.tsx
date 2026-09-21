@@ -40,10 +40,18 @@ export function RunDiagnosticsSection({
   diagnostics,
   loading,
   error,
+  exporting = false,
+  exportError = null,
+  onRetry,
+  onExport,
 }: {
   diagnostics: AdminRunDiagnosticsResponse | null;
   loading: boolean;
   error: string | null;
+  exporting?: boolean;
+  exportError?: string | null;
+  onRetry?: () => void;
+  onExport?: () => void;
 }) {
   if (loading && !diagnostics) {
     return (
@@ -57,7 +65,14 @@ export function RunDiagnosticsSection({
     return (
       <section className="p-4" data-run-runtime-diagnostics>
         <h3 className="text-xs font-semibold text-[var(--theme-text)]">执行诊断</h3>
-        <p className="mt-2 text-xs text-[var(--theme-danger)]">诊断读取失败：{error}</p>
+        <div role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">
+          诊断读取失败：{error}
+        </div>
+        {onRetry ? (
+          <button type="button" className="btn-secondary mt-3 rounded-md px-3 py-1.5 text-xs" onClick={onRetry}>
+            重新读取诊断
+          </button>
+        ) : null}
       </section>
     );
   }
@@ -75,10 +90,12 @@ export function RunDiagnosticsSection({
   const observationEvidence = diagnostics.details.observations ?? [];
   const toolEvidence = observationEvidence.length
     ? observationEvidence.flatMap((observation) => [
+        ...observation.tool_lifecycles,
         ...observation.tool_calls,
         ...observation.tool_policy_denials,
       ])
     : [
+        ...diagnostics.details.tool_lifecycles,
         ...diagnostics.details.tool_calls,
         ...diagnostics.details.tool_policy_denials,
       ];
@@ -87,11 +104,28 @@ export function RunDiagnosticsSection({
     <section className="p-4" data-run-runtime-diagnostics>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-[var(--theme-text)]">执行诊断</h3>
-        <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-          {COVERAGE_LABELS[diagnostics.coverage] ?? diagnostics.coverage}
-          {diagnostics.revision ? ` · r${diagnostics.revision}` : ""}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+            {COVERAGE_LABELS[diagnostics.coverage] ?? diagnostics.coverage}
+            {diagnostics.revision ? ` · r${diagnostics.revision}` : ""}
+          </span>
+          {onExport ? (
+            <button
+              type="button"
+              className="btn-secondary rounded-md px-2.5 py-1 text-[11px]"
+              onClick={onExport}
+              disabled={exporting}
+            >
+              {exporting ? "正在生成…" : "下载脱敏诊断包"}
+            </button>
+          ) : null}
+        </div>
       </div>
+      {exportError ? (
+        <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">
+          诊断包生成失败：{exportError}
+        </p>
+      ) : null}
       {diagnostics.coverage === "not_collected" ? (
         <p className="mt-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
           此 Run 没有可用的私有诊断记录。业务状态仍可从上方状态与时间线判断。

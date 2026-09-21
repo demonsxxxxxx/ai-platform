@@ -47,6 +47,23 @@ def _install_admin_cancel(monkeypatch, handler):
     )
 
 
+def _install_admin_monitor_metadata(monkeypatch, metadata):
+    class AdminMonitorMetadataService:
+        async def read_admin_monitor_metadata(self, _conn, *, tenant_id, run_ids):
+            assert tenant_id == "default"
+            return {
+                run_id: dict(metadata[run_id])
+                for run_id in run_ids
+                if run_id in metadata
+            }
+
+    service = AdminMonitorMetadataService()
+    monkeypatch.setattr(
+        "app.routes.admin_runs._require_run_diagnostics_service",
+        lambda _request: service,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _install_test_run_stream_runtime(monkeypatch):
     original_create_app = create_app
@@ -209,6 +226,19 @@ def test_admin_run_list_returns_tenant_scoped_summaries(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runs.repositories.list_admin_runs", fake_list_admin_runs, raising=False)
     monkeypatch.setattr("app.routes.admin_runs.get_run_queue_position", fake_get_run_queue_position, raising=False)
     monkeypatch.setattr("app.routes.admin_runs.get_queue_insight", fake_get_queue_insight, raising=False)
+    _install_admin_monitor_metadata(
+        monkeypatch,
+        {
+            "run_a": {
+                "session_title": "审核采购合同",
+                "task_summary": "请审核采购合同中的付款条款",
+                "user_display_name": "王敏",
+                "workspace_name": "法务工作区",
+                "agent_name": "合同审阅助手",
+                "skill_name": "合同审阅",
+            }
+        },
+    )
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runs?user_id=user-a&status=queued&limit=25", headers=headers())
@@ -218,6 +248,11 @@ def test_admin_run_list_returns_tenant_scoped_summaries(monkeypatch):
     assert data["limit"] == 25
     assert data["runs"][0]["run_id"] == "run_a"
     assert data["runs"][0]["user_id"] == "user-a"
+    assert data["runs"][0]["session_title"] == "审核采购合同"
+    assert data["runs"][0]["user_display_name"] == "王敏"
+    assert data["runs"][0]["workspace_name"] == "法务工作区"
+    assert data["runs"][0]["agent_name"] == "合同审阅助手"
+    assert data["runs"][0]["skill_name"] == "合同审阅"
     assert data["runs"][0]["queue_position"] == 2
     assert data["runs"][0]["queue_insight"]["reason"] == "workers_busy"
     assert calls == [("default", "user-a", "queued", 25)]
@@ -248,6 +283,19 @@ def test_admin_run_list_sanitizes_secret_like_error_fields(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.admin_runs.repositories.list_admin_runs", fake_list_admin_runs, raising=False)
+    _install_admin_monitor_metadata(
+        monkeypatch,
+        {
+            "run_a": {
+                "session_title": "Review token=admin-list-title-token",
+                "task_summary": "Summarize client_secret=admin-list-task-token",
+                "user_display_name": "User token=admin-list-user-token",
+                "workspace_name": "/var/lib/ai-platform/private-workspace",
+                "agent_name": "Agent token=admin-list-agent-token",
+                "skill_name": "Skill token=admin-list-skill-token",
+            }
+        },
+    )
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runs", headers=headers())
@@ -256,6 +304,12 @@ def test_admin_run_list_sanitizes_secret_like_error_fields(monkeypatch):
     run = response.json()["runs"][0]
     assert run["error_code"] == "executor_failure token=[redacted-secret]"
     assert run["error_message"] == ""
+    assert run["session_title"] == "Review token=[redacted-secret]"
+    assert run["task_summary"] == "Summarize client_secret=[redacted-secret]"
+    assert run["user_display_name"] == "User token=[redacted-secret]"
+    assert run["workspace_name"] is None
+    assert run["agent_name"] == "Agent token=[redacted-secret]"
+    assert run["skill_name"] == "Skill token=[redacted-secret]"
     assert "admin-list-code-token" not in str(run)
     assert "admin-list-message-token" not in str(run)
     assert "/var/lib/ai-platform" not in str(run)
@@ -320,6 +374,7 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
                 "run_id": run_id,
                 "session_id": "ses_a",
                 "user_id": "user-a",
+                "workspace_id": "default",
                 "status": "succeeded",
                 "agent_id": "qa-word-review",
                 "skill_id": "qa-file-reviewer",
@@ -377,6 +432,19 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runs.repositories.get_admin_run_detail", fake_get_admin_run_detail)
     monkeypatch.setattr("app.routes.admin_runs.get_run_queue_position", fake_get_run_queue_position, raising=False)
     monkeypatch.setattr("app.routes.admin_runs.get_queue_insight", fake_get_queue_insight, raising=False)
+    _install_admin_monitor_metadata(
+        monkeypatch,
+        {
+            "run_a": {
+                "session_title": "审核采购合同",
+                "task_summary": "检查付款条款",
+                "user_display_name": "王敏",
+                "workspace_name": "法务工作区",
+                "agent_name": "合同审阅助手",
+                "skill_name": "文档审阅",
+            }
+        },
+    )
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runs/run_a", headers=headers())
@@ -384,6 +452,9 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["run"]["run_id"] == "run_a"
+    assert data["run"]["session_title"] == "审核采购合同"
+    assert data["run"]["agent_name"] == "合同审阅助手"
+    assert data["run"]["workspace_name"] == "法务工作区"
     assert data["run"]["input"]["intent"]["selected_capability"] == "document_review"
     assert data["artifacts"][0]["artifact_id"] == "art_a"
     assert data["sandbox_leases"][0]["lease_id"] == "lease-a"
@@ -433,6 +504,11 @@ def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch)
         }
 
     class LegacyDiagnosticsPersistence:
+        async def get_admin_monitor_metadata(self, _conn, *, tenant_id, run_ids):
+            assert tenant_id == "default"
+            assert run_ids == ("run_failed",)
+            return {}
+
         async def get_admin_snapshot(self, _conn, *, tenant_id, run_id):
             assert tenant_id == "default"
             assert run_id == "run_failed"
@@ -540,6 +616,7 @@ def test_admin_run_detail_includes_live_queue_context_for_queued_run(monkeypatch
     monkeypatch.setattr("app.routes.admin_runs.repositories.get_admin_run_detail", fake_get_admin_run_detail)
     monkeypatch.setattr("app.routes.admin_runs.get_run_queue_position", fake_get_run_queue_position, raising=False)
     monkeypatch.setattr("app.routes.admin_runs.get_queue_insight", fake_get_queue_insight, raising=False)
+    _install_admin_monitor_metadata(monkeypatch, {})
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runs/run_queued", headers=headers())

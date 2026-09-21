@@ -14,6 +14,7 @@ from app.runs.domain.diagnostics import (
     merge_run_diagnostics,
     sanitize_runtime_diagnostics,
 )
+from app.runs.infrastructure.diagnostics_postgres import PostgresRunDiagnosticsRepository
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
@@ -55,6 +56,85 @@ class InMemoryDiagnostics:
 
     async def get_admin_snapshot(self, _conn, **_kwargs):
         return self.snapshot
+
+
+@pytest.mark.asyncio
+async def test_admin_monitor_metadata_read_is_deduplicated_and_bounded():
+    class MetadataPersistence(InMemoryDiagnostics):
+        async def get_admin_monitor_metadata(self, conn, **kwargs):
+            self.calls.append((conn, kwargs))
+            return {"run-0": {"session_title": "Readable task"}}
+
+    persistence = MetadataPersistence()
+    service = RunDiagnosticsService(
+        persistence=persistence,
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+    conn = object()
+
+    result = await service.read_admin_monitor_metadata(
+        conn,
+        tenant_id="tenant-a",
+        run_ids=["", " run-0 ", "run-0", *[f"run-{index}" for index in range(1, 105)]],
+    )
+
+    assert result == {"run-0": {"session_title": "Readable task"}}
+    assert persistence.calls[0][0] is conn
+    assert persistence.calls[0][1]["tenant_id"] == "tenant-a"
+    assert persistence.calls[0][1]["run_ids"][:2] == ("run-0", "run-1")
+    assert len(persistence.calls[0][1]["run_ids"]) == 100
+
+
+@pytest.mark.asyncio
+async def test_postgres_admin_monitor_metadata_is_tenant_scoped_and_batched():
+    class MetadataCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "run_id": "run-a",
+                    "session_title": "审核采购合同",
+                    "task_summary": "检查付款条款",
+                    "user_display_name": "王敏",
+                    "workspace_name": "法务工作区",
+                    "agent_name": "合同审阅助手",
+                    "skill_name": "文档审阅",
+                    "latency_ms": 320,
+                    "input_token_count": 10,
+                    "output_token_count": 20,
+                    "total_token_count": 30,
+                    "estimated_cost_minor": 4,
+                    "model_value": "model-a",
+                    "copied_from_run_id": None,
+                    "trace_id_recorded": True,
+                }
+            ]
+
+    class MetadataConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return MetadataCursor()
+
+    conn = MetadataConnection()
+    repository = PostgresRunDiagnosticsRepository()
+
+    result = await repository.get_admin_monitor_metadata(
+        conn,
+        tenant_id="tenant-a",
+        run_ids=("run-a", "run-b"),
+    )
+
+    sql, params = conn.calls[0]
+    assert "left join sessions" in sql
+    assert "left join agent_profile_revisions admitted_profile" in sql
+    assert "where runs.tenant_id = %s and runs.id = any(%s::text[])" in sql
+    assert params == ("tenant-a", ["run-a", "run-b"])
+    assert result["run-a"]["session_title"] == "审核采购合同"
+    assert result["run-a"]["trace_id_recorded"] is True
+    assert "run_id" not in result["run-a"]
 
 
 @pytest.mark.asyncio
