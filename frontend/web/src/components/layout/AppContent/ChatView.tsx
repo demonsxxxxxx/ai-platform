@@ -101,8 +101,9 @@ import { clearSidebarHistory } from "../../chat/ChatMessage/items/sidebarHistory
 import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
 import { sessionApi, type SessionInputFile } from "../../../services/api";
+import type { ProfileDriveFileReference } from "../../../services/api/profileDrive";
 import {
-  getProfileDriveDragPath,
+  getProfileDriveDragReference,
   hasProfileDriveDragData,
 } from "../../workbench/profileDriveDrag";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
@@ -719,13 +720,13 @@ export function ChatView({
   );
 
   const handleProfileDriveFileDrop = useCallback(
-    async (path: string) => {
+    async (reference: ProfileDriveFileReference) => {
       if (!sessionId) return;
-      const requestKey = `${sessionId}\u0000${path}`;
+      const requestKey = `${sessionId}\u0000${reference.source_id}\u0000${reference.path}`;
       if (profileDriveDropInFlightRef.current.has(requestKey)) return;
       profileDriveDropInFlightRef.current.add(requestKey);
       try {
-        const file = await sessionApi.importProfileDriveFile(sessionId, path);
+        const file = await sessionApi.importProfileDriveFile(sessionId, reference);
         if (activeSessionIdRef.current !== sessionId) return;
         setWorkspaceProjection((current) =>
           current.session_id === sessionId
@@ -739,13 +740,19 @@ export function ChatView({
             : [...current, attachment],
         );
         toast.success(
-          t("profileDrive.addedToConversation", "已将个人文件添加到会话。"),
+          reference.source_id === "public"
+            ? t("profileDrive.publicAddedToConversation", "已将公盘文件添加到会话。")
+            : t("profileDrive.addedToConversation", "已将个人文件添加到会话。"),
         );
       } catch (error) {
         console.error("ProfileDrive drop import failed", {
           kind: error instanceof Error ? error.name : "request_failed",
         });
-        toast.error(t("profileDrive.importFailed", "导入个人文件失败。"));
+        toast.error(
+          reference.source_id === "public"
+            ? t("profileDrive.publicImportFailed", "导入公盘文件失败。")
+            : t("profileDrive.importFailed", "导入个人文件失败。"),
+        );
       } finally {
         profileDriveDropInFlightRef.current.delete(requestKey);
       }
@@ -764,10 +771,10 @@ export function ChatView({
 
   const handleProfileDriveDrop = useCallback(
     (event: React.DragEvent<HTMLElement>) => {
-      const path = getProfileDriveDragPath(event.dataTransfer);
-      if (!path) return;
+      const reference = getProfileDriveDragReference(event.dataTransfer);
+      if (!reference) return;
       event.preventDefault();
-      void handleProfileDriveFileDrop(path);
+      void handleProfileDriveFileDrop(reference);
     },
     [handleProfileDriveFileDrop],
   );

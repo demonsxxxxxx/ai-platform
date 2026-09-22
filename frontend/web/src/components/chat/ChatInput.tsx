@@ -62,7 +62,7 @@ import {
   prepareSelectedSkillSubmission,
 } from "../../hooks/useSelectedSkillTask";
 import {
-  getProfileDriveDragPath,
+  getProfileDriveDragReference,
   hasProfileDriveDragData,
 } from "../workbench/profileDriveDrag";
 import {
@@ -864,10 +864,10 @@ export const ChatInput = memo(function ChatInput({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
-    const profileDrivePath = getProfileDriveDragPath(e.dataTransfer);
-    if (profileDrivePath && onProfileDriveFileDrop) {
+    const profileDriveReference = getProfileDriveDragReference(e.dataTransfer);
+    if (profileDriveReference && onProfileDriveFileDrop) {
       e.stopPropagation();
-      void onProfileDriveFileDrop(profileDrivePath);
+      void onProfileDriveFileDrop(profileDriveReference);
       return;
     }
     const files = e.dataTransfer?.files;
