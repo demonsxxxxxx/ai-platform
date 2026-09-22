@@ -201,6 +201,7 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   const chatInput = read("src/components/chat/ChatInput.tsx");
   const composer = read("src/librechat-ui/Composer.tsx");
 
+  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4"/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /workspaceWithContext:[\s\S]*18rem/);
   assert.match(shell, /data-librechat-context-toggle/);
@@ -212,6 +213,7 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(sidePanel, /workbenchSurface\.compactPanel/);
   assert.match(chatInput, /LibreChatComposerFrame/);
+  assert.doesNotMatch(chatInput, /ChatInputHelpMenu/);
   assert.match(composer, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });

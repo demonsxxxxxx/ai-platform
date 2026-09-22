@@ -22,7 +22,6 @@ import { usePasteHandler } from "../../hooks/usePasteHandler";
 import { useAuth } from "../../hooks/useAuth";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { ChatInputSelectors } from "./ChatInputSelectors";
-import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
 import { ChatInputAttachments } from "./ChatInputAttachments";
 import {
   parseComposerCommand,
@@ -1013,8 +1012,6 @@ export const ChatInput = memo(function ChatInput({
         currentModelId={currentModelId}
         onSelectModel={handleSelectModelChip}
       />
-
-      <ChatInputHelpMenu />
 
       {imageViewerSrc && (
         <ImageViewer
