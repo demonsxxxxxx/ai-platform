@@ -17,6 +17,16 @@ from app.files.application.profile_drive import ProfileDriveTransferError
 _SAFE_CONTENT_TYPE_PATTERN = re.compile(
     r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$"
 )
+_OFFICE_CONTENT_TYPES = {
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
 def _upstream_status_code(status_code: int, *, not_found_status: int) -> int:
     if status_code == 413:
         return 413
@@ -100,7 +110,9 @@ async def open_profile_drive_file(
     declared_content_type = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
     if not _SAFE_CONTENT_TYPE_PATTERN.fullmatch(declared_content_type):
         declared_content_type = "application/octet-stream"
-    guessed_content_type = mimetypes.guess_type(filename)[0]
+    guessed_content_type = _OFFICE_CONTENT_TYPES.get(
+        Path(filename).suffix.lower()
+    ) or mimetypes.guess_type(filename)[0]
     content_type = guessed_content_type or declared_content_type or "application/octet-stream"
     return client, response, content_length, content_type
 

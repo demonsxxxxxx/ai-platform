@@ -13,6 +13,7 @@ from app.context.retrieval import (
     ContextRetrievalDenied,
     ContextRetrievalInputError,
 )
+from app.files.infrastructure.profile_drive import open_profile_drive_file
 from tests.support.context_retrieval import InMemoryContextRetrievalRepository
 from app.main import create_app
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
@@ -353,6 +354,59 @@ def test_profile_drive_callback_rejects_lease_without_staging_authority(monkeypa
 
     assert response.status_code == 403
     assert response.json() == {"detail": "context_retrieval_not_authorized"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "expected_content_type"),
+    [
+        (
+            "项目基本信息收集表.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            "数据收集表.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "汇报材料.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+    ],
+)
+async def test_profile_drive_transfer_has_stable_office_content_types(
+    monkeypatch,
+    path,
+    expected_content_type,
+):
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            headers={"Content-Length": "1", "Content-Type": "application/octet-stream"},
+            stream=httpx.ByteStream(b"x"),
+        )
+    )
+    monkeypatch.setattr(
+        "app.files.infrastructure.profile_drive.httpx.AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+
+    client, response, _content_length, content_type = await open_profile_drive_file(
+        upstream="https://profile-drive.test",
+        ca_cert_file="",
+        jwt="company.jwt",
+        path=path,
+        max_bytes=1024,
+        require_nonempty=True,
+        not_found_status=404,
+        too_large_detail="file_too_large",
+    )
+    try:
+        assert content_type == expected_content_type
+    finally:
+        await response.aclose()
+        await client.aclose()
 
 
 def test_profile_drive_callback_streams_only_for_attempt_authorized_lease(monkeypatch):
