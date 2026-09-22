@@ -4,6 +4,7 @@ import test from "node:test";
 // jsdom is the pinned mounted-test runtime and does not ship declarations here.
 // @ts-expect-error jsdom runtime import.
 import { JSDOM } from "jsdom";
+import { PROFILE_DRIVE_DRAG_TYPE } from "../profileDriveDrag";
 
 function buttonByText(root: ParentNode, label: string): HTMLButtonElement {
   const button = Array.from(root.querySelectorAll("button")).find((candidate) =>
@@ -185,6 +186,7 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
   assert.ok(container);
   const root = createRoot(container);
   const imported: Array<{ file_id: string; preview_url: string | null }> = [];
+  const addedPaths: string[] = [];
 
   try {
     await act(async () => {
@@ -192,6 +194,9 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
         createElement(ProfileDriveWorkspaceBrowser, {
           sessionId: "session-a",
           onImported: (file) => imported.push(file),
+          onAddToConversation: (path) => {
+            addedPaths.push(path);
+          },
         }),
       );
       await flush();
@@ -241,8 +246,39 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
     assert.match(container.textContent ?? "", /shortcut\.lnk/);
     await act(async () => changeInput(filter, ""));
 
+    const reportButton = buttonByText(container, "report.pdf");
+    const reportRow = reportButton.closest<HTMLElement>('[role="treeitem"]');
+    assert.ok(reportRow);
+    assert.equal(reportRow.draggable, true);
+    const dragPayload = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: "none",
+      setData: (type: string, value: string) => dragPayload.set(type, value),
+    };
+    const dragStart = new dom.window.Event("dragstart", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(dragStart, "dataTransfer", { value: dataTransfer });
+    await act(async () => reportRow.dispatchEvent(dragStart));
+    assert.equal(dataTransfer.effectAllowed, "copy");
+    assert.equal(
+      dragPayload.get(PROFILE_DRIVE_DRAG_TYPE),
+      "Documents/reports/report.pdf",
+    );
+    const addButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="添加 report.pdf 到会话"]',
+    );
+    assert.ok(addButton);
+    await act(async () =>
+      addButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      ),
+    );
+    assert.deepEqual(addedPaths, ["Documents/reports/report.pdf"]);
+
     await act(async () => {
-      buttonByText(container, "report.pdf").dispatchEvent(
+      reportButton.dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
       await flush();
@@ -276,6 +312,9 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
           key: "session-b",
           sessionId: "session-b",
           onImported: (file) => imported.push(file),
+          onAddToConversation: (path) => {
+            addedPaths.push(path);
+          },
         }),
       );
       await flush();

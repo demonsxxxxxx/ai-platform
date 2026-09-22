@@ -31,23 +31,17 @@ const PdfPreview = memo(function PdfPreview({ url }: PdfPreviewProps) {
 
   if (loadFailed) {
     return (
-      <div className="flex h-full min-h-[400px] w-full flex-col items-center justify-center gap-4 bg-stone-100 px-6 text-center dark:bg-stone-950">
-        <div>
-          <p className="text-sm font-medium text-stone-700 dark:text-stone-200">
-            {t("documents.pdfPreviewUnavailable", "PDF 预览不可用")}
-          </p>
-          <p className="mt-1 max-w-sm text-xs text-stone-500 dark:text-stone-400">
-            {t(
-              "documents.pdfPreviewUnavailableHint",
-              "当前浏览器无法在页面内打开这个 PDF，可以在新窗口中查看。",
-            )}
-          </p>
-        </div>
+      <div className="relative h-full min-h-[400px] w-full bg-stone-100 dark:bg-stone-950">
+        <iframe
+          src={url}
+          title={t("documents.pdfPreviewTitle", "PDF 预览")}
+          className="h-full min-h-[400px] w-full border-0"
+        />
         <a
           href={url}
           target="_blank"
           rel="noreferrer"
-          className="rounded-lg bg-stone-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-stone-700 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-stone-300"
+          className="absolute right-3 top-3 rounded-lg bg-black/70 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-black/85"
         >
           {t("documents.openInNewTab", "在新窗口打开")}
         </a>

@@ -14,11 +14,13 @@ const frontendPackage = JSON.parse(
   readFileSync(new URL("../../../../../package.json", import.meta.url), "utf8"),
 );
 
-test("PDF preview renders through PDF.js instead of a native embedded viewer", () => {
+test("PDF preview uses PDF.js with an in-panel native fallback", () => {
   assert.match(source, /from\s+"react-pdf"/);
   assert.match(source, /\bDocument\b/);
   assert.match(source, /\bPage\b/);
-  assert.doesNotMatch(source, /<iframe\b/);
+  assert.match(source, /loadFailed/);
+  assert.match(source, /<iframe\b/);
+  assert.match(source, /src=\{url\}/);
 });
 
 test("PDF preview renders all pages in a continuous scroll surface", () => {
@@ -49,9 +51,9 @@ test("shared document previews preserve PDF mobile gestures", () => {
   assert.match(frameSource, /scrollTop/);
 });
 
-test("PDF preview keeps a user-facing fallback when rendering fails", () => {
+test("PDF preview keeps a user-facing fallback when PDF.js fails", () => {
   assert.match(source, /loadFailed/);
-  assert.match(source, /documents\.pdfPreviewUnavailable/);
+  assert.match(source, /<iframe\b/);
   assert.match(source, /documents\.openInNewTab/);
 });
 
