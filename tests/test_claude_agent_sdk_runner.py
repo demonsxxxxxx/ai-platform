@@ -4296,6 +4296,33 @@ async def test_sdk_empty_result_is_not_a_successful_terminal(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_sdk_streamed_answer_can_complete_when_result_field_is_empty(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [("assistant", "streamed final answer")],
+            result_text="   ",
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+    )
+
+    assert result.error is None
+    assert result.received_structured_terminal is True
+    assert result.message == "streamed final answer"
+
+
+@pytest.mark.asyncio
 async def test_sdk_streams_split_assistant_text_before_later_tool_block(
     monkeypatch, tmp_path
 ):

@@ -3638,7 +3638,8 @@ async def run_claude_agent_sdk(
                     item["source_path"] for item in response_file_descriptors
                 ]
                 received_structured_terminal = True
-                answer_timeline.accept_result(final_answer)
+                if final_answer.strip():
+                    answer_timeline.accept_result(final_answer)
                 stop_reason = getattr(message, "stop_reason", None)
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
@@ -3676,7 +3677,7 @@ async def run_claude_agent_sdk(
             completion_error = capability_completion_error()
             if completion_error is not None:
                 terminal_error = mcp_execution_receipt_error() or completion_error
-        if terminal_error is None and terminal_answer_empty:
+        if terminal_error is None and terminal_answer_empty and not answer_timeline.text.strip():
             terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL
         finished_answer = answer_stream_gate.finish(
             final_text=answer_timeline.text,
