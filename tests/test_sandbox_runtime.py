@@ -22,7 +22,10 @@ from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxEx
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime, SandboxRuntimeCleanupError
-from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+from app.validation import (
+    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
+    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
+)
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt_run-a") -> str:
@@ -84,12 +87,16 @@ def request(**overrides) -> SandboxRuntimeRequest:
     return SandboxRuntimeRequest(**values)
 
 
-def test_sandbox_system_prompt_uses_the_same_character_limit_as_profile_admission():
-    accepted = request(system_prompt="界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+def test_sandbox_system_prompt_allows_bounded_profile_and_control_composition():
+    composed = (
+        "p" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+        + "c" * (MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS - MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+    )
+    accepted = request(system_prompt=composed)
 
-    assert accepted.system_prompt == "界" * MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+    assert accepted.system_prompt == composed
     with pytest.raises(ValueError):
-        request(system_prompt="界" * (MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS + 1))
+        request(system_prompt="界" * (MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS + 1))
 
 
 def test_sandbox_request_rejects_invalid_public_skill_metadata():

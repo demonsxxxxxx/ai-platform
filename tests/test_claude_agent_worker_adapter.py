@@ -1919,12 +1919,13 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert runtime_request.skill_ids == ["qa-file-reviewer"]
     assert (workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
     assert not (workspace / ".claude" / "skills" / "minimax-docx").exists()
-    assert "Skill: qa-file-reviewer" not in runtime_request.input_message
-    assert "Office context pack:" in runtime_request.input_message
-    assert "Context pack: 1 message(s), 1 file(s), 1 artifact(s), 0 long-term memory record(s)" in runtime_request.input_message
-    assert "Latest artifact version: v4" in runtime_request.input_message
-    assert "raw_storage_key" not in runtime_request.input_message
-    assert "s3://private" not in runtime_request.input_message
+    assert runtime_request.input_message == "审核一下"
+    assert "Skill: qa-file-reviewer" not in runtime_request.system_prompt
+    assert "Office context pack:" in runtime_request.system_prompt
+    assert "Context pack: 1 message(s), 1 file(s), 1 artifact(s), 0 long-term memory record(s)" in runtime_request.system_prompt
+    assert "Latest artifact version: v4" in runtime_request.system_prompt
+    assert "raw_storage_key" not in runtime_request.system_prompt
+    assert "s3://private" not in runtime_request.system_prompt
 
 
 @pytest.mark.asyncio
@@ -2129,8 +2130,9 @@ async def test_agent_run_threads_materialized_file_names_in_payload_order(monkey
 
     assert result.status == "succeeded"
     assert runtime_requests[0].materialized_file_names == ["z.docx", "a.docx"]
-    assert "z.docx" in runtime_requests[0].input_message
-    assert document_body_marker not in runtime_requests[0].input_message
+    assert runtime_requests[0].input_message == "review"
+    assert "z.docx" in runtime_requests[0].system_prompt
+    assert document_body_marker not in runtime_requests[0].system_prompt
 
 
 
@@ -2188,12 +2190,13 @@ async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monke
     )
 
     assert result.status == "succeeded"
-    prompt = runtime_requests[0].input_message
-    assert "Context pack: 1 message(s), 0 file(s), 0 artifact(s)" in prompt
-    assert "Context pack version: v4" in prompt
-    assert "99 message(s)" not in prompt
-    assert "raw_storage_key" not in prompt
-    assert "s3://private" not in prompt
+    request = runtime_requests[0]
+    assert request.input_message == "审核一下"
+    assert "Context pack: 1 message(s), 0 file(s), 0 artifact(s)" in request.system_prompt
+    assert "Context pack version: v4" in request.system_prompt
+    assert "99 message(s)" not in request.system_prompt
+    assert "raw_storage_key" not in request.system_prompt
+    assert "s3://private" not in request.system_prompt
 
 
 @pytest.mark.asyncio

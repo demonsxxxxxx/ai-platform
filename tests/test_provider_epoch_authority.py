@@ -13,6 +13,8 @@ from app.context.domain.conversation_authority import (
     extend_source_digest,
 )
 from app.context.domain.provider_sessions import (
+    MAX_PROVIDER_SESSION_ENTRIES,
+    MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
     ProviderSessionConflictError,
     ProviderSessionScope,
     normalize_provider_entry_batch,
@@ -35,8 +37,9 @@ class Cursor:
 
 
 class Connection:
-    def __init__(self, *, head=None):
+    def __init__(self, *, head=None, existing_attempt=None):
         self.head = head
+        self.existing_attempt = existing_attempt
         self.epoch_next = 1
         self.receipts: dict[int, dict[str, Any]] = {}
         self.entries: list[tuple[Any, ...]] = []
@@ -57,7 +60,7 @@ class Connection:
         if "select head.current_epoch_id, head.next_epoch_number" in sql:
             return Cursor(self.head)
         if "select execution_spec_json->'context_pack'" in sql:
-            return Cursor()
+            return Cursor(self.existing_attempt)
         if "select batch_sha256, entry_count, last_sequence" in sql:
             return Cursor(self.receipts.get(values[1]))
         if "insert into provider_session_entries" in sql:
@@ -155,6 +158,95 @@ async def test_ready_epoch_requires_exact_source_digest_and_count_before_resume(
     assert rotated["provider_epoch_id"] != "pe-old"
     assert rotated["provider_session_id"] != head["provider_session_id"]
     assert any("insert into provider_session_epochs" in sql for sql in conn.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "head_change",
+    [
+        {"state": "dirty"},
+        {"state": "closed"},
+        {"coverage_source_sha256": "b" * 64},
+        {"coverage_message_count": 0},
+        {"entry_count": MAX_PROVIDER_SESSION_ENTRIES},
+        {"transcript_bytes": MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES},
+    ],
+)
+async def test_existing_conversation_requires_new_conversation_when_native_epoch_is_unusable(
+    head_change,
+):
+    receipt = source_receipt()
+    context = {
+        "source_sha256": receipt["source_sha256"],
+        "message_count": 1,
+        "current_message_id": "msg-user",
+        "messages": [],
+        "selected_message_count": 0,
+        "selected_turn_count": 0,
+    }
+    head = {
+        "active_run_id": "run-current",
+        "current_epoch_id": "pe-old",
+        "next_epoch_number": 2,
+        "state": "ready",
+        "coverage_source_sha256": receipt["source_sha256"],
+        "coverage_message_count": 1,
+        "entry_count": 1,
+        "transcript_bytes": 100,
+        "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685",
+        **head_change,
+    }
+
+    with pytest.raises(
+        ProviderSessionConflictError,
+        match="provider_session_requires_new_conversation",
+    ):
+        await provider_epochs.prepare_provider_epoch(
+            Connection(head=head),
+            scope=SCOPE,
+            run_id="run-current",
+            conversation_context=context,
+        )
+
+
+@pytest.mark.asyncio
+async def test_running_attempt_restores_frozen_native_resume_before_epoch_readiness_check():
+    receipt = source_receipt()
+    context = {
+        "source_sha256": receipt["source_sha256"],
+        "message_count": 1,
+        "current_message_id": "msg-user",
+        "messages": [],
+        "selected_message_count": 0,
+        "selected_turn_count": 0,
+        "native_source_verified": False,
+    }
+    frozen = {
+        **context,
+        "execution_mode": "native_resume",
+        "provider_epoch_id": "pe-old",
+        "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685",
+    }
+    head = {
+        "active_run_id": "run-current",
+        "current_epoch_id": "pe-old",
+        "next_epoch_number": 2,
+        "state": "active",
+        "coverage_source_sha256": receipt["source_sha256"],
+        "coverage_message_count": 0,
+        "entry_count": 10,
+        "transcript_bytes": 1_000,
+        "provider_session_id": frozen["provider_session_id"],
+    }
+
+    result = await provider_epochs.prepare_provider_epoch(
+        Connection(head=head, existing_attempt={"frozen_context": frozen}),
+        scope=SCOPE,
+        run_id="run-current",
+        conversation_context=context,
+    )
+
+    assert result == frozen
 
 
 @pytest.mark.asyncio

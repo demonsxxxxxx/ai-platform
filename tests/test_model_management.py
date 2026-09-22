@@ -1131,7 +1131,7 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
 @pytest.mark.asyncio
 async def test_anthropic_messages_delegate_input_capacity_to_claude():
     forwarded = []
-    mode = "platform_bootstrap"
+    mode = "empty_start"
 
     @asynccontextmanager
     async def transaction():
@@ -1178,19 +1178,24 @@ async def test_anthropic_messages_delegate_input_capacity_to_claude():
         "tools": [{"name": "Read"}], "thinking": {"type": "disabled"},
         "stream": True, "max_tokens": 512,
     }
-    for mode in ("platform_bootstrap", "empty_start", "native_resume"):
+    for mode in ("empty_start", "native_resume"):
         response = await service.proxy(body=json.dumps(payload).encode(), **fields)
         assert response.status == 200
-    assert len(forwarded) == 3
+    assert len(forwarded) == 2
     assert all(call["path"] == "/v1/messages" for call in forwarded)
 
+    mode = "platform_bootstrap"
+    with pytest.raises(PermissionError, match="model_proxy_conversation_mode_invalid"):
+        await service.proxy(body=json.dumps(payload).encode(), **fields)
+
+    mode = "empty_start"
     for output in (True, 2049, 0):
         with pytest.raises(ValueError, match="model_proxy_max_tokens_invalid"):
             await service.proxy(
                 body=json.dumps({**payload, "max_tokens": output}).encode(),
                 **fields,
             )
-    assert len(forwarded) == 3
+    assert len(forwarded) == 2
 
 
 @pytest.mark.asyncio
@@ -1286,74 +1291,6 @@ async def test_anthropic_count_tokens_404_uses_bounded_local_fallback_only():
     )
     assert response.status == 200
     assert len(forwarded) == 2
-
-
-@pytest.mark.asyncio
-async def test_stateless_context_summary_uses_frozen_run_budget_and_no_tools():
-    @asynccontextmanager
-    async def fake_transaction():
-        yield object()
-
-    async def preparation(_conn, *, run_id, encryption_key):
-        assert run_id == "run-a" and encryption_key == _key()
-        return SimpleNamespace(model_value="claude-custom", max_input_tokens=32000,
-                               max_output_tokens=2048, base_url="https://gateway.example",
-                               api_key="run-revision-key")
-
-    sent = []
-
-    def upstream_request(**kwargs):
-        sent.append(kwargs)
-        if kwargs["path"].endswith("count_tokens"):
-            return SimpleNamespace(status=200, body=b'{"input_tokens":400}')
-        return SimpleNamespace(status=200, body=json.dumps({
-            "model": "claude-custom", "content": [{"type": "text", "text": "User constraints survive."}],
-            "usage": {"input_tokens": 400, "output_tokens": 12},
-        }).encode())
-
-    service = ModelControlPlaneService(
-        transaction_factory=fake_transaction,
-        settings_provider=lambda: SimpleNamespace(model_connection_encryption_key=_key(),
-                                                  model_connection_allowed_internal_hosts=""),
-        repository=SimpleNamespace(preparation_connection=preparation),
-        security=SimpleNamespace(), upstream=SimpleNamespace(request=upstream_request),
-        attempt_capability_verifier=lambda **_kwargs: False,
-    )
-    result = await service.summarize_context_for_run(run_id="run-a", source_text="prior user constraint")
-    assert result["summary"] == "User constraints survive."
-    assert result["input_tokens"] == 400 and result["output_tokens"] == 12
-    assert [item["path"] for item in sent] == ["/v1/messages/count_tokens", "/v1/messages"]
-    assert all(item["query"] == "beta=true" and item["api_key"] == "run-revision-key" for item in sent)
-    assert json.loads(sent[0]["body"])["tools"] == []
-    assert json.loads(sent[1]["body"])["max_tokens"] == 2048
-    sent.clear()
-    count = await service.count_checkpoint_input_for_run(run_id="run-a", source_text="checkpoint and tail")
-    assert count == 400 and len(sent) == 1
-    assert json.loads(sent[0]["body"]) == {
-        "model": "claude-custom", "messages": [{"role": "user", "content": "checkpoint and tail"}],
-        "tools": [],
-    }
-    sent.clear()
-
-    def missing_count(**kwargs):
-        sent.append(kwargs)
-        return SimpleNamespace(status=404, body=b'{}')
-
-    service._upstream = SimpleNamespace(request=missing_count)
-    count = await service.count_checkpoint_input_for_run(
-        run_id="run-a", source_text="count-less gateway",
-    )
-    assert count == len(sent[0]["body"]) + 4096
-    sent.clear()
-
-    def over_budget(**kwargs):
-        sent.append(kwargs)
-        return SimpleNamespace(status=200, body=b'{"input_tokens":32001}')
-
-    service._upstream = SimpleNamespace(request=over_budget)
-    with pytest.raises(ValueError, match="context_compaction_chunk_too_large"):
-        await service.summarize_context_for_run(run_id="run-a", source_text="prior user constraint")
-    assert len(sent) == 1
 
 
 @pytest.mark.asyncio

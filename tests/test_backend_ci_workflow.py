@@ -40,6 +40,7 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_authority.py",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",
+    "tests/test_agent_profiles.py",
     "tests/test_agent_profiles_postgres.py",
     "tests/test_model_management_postgres.py",
     "tests/test_authorized_skill_catalog.py",
@@ -58,6 +59,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_claude_agent_worker_adapter.py",
         "tests/test_claude_agent_worker_file_continuity.py",
         "tests/test_context_file_content.py",
+        "tests/test_context_prompt_continuity.py",
+        "tests/test_context_retrieval_callback.py",
         "tests/test_sandbox_document_capability.py",
         "tests/test_required_tool_contract.py",
         "tests/test_intent_router.py",
@@ -70,6 +73,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sandbox_runtime.py",
         "tests/test_sandbox_runtime_cleanup.py",
         "tests/test_sandbox_runtime_evidence_script.py",
+        "tests/test_validation.py",
         "tests/test_contract.py",
     ),
     "repository-worker-streaming": (
@@ -77,7 +81,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_queue.py",
         "tests/test_run_attempt_application.py",
         "tests/test_run_attempt_repository.py",
-        "tests/test_context_checkpoint_leases_postgres.py",
+        "tests/test_legacy_context_checkpoint.py",
         "tests/test_worker_main.py",
         "tests/test_worker_heartbeat_postgres_redis_integration.py",
         "tests/test_sse_runtime_cutover.py",
@@ -104,9 +108,11 @@ BACKEND_TEST_SHARDS = {
         "tests/test_chat_selected_skill_routing.py",
         "tests/test_claude_agent_events.py",
         "tests/test_executor_reconciler.py",
+        "tests/test_conversation_authority.py",
         "tests/test_file_upload_security.py",
         "tests/test_issue_511_session_context_gen2.py",
         "tests/test_platform_multi_agent_retirement.py",
+        "tests/test_provider_epoch_authority.py",
         "tests/test_routes.py",
         "tests/test_run_admission_terminalization.py",
         "tests/test_run_cancellation_use_case.py",
@@ -114,6 +120,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_diagnostics.py",
         "tests/test_run_persistence.py",
         "tests/test_run_projection.py",
+        "tests/test_session_continuity.py",
         "tests/test_sse_v4_contract_generation.py",
         "tests/test_streaming_contracts.py",
         "tests/test_worker_attempt_lifecycle.py",
@@ -270,7 +277,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 84
+    assert len(all_selectors) == len(set(all_selectors)) == 90
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

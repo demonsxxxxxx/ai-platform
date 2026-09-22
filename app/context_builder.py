@@ -7,7 +7,7 @@ from typing import Any
 from app import repositories
 from app.context.api import (
     ConversationSourceChain, ProviderSessionScope, claim_provider_lineage,
-    load_ready_checkpoint, validate_authority_receipt,
+    validate_authority_receipt,
 )
 from app.context.file_continuity import snapshot_file_ids
 from app.context_manifest import (
@@ -598,21 +598,11 @@ async def record_initial_context_snapshot(
             raise repositories.RepositoryConflictError(str(exc)) from exc
         scope = {"tenant_id": tenant_id, "workspace_id": workspace_id, "user_id": user_id,
                  "session_id": session_id, "agent_id": agent_id}
-        try:
-            base = await load_ready_checkpoint(conn, scope=scope, run_id=run_id)
-        except ValueError as exc:
-            raise repositories.RepositoryConflictError(str(exc)) from exc
         chain = ConversationSourceChain(
             scope=scope,
             through_session_generation=current_run.get("session_generation"),
             current_run_id=run_id,
             current_message_id=(included_message_ids[-1] if included_message_ids else None),
-            predecessor_digest=base["source_sha256"] if base else None,
-            base_checkpoint_id=base["id"] if base else None,
-            base_checkpoint_summary_sha256=base["summary_sha256"] if base else None,
-            predecessor_message_count=base["message_count"] if base else 0,
-            predecessor_range_start=base["range_start"] if base else None,
-            predecessor_range_end=base["range_end"] if base else None,
         )
         history_candidate_count = await repositories.count_session_context_messages(
             conn,

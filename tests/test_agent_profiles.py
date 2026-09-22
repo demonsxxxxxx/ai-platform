@@ -1450,7 +1450,7 @@ def test_agent_profile_instructions_are_not_placed_in_the_user_prompt():
     )
 
     assert "Private profile instruction" not in prompt
-    assert "User request: User supplied question" in prompt
+    assert "User supplied question" not in prompt
 
 
 def _draft(*, expected_draft_revision: int) -> AgentProfileDraftRequest:

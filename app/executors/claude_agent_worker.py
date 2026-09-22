@@ -47,7 +47,7 @@ from app.executors.claude_agent_sdk_runner import (
 )
 from app.executors.claude.prompts import (
     CurrentRequestTooLargeError,
-    build_harness_chat_prompt,
+    build_harness_chat_prompt, compose_system_prompt,
 )
 from app.execution import api as execution_api
 from app.execution.api import (
@@ -1159,7 +1159,7 @@ class ClaudeAgentWorkerAdapter:
             "context_pack": prompt_context_pack,
         }
         try:
-            prompt = (
+            control_prompt = (
                 build_harness_chat_prompt(**prompt_builder_kwargs)
                 if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
                 else build_skill_prompt(
@@ -1206,8 +1206,8 @@ class ClaudeAgentWorkerAdapter:
                 public_skill_metadata=_authorized_catalog_public_skill_metadata(
                     authorized_catalog
                 ),
-                prompt=prompt,
-                system_prompt=self._agent_profile_system_prompt(payload),
+                prompt=prompt_builder_kwargs["user_message"],
+                system_prompt=compose_system_prompt(self._agent_profile_system_prompt(payload), control_prompt),
                 attachment_metadata=attachment_metadata,
                 materialized_file_names=staged_file_names,
             ),

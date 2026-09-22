@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
+from app.context_manifest import available_context_retrieval_tools
 from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
 from app.tool_policy import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
-    "read_session_messages",
     "read_run_artifact",
     "stage_context_file_to_workspace",
     "stage_run_artifact_to_workspace",
@@ -24,7 +24,6 @@ _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX = "mcp__ai-platform-response__"
 _SKILL_INPUT_MAX_BYTES = 64 * 1024
 _SKILL_INPUT_MAX_DEPTH = 16
 _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
-    "read_session_messages": ("limit", "offset", "max_tokens"),
     "read_run_artifact": ("artifact_id", "max_bytes"),
     "stage_context_file_to_workspace": ("file_id", "max_bytes"),
     "stage_run_artifact_to_workspace": ("artifact_id", "max_bytes"),
@@ -40,6 +39,15 @@ _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
 _SANDBOX_LOCAL_TOOL_IDENTITIES = frozenset(
     {"Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"}
 )
+
+
+def claude_context_retrieval_tools(manifest: dict[str, Any] | None) -> list[str]:
+    """Exclude platform conversation bodies from Claude's current capabilities."""
+    return [
+        tool
+        for tool in available_context_retrieval_tools(manifest)
+        if tool in _SDK_INTERNAL_CONTEXT_TOOLS
+    ]
 
 
 def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:

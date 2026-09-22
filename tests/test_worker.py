@@ -84,16 +84,9 @@ _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_sk
 
 @pytest.fixture(autouse=True)
 def _stub_terminal_context_ports(monkeypatch):
-    async def usage(_conn, **_kwargs):
-        return {"input_tokens": 0, "output_tokens": 0}
-
     async def release(_conn, **_kwargs):
         return None
 
-    monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
-        usage,
-    )
     monkeypatch.setattr(
         "app.runs.application.provider_terminalization.release_provider_lineage",
         release,
@@ -1125,11 +1118,6 @@ def default_cancel_not_requested(monkeypatch):
         }
 
     monkeypatch.setattr("app.worker._load_run_model_snapshot", load_test_model)
-
-    async def no_checkpoint_in_fake_transaction(**_kwargs):
-        return None, False
-
-    monkeypatch.setattr("app.worker.prepare_worker_checkpoint", no_checkpoint_in_fake_transaction)
 
     async def ready_fence(_conn, **_kwargs):
         return "ready"
@@ -5933,6 +5921,59 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
     assert outcome.status == "succeeded"
     assert captured["payload"].skill_version == "hash-primary"
     assert captured["payload"].skill_manifests == [full_manifest]
+
+
+@pytest.mark.asyncio
+async def test_worker_requires_new_conversation_before_attempt_binding(monkeypatch):
+    calls = []
+
+    class ForbiddenAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise AssertionError("invalid native continuity must not reach the adapter")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-a"
+
+    async def missing_native_context(*_args, **_kwargs):
+        return None, "provider_session_requires_new_conversation"
+
+    async def fail_run(conn, **kwargs):
+        calls.append(("fail", kwargs["error_code"], kwargs["error_message"]))
+        return RunTerminalizationProgress(True, "failed", True)
+
+    async def forbidden_bind(*_args, **_kwargs):
+        raise AssertionError("native continuity must fail before Attempt binding")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr(
+        "app.worker.materialize_queued_worker_context_snapshot",
+        missing_native_context,
+    )
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(
+        _TEST_RUN_ATTEMPT_LIFECYCLE.persistence,
+        "start_worker_run_attempt",
+        forbidden_bind,
+    )
+
+    outcome = await process_run_payload(
+        base_payload(executor_type="claude-agent-worker"),
+        AdapterRegistry({"claude-agent-worker": ForbiddenAdapter()}),
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "provider_session_requires_new_conversation"
+    assert (
+        "fail",
+        "provider_session_requires_new_conversation",
+        "A new conversation is required because native provider context is unavailable",
+    ) in calls
 
 
 @pytest.mark.asyncio

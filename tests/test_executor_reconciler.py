@@ -1843,9 +1843,6 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         calls.append(("publish", kwargs))
         return True
 
-    async def no_checkpoint_usage(_conn, **_kwargs):
-        return {"input_tokens": 0, "output_tokens": 0}
-
     async def no_provider_lineage(_conn, **_kwargs):
         return None
 
@@ -1857,10 +1854,6 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         has_claim,
     )
     monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
-    monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
-        no_checkpoint_usage,
-    )
     monkeypatch.setattr(
         "app.runs.application.provider_terminalization.release_provider_lineage",
         no_provider_lineage,

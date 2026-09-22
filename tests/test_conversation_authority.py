@@ -4,8 +4,6 @@ import hashlib
 
 import pytest
 
-from app.executors.claude.prompts import conversation_history_prompt_section
-
 from app.context.application.worker_snapshot import materialize_worker_context_snapshot
 from app.context.domain.conversation_authority import (
     ConversationSourceChain,
@@ -20,6 +18,10 @@ _SCOPE = {
     "tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
     "session_id": "session-a", "agent_id": "agent-a",
 }
+
+
+async def _matching_epoch(*_args, **_kwargs):
+    return True
 
 
 def test_conversation_source_chain_authorizes_all_pages_without_a_message_candidate_cap():
@@ -60,7 +62,7 @@ def test_conversation_source_rejects_current_run_or_unproven_generation():
 
 
 @pytest.mark.asyncio
-async def test_worker_verifies_frozen_range_and_materializes_every_prior_turn():
+async def test_claude_worker_verifies_every_authorized_row_without_materializing_history():
     rows = [
         {"id": f"msg-{index:03d}", "run_id": f"run-{index:03d}", "role": "user",
          "content": "constraint " + "x" * 128, "created_at": f"2026-09-15T00:{index // 60:02d}:{index % 60:02d}Z",
@@ -88,15 +90,24 @@ async def test_worker_verifies_frozen_range_and_materializes_every_prior_turn():
 
     common = dict(identity=identity, context_snapshot_id="ctx-current", snapshot_loader=snapshot,
                   message_loader=forbidden_explicit_loader, history_page_loader=page,
-                  context_projector=lambda row: {"context_snapshot_id": row["id"]})
+                  context_projector=lambda row: {"context_snapshot_id": row["id"]},
+                  provider_epoch_matcher=_matching_epoch)
     result = await materialize_worker_context_snapshot(object(), **common)
     assert result is not None
-    assert result["conversation_context"]["selected_message_count"] == 82
-    assert result["conversation_context"]["selected_turn_count"] == 82
-    assert result["conversation_context"]["dropped_turn_count"] == 0
-    assert all(item["message_id"] != "msg-current" for item in result["conversation_context"]["messages"])
+    assert result["conversation_context"]["selected_message_count"] == 0
+    assert result["conversation_context"]["selected_turn_count"] == 0
+    assert result["conversation_context"]["messages"] == []
     assert len(calls) == 21 and calls[-1]["after_id"] == "msg-079"
     assert "conversation_authority_json" not in str(result["context_snapshot"])
+
+    async def active_writer(*_args, **_kwargs):
+        return False
+
+    reconciliation_result = await materialize_worker_context_snapshot(
+        object(), **{**common, "provider_epoch_matcher": active_writer}
+    )
+    assert reconciliation_result is not None
+    assert reconciliation_result["conversation_context"]["native_source_verified"] is False
 
     rows[0] = {**rows[0], "content": "tampered"}
     assert await materialize_worker_context_snapshot(object(), **common) is None
@@ -104,7 +115,7 @@ async def test_worker_verifies_frozen_range_and_materializes_every_prior_turn():
 
 
 @pytest.mark.asyncio
-async def test_ready_checkpoint_preserves_full_source_digest_and_only_materializes_tail():
+async def test_historical_checkpoint_receipt_still_verifies_tail_without_prompt_materialization():
     rows = [
         {"id": f"msg-{index:03d}", "run_id": f"run-{index:03d}", "role": "user",
          "content": f"earlier constraint {index}: " + "x" * 128,
@@ -147,21 +158,17 @@ async def test_ready_checkpoint_preserves_full_source_digest_and_only_materializ
                   context_snapshot_id="ctx-current", snapshot_loader=snapshot,
                   message_loader=lambda *_args, **_kwargs: None, history_page_loader=page,
                   checkpoint_loader=checkpoint,
-                  context_projector=lambda row: {"context_snapshot_id": row["id"]})
+                  context_projector=lambda row: {"context_snapshot_id": row["id"]},
+                  provider_epoch_matcher=_matching_epoch)
     result = await materialize_worker_context_snapshot(object(), **common)
     assert result is not None
     context = result["conversation_context"]
-    assert context["message_count"] == 82 and context["selected_message_count"] == 8
-    assert [row["message_id"] for row in context["messages"]] == [row["id"] for row in rows[74:]]
-    assert calls[0]["after_id"] == "msg-073" and len(calls) == 3
-    rendered = conversation_history_prompt_section(context)
-    assert "prior goal and explicit constraints" in rendered
-    assert "earlier constraint 74" in rendered and "earlier constraint 0" not in rendered
-    assert conversation_history_prompt_section({**context, "execution_mode": "native_resume"}) == ""
+    assert context["message_count"] == 82 and context["selected_message_count"] == 0
+    assert context["messages"] == []
+    assert context["checkpoint_id"] is None
+    assert context["checkpoint_summary"] is None
+    assert calls[0]["after_id"] is None and len(calls) == 21
     rows[74] = {**rows[74], "content": "tampered"}
-    assert await materialize_worker_context_snapshot(object(), **common) is None
-    rows[74] = {**rows[74], "content": "earlier constraint 74: " + "x" * 128}
-    base["summary_sha256"] = "0" * 64
     assert await materialize_worker_context_snapshot(object(), **common) is None
 
 
@@ -200,6 +207,5 @@ async def test_ready_native_epoch_verifies_over_16_mib_without_materializing_old
     context = result["conversation_context"]
     assert context["message_count"] == 82 and context["native_source_verified"] is True
     assert context["messages"] == [] and context["selected_message_count"] == 0
-    assert conversation_history_prompt_section({**context, "execution_mode": "native_resume"}) == ""
     rows[0] = {**rows[0], "content": "tampered"}
     assert await materialize_worker_context_snapshot(object(), provider_epoch_matcher=matches, **common) is None

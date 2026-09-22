@@ -1,241 +1,164 @@
-# Agent Conversation Context PRD
+# Agent Conversation Context
+
+Status: active source contract
+Owner: Context; engine adaptation is owned by each executor integration
+Last updated: 2026-09-22
 
 ## Purpose
 
-Agent conversation continuity is a platform responsibility. Every admitted run
-must receive the authorized same-conversation text needed to interpret the
-current request without asking the model to retrieve the immediately preceding
-assistant answer.
+Platform conversation data has two responsibilities that must not be confused:
 
-This document owns the product requirements for selecting stored conversation
-messages, materializing executor-private text, applying a bounded context
-budget, and adapting that context to an Engine. It does not own message
-persistence, file bytes, model-loop internals, or current-run capability
-admission.
+1. authorize and audit which same-session messages a Run may continue from; and
+2. supply model-facing conversation history when an Engine does not own durable
+   native continuation.
 
-## Problem
+Claude uses only the first responsibility. Its model-facing history is the
+native Claude `SessionStore`. Other engines may still consume an
+executor-private platform message projection under their own adapter contract.
 
-The motivating pre-cutover path stored immutable context snapshots but
-projected recent conversation messages through a public-safe manifest before
-execution. This paragraph records the original failure mode, not a fresh
-implementation or deployment assessment. A prior message that exceeds a
-per-message inline limit is reduced to an identifier and `requires_retrieval`.
-The Claude Agent SDK then received no message body unless the model elected
-to call `read_session_messages`.
+## Authorities
 
-Claude bootstrap now receives bounded reconstructed recent conversation through
-the executor-private context pack. After a committed provider transcript exists,
-later Claude turns use native `SessionStore` resume. Platform Messages and
-immutable context snapshots remain the audit and fallback authorities.
+**Platform Messages**
+: Immutable public conversation rows ordered by `(created_at, id)`. They remain
+  the UI, authorization-source, audit, and provider-coverage authority.
 
-That previous behavior breaks ordinary follow-ups such as `A`, `continue`, or
-`use the second option`: the current request may depend on choices in the latest
-assistant answer, while only an older user question remains inline. A snapshot
-that proves an omitted message was authorized does not make that message
-available to the model.
+**Conversation Source Receipt**
+: The immutable Run-bound scope, range, count, and digest of authorized prior
+  Messages. It proves coverage; it is not itself model context.
 
-## Product Decision
-
-Basic conversation history uses an ordered, executor-private message sequence.
-The platform materializes authorized message bodies before dispatch, groups
-messages into complete user turns, and removes the oldest complete turns only
-when the total context budget requires it.
-
-Message retrieval remains an overflow and inspection capability for older
-history. It is not the normal continuity mechanism for the most recent
-conversation turn.
-
-The semantic reference is the FastGPT approach at commit
-`8800099a77a93a46f2a66254298bc5f33168b1a4`: stored chat items become standard
-model messages, and context limits remove old complete user turns while
-preserving system context and the newest turn. FastGPT source is comparative
-input, not a runtime dependency or implementation authority.
-
-## Ubiquitous Language
-
-**Authorized Conversation Message**
-: An immutable stored user or assistant message selected by the exact run-bound
-  context snapshot and proven to belong to the same tenant, workspace, user,
-  session, and conversation authority as the run.
-
-**Conversation Turn**
-: One user message followed by every assistant message that belongs to that user
-  request. Tool history may join the turn only through an executor adapter that
-  can preserve a complete, safe tool call/response pair without restoring
-  current-run capability.
+**Claude Provider Epoch**
+: One scoped, ordered, opaque native transcript with a stable provider UUID,
+  state, capacity, and exact source-coverage receipt.
 
 **Executor Conversation Context**
-: The ordered, bounded, executor-private user/assistant text actually supplied
-  to the Engine adapter. It is not an ordinary-user projection.
+: An engine-private projection. For Claude v2 it contains receipts and an empty
+  `messages` array; for a non-native engine it may contain verified platform
+  message bodies.
 
-**Context Receipt**
-: The immutable run binding that records which messages were authorized and the
-  deterministic selection contract. It is evidence of executor input only when
-  those exact authorized bodies are materialized under the same binding.
+**Current Run Context**
+: Current Agent Profile, Skill/tool policy, credentials, model binding, files,
+  artifacts, memory refs, and the exact current input. It is rebuilt for every
+  Run and is never restored from historical provider entries.
 
-**Public Context Summary**
-: A safe projection of counts, sources, trimming state, and versions. It never
-  substitutes for executor-private conversation text.
+## Source And Verification
 
-## Required Behavior
+1. Context admission claims the scoped provider lineage and constructs one
+   source receipt over all prior user/assistant Messages authorized for the
+   Session and current Run generation.
+2. The receipt excludes the current Run's user message from prior history and
+   records that current message identity separately.
+3. Worker materialization reloads every authorized row in durable order,
+   validates scope, role, range, count, and digest, and fails closed on a
+   missing, duplicate, reordered, out-of-scope, or changed row.
+4. Message bodies used for verification are not public projections or logs.
+5. A retry of the same immutable snapshot verifies the same source receipt.
+6. Historical system messages and historical tool calls never enter the
+   authorized user/assistant source range.
 
-### 1. Source and authorization
+## Claude Adaptation
 
-1. Stored `messages` rows remain the conversation text authority.
-2. The immutable run context snapshot remains the authorization boundary for
-   selecting messages. It records at most 64 prior candidate message IDs plus
-   the current-run message IDs; this is an authorization ceiling, not a
-   model-facing count or turn selector.
-3. Materialization must fetch only message identifiers selected by that exact
-   snapshot and must re-prove tenant, workspace, user, session, and run binding.
-4. A missing, duplicate, or out-of-scope materialization fails closed before
-   Engine dispatch. Returned rows are normalized to durable conversation order
-   and repository return order is not an authority.
-5. Retry of the same run uses the same ordered selected message set and the same
-   deterministic trimming algorithm.
+Claude has no platform-history bootstrap mode.
 
-### 2. Canonical message sequence
+1. Worker source verification retains no historical message body in the Claude
+   executor context.
+2. A ready provider epoch is resumable only when its coverage digest and message
+   count exactly equal the verified source receipt and its entry/transcript
+   capacity has sufficient headroom.
+3. Exact coverage selects `native_resume`.
+4. A zero-prior-message source selects `empty_start`.
+5. Any non-empty source without one exact usable native epoch raises
+   `provider_session_requires_new_conversation` before ExecutionSpec/Attempt
+   binding.
+6. Dirty, closed, missing, over-capacity, or coverage-mismatched epochs cannot
+   rotate to a fresh transcript under the same platform conversation.
+7. The SDK user turn is exactly the current `input.message` (or the legacy
+   current `input.prompt` alias). Platform control instructions, Agent Profile,
+   authorized Skill metadata, file/material refs, language policy, and response
+   policy use the controlled system channel.
+8. Claude Code alone owns transcript ordering, token accounting, context-window
+   behavior, summaries, and automatic compaction.
 
-1. Executor context represents messages as ordered records with `message_id`,
-   `run_id`, `role`, and full authorized `content`.
-2. Only user and assistant conversation text enters the first implementation.
-3. Historical system messages never enter the sequence. The admitted current
-   Agent Profile supplies the only system instructions.
-4. Historical tool calls do not restore Skill, MCP, Bash, or other capability.
-5. Files, artifacts, and memory remain independently authorized references and
-   do not become implicit conversation text.
+The platform does not issue `/compact`, inspect context usage before dispatch,
+pre-count ordinary `/v1/messages`, inject stored message bodies, or generate a
+conversation summary. Explicit SDK-generated `/v1/messages/count_tokens`
+traffic remains authorized Run/Attempt-bound proxy traffic.
 
-### 3. Complete-turn selection
+## Non-Claude Adaptation
 
-1. Messages are ordered by the durable conversation order `(created_at, id)`.
-2. A user message starts a turn; following assistant messages remain in that
-   turn until the next user message.
-3. Selection evaluates turns newest first and renders selected turns in
-   chronological order.
-4. The current user request is supplied exactly once through the current-run
-   prompt boundary and is not duplicated as history.
-5. The latest complete prior turn is retained whenever one exists.
-6. When the context budget is exceeded, the oldest complete turn is removed.
-7. The selector never retains a user message while dropping its corresponding
-   assistant answer merely because that answer is longer than a per-message
-   threshold.
-8. There is no fixed 640-character or equivalent per-message omission rule for
-   ordinary conversation history.
+An Engine without owned native continuation may materialize verified prior
+Messages into its executor-private context. That path:
 
-### 4. Context budget
+- preserves complete ordered user/assistant turns;
+- excludes historical system/tool capability state;
+- never exposes private bodies through public context projections; and
+- remains independent from Claude provider epochs.
 
-1. One total conversation-history budget replaces independent per-message
-   inline limits.
-2. The budget accounts for role framing and UTF-8 content with a deterministic,
-   conservative estimator until a target-model tokenizer is an owned platform
-   dependency.
-3. System instructions, current request, file metadata, Skill catalog, and
-   required output reserve are budgeted outside or before historical turns.
-4. A latest prior turn that exceeds the historical budget remains available as
-   one complete turn; the Engine adapter may reject an assembled request that
-   exceeds the model's hard context limit rather than silently deleting half of
-   the turn.
-5. Context checkpoints may replace older removed turns only through their
-   separately versioned, testable summarization contract.
+No new platform checkpoint is built for any Engine by this contract. A future
+engine-specific summarization feature requires its own owner, schema, limits,
+and Change Contract.
 
-### 5. Checkpoint build recovery
+## Current Capability Boundary
 
-1. A `building` checkpoint is owned by one queued Run and one expiring builder
-   lease. Token counting and summarization renew that exact lease while the
-   provider operation remains pending.
-2. Every progress write and final transition rechecks the checkpoint, lease,
-   owner Run, and source snapshot fences. A superseded builder cannot commit.
-3. Worker maintenance converges expired or missing builder leases from
-   `building` to `failed` in bounded, lock-skipping batches.
-4. The same Run, source snapshot, predecessor, and deterministic build key may
-   reopen a failed or expired build with a new lease and reuse validated partial
-   progress. A different identity cannot take it over.
-5. A waiter does not fail merely because one fixed wall-clock interval elapsed;
-   it waits while the exact owner remains dispatchable and fails when the source
-   or owner fence is no longer valid.
+Historical context never restores capabilities. Every Run derives these from
+current platform authority:
 
-### 6. Engine adaptation
+- Agent Profile and profile revision;
+- Skill Set, selected Skill, dependencies, and release decisions;
+- MCP/native tool authorization and permission policy;
+- model value, gateway revision, and capacity;
+- credentials and callback capability;
+- files, artifacts, and memory references; and
+- Run/Attempt/lease ownership.
 
-1. Engine-neutral conversation records terminate at the Engine adapter.
-2. An adapter that accepts native message arrays receives role-preserving
-   messages.
-3. The Claude Agent SDK adapter uses bounded reconstructed conversation during
-   bootstrap. After a committed provider transcript exists, later Claude turns
-   use native `SessionStore` resume; platform Messages and immutable context
-   snapshots remain the audit and fallback authorities.
-4. The transcript distinguishes historical data from system instructions and
-   the current request.
-5. The model is not instructed to call `read_session_messages` to understand the
-   latest prior turn.
+Provider transcript content is opaque and cannot override these bindings.
 
-### 7. Projection and observability
+## Projection And Non-Disclosure
 
-1. Executor-private message text must not enter ordinary-user context summaries,
-   operational logs, or public events.
-2. Public projections may report candidate, snapshot-authorized, and
-   candidate-omitted message counts, context version, and whether older
-   retrieval remains available. The context manifest contains no current
-   request, historical message body, message ID, or per-message selection
-   result.
-3. Runtime evidence may identify message and turn counts but must not expose raw
-   message identifiers or content to ordinary users.
-4. Context assembly failures use bounded error categories without echoing text.
-
-## Removed Behavior
-
-The conversation execution path must stop relying on:
-
-- conversation fields in the context manifest, including `current_message`,
-  `recent_messages`, `inline_content`, message summaries, message token
-  estimates, and message `requires_retrieval` rows;
-- the fixed eight-message snapshot clamp;
-- per-message character limits that erase an otherwise affordable turn;
-- message reference identifiers rendered into the model prompt;
-- `Context pack: N message(s)` as a substitute for the selected text;
-- model-initiated `read_session_messages` as the recovery path for recent
-  conversation history;
-- process-local SDK session state as cross-run conversation authority; committed
-  Claude provider transcripts are used only for native continuation. Platform
-  Messages and immutable context snapshots remain audit and fallback authorities.
-
-The retrieval API itself remains for explicitly older history and authorized
-inspection. File, artifact, and memory manifest behavior is not removed by this
-cutover.
+- Ordinary-user projections exclude source message IDs, provider UUIDs, raw
+  provider entries, checkpoint summaries, storage keys, runtime paths, callback
+  credentials, and executor-private payloads.
+- Public context summaries may expose bounded counts and safe provenance only.
+- Context failures use stable error categories and do not echo historical text.
+- Provider transcript entries are never interpreted or rendered by platform
+  code.
 
 ## Acceptance Criteria
 
-1. Given a prior assistant message longer than 640 characters whose final text
-   defines options A and B, when the next user message is `A`, the exact A/B
-   choice text is present in the executor conversation context.
-2. That scenario requires no `read_session_messages` invocation.
-3. Given three complete turns and a budget for two, the oldest turn is absent
-   and both newer user/assistant pairs remain complete and ordered.
-4. Given one latest prior turn larger than the historical budget, that turn is
-   retained whole and no older turn is retained.
-5. Current user text appears exactly once in the final Claude prompt.
-6. Historical system messages and historical capability authorization never
-   enter executor conversation context.
-7. A snapshot-selected message from another scope or a materialization with a
-   missing selected identifier fails before SDK dispatch.
-8. New context manifests contain no conversation fields or message identifiers;
-   legacy persisted manifest fields are discarded at the sanitization boundary
-   and only their non-sensitive count may migrate to the new public projection.
-9. Existing file, artifact, memory, public provenance, run isolation, and
-   current-run capability tests remain green.
+- Claude first turn uses `empty_start` and sends only the current message in the
+  SDK user channel.
+- Claude later turn uses `native_resume` only with exact ready coverage.
+- Platform historical bodies and checkpoint summaries are absent from every
+  Claude prompt channel; Claude is not authorized to call
+  `read_session_messages` as a retrieval tool.
+- Worker still detects a changed authorized Message before dispatch.
+- Missing, dirty, closed, over-capacity, or mismatched Claude native state
+  requires a new conversation before Attempt binding.
+- Resume applies current tools, profile, credentials, model, and file/material
+  authority rather than historical capabilities.
+- Non-Claude private materialization and public redaction behavior remain green.
 
-## Delivery Boundaries
+## Removed Behavior
 
-The delivered source contract includes the PRD, an executor-private message
-materialization seam, complete-turn selection, Claude transcript rendering,
-versioned checkpoint summarization, and focused regression tests.
+The active execution path no longer uses:
 
-It excludes UI changes, changes to message retention, file content inlining, and
-deployment. Runtime claims require a controlled-host acceptance run of the exact
-deployed subject.
+- `platform_bootstrap`;
+- platform-generated conversation checkpoint summaries;
+- checkpoint token counting or summarization model calls;
+- Worker checkpoint preparation or expired-build maintenance;
+- checkpoint usage merged into terminal Run token counts;
+- stored platform message bodies rendered into Claude prompts;
+- message retrieval as automatic recovery for missing Claude continuity; or
+- silent `empty_start` fallback for an existing conversation.
 
-## Rollback
+Legacy checkpoint rows and the shared non-Claude context-retrieval API remain
+read-only compatibility surfaces. Historical non-Claude snapshots may still
+load a ready checkpoint they explicitly name, and identified non-Claude clients
+may still use scoped message retrieval. Historical Claude snapshots ignore a
+checkpoint summary, verify the full source range, and never expose
+`read_session_messages` to the SDK.
 
-The source change is rollbackable by reverting the implementation and PRD index
-entry. No data rewrite or schema rollback is required. Existing messages and
-context snapshots remain readable through a one-way sanitization migration;
-new snapshots never emit the removed conversation-manifest fields.
+## Delivery Boundary
+
+This source change does not claim deployment, packaged-image behavior,
+PostgreSQL runtime migration, or cross-sandbox external acceptance. It changes
+no public SSE, message, callback-receipt, or frontend contract.

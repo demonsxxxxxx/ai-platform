@@ -13,7 +13,7 @@ from app.runtime.kernel_contracts import AgentEvent
 from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 from app.sandbox.api import AssistantAnswerReceipt
 from app.validation import (
-    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
+    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
     assert_safe_id,
     assert_safe_principal_user_id,
 )
@@ -278,7 +278,7 @@ class SandboxRuntimeRequest(BaseModel):
     mcp_tool_ids: list[str] = Field(default_factory=list)
     tool_policy_subjects: list[dict[str, Any]] = Field(default_factory=list)
     input_message: str
-    system_prompt: str = Field(default="", max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+    system_prompt: str = Field(default="", max_length=MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS)
     file_ids: list[str] = Field(default_factory=list)
     materialized_file_names: list[str] = Field(default_factory=list)
     sandbox_mode: SandboxMode
@@ -836,7 +836,6 @@ class ExecutorContextRetrievalRequest(BaseModel):
     attempt_id: str
     callback_token_id: str
     action: Literal[
-        "read_session_messages",
         "read_run_artifact",
         "stage_context_file_to_workspace",
         "stage_run_artifact_to_workspace",

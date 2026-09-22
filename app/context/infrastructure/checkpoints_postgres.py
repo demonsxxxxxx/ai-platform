@@ -109,28 +109,3 @@ async def load_ready_checkpoint(
     if checkpoint_id is not None and rows[0]["id"] != checkpoint_id:
         raise ValueError("conversation_checkpoint_identity_invalid")
     return _ready_chain(rows, scope)
-
-
-async def load_checkpoint_usage_for_run(
-    conn: AsyncConnection, *, tenant_id: str, run_id: str,
-) -> dict[str, Any]:
-    cursor = await conn.execute(
-        """
-        select count(runs.id) as run_count,
-               coalesce(sum(checkpoint.input_tokens), 0)::bigint as input_tokens,
-               coalesce(sum(checkpoint.output_tokens), 0)::bigint as output_tokens
-        from runs
-        left join conversation_context_checkpoints checkpoint
-          on checkpoint.tenant_id = runs.tenant_id
-          and checkpoint.workspace_id = runs.workspace_id
-          and checkpoint.user_id = runs.user_id
-          and checkpoint.session_id = runs.session_id
-          and checkpoint.owner_run_id = runs.id
-        where runs.tenant_id = %s and runs.id = %s
-        """,
-        (tenant_id, run_id),
-    )
-    row = await cursor.fetchone()
-    if row is None or row["run_count"] != 1:
-        raise ValueError("conversation_checkpoint_usage_run_unavailable")
-    return row

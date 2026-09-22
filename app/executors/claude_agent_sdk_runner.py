@@ -13,7 +13,7 @@ from inspect import isawaitable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from app.context_manifest import available_context_retrieval_tools, truncate_utf8_text
+from app.context_manifest import truncate_utf8_text
 from app.bootstrap.claude_mcp import prepare_claude_mcp
 from app.context.retrieval import (
     ContextRetrievalAuthority,
@@ -40,6 +40,7 @@ from app.executors.claude.capability_policy import (
     _extract_skill_names_from_tool_input,
     _mcp_server_options,
     _parameters_match_subject,
+    claude_context_retrieval_tools,
     internal_context_tool_policy_subjects,
     internal_response_tool_policy_subjects,
 )
@@ -119,7 +120,7 @@ def runtime_tool_policy_subjects(
     )
     subjects.extend(
         internal_context_tool_policy_subjects(
-            available_context_retrieval_tools(context_manifest)
+            claude_context_retrieval_tools(context_manifest)
         )
     )
     subjects.extend(internal_response_tool_policy_subjects())
@@ -817,18 +818,6 @@ def _build_context_retrieval_mcp_server(
             )
 
     @sdk_tool(
-        "read_session_messages",
-        "Read prior messages for the current ai-platform run scope only.",
-        {
-            "limit": int,
-            "offset": int,
-            "max_tokens": int,
-        },
-    )
-    async def read_session_messages(args):
-        return await _run("read_session_messages", args)
-
-    @sdk_tool(
         "read_run_artifact",
         "Read an artifact explicitly authorized by the current ai-platform run snapshot.",
         {
@@ -887,7 +876,6 @@ def _build_context_retrieval_mcp_server(
         tools=[
             tool
             for tool in (
-                read_session_messages,
                 read_run_artifact,
                 stage_context_file_to_workspace,
                 stage_run_artifact_to_workspace,
