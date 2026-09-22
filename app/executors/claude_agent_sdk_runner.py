@@ -1621,6 +1621,8 @@ async def run_claude_agent_sdk(
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_capability_evidence: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
+    on_subagent_lifecycle: Callable[[dict[str, str]], Awaitable[None] | None]
+    | None = None,
     on_agent_event: Callable[[tuple[Any, ...]], Awaitable[bool | None] | bool | None]
     | None = None,
     run_id: str | None = None,
@@ -3131,6 +3133,33 @@ async def run_claude_agent_sdk(
 
         return handler
 
+    def subagent_lifecycle_hook(lifecycle: str):
+        async def handler(
+            hook_input, _tool_use_id=None, _context=None
+        ) -> dict[str, object]:
+            if on_subagent_lifecycle is None or not isinstance(hook_input, dict):
+                return {}
+            agent_id = hook_input.get("agent_id")
+            agent_type = hook_input.get("agent_type")
+            session_id = hook_input.get("session_id")
+            if not all(
+                isinstance(value, str) and value
+                for value in (agent_id, agent_type, session_id)
+            ):
+                return {}
+            fact = {
+                "lifecycle": lifecycle,
+                "agent_id": str(agent_id),
+                "agent_type": str(agent_type),
+                "session_id": str(session_id),
+            }
+            callback_result = on_subagent_lifecycle(fact)
+            if isawaitable(callback_result):
+                await callback_result
+            return {}
+
+        return handler
+
     try:
         _scrub_project_setting_files(cwd)
     except OSError as exc:
@@ -3153,6 +3182,18 @@ async def run_claude_agent_sdk(
                 HookMatcher(
                     matcher=None,
                     hooks=[enforce_side_effect_tool_policy],
+                )
+            ],
+            "SubagentStart": [
+                HookMatcher(
+                    matcher=None,
+                    hooks=[subagent_lifecycle_hook("started")],
+                )
+            ],
+            "SubagentStop": [
+                HookMatcher(
+                    matcher=None,
+                    hooks=[subagent_lifecycle_hook("stopped")],
                 )
             ],
         }
