@@ -321,7 +321,7 @@ def _fake_sdk(
             )
         for hook_name, hook_input, tool_call_id in hook_invocations:
             matchers = captured["hooks"][hook_name]
-            if hook_name == "PreToolUse":
+            if hook_name in {"PreToolUse", "SubagentStart", "SubagentStop"}:
                 matcher = matchers[0]
             else:
                 tool_name = str(hook_input.get("tool_name") or "")
@@ -416,7 +416,7 @@ def _scripted_sdk(
         async def invoke_hook(value):
             hook_name, hook_input, tool_call_id = value
             matchers = captured["hooks"][hook_name]
-            if hook_name == "PreToolUse":
+            if hook_name in {"PreToolUse", "SubagentStart", "SubagentStop"}:
                 matcher = matchers[0]
             else:
                 tool_name = str(hook_input.get("tool_name") or "")
@@ -668,6 +668,67 @@ async def test_sdk_auto_does_not_publish_an_unexpected_thinking_block(
 
     assert result.error is None
     assert "Unexpected public summary" not in repr(published)
+
+
+@pytest.mark.asyncio
+async def test_sdk_registers_subagent_lifecycle_hooks(monkeypatch, tmp_path):
+    captured, lifecycle_facts = {}, []
+    identity = {
+        "session_id": "sdk-parent-session",
+        "agent_id": "sdk-child-agent",
+        "agent_type": "reviewer",
+    }
+
+    async def record_lifecycle(fact):
+        lifecycle_facts.append(dict(fact))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _fake_sdk(
+            captured,
+            hook_invocations=[
+                (
+                    "SubagentStart",
+                    {
+                        "session_id": identity["session_id"],
+                        "agent_type": identity["agent_type"],
+                        "hook_event_name": "SubagentStart",
+                    },
+                    None,
+                ),
+                (
+                    "SubagentStart",
+                    {**identity, "hook_event_name": "SubagentStart"},
+                    None,
+                ),
+                (
+                    "SubagentStop",
+                    {**identity, "hook_event_name": "SubagentStop"},
+                    None,
+                ),
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="delegate",
+        cwd=tmp_path,
+        skill_id=None,
+        on_subagent_lifecycle=record_lifecycle,
+    )
+
+    assert result.error is None
+    assert captured["hooks"]["SubagentStart"][0].matcher is None
+    assert captured["hooks"]["SubagentStop"][0].matcher is None
+    assert lifecycle_facts == [
+        {"lifecycle": "started", **identity},
+        {"lifecycle": "stopped", **identity},
+    ]
 
 
 @pytest.mark.asyncio
