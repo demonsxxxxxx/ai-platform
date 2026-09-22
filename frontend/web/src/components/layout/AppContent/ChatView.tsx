@@ -901,8 +901,8 @@ export function ChatView({
     onSelectModel,
     attachments,
     onAttachmentsChange,
-    uploadControls,
     onProfileDriveFileDrop: handleProfileDriveFileDrop,
+    uploadControls,
   };
 
   const assistantUiActions = useMemo(
