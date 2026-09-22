@@ -15,10 +15,14 @@ class ProfileDriveTransferError(Exception):
 @dataclass(frozen=True, slots=True)
 class ProfileDriveFileImportRequest:
     path: str
+    source_id: str = "profile"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.path, str):
+        if not isinstance(self.path, str) or not isinstance(self.source_id, str):
             raise ValueError("profile_drive_path_invalid")
+        source_id = self.source_id.strip().lower()
+        if source_id not in {"profile", "public"}:
+            raise ValueError("profile_drive_source_invalid")
         normalized = self.path.replace("\\", "/")
         parts = normalized.split("/")
         if (
@@ -29,6 +33,7 @@ class ProfileDriveFileImportRequest:
         ):
             raise ValueError("profile_drive_path_invalid")
         object.__setattr__(self, "path", normalized)
+        object.__setattr__(self, "source_id", source_id)
 
 
 def parse_profile_drive_file_import_request(value: object) -> ProfileDriveFileImportRequest:
@@ -36,7 +41,12 @@ def parse_profile_drive_file_import_request(value: object) -> ProfileDriveFileIm
         return value
     if not isinstance(value, Mapping):
         raise ValueError("profile_drive_path_invalid")
-    return ProfileDriveFileImportRequest(value.get("path"))
+    if any(key not in {"path", "source_id"} for key in value):
+        raise ValueError("profile_drive_source_invalid")
+    return ProfileDriveFileImportRequest(
+        value.get("path"),
+        value.get("source_id", "profile"),
+    )
 
 
 class ProfileDriveTransferPort(Protocol):

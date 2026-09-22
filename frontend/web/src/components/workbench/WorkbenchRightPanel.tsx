@@ -3,13 +3,16 @@ import {
   type LibreChatSidePanelProps,
 } from "../../librechat-ui/SidePanel";
 import type { SessionInputFile } from "../../services/api";
+import type { ProfileDriveFileReference } from "../../services/api/profileDrive";
 import { ProfileDriveWorkspaceBrowser } from "./ProfileDriveWorkspaceBrowser";
 
 export interface WorkbenchRightPanelProps
   extends Omit<LibreChatSidePanelProps, "additionalSections"> {
   sessionId: string | null;
   onProfileDriveFileImported: (file: SessionInputFile) => void;
-  onProfileDriveFileDrop: (path: string) => void | Promise<void>;
+  onProfileDriveFileDrop: (
+    reference: ProfileDriveFileReference,
+  ) => void | Promise<void>;
 }
 
 export function WorkbenchRightPanel({
@@ -22,12 +25,24 @@ export function WorkbenchRightPanel({
     <LibreChatSidePanel
       {...props}
       additionalSections={
-        <ProfileDriveWorkspaceBrowser
-          key={sessionId ?? "no-session"}
-          sessionId={sessionId}
-          onImported={onProfileDriveFileImported}
-          onAddToConversation={onProfileDriveFileDrop}
-        />
+        <>
+          <ProfileDriveWorkspaceBrowser
+            key={`${sessionId ?? "no-session"}-profile`}
+            sessionId={sessionId}
+            sourceId="profile"
+            title="个人文件"
+            onImported={onProfileDriveFileImported}
+            onAddToConversation={onProfileDriveFileDrop}
+          />
+          <ProfileDriveWorkspaceBrowser
+            key={`${sessionId ?? "no-session"}-public`}
+            sessionId={sessionId}
+            sourceId="public"
+            title="公盘"
+            onImported={onProfileDriveFileImported}
+            onAddToConversation={onProfileDriveFileDrop}
+          />
+        </>
       }
     />
   );

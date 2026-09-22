@@ -51,9 +51,41 @@ test("lists the current user's ProfileDrive directory through the credential han
     );
     assert.equal(requests[1]?.init.credentials, "omit");
     assert.deepEqual(JSON.parse(String(requests[1]?.init.body)), {
+      source: "profile",
       path: "reports",
       maxEntries: 200,
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("selects the fixed public drive source without accepting a server", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies: unknown[] = [];
+  globalThis.fetch = (async (input, init = {}) => {
+    const url = String(input);
+    if (url.endsWith("/api/ai/auth/company-credential-handoff")) {
+      return new Response(JSON.stringify({ credential: "handoff-jwt" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    bodies.push(JSON.parse(String(init.body)));
+    return new Response(
+      JSON.stringify({
+        status: "success",
+        path: "",
+        entries: [],
+        truncated: false,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    await profileDriveApi.listFiles("", "public");
+    assert.deepEqual(bodies, [{ source: "public", path: "", maxEntries: 200 }]);
   } finally {
     globalThis.fetch = originalFetch;
   }

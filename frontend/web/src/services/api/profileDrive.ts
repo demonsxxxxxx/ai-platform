@@ -1,5 +1,12 @@
 import { authApi } from "./auth";
 
+export type ProfileDriveSourceId = "profile" | "public";
+
+export interface ProfileDriveFileReference {
+  source_id: ProfileDriveSourceId;
+  path: string;
+}
+
 export interface ProfileDriveConnectionStatus {
   status: string;
   connected: boolean;
@@ -124,11 +131,11 @@ export const profileDriveApi = {
     });
   },
 
-  async listFiles(path = "") {
+  async listFiles(path = "", source: ProfileDriveSourceId = "profile") {
     return profileDriveListResult(
       await request<unknown>("/files/list", {
         method: "POST",
-        body: JSON.stringify({ path, maxEntries: 200 }),
+        body: JSON.stringify({ source, path, maxEntries: 200 }),
       }),
     );
   },
