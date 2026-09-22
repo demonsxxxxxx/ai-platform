@@ -126,7 +126,8 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "admin_skill_release_dashboard_runtime_acceptance_source_route_tests" in domains["skill_governance"][
         "implemented"
     ]
-    assert "signed_skill_package_or_sbom_release_gate" in domains["skill_governance"]["gaps"]
+    assert "skill_inventory_missing_or_empty" in domains["skill_governance"]["gaps"]
+    assert "signed_skill_package_or_sbom_release_gate" not in domains["skill_governance"]["gaps"]
     assert "skill_dependency_review_policy_runtime_acceptance" in domains["skill_governance"]["gaps"]
     assert "admin_skill_release_dashboard_acceptance" not in domains["skill_governance"]["gaps"]
     assert "admin_skill_release_dashboard_runtime_acceptance" not in domains["skill_governance"]["gaps"]
@@ -135,12 +136,17 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     release_evidence = domains["skill_governance"]["evidence"]["release_readiness"]
     assert release_evidence["schema_version"] == "ai-platform.skill-release-readiness.v1"
     assert release_evidence["status"] == "partial_blocked"
-    assert release_evidence["source"]["external_evidence"] == {
-        "mode": "optional_external_release_evidence",
-        "root": "docs/release-evidence/skill-release",
-        "present": True,
+    assert release_evidence["source"] == {
+        "mode": "offline_external_skill_inventory",
+        "root": None,
+        "inventory_present": False,
+        "external_evidence": {
+            "mode": "optional_external_release_evidence",
+            "root": "docs/release-evidence/skill-release",
+            "present": True,
+        },
     }
-    assert release_evidence["summary"]["total_skills"] >= 1
+    assert release_evidence["summary"]["total_skills"] == 0
     assert release_evidence["summary"]["skills_with_sbom_evidence"] == release_evidence["summary"]["total_skills"]
     assert release_evidence["summary"]["skills_with_license_evidence"] == release_evidence["summary"]["total_skills"]
     assert release_evidence["summary"]["skills_with_vulnerability_evidence"] == release_evidence["summary"][
@@ -185,8 +191,9 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert runtime_contract["does_not_close_g6"] is True
     assert release_evidence["runtime_acceptance_evidence"] == {}
     assert release_evidence["closed_runtime_gaps"] == []
-    assert "signed_skill_package_or_sbom_release_gate" in release_evidence["open_gaps"]
-    assert "dependency_vulnerability_or_license_policy" in release_evidence["open_gaps"]
+    assert release_evidence["open_gaps"][0] == "skill_inventory_missing_or_empty"
+    assert "signed_skill_package_or_sbom_release_gate" not in release_evidence["open_gaps"]
+    assert "dependency_vulnerability_or_license_policy" not in release_evidence["open_gaps"]
     assert "skill_dependency_review_policy_runtime_acceptance" in release_evidence["open_gaps"]
     dashboard_evidence = domains["skill_governance"]["evidence"]["admin_skill_release_dashboard"]
     assert dashboard_evidence["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
@@ -514,7 +521,8 @@ def test_render_governance_readiness_markdown_is_operator_readable_and_gap_first
     open_gaps = markdown.split("## Domains", 1)[0]
     assert "admin_policy_bulk_review_runtime_acceptance" not in open_gaps
     assert "source_route_tests_recorded" in markdown
-    assert "signed_skill_package_or_sbom_release_gate" in markdown
+    assert "skill_inventory_missing_or_empty" in markdown
+    assert "signed_skill_package_or_sbom_release_gate" not in markdown
     assert "skill_dependency_review_policy_contract" in markdown
     assert "skill_dependency_review_policy_runtime_acceptance" in markdown
     assert "ai-platform.skill-dependency-review-policy.v1" in markdown

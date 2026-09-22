@@ -3448,7 +3448,7 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
         return 4
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry)
+    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
         "app.routes.chat.repositories.get_effective_skill_version_for_policy",
@@ -3547,7 +3547,7 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
         return 4
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry)
+    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
         "app.routes.chat.repositories.get_effective_skill_version_for_policy",
@@ -3616,7 +3616,7 @@ async def test_chat_stream_rejects_reviewed_rollout_previous_version(monkeypatch
         raise AssertionError("queue must not receive reviewed rollout previous version")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry)
+    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
         "app.routes.chat.repositories.get_effective_skill_version_for_policy",

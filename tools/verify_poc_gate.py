@@ -49,7 +49,6 @@ RUNTIME_ENV_ALLOWLIST = frozenset(
         "MODEL_CATALOG_JSON",
         "OPENAI_MODEL",
         "ANTHROPIC_MODEL",
-        "CLAUDE_AGENT_SDK_SKILLS",
         "EXISTING_AUTH_BASE_URL",
     }
 )
@@ -472,7 +471,6 @@ def _model_ids_from_catalog_json(raw: str) -> tuple[str, list[str]]:
 
 def check_runtime_config(env_path: str, values: dict[str, str] | None = None) -> Gate:
     values = dict(values) if values is not None else read_env(env_path)
-    skills = {item.strip() for item in values.get("CLAUDE_AGENT_SDK_SKILLS", "").split(",") if item.strip()}
     configured_models = {
         values.get("CLAUDE_AGENT_MODEL"),
         values.get("OPENAI_MODEL"),
@@ -492,7 +490,6 @@ def check_runtime_config(env_path: str, values: dict[str, str] | None = None) ->
         and bool(configured_model_id)
         and default_model_id == configured_model_id
         and catalog_valid
-        and {"general-chat", "qa-file-reviewer"}.issubset(skills)
     )
     return Gate(
         "runtime_config",
@@ -508,7 +505,6 @@ def check_runtime_config(env_path: str, values: dict[str, str] | None = None) ->
             "model_catalog_status": catalog_status,
             "available_model_ids": catalog_model_ids,
             "model_catalog_contains_configured_model": catalog_contains_configured_model,
-            "skills_present": sorted(skills.intersection({"general-chat", "qa-file-reviewer"})),
         },
     )
 
@@ -543,7 +539,15 @@ def check_company_auth_bridge(existing_auth_base_url: str) -> Gate:
     )
 
 
-def latest_successful_run(container: str, db_user: str, db_name: str, *, agent_id: str, skill_id: str) -> dict[str, Any] | None:
+def latest_successful_run(
+    container: str,
+    db_user: str,
+    db_name: str,
+    *,
+    agent_id: str,
+    skill_id: str | None,
+) -> dict[str, Any] | None:
+    skill_clause = "r.skill_id is null" if skill_id is None else f"r.skill_id = '{skill_id}'"
     sql = f"""
 select json_build_object(
   'run_id', r.id,
@@ -561,7 +565,7 @@ select json_build_object(
 from runs r
 left join artifacts a on a.run_id = r.id
 where r.agent_id = '{agent_id}'
-  and r.skill_id = '{skill_id}'
+  and {skill_clause}
   and r.status = 'succeeded'
 order by r.created_at desc
 limit 1;
@@ -572,8 +576,7 @@ limit 1;
 
 def check_db_evidence(container: str, db_user: str, db_name: str) -> list[Gate]:
     specs = [
-        ("general_chat_run", "general-agent", "general-chat", False),
-        ("review_artifact", "qa-word-review", "qa-file-reviewer", True),
+        ("general_chat_run", "general-agent", None, False),
     ]
     gates: list[Gate] = []
     for name, agent_id, skill_id, require_artifact in specs:
@@ -1306,208 +1309,6 @@ group by r.id;
     )
 
 
-def sample_docx_bytes() -> tuple[str, bytes] | None:
-    try:
-        import docx
-    except ImportError:
-        return None
-    package_file = Path(docx.__file__) if docx.__file__ else None
-    candidate = package_file.parent / "templates" / "default.docx" if package_file else None
-    if candidate is not None and candidate.is_file():
-        return candidate.name, candidate.read_bytes()
-    return None
-
-
-def check_word_review_attachment_chat(
-    api_url: str,
-    container: str,
-    db_user: str,
-    db_name: str,
-    *,
-    wait_attempts: int = 90,
-) -> Gate:
-    sample = sample_docx_bytes()
-    if sample is None:
-        return Gate("word_review_attachment_chat", False, {"sample_docx_found": False})
-    filename, content = sample
-    headers = principal_headers("upload-review-gate-user", "Upload Review Gate User")
-    upload_status, upload_payload = http_multipart_file_post(
-        f"{api_url.rstrip('/')}/api/ai/files",
-        field_name="file",
-        filename=filename,
-        content=content,
-        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers=headers,
-    )
-    file_id = upload_payload.get("file_id") if isinstance(upload_payload, dict) else None
-    chat_payload: dict[str, Any] | None = None
-    chat_status = 0
-    if file_id:
-        chat_status, chat_payload = http_json_post_with_headers(
-            f"{api_url.rstrip('/')}/api/chat/stream?agent_id=general-agent",
-            {
-                "message": "审核一下这个文档",
-                "workspace_id": "default",
-                "attachments": [
-                    {
-                        "key": file_id,
-                        "name": filename,
-                        "type": "uploads",
-                        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        "size": len(content),
-                    }
-                ],
-            },
-            headers=headers,
-            timeout=30,
-        )
-    run_id = chat_payload.get("run_id") if isinstance(chat_payload, dict) else None
-    run_evidence: dict[str, Any] = {}
-    if run_id:
-        run_id = assert_safe_id(str(run_id), "run_id")
-        for _ in range(max(1, wait_attempts)):
-            rows = psql_rows(
-                container,
-                db_user,
-                db_name,
-                f"""
-select json_build_object(
-  'run_id', r.id,
-  'tenant_id', r.tenant_id,
-  'agent_id', r.agent_id,
-  'skill_id', r.skill_id,
-  'status', r.status,
-  'file_ids', r.input_json->'file_ids',
-  'error_message', r.error_message,
-  'artifact_count', count(a.id),
-  'artifacts', coalesce(
-    json_agg(
-      json_build_object(
-        'artifact_id', a.id,
-        'artifact_type', a.artifact_type,
-        'content_type', a.content_type
-      )
-      order by a.created_at, a.id
-    ) filter (where a.id is not null),
-    '[]'::json
-  )
-)::text
-from runs r
-left join artifacts a on a.run_id = r.id and a.tenant_id = r.tenant_id
-where r.id = '{run_id}'
-group by r.id;
-""",
-            )
-            run_evidence = rows[0] if rows else {}
-            if run_evidence.get("status") in {"succeeded", "failed"}:
-                break
-            time.sleep(1)
-    run_artifacts = _artifact_rows_from_run_evidence(run_evidence)
-    reviewed_docx_artifacts = [
-        item
-        for item in run_artifacts
-        if item["artifact_type"] == "reviewed_docx" and item["content_type"] in PREVIEW_ALLOWED_CONTENT_TYPES
-    ]
-    reviewed_docx_artifact_ids = {item["artifact_id"] for item in reviewed_docx_artifacts if item["artifact_id"]}
-    playback_status = 0
-    playback_payload: Any = {}
-    if run_id:
-        playback_status, playback_payload = http_json_get_with_headers(
-            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/playback",
-            headers=headers,
-            timeout=30,
-        )
-    playback_artifacts = playback_payload.get("artifacts") if isinstance(playback_payload, dict) else []
-    if not isinstance(playback_artifacts, list):
-        playback_artifacts = []
-    playback_text = json.dumps(playback_payload, ensure_ascii=False, default=str).lower()
-    playback_private_payload_leaked = any(
-        marker in playback_text
-        for marker in (
-            "storage_key",
-            "tenants/default",
-            "/tmp/",
-            "/" "home/",
-            "/var/lib/ai-platform",
-            "private_payload",
-            "runtime_private_payload",
-            "runtimeprivatepayload",
-            "executor_payload",
-            "executorpayload",
-        )
-    )
-    playback_preview_url_count = sum(
-        1
-        for artifact in playback_artifacts
-        if isinstance(artifact, dict) and isinstance(artifact.get("preview_url"), str) and artifact["preview_url"]
-    )
-    playback_download_url_count = sum(
-        1
-        for artifact in playback_artifacts
-        if isinstance(artifact, dict) and isinstance(artifact.get("download_url"), str) and artifact["download_url"]
-    )
-    matched_preview_artifact_count = 0
-    matched_download_artifact_count = 0
-    for artifact in playback_artifacts:
-        if not isinstance(artifact, dict):
-            continue
-        artifact_id = str(artifact.get("artifact_id") or "")
-        if artifact_id not in reviewed_docx_artifact_ids:
-            continue
-        if artifact.get("download_url") == f"/api/ai/artifacts/{artifact_id}/download":
-            matched_download_artifact_count += 1
-        if artifact.get("preview_url") == f"/api/ai/artifacts/{artifact_id}/preview":
-            matched_preview_artifact_count += 1
-    playback_ok = (
-        playback_status == 200
-        and isinstance(playback_payload, dict)
-        and playback_payload.get("contract_version") == "ai-platform.run-playback.v1"
-        and bool(playback_artifacts)
-        and bool(reviewed_docx_artifact_ids)
-        and matched_download_artifact_count == len(reviewed_docx_artifact_ids)
-        and matched_preview_artifact_count == len(reviewed_docx_artifact_ids)
-        and not playback_private_payload_leaked
-    )
-    context_projection_gate = check_context_snapshot_public_projection(api_url, run_evidence, headers=headers)
-    ok = (
-        upload_status == 200
-        and isinstance(upload_payload, dict)
-        and str(upload_payload.get("file_id") or "").startswith("file_")
-        and chat_status == 200
-        and run_evidence.get("status") == "succeeded"
-        and run_evidence.get("agent_id") == "qa-word-review"
-        and run_evidence.get("skill_id") == "qa-file-reviewer"
-        and file_id in (run_evidence.get("file_ids") or [])
-        and bool(reviewed_docx_artifact_ids)
-        and playback_ok
-        and context_projection_gate.ok
-    )
-    return Gate(
-        "word_review_attachment_chat",
-        ok,
-        {
-            "sample_docx_found": True,
-            "sample_docx_name": filename,
-            "upload_status": upload_status,
-            "upload_payload": upload_payload,
-            "chat_status": chat_status,
-            "chat_payload": chat_payload,
-            "run": run_evidence,
-            "playback": {
-                "status": playback_status,
-                "contract_version": playback_payload.get("contract_version") if isinstance(playback_payload, dict) else None,
-                "artifact_count": len(playback_artifacts),
-                "download_url_count": playback_download_url_count,
-                "preview_url_count": playback_preview_url_count,
-                "matched_download_artifact_count": matched_download_artifact_count,
-                "matched_preview_artifact_count": matched_preview_artifact_count,
-                "private_payload_leaked": playback_private_payload_leaked,
-            },
-            "context_snapshot_public_projection": context_projection_gate.evidence,
-        },
-    )
-
-
 def check_auth_audit(container: str, db_user: str, db_name: str) -> Gate:
     sql = """
 select json_build_object(
@@ -1555,29 +1356,17 @@ def main() -> int:
     parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
     parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
     parser.add_argument("--upload-run-wait-seconds", type=int, default=45)
-    parser.add_argument("--word-review-run-wait-seconds", type=int, default=90)
     args = parser.parse_args()
 
     db_gates = check_db_evidence(args.postgres_container, args.postgres_user, args.postgres_db)
     env_values = runtime_env_values(args.env_path, args.worker_container)
     runtime_config_gate = check_runtime_config(args.env_path, env_values)
-    artifact_rows = [gate.evidence for gate in db_gates if gate.name == "review_artifact" and gate.ok]
-    word_review_gate = check_word_review_attachment_chat(
+    upload_attachment_gate = check_upload_attachment_chat(
         args.api_url,
         args.postgres_container,
         args.postgres_user,
         args.postgres_db,
-        wait_attempts=args.word_review_run_wait_seconds,
-    )
-    governed_run_rows = list(artifact_rows)
-    word_review_run = word_review_gate.evidence.get("run")
-    if isinstance(word_review_run, dict):
-        governed_run_rows.append({**word_review_run, "fresh_smoke_run": True})
-    governed_skill_runs_gate = check_governed_skill_runs(
-        args.postgres_container,
-        args.postgres_user,
-        args.postgres_db,
-        governed_run_rows,
+        wait_attempts=args.upload_run_wait_seconds,
     )
     gates = [
         check_frontend(args.frontend_url),
@@ -1590,22 +1379,7 @@ def main() -> int:
         runtime_config_gate,
         check_company_auth_bridge(env_values.get("EXISTING_AUTH_BASE_URL", "")),
         *db_gates,
-        governed_skill_runs_gate,
-        check_artifact_download_isolation(args.api_url, artifact_rows),
-        check_artifact_preview_isolation(args.api_url, artifact_rows),
-        check_upload_attachment_chat(
-            args.api_url,
-            args.postgres_container,
-            args.postgres_user,
-            args.postgres_db,
-            wait_attempts=args.upload_run_wait_seconds,
-        ),
-        word_review_gate,
-        Gate(
-            "context_snapshot_public_projection",
-            bool(word_review_gate.evidence.get("context_snapshot_public_projection", {}).get("ok")),
-            word_review_gate.evidence.get("context_snapshot_public_projection", {}),
-        ),
+        upload_attachment_gate,
         check_auth_audit(args.postgres_container, args.postgres_user, args.postgres_db),
     ]
     result = {

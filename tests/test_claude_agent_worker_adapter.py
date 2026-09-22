@@ -1598,16 +1598,7 @@ async def test_harness_chat_stages_authorized_attachment_under_inputs(
 
 
 @pytest.mark.asyncio
-async def test_harness_chat_cannot_enter_multi_agent_skill_resume_path(
-    monkeypatch,
-):
-    def fail_registry(*_args, **_kwargs):
-        raise AssertionError("Harness chat must not resolve the Skill catalog")
-
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.BuiltinSkillRegistry",
-        fail_registry,
-    )
+async def test_harness_chat_cannot_enter_multi_agent_skill_resume_path():
     adapter = ClaudeAgentWorkerAdapter()
     result = await adapter._run_multi_agent_file_skill(
         payload(

@@ -27,6 +27,10 @@ REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
 REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM = (
     "63f6fe428c51631d844a375149b1c76527338d4889c6f0cbe30893fe8c3a774b"
 )
+# Exact origin/main 2026.09.16.1 ledger checksum before repository Skill retirement.
+REMOTE_SANDBOX_PROVIDER_RENEWAL_CHECKSUM = (
+    "a8aeca36bdc095c451f00ac9dc358c90528df2f837b5888b9af9249c6ef67019"
+)
 
 
 # Exact 2026.09.11.1 ledger checksum before the Stream-only cutover.
@@ -391,6 +395,10 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
             schema_migrations.RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION,
             REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM,
         ),
+        (
+            schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION,
+            REMOTE_SANDBOX_PROVIDER_RENEWAL_CHECKSUM,
+        ),
     ),
 )
 async def test_prior_schema_ledgers_advance_to_current_schema(
@@ -481,10 +489,10 @@ def test_stream_only_schema_change_advances_schema_version():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.16.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.22.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION
+        == schema_migrations.REPOSITORY_SKILL_RETIREMENT_SCHEMA_VERSION
     )
     assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
     assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"

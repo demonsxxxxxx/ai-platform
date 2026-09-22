@@ -1911,14 +1911,7 @@ async def run_claude_agent_sdk(
 
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
-    configured_skills = (
-        skills
-        if skills is not None
-        else (
-            _split_csv(settings.claude_agent_sdk_skills)
-            or ([skill_id] if skill_id else [])
-        )
-    )
+    configured_skills = skills if skills is not None else ([skill_id] if skill_id else [])
     if any(
         not isinstance(name, str) or _SDK_SKILL_NAME_PATTERN.fullmatch(name) is None
         for name in configured_skills

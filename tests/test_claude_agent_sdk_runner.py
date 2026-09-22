@@ -113,7 +113,6 @@ def _settings():
         claude_agent_sdk_enabled=True,
         claude_agent_sdk_max_turns=12,
         claude_agent_sdk_timeout_seconds=5,
-        claude_agent_sdk_skills="",
         claude_agent_permission_mode="dontAsk",
         claude_agent_allowed_tools="Read,Glob,LS",
         claude_agent_disallowed_tools="",

@@ -13,7 +13,6 @@ _OPEN_GAPS = [
 
 _SOURCE_ROUTES = [
     "GET /api/ai/admin/skills/{skill_id}",
-    "POST /api/ai/admin/skills/sync-builtin",
     "POST /api/ai/admin/skills/{skill_id}/versions/upload",
     "GET /api/ai/admin/skills/{skill_id}/versions/diff",
     "POST /api/ai/admin/skills/{skill_id}/promote",
@@ -34,8 +33,6 @@ _RUNTIME_ACCEPTANCE_SOURCE_TESTS = [
     "tests/test_admin_skills.py::test_admin_skill_detail_requires_admin",
     "tests/test_admin_skills.py::test_admin_skill_detail_returns_skill_versions_and_snapshots",
     "tests/test_admin_skills.py::test_admin_skill_detail_does_not_infer_dependency_without_persisted_version",
-    "tests/test_admin_skills.py::test_admin_sync_builtin_skills_records_registry_versions_without_inferred_dependencies",
-    "tests/test_admin_skills.py::test_admin_sync_builtin_skills_preserves_existing_immutable_dependency_manifest",
     "tests/test_admin_skills.py::test_admin_upload_skill_package_requires_admin",
     "tests/test_admin_skills.py::test_admin_upload_skill_package_stores_object_and_upserts_skill_version",
     "tests/test_admin_skills.py::test_admin_upload_new_skill_package_creates_draft_without_release_or_visibility",
@@ -44,7 +41,6 @@ _RUNTIME_ACCEPTANCE_SOURCE_TESTS = [
     "tests/test_admin_skills.py::test_admin_skill_version_diff_returns_manifest_changes",
     "tests/test_admin_skills.py::test_admin_promote_skill_version_sets_release_policy_and_audit",
     "tests/test_admin_skills.py::test_admin_promote_rejects_inactive_skill_version",
-    "tests/test_admin_skills.py::test_admin_promote_rejects_builtin_version_that_cannot_be_materialized",
     "tests/test_admin_skills.py::test_admin_rollback_skill_version_sets_release_policy_and_audit",
     "tests/test_admin_skills.py::test_admin_rollback_requires_existing_policy",
     "tests/test_admin_skills.py::test_admin_rollback_missing_version_returns_404",
@@ -53,8 +49,6 @@ _RUNTIME_ACCEPTANCE_SOURCE_TESTS = [
 _RUNTIME_ACCEPTANCE_CONTROLS = [
     "ordinary_user_denied_detail",
     "same_tenant_admin_detail_projection",
-    "sync_builtin_without_inferred_dependencies",
-    "sync_builtin_preserves_immutable_dependency_manifest",
     "upload_admin_only_without_inferred_dependencies",
     "version_diff_admin_only_projection",
     "promote_policy_and_audit_controls",

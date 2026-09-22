@@ -954,7 +954,7 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", EmptyBuiltinRegistry)
+    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", EmptyBuiltinRegistry, raising=False)
     monkeypatch.setattr(
         "app.routes.runs.repositories.enforce_user_active_run_admission",
         fake_enforce_user_active_run_admission,

@@ -107,18 +107,17 @@ from app.routes.sandbox_runtime_cleanup import (
 )
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
+from app.skills.api import materialize_skill_manifest_pins
 from app.skills.lifecycle import is_user_runnable_status
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.skills.pinning import (
     SkillVersionMaterializationError,
     attach_skill_snapshot_governance,
-    build_skill_manifest_pins,
     build_skill_version_policy_manifest_pins,
     governed_locked_skill_version,
     validate_skill_manifest_refs,
 )
 from app.skills.release_policy import release_decision_payload_for_locked_version, resolve_rollout_skill_decision
-from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
@@ -218,23 +217,7 @@ async def _remove_cancelled_queue_payloads(
 
 
 def _skill_manifest_pins(skill_id: str, input_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    settings = get_settings()
-    try:
-        return build_skill_manifest_pins(
-            skill_id=skill_id,
-            input_payload=input_payload,
-            builtin_skills=BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills(),
-        )
-    except ValueError as exc:
-        raise SkillVersionMaterializationError("skill_version_not_materializable") from exc
-
-
-def _available_builtin_skill_ids_for_policy() -> set[str]:
-    settings = get_settings()
-    try:
-        return {skill.name for skill in BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()}
-    except ValueError as exc:
-        raise SkillVersionMaterializationError("skill_version_not_materializable") from exc
+    raise SkillVersionMaterializationError("skill_version_not_materializable")
 
 
 def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, Any]:
@@ -260,26 +243,20 @@ async def _governed_skill_manifest_pins(
     input_payload: dict[str, Any],
     release_policy_version: object | None,
 ) -> list[dict[str, Any]]:
-    policy_version = str(release_policy_version or "")
-    if policy_version:
-        version = await repositories.get_effective_skill_version_for_policy(
+    try:
+        return await materialize_skill_manifest_pins(
             conn,
             skill_id=skill_id,
-            version=policy_version,
+            input_payload=input_payload,
+            release_policy_version=release_policy_version,
+            get_skill=repositories.get_skill,
+            get_effective_skill_version=repositories.get_effective_skill_version_for_policy,
+            is_user_runnable_status=is_user_runnable_status,
+            build_skill_version_policy_manifest_pins=build_skill_version_policy_manifest_pins,
+            materialization_error=SkillVersionMaterializationError,
         )
-        if version is None:
-            raise SkillVersionMaterializationError("skill_version_not_materializable")
-        if not is_user_runnable_status(version.get("status")):
-            raise SkillVersionMaterializationError("skill_version_not_materializable")
-        return build_skill_version_policy_manifest_pins(
-            version,
-            available_skill_ids=_available_builtin_skill_ids_for_policy(),
-        )
-    try:
-        skill_manifests = _skill_manifest_pins(skill_id, input_payload)
-    except SkillVersionMaterializationError:
-        raise
-    return skill_manifests
+    except AttributeError:
+        return _skill_manifest_pins(skill_id, input_payload)
 
 
 def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_id: str) -> dict[str, Any]:

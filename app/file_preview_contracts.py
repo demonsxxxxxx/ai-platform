@@ -782,7 +782,6 @@ def _parse_xlsx_preview_child(
             staged_path = _stage_xlsx_preview_bytes(Path(directory), raw)
             phase = "child_parse"
             parsed = parse_xlsx_preview_attachment(path=staged_path, requirement=requirement)
-            phase = "child_images"
             images_by_sheet, image_warnings = image_extractor(
                 staged_path,
                 max_sheets=MAX_XLSX_SHEETS,

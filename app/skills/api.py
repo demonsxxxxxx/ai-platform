@@ -130,6 +130,88 @@ def restore_admitted_skill_manifest_authority(
     return restored
 
 
+async def materialize_skill_manifest_pins(
+    conn: Any,
+    *,
+    skill_id: str,
+    input_payload: dict[str, Any],
+    release_policy_version: object | None,
+    get_skill: Any,
+    get_effective_skill_version: Any,
+    is_user_runnable_status: Any,
+    build_skill_version_policy_manifest_pins: Any,
+    materialization_error: Any,
+) -> list[dict[str, Any]]:
+    """Materialize only database-backed immutable Skill manifests for a run."""
+
+    def available_skill_ids(
+        root_skill_id: str,
+        skill_version: dict[str, Any],
+        requested_ids: set[str] | None = None,
+    ) -> set[str]:
+        available = set(requested_ids or ()) | {root_skill_id}
+        dependency_ids = skill_version.get("dependency_ids")
+        if isinstance(dependency_ids, list):
+            available.update(item for item in dependency_ids if isinstance(item, str))
+        source = skill_version.get("source")
+        dependency_manifests = source.get("dependency_manifests") if isinstance(source, dict) else None
+        if isinstance(dependency_manifests, list):
+            available.update(
+                str(item.get("skill_id"))
+                for item in dependency_manifests
+                if isinstance(item, dict) and item.get("skill_id")
+            )
+        return available
+
+    policy_version = str(release_policy_version or "")
+    if policy_version:
+        version = await get_effective_skill_version(
+            conn,
+            skill_id=skill_id,
+            version=policy_version,
+        )
+        if version is None or not is_user_runnable_status(version.get("status")):
+            raise materialization_error("skill_version_not_materializable")
+        return build_skill_version_policy_manifest_pins(
+            version,
+            available_skill_ids=available_skill_ids(skill_id, version),
+        )
+
+    requested_ids = [skill_id]
+    raw_skill_ids = input_payload.get("skill_ids")
+    if isinstance(raw_skill_ids, list):
+        requested_ids.extend(item for item in raw_skill_ids if isinstance(item, str))
+    requested_ids = list(dict.fromkeys(item for item in requested_ids if item))
+    requested_id_set = set(requested_ids)
+    manifests_by_id: dict[str, dict[str, Any]] = {}
+    for requested_id in requested_ids:
+        skill = await get_skill(conn, skill_id=requested_id)
+        version = str((skill or {}).get("version") or "")
+        if not version:
+            raise materialization_error("skill_version_not_materializable")
+        skill_version = await get_effective_skill_version(
+            conn,
+            skill_id=requested_id,
+            version=version,
+        )
+        if skill_version is None or not is_user_runnable_status(skill_version.get("status")):
+            raise materialization_error("skill_version_not_materializable")
+        for manifest in build_skill_version_policy_manifest_pins(
+            skill_version,
+            available_skill_ids=available_skill_ids(
+                requested_id,
+                skill_version,
+                requested_id_set,
+            ),
+        ):
+            manifest_id = str(manifest.get("skill_id") or "")
+            existing = manifests_by_id.get(manifest_id)
+            if existing is not None and existing.get("content_hash") != manifest.get("content_hash"):
+                raise materialization_error("skill_version_not_materializable")
+            manifests_by_id.setdefault(manifest_id, manifest)
+    return list(manifests_by_id.values())
+
+
 __all__ = [
     "AdminSkillListResponse",
     "AdminSkillSummaryResponse",
@@ -138,6 +220,7 @@ __all__ = [
     "is_internal_dependency_skill",
     "list_uploaded_skill_display_version_rows",
     "lock_skill_for_version_upload",
+    "materialize_skill_manifest_pins",
     "next_uploaded_skill_display_version",
     "resolve_uploaded_skill_display_versions",
     "restore_admitted_skill_manifest_authority",

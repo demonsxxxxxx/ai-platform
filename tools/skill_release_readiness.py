@@ -20,8 +20,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Print the current ai-platform Skill release readiness baseline.")
     parser.add_argument(
         "--skills-root",
-        default="skills",
-        help="Skill inventory root to scan. Defaults to the repository skills directory.",
+        help="Optional external Skill inventory root to scan.",
     )
     parser.add_argument(
         "--format",
@@ -58,6 +57,8 @@ def main() -> None:
         if not args.skill_id:
             parser.error("--write-evidence-scaffold requires --skill-id")
         try:
+            if not args.skills_root:
+                parser.error("--write-evidence-scaffold requires --skills-root")
             scaffold = write_skill_release_evidence_scaffold(
                 skills_root=args.skills_root,
                 evidence_root=args.evidence_root,

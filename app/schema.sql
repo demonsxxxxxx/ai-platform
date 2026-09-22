@@ -2419,11 +2419,11 @@ insert into workspaces(id, tenant_id, name)
 values ('default', 'default', 'Default Workspace')
 on conflict (id) do nothing;
 
-insert into skills(id, name, version, description, input_modes, output_modes, executor_type)
+insert into skills(id, name, version, description, input_modes, output_modes, executor_type, status)
 values
-  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Review Word documents and return commented Word artifacts.', '["docx"]'::jsonb, '["result_docx", "result_json"]'::jsonb, 'claude-agent-worker'),
-  ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Internal Word document composition dependency used by first-party document Skills.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker'),
-  ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Query company knowledge base with scoped citations through the platform-managed MCP tool.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker')
+  ('qa-file-reviewer', 'QA Word Review', '0.1.0', 'Retired repository Skill. Historical rows remain readable.', '["docx"]'::jsonb, '["result_docx", "result_json"]'::jsonb, 'claude-agent-worker', 'inactive'),
+  ('minimax-docx', 'Minimax DOCX', '0.1.0', 'Retired repository Skill dependency. Historical rows remain readable.', '["docx"]'::jsonb, '["docx"]'::jsonb, 'claude-agent-worker', 'inactive'),
+  ('ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', 'Retired repository Skill. Historical rows remain readable.', '["chat"]'::jsonb, '["answer", "citations"]'::jsonb, 'claude-agent-worker', 'inactive')
 on conflict (id) do update set
   name = excluded.name,
   version = excluded.version,
@@ -2431,19 +2431,25 @@ on conflict (id) do update set
   input_modes = excluded.input_modes,
   output_modes = excluded.output_modes,
   executor_type = excluded.executor_type,
-  status = excluded.status;
+  status = excluded.status
+where not exists (
+  select 1
+  from skill_versions uploaded_version
+  where uploaded_version.skill_id = skills.id
+    and uploaded_version.source_json->>'kind' = 'uploaded'
+);
 
 insert into skill_versions(id, skill_id, version, content_hash, description, source_json, dependency_ids, status, created_by)
 values
-  ('skv_seed_qa_file_reviewer_0_1_0', 'qa-file-reviewer', '0.1.0', '0.1.0', 'Schema-seeded baseline for QA Word Review.', '{"kind":"schema-seed"}'::jsonb, '["minimax-docx"]'::jsonb, 'active', 'schema'),
-  ('skv_seed_minimax_docx_0_1_0', 'minimax-docx', '0.1.0', '0.1.0', 'Schema-seeded baseline for internal DOCX composition dependency.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema'),
-  ('skv_seed_ragflow_knowledge_search_0_1_0', 'ragflow-knowledge-search', '0.1.0', '0.1.0', 'Schema-seeded baseline for RAGFlow Knowledge Search.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'active', 'schema')
+  ('skv_seed_qa_file_reviewer_0_1_0', 'qa-file-reviewer', '0.1.0', '0.1.0', 'Historical schema-seeded baseline for QA Word Review.', '{"kind":"schema-seed"}'::jsonb, '["minimax-docx"]'::jsonb, 'inactive', 'schema'),
+  ('skv_seed_minimax_docx_0_1_0', 'minimax-docx', '0.1.0', '0.1.0', 'Historical schema-seeded baseline for internal DOCX composition dependency.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'inactive', 'schema'),
+  ('skv_seed_ragflow_knowledge_search_0_1_0', 'ragflow-knowledge-search', '0.1.0', '0.1.0', 'Historical schema-seeded baseline for RAGFlow Knowledge Search.', '{"kind":"schema-seed"}'::jsonb, '[]'::jsonb, 'inactive', 'schema')
 on conflict (skill_id, version) do nothing;
 
 insert into tenant_workbench_skills(tenant_id, skill_id, status, visible_to_user)
 values
-  ('default', 'qa-file-reviewer', 'active', true),
-  ('default', 'ragflow-knowledge-search', 'active', true)
+  ('default', 'qa-file-reviewer', 'disabled', false),
+  ('default', 'ragflow-knowledge-search', 'disabled', false)
 on conflict (tenant_id, skill_id) do nothing;
 
 insert into mcp_tools(id, server_id, name, description, transport_type, endpoint, auth_mode, allowed_tools, status, write_capable, risk_level, visible_to_user)
@@ -2457,10 +2463,10 @@ values
     '',
     'platform-managed',
     '["ragflow_search"]'::jsonb,
-    'active',
+    'disabled',
     false,
     'low',
-    true
+    false
   )
 on conflict (id) do update set
   server_id = excluded.server_id,
@@ -2477,15 +2483,15 @@ where mcp_tools.endpoint = '';
 
 insert into tool_policies(tenant_id, tool_id, status, write_capable, risk_level, visible_to_user, reason)
 values
-  ('default', 'ragflow-knowledge-search', 'active', false, 'low', true, 'Schema-seeded read-only RAGFlow tool policy for the default tenant.')
+  ('default', 'ragflow-knowledge-search', 'disabled', false, 'low', false, 'Retired repository MCP tool policy; historical policy remains readable.')
 on conflict (tenant_id, tool_id) do nothing;
 
 insert into agents(id, tenant_id, name, agent_type, description, default_skill_id, status)
 values
-  ('document-review', 'default', '文档审核', 'file', 'Legacy alias for qa-word-review. Hidden from LambChat mode selection.', 'qa-file-reviewer', 'inactive'),
+  ('document-review', 'default', '文档审核', 'file', 'Retired legacy document review agent.', 'qa-file-reviewer', 'inactive'),
   ('general-agent', 'default', '通用聊天 Agent', 'chat', 'General company chat backed by the governed Harness without a Skill identity.', null, 'active'),
-  ('qa-word-review', 'default', '文档审核', 'file', 'Upload Word documents and generate reviewed Word artifacts.', 'qa-file-reviewer', 'active'),
-  ('sop-assistant', 'default', 'SOP 助手', 'chat', 'Answer SOP questions with RAGFlow citations.', 'ragflow-knowledge-search', 'active')
+  ('qa-word-review', 'default', '文档审核', 'file', 'Retired repository document review agent.', 'qa-file-reviewer', 'inactive'),
+  ('sop-assistant', 'default', 'SOP 助手', 'chat', 'Retired repository knowledge assistant.', 'ragflow-knowledge-search', 'inactive')
 on conflict (id) do update set
   tenant_id = excluded.tenant_id,
   name = excluded.name,
@@ -2604,14 +2610,245 @@ alter table agent_profiles
   foreign key (tenant_id, agent_id, published_revision, published_hash)
   references agent_profile_revisions(tenant_id, agent_id, revision, content_hash);
 
-update tenant_workbench_skills
-set status = 'disabled', visible_to_user = false
-where skill_id = 'general-chat';
-
-update tenant_capability_distributions
-set status = 'disabled', visible_to_user = false
-where capability_kind = 'skill' and capability_id = 'general-chat';
+update agents
+set status = 'inactive'
+where exists (
+  select 1
+  from (
+    select agents.default_skill_id as skill_id
+    where agents.default_skill_id is not null
+    union
+    select selected_skill->>'skill_id' as skill_id
+    from agent_profiles current_profile
+    join agent_profile_revisions current_revision
+      on current_revision.tenant_id = current_profile.tenant_id
+     and current_revision.agent_id = current_profile.agent_id
+     and current_revision.revision = current_profile.published_revision
+     and current_revision.content_hash = current_profile.published_hash
+     and current_revision.revision_status = 'published'
+    cross join lateral jsonb_array_elements(current_revision.skill_set) selected_skill
+    where current_profile.tenant_id = agents.tenant_id
+      and current_profile.agent_id = agents.id
+      and current_profile.lifecycle_status = 'published'
+  ) retired_reference
+  where retired_reference.skill_id in (
+    'general-chat',
+    'qa-file-reviewer',
+    'minimax-docx',
+    'ragflow-knowledge-search',
+    'ctd-32s73-stability-template-fill',
+    'reference-fact-extraction'
+  )
+    and not exists (
+      select 1
+      from skills skill_catalog
+      left join skill_release_policies release_policy
+        on release_policy.tenant_id = agents.tenant_id
+       and release_policy.skill_id = skill_catalog.id
+       and release_policy.channel = 'stable'
+       and release_policy.status = 'active'
+      left join skill_versions current_version
+        on current_version.skill_id = skill_catalog.id
+       and current_version.version = coalesce(
+         release_policy.current_version,
+         skill_catalog.version
+       )
+      left join skill_versions previous_version
+        on previous_version.skill_id = skill_catalog.id
+       and previous_version.version = release_policy.previous_version
+      where skill_catalog.id = retired_reference.skill_id
+        and (
+          (
+            release_policy.id is null
+            and current_version.source_json->>'kind' = 'uploaded'
+            and current_version.status in ('released', 'active')
+          )
+          or (
+            release_policy.id is not null
+            and current_version.source_json->>'kind' = 'uploaded'
+            and current_version.status in ('released', 'active')
+            and (
+              release_policy.rollout_percent = 100
+              or release_policy.previous_version is null
+              or (
+                previous_version.source_json->>'kind' = 'uploaded'
+                and previous_version.status in ('released', 'active')
+              )
+            )
+          )
+        )
+    )
+);
 
 update skills
 set status = 'inactive'
-where id = 'general-chat';
+where id in (
+  'general-chat',
+  'qa-file-reviewer',
+  'minimax-docx',
+  'ragflow-knowledge-search',
+  'ctd-32s73-stability-template-fill',
+  'reference-fact-extraction'
+)
+  and not exists (
+    select 1
+    from skill_versions uploaded_version
+    where uploaded_version.skill_id = skills.id
+      and uploaded_version.source_json->>'kind' = 'uploaded'
+  );
+
+update skill_versions
+set status = 'inactive'
+where skill_id in (
+  'general-chat',
+  'qa-file-reviewer',
+  'minimax-docx',
+  'ragflow-knowledge-search',
+  'ctd-32s73-stability-template-fill',
+  'reference-fact-extraction'
+)
+  and coalesce(source_json->>'kind', '') <> 'uploaded';
+
+update tenant_workbench_skills
+set status = 'disabled', visible_to_user = false
+where skill_id in (
+  'general-chat',
+  'qa-file-reviewer',
+  'minimax-docx',
+  'ragflow-knowledge-search',
+  'ctd-32s73-stability-template-fill',
+  'reference-fact-extraction'
+)
+  and not exists (
+    select 1
+    from skills skill_catalog
+    left join skill_release_policies release_policy
+      on release_policy.tenant_id = tenant_workbench_skills.tenant_id
+     and release_policy.skill_id = skill_catalog.id
+     and release_policy.channel = 'stable'
+     and release_policy.status = 'active'
+    left join skill_versions current_version
+      on current_version.skill_id = skill_catalog.id
+     and current_version.version = coalesce(
+       release_policy.current_version,
+       skill_catalog.version
+     )
+    left join skill_versions previous_version
+      on previous_version.skill_id = skill_catalog.id
+     and previous_version.version = release_policy.previous_version
+    where skill_catalog.id = tenant_workbench_skills.skill_id
+      and (
+        (
+          release_policy.id is null
+          and current_version.source_json->>'kind' = 'uploaded'
+          and current_version.status in ('released', 'active')
+        )
+        or (
+          release_policy.id is not null
+          and current_version.source_json->>'kind' = 'uploaded'
+          and current_version.status in ('released', 'active')
+          and (
+            release_policy.rollout_percent = 100
+            or release_policy.previous_version is null
+            or (
+              previous_version.source_json->>'kind' = 'uploaded'
+              and previous_version.status in ('released', 'active')
+            )
+          )
+        )
+      )
+  );
+
+update tenant_capability_distributions
+set status = 'disabled', visible_to_user = false
+where capability_kind = 'skill'
+  and capability_id in (
+    'general-chat',
+    'qa-file-reviewer',
+    'minimax-docx',
+    'ragflow-knowledge-search',
+    'ctd-32s73-stability-template-fill',
+    'reference-fact-extraction'
+  )
+  and not exists (
+    select 1
+    from skills skill_catalog
+    left join skill_release_policies release_policy
+      on release_policy.tenant_id = tenant_capability_distributions.tenant_id
+     and release_policy.skill_id = skill_catalog.id
+     and release_policy.channel = 'stable'
+     and release_policy.status = 'active'
+    left join skill_versions current_version
+      on current_version.skill_id = skill_catalog.id
+     and current_version.version = coalesce(
+       release_policy.current_version,
+       skill_catalog.version
+     )
+    left join skill_versions previous_version
+      on previous_version.skill_id = skill_catalog.id
+     and previous_version.version = release_policy.previous_version
+    where skill_catalog.id = tenant_capability_distributions.capability_id
+      and (
+        (
+          release_policy.id is null
+          and current_version.source_json->>'kind' = 'uploaded'
+          and current_version.status in ('released', 'active')
+        )
+        or (
+          release_policy.id is not null
+          and current_version.source_json->>'kind' = 'uploaded'
+          and current_version.status in ('released', 'active')
+          and (
+            release_policy.rollout_percent = 100
+            or release_policy.previous_version is null
+            or (
+              previous_version.source_json->>'kind' = 'uploaded'
+              and previous_version.status in ('released', 'active')
+            )
+          )
+        )
+      )
+  );
+
+update skill_release_policies
+set status = 'disabled', updated_at = now()
+where channel = 'stable'
+  and status = 'active'
+  and skill_id in (
+    'general-chat',
+    'qa-file-reviewer',
+    'minimax-docx',
+    'ragflow-knowledge-search',
+    'ctd-32s73-stability-template-fill',
+    'reference-fact-extraction'
+  )
+  and not (
+    exists (
+      select 1
+      from skill_versions current_version
+      where current_version.skill_id = skill_release_policies.skill_id
+        and current_version.version = skill_release_policies.current_version
+        and current_version.source_json->>'kind' = 'uploaded'
+        and current_version.status in ('released', 'active')
+    )
+    and (
+      rollout_percent = 100
+      or previous_version is null
+      or exists (
+        select 1
+        from skill_versions previous_version
+        where previous_version.skill_id = skill_release_policies.skill_id
+          and previous_version.version = skill_release_policies.previous_version
+          and previous_version.source_json->>'kind' = 'uploaded'
+          and previous_version.status in ('released', 'active')
+      )
+    )
+  );
+
+update mcp_tools
+set status = 'disabled', visible_to_user = false
+where id = 'ragflow-knowledge-search';
+
+update tool_policies
+set status = 'disabled', visible_to_user = false
+where tool_id = 'ragflow-knowledge-search';
