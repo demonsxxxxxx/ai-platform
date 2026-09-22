@@ -17,6 +17,16 @@ async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function changeInput(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    Object.getPrototypeOf(input),
+    "value",
+  )?.set;
+  assert.ok(setter);
+  setter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 test("navigates ProfileDrive and imports a file into the current workspace", async () => {
   const dom = new JSDOM(
     "<!doctype html><html><body><div id='root'></div></body></html>",
@@ -83,22 +93,60 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
         body.path === ""
           ? [
               {
-                path: "reports",
-                name: "reports",
+                path: "$RECYCLE.BIN",
+                name: "$RECYCLE.BIN",
+                type: "directory",
+                size: null,
+                lastModifiedUtc: "2026-09-21T00:00:00Z",
+              },
+              {
+                path: "Desktop",
+                name: "Desktop",
+                type: "directory",
+                size: null,
+                lastModifiedUtc: "2026-09-21T00:00:00Z",
+              },
+              {
+                path: "Documents",
+                name: "Documents",
                 type: "directory",
                 size: null,
                 lastModifiedUtc: "2026-09-21T00:00:00Z",
               },
             ]
-          : [
-              {
-                path: "reports/report.pdf",
-                name: "report.pdf",
-                type: "file",
-                size: 42,
-                lastModifiedUtc: "2026-09-21T00:00:00Z",
-              },
-            ];
+          : body.path === "Documents"
+            ? [
+                {
+                  path: "Documents/reports",
+                  name: "reports",
+                  type: "directory",
+                  size: null,
+                  lastModifiedUtc: "2026-09-21T00:00:00Z",
+                },
+              ]
+            : [
+                {
+                  path: "Documents/reports/~$draft.doc",
+                  name: "~$draft.doc",
+                  type: "file",
+                  size: 162,
+                  lastModifiedUtc: "2026-09-21T00:00:00Z",
+                },
+                {
+                  path: "Documents/reports/report.pdf",
+                  name: "report.pdf",
+                  type: "file",
+                  size: 42,
+                  lastModifiedUtc: "2026-09-21T00:00:00Z",
+                },
+                {
+                  path: "Documents/reports/shortcut.lnk",
+                  name: "shortcut.lnk",
+                  type: "file",
+                  size: 128,
+                  lastModifiedUtc: "2026-09-21T00:00:00Z",
+                },
+              ];
       return new Response(
         JSON.stringify({
           status: "success",
@@ -150,6 +198,29 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
       await flush();
     });
 
+    assert.doesNotMatch(container.textContent ?? "", /\$RECYCLE\.BIN/);
+    assert.match(container.textContent ?? "", /桌面/);
+    assert.match(container.textContent ?? "", /文档/);
+    const rootFilter = container.querySelector<HTMLInputElement>(
+      'input[aria-label="筛选当前目录"]',
+    );
+    assert.ok(rootFilter);
+    await act(async () => changeInput(rootFilter, "文档"));
+    assert.doesNotMatch(container.textContent ?? "", /桌面/);
+    assert.match(container.textContent ?? "", /文档/);
+    await act(async () => changeInput(rootFilter, ""));
+
+    await act(async () => {
+      buttonByText(container, "文档").dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    assert.equal(
+      container.querySelector('[aria-current="page"]')?.textContent,
+      "文档",
+    );
+
     await act(async () => {
       buttonByText(container, "reports").dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
@@ -157,6 +228,18 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
       await flush();
     });
     assert.match(container.textContent ?? "", /report\.pdf/);
+    assert.doesNotMatch(container.textContent ?? "", /~\$draft\.doc/);
+    assert.ok(container.querySelector('button[aria-label="预览 report.pdf"]'));
+    assert.ok(container.querySelector('button[aria-label="下载 shortcut.lnk"]'));
+
+    const filter = container.querySelector<HTMLInputElement>(
+      'input[aria-label="筛选当前目录"]',
+    );
+    assert.ok(filter);
+    await act(async () => changeInput(filter, "shortcut"));
+    assert.doesNotMatch(container.textContent ?? "", /report\.pdf/);
+    assert.match(container.textContent ?? "", /shortcut\.lnk/);
+    await act(async () => changeInput(filter, ""));
 
     await act(async () => {
       buttonByText(container, "report.pdf").dispatchEvent(
@@ -177,7 +260,7 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
     assert.equal(importRequest.init.credentials, "include");
     assert.equal(new Headers(importRequest.init.headers).get("Authorization"), null);
     assert.deepEqual(JSON.parse(String(importRequest.init.body)), {
-      path: "reports/report.pdf",
+      path: "Documents/reports/report.pdf",
     });
 
     await act(async () => {

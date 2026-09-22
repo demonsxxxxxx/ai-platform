@@ -2537,6 +2537,38 @@ async def test_download_input_file_forces_attachment_and_security_headers(monkey
 
 
 @pytest.mark.asyncio
+async def test_legacy_word_input_file_can_be_previewed_in_the_browser(monkeypatch):
+    raw = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1legacy-word"
+
+    async def fake_authorized_input_file(**kwargs):
+        return {
+            "id": kwargs["file_id"],
+            "original_name": "source.doc",
+            "content_type": "application/msword",
+            "storage_key": "private/source.doc",
+        }
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            assert storage_key == "private/source.doc"
+            return raw
+
+    monkeypatch.setattr("app.routes.files._authorized_input_file", fake_authorized_input_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+
+    response = await preview_input_file(
+        "file-doc",
+        session_id="session-a",
+        run_id="run-current",
+        principal=principal(),
+    )
+
+    assert response.body == raw
+    assert response.media_type == "application/msword"
+    assert response.headers["content-disposition"].startswith("inline;")
+
+
+@pytest.mark.asyncio
 async def test_unsafe_input_file_preview_falls_back_to_download_without_storage_read(monkeypatch):
     async def fake_authorized_input_file(**kwargs):
         return {

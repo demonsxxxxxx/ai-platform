@@ -169,6 +169,7 @@ ACTIVE_SNIFF_BYTES = 4096
 INPUT_FILE_PREVIEW_CONTENT_TYPES = frozenset(
     {
         "application/json",
+        "application/msword",
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
