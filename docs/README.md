@@ -28,6 +28,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | --- | --- |
 | Product vocabulary and Expert Agent UX | [Workbench](architecture/expert-agent-service-workbench.md); root [CONTEXT](../CONTEXT.md) |
 | Profile revisions, visibility, and publication | [Profile boundary](architecture/agent-profile-persistence-boundary.md) |
+| External Knowledge connections, source authorization, retrieval evidence and citations | [Product contract](product/external-knowledge/README.md); [ADR 0014](adr/0014-external-knowledge-authority.md) |
 | Conversation selection and executor-private history | [Conversation context](architecture/agent-conversation-context.md) |
 | Claude-native session transcript and epoch lifecycle | [Provider continuity](architecture/claude-provider-session-continuity.md) |
 | Run terminalization and transaction ordering | [Run lifecycle](architecture/run-lifecycle-boundary.md) |
@@ -55,10 +56,12 @@ Accepted rationale is recorded in [ADR 0001](adr/0001-agent-app-revision-authori
 [ADR 0006](adr/0006-domain-first-modular-monolith.md),
 [ADR 0007](adr/0007-fixed-browser-authentication-day.md),
 [ADR 0008](adr/0008-agent-sdk-autonomous-skill-dispatch.md),
-[ADR 0012](adr/0012-recoverable-agent-kernel-event-stream-v4.md), and
-[ADR 0013](adr/0013-redis-stream-only-sse.md).
+[ADR 0012](adr/0012-recoverable-agent-kernel-event-stream-v4.md),
+[ADR 0013](adr/0013-redis-stream-only-sse.md), and
+[ADR 0014](adr/0014-external-knowledge-authority.md).
 ADR 0012 owns the v4 event model; ADR 0013 supersedes its publication/recovery
-architecture with the sole Redis Stream transport. Earlier streaming designs
+architecture with the sole Redis Stream transport. ADR 0014 establishes the
+External Knowledge bounded context and provider boundary. Earlier streaming designs
 are history, not selectable fallback runtimes. Keep historical decisions and
 release evidence intact.
 

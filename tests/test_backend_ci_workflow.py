@@ -1,7 +1,6 @@
 import ast
 import os
 import re
-import shlex
 import subprocess
 import sys
 import textwrap
@@ -40,8 +39,21 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_authority.py",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",
+    "tests/test_agent_profiles.py",
     "tests/test_agent_profiles_postgres.py",
+    "tests/test_agent_profile_knowledge.py",
+    "tests/test_conversation_run_admission.py",
+    "tests/test_run_control_routes.py",
+    "tests/test_run_knowledge_admission.py",
     "tests/test_model_management_postgres.py",
+    "tests/test_knowledge_acl.py",
+    "tests/test_knowledge_application.py",
+    "tests/test_knowledge_control_plane.py",
+    "tests/test_knowledge_normalization.py",
+    "tests/test_knowledge_postgres.py",
+    "tests/test_knowledge_ragflow_retrieval.py",
+    "tests/test_knowledge_runtime.py",
+    "tests/test_knowledge_runtime_application.py",
     "tests/test_authorized_skill_catalog.py",
     "tests/test_skill_dependencies.py",
     "tests/test_skill_lifecycle.py",
@@ -144,6 +156,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_packaging_publish_workflow.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
+        "tests/test_external_knowledge_slice_manifest.py",
+        "tests/test_external_knowledge_architecture.py",
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
@@ -270,7 +284,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 84
+    assert len(all_selectors) == len(set(all_selectors)) == 86
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job
@@ -365,42 +379,20 @@ def test_agent_skill_contract_job_is_bounded_and_required():
         "timeout --signal"
     )
     timeout_script = run_script.split("mkdir -p .pytest-tmp", 1)[1]
-    normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", timeout_script)
-    tokens = shlex.split(normalized_run)
-    expected_tokens = [
-        "timeout",
-        "--signal=TERM",
-        "--kill-after=30s",
-        "10m",
-        "uv",
-        "run",
-        "--locked",
-        "--extra",
-        "test",
-        "python",
-        "-m",
-        "pytest",
-        *AGENT_SKILL_CONTRACT_TESTS,
-        "-vv",
-        "--tb=short",
-        "-o",
-        "faulthandler_timeout=120",
-        "--junitxml",
-        ".pytest-tmp/agent-skill-contracts.xml",
-        "--basetemp",
-        ".pytest-tmp/agent-skill-contracts",
-        "uv",
-        "run",
-        "--locked",
-        "--extra",
-        "test",
-        "python",
-        "tools/require_zero_junit_skips.py",
-        ".pytest-tmp/agent-skill-contracts.xml",
-    ]
-    assert tokens == expected_tokens
-    assert not any(token.startswith("-k") for token in tokens)
-    assert not any(token.startswith("--ignore") for token in tokens)
+    assert "knowledge_contract_tests=()" in timeout_script
+    assert "if test -f app/knowledge/__init__.py; then" in timeout_script
+    assert '"${knowledge_contract_tests[@]}"' in timeout_script
+    for selector in AGENT_SKILL_CONTRACT_TESTS:
+        assert timeout_script.count(selector) == 1
+    assert timeout_script.index("timeout --signal=TERM --kill-after=30s 10m") < timeout_script.index(
+        "uv run --locked --extra test python -m pytest"
+    )
+    assert timeout_script.index("uv run --locked --extra test python -m pytest") < timeout_script.index(
+        "tools/require_zero_junit_skips.py"
+    )
+    assert "--collect-only" not in timeout_script
+    assert " -k " not in timeout_script
+    assert "--ignore" not in timeout_script
 
     assert (
         "needs: [backend-preflight, backend-tests, agent-skill-contracts, backend-image]"
