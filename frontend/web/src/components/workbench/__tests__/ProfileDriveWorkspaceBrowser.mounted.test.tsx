@@ -186,7 +186,7 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
   assert.ok(container);
   const root = createRoot(container);
   const imported: Array<{ file_id: string; preview_url: string | null }> = [];
-  const addedPaths: string[] = [];
+  const addedPaths: Array<{ source_id: string; path: string }> = [];
 
   try {
     await act(async () => {
@@ -194,8 +194,8 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
         createElement(ProfileDriveWorkspaceBrowser, {
           sessionId: "session-a",
           onImported: (file) => imported.push(file),
-          onAddToConversation: (path) => {
-            addedPaths.push(path);
+          onAddToConversation: (reference) => {
+            addedPaths.push(reference);
           },
         }),
       );
@@ -264,7 +264,10 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
     assert.equal(dataTransfer.effectAllowed, "copy");
     assert.equal(
       dragPayload.get(PROFILE_DRIVE_DRAG_TYPE),
-      "Documents/reports/report.pdf",
+      JSON.stringify({
+        source_id: "profile",
+        path: "Documents/reports/report.pdf",
+      }),
     );
     const addButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="添加 report.pdf 到会话"]',
@@ -275,7 +278,9 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
         new dom.window.MouseEvent("click", { bubbles: true }),
       ),
     );
-    assert.deepEqual(addedPaths, ["Documents/reports/report.pdf"]);
+    assert.deepEqual(addedPaths, [
+      { source_id: "profile", path: "Documents/reports/report.pdf" },
+    ]);
 
     await act(async () => {
       reportButton.dispatchEvent(
@@ -296,6 +301,7 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
     assert.equal(importRequest.init.credentials, "include");
     assert.equal(new Headers(importRequest.init.headers).get("Authorization"), null);
     assert.deepEqual(JSON.parse(String(importRequest.init.body)), {
+      source_id: "profile",
       path: "Documents/reports/report.pdf",
     });
 
@@ -312,8 +318,8 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
           key: "session-b",
           sessionId: "session-b",
           onImported: (file) => imported.push(file),
-          onAddToConversation: (path) => {
-            addedPaths.push(path);
+          onAddToConversation: (reference) => {
+            addedPaths.push(reference);
           },
         }),
       );
@@ -322,6 +328,177 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
     pendingImport.release();
     await act(flush);
     assert.equal(imported.length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.fetch = originalFetch;
+    for (const [key, descriptor] of previousDescriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    dom.window.close();
+  }
+});
+
+test("mounts the public drive with source-correct navigation and import", async () => {
+  const dom = new JSDOM(
+    "<!doctype html><html><body><div id='root'></div></body></html>",
+    { url: "http://localhost/chat/session-a", pretendToBeVisual: true },
+  );
+  const globalValues: Record<string, unknown> = {
+    window: dom.window,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    HTMLElement: dom.window.HTMLElement,
+    Node: dom.window.Node,
+    Event: dom.window.Event,
+    MouseEvent: dom.window.MouseEvent,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const previousDescriptors = new Map(
+    Object.keys(globalValues).map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+  );
+  for (const [key, value] of Object.entries(globalValues)) {
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      writable: true,
+      value,
+    });
+  }
+
+  const [{ act, createElement }, { createRoot }, { ProfileDriveWorkspaceBrowser }] =
+    await Promise.all([
+      import("react"),
+      import("react-dom/client"),
+      import("../ProfileDriveWorkspaceBrowser"),
+    ]);
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (input, init = {}) => {
+    const url = String(input);
+    if (url.endsWith("/api/ai/auth/company-credential-handoff")) {
+      return new Response(JSON.stringify({ credential: "handoff-jwt" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.endsWith("/api/profile-drive/status")) {
+      return new Response(
+        JSON.stringify({
+          status: "connected",
+          connected: true,
+          reauthRequired: false,
+          connectedAtUtc: null,
+          lastUsedAtUtc: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url.endsWith("/api/profile-drive/files/list")) {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      bodies.push(body);
+      const path = String(body.path);
+      return new Response(
+        JSON.stringify({
+          status: "success",
+          path,
+          entries:
+            path === ""
+              ? [
+                  {
+                    path: "01-研发部",
+                    name: "01-研发部",
+                    type: "directory",
+                    size: null,
+                    lastModifiedUtc: "1970-01-01T00:00:00Z",
+                  },
+                ]
+              : [
+                  {
+                    path: "01-研发部/report.pdf",
+                    name: "report.pdf",
+                    type: "file",
+                    size: 42,
+                    lastModifiedUtc: "2026-09-22T00:00:00Z",
+                  },
+                ],
+          truncated: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url.endsWith("/api/ai/chat/sessions/session-a/profile-drive-files")) {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          file_id: "file-public",
+          run_id: null,
+          name: "report.pdf",
+          mime_type: "application/pdf",
+          size_bytes: 42,
+          preview_url: "/api/ai/files/file-public/preview?session_id=session-a",
+          download_url: "/api/ai/files/file-public/download?session_id=session-a",
+          created_at: "2026-09-22T00:00:00Z",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }) as typeof fetch;
+
+  const container = dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(
+        createElement(ProfileDriveWorkspaceBrowser, {
+          sessionId: "session-a",
+          sourceId: "public",
+          title: "公盘",
+          onImported: () => undefined,
+          onAddToConversation: () => undefined,
+        }),
+      );
+      await flush();
+      await flush();
+    });
+
+    assert.ok(container.querySelector('button[aria-label="刷新公盘"]'));
+    assert.ok(container.querySelector('nav[aria-label="公盘路径"]'));
+    assert.equal(container.querySelector('[aria-current="page"]')?.getAttribute("title"), "公盘");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="刷新公盘"]')?.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    await act(async () => {
+      buttonByText(container, "01-研发部").dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    await act(async () => {
+      buttonByText(container, "report.pdf").dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    assert.deepEqual(bodies[0], { source: "public", path: "", maxEntries: 200 });
+    assert.deepEqual(bodies[1], { source: "public", path: "", maxEntries: 200 });
+    assert.deepEqual(bodies[2], {
+      source: "public",
+      path: "01-研发部",
+      maxEntries: 200,
+    });
+    assert.deepEqual(bodies[3], {
+      source_id: "public",
+      path: "01-研发部/report.pdf",
+    });
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;

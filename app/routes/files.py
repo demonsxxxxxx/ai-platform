@@ -428,6 +428,7 @@ async def _open_profile_drive_file(
     *,
     principal: AuthPrincipal,
     path: str,
+    source_id: str = "profile",
 ) -> tuple[object, object, int, str]:
     settings = get_settings()
     try:
@@ -440,6 +441,7 @@ async def _open_profile_drive_file(
             ca_cert_file=settings.profile_drive_transfer_ca_cert_file,
             jwt=jwt,
             path=path,
+            source_id=source_id,
             max_bytes=MAX_UPLOAD_BYTES,
             require_nonempty=True,
             not_found_status=404,
@@ -801,6 +803,7 @@ async def import_profile_drive_file(
     client, upstream_response, content_length, content_type = await _open_profile_drive_file(
         principal=principal,
         path=request.path,
+        source_id=request.source_id,
     )
 
     file_id = new_id("file")

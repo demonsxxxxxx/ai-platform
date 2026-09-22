@@ -9,6 +9,7 @@ import type {
   MessageAttachment,
 } from "../../types";
 import type { FileUploadControls } from "../../hooks/useFileUpload";
+import type { ProfileDriveFileReference } from "../../services/api/profileDrive";
 import type {
   StopGenerationResult,
   SubmissionOutcome,
@@ -88,8 +89,10 @@ export interface ChatInputProps {
   ) => void;
   /** Optional shared controller used by page-level and Composer drops. */
   uploadControls?: FileUploadControls;
-  /** Imports one trusted ProfileDrive path when it is dropped on the Composer. */
-  onProfileDriveFileDrop?: (path: string) => void | Promise<void>;
+  /** Imports one trusted ProfileDrive reference when it is dropped on the Composer. */
+  onProfileDriveFileDrop?: (
+    reference: ProfileDriveFileReference,
+  ) => void | Promise<void>;
   pendingInput?: string | null;
   onPendingInputConsumed?: () => void;
   className?: string;

@@ -16,6 +16,7 @@ import {
   type AgentConversationSessionProjection,
 } from "../../types/agentProfile";
 import { API_BASE } from "./config";
+import type { ProfileDriveFileReference } from "./profileDrive";
 import { authFetch } from "./fetch";
 
 export const DEFAULT_CHAT_AGENT_ID = "general-agent";
@@ -553,11 +554,11 @@ export const sessionApi = {
   /** Import one user-confirmed ProfileDrive file into the current session workspace. */
   async importProfileDriveFile(
     sessionId: string,
-    path: string,
+    reference: ProfileDriveFileReference,
   ): Promise<SessionInputFile> {
     return authFetch(buildProfileDriveImportUrl(sessionId), {
       method: "POST",
-      body: JSON.stringify({ path }),
+      body: JSON.stringify(reference),
     });
   },
 

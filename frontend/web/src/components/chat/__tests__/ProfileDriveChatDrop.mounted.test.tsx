@@ -70,7 +70,7 @@ test("drops a ProfileDrive path into the Composer without treating it as a local
   const container = dom.window.document.getElementById("root");
   assert.ok(container);
   const root = createRoot(container);
-  const droppedPaths: string[] = [];
+  const droppedPaths: Array<{ source_id: string; path: string }> = [];
 
   try {
     await act(async () => {
@@ -91,8 +91,8 @@ test("drops a ProfileDrive path into the Composer without treating it as a local
             enableSkills: false,
             agentOptionValues: {},
             availableModels: [],
-            onProfileDriveFileDrop: async (path: string) => {
-              droppedPaths.push(path);
+            onProfileDriveFileDrop: async (reference) => {
+              droppedPaths.push(reference);
             },
           }),
         ),
@@ -124,7 +124,34 @@ test("drops a ProfileDrive path into the Composer without treating it as a local
     });
 
     assert.equal(drop.defaultPrevented, true);
-    assert.deepEqual(droppedPaths, ["Documents/report.pdf"]);
+    assert.deepEqual(droppedPaths, [
+      { source_id: "profile", path: "Documents/report.pdf" },
+    ]);
+
+    const publicDrop = new dom.window.Event("drop", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(publicDrop, "dataTransfer", {
+      value: {
+        types: [PROFILE_DRIVE_DRAG_TYPE],
+        getData: (type: string) =>
+          type === PROFILE_DRIVE_DRAG_TYPE
+            ? JSON.stringify({
+                source_id: "public",
+                path: "01-研发部/report.pdf",
+              })
+            : "",
+      },
+    });
+    await act(async () => {
+      composer.dispatchEvent(publicDrop);
+      await flush();
+    });
+    assert.deepEqual(droppedPaths[1], {
+      source_id: "public",
+      path: "01-研发部/report.pdf",
+    });
   } finally {
     await act(async () => root.unmount());
     for (const [key, descriptor] of previousDescriptors) {

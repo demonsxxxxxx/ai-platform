@@ -45,6 +45,7 @@ async def open_profile_drive_file(
     ca_cert_file: str,
     jwt: str,
     path: str,
+    source_id: str = "profile",
     max_bytes: int,
     require_nonempty: bool,
     not_found_status: int,
@@ -61,12 +62,15 @@ async def open_profile_drive_file(
         trust_env=False,
         verify=verify,
     )
+    payload = {"path": path}
+    if source_id != "profile":
+        payload["source"] = source_id
     try:
         response = await client.send(
             client.build_request(
                 "POST",
                 f"{upstream.rstrip('/')}/api/profile-drive/files/content",
-                json={"path": path},
+                json=payload,
                 headers={
                     "Authorization": f"Bearer {jwt}",
                     "Accept": "application/octet-stream",

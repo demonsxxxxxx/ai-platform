@@ -16,10 +16,15 @@ import {
   profileDriveApi,
   ProfileDriveRequestError,
   type ProfileDriveFileEntry,
+  type ProfileDriveFileReference,
+  type ProfileDriveSourceId,
 } from "../../services/api/profileDrive";
 import { sessionApi } from "../../services/api/session";
 import { formatFileSize, getFileExtension } from "../documents/utils";
-import { PROFILE_DRIVE_DRAG_TYPE } from "./profileDriveDrag";
+import {
+  PROFILE_DRIVE_DRAG_TYPE,
+  serializeProfileDriveDragReference,
+} from "./profileDriveDrag";
 import { workbenchSurface } from "./workbenchSurface";
 
 const PROFILE_DRIVE_PREVIEW_EXTENSIONS = new Set([
@@ -70,32 +75,40 @@ function previewableEntry(entry: ProfileDriveFileEntry): boolean {
 
 interface ProfileDriveWorkspaceBrowserProps {
   sessionId: string | null;
+  sourceId?: ProfileDriveSourceId;
+  title?: string;
   onImported: (file: SessionInputFile) => void;
-  onAddToConversation: (path: string) => void | Promise<void>;
+  onAddToConversation: (reference: ProfileDriveFileReference) => void | Promise<void>;
 }
 
 function profileDirectoryLabel(name: string): string {
   return PROFILE_DIRECTORY_LABELS[name.toLowerCase()] ?? name;
 }
 
-function entryLabel(entry: ProfileDriveFileEntry, path: string): string {
-  return path === "" && entry.type === "directory"
+function entryLabel(
+  entry: ProfileDriveFileEntry,
+  path: string,
+  sourceId: ProfileDriveSourceId,
+): string {
+  return sourceId === "profile" && path === "" && entry.type === "directory"
     ? profileDirectoryLabel(entry.name)
     : entry.name;
 }
 
-function browserError(error: unknown): string {
+function browserError(error: unknown, title: string): string {
   if (
     error instanceof ProfileDriveRequestError &&
     ["reauth_required", "credential_rejected"].includes(error.code)
   ) {
-    return "个人文件服务器需要重新认证。";
+    return `${title}服务器需要重新认证。`;
   }
-  return "个人文件暂时不可用。";
+  return `${title}暂时不可用。`;
 }
 
 export function ProfileDriveWorkspaceBrowser({
   sessionId,
+  sourceId = "profile",
+  title = "个人文件",
   onImported,
   onAddToConversation,
 }: ProfileDriveWorkspaceBrowserProps) {
@@ -115,7 +128,7 @@ export function ProfileDriveWorkspaceBrowser({
     setLoading(true);
     setError(null);
     try {
-      const result = await profileDriveApi.listFiles(nextPath);
+      const result = await profileDriveApi.listFiles(nextPath, sourceId);
       if (requestId !== requestIdRef.current) return;
       setPath(result.path);
       setEntries(result.entries.filter(visibleEntry));
@@ -125,11 +138,11 @@ export function ProfileDriveWorkspaceBrowser({
       if (requestId !== requestIdRef.current) return;
       setEntries([]);
       setTruncated(false);
-      setError(browserError(loadError));
+      setError(browserError(loadError, title));
     } finally {
       if (requestId === requestIdRef.current) setLoading(false);
     }
-  }, []);
+  }, [sourceId, title]);
 
   const navigate = useCallback(
     (nextPath: string) => {
@@ -155,7 +168,7 @@ export function ProfileDriveWorkspaceBrowser({
       .catch((statusError) => {
         if (!active) return;
         setConnected(false);
-        setError(browserError(statusError));
+        setError(browserError(statusError, title));
         setLoading(false);
       });
     return () => {
@@ -163,17 +176,17 @@ export function ProfileDriveWorkspaceBrowser({
       mountedRef.current = false;
       requestIdRef.current += 1;
     };
-  }, [load]);
+  }, [load, title]);
 
   const preview = useCallback(
     async (entry: ProfileDriveFileEntry) => {
       if (!sessionId || importingPath) return;
       setImportingPath(entry.path);
       try {
-        const imported = await sessionApi.importProfileDriveFile(
-          sessionId,
-          entry.path,
-        );
+        const imported = await sessionApi.importProfileDriveFile(sessionId, {
+          source_id: sourceId,
+          path: entry.path,
+        });
         if (mountedRef.current) onImported(imported);
       } catch (importError) {
         if (!mountedRef.current) return;
@@ -188,28 +201,33 @@ export function ProfileDriveWorkspaceBrowser({
         if (mountedRef.current) setImportingPath(null);
       }
     },
-    [importingPath, onImported, sessionId],
+    [importingPath, onImported, sessionId, sourceId],
   );
 
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const filteredEntries = normalizedFilter
     ? entries.filter((entry) =>
-        entryLabel(entry, path).toLocaleLowerCase().includes(normalizedFilter),
+        entryLabel(entry, path, sourceId)
+          .toLocaleLowerCase()
+          .includes(normalizedFilter),
       )
     : entries;
   const pathSegments = path ? path.split("/") : [];
   const breadcrumbs = [
-    { label: "个人文件", path: "" },
+    { label: title, path: "" },
     ...pathSegments.map((segment, index) => ({
-      label: index === 0 ? profileDirectoryLabel(segment) : segment,
+      label:
+        sourceId === "profile" && index === 0
+          ? profileDirectoryLabel(segment)
+          : segment,
       path: pathSegments.slice(0, index + 1).join("/"),
     })),
   ];
 
   return (
     <section
-      data-librechat-context-section="profile-drive"
-      aria-labelledby="librechat-profile-drive-label"
+      data-librechat-context-section={`${sourceId}-drive`}
+      aria-labelledby={`librechat-${sourceId}-drive-label`}
       className={`${workbenchSurface.compactPanel} mt-3 p-3`}
     >
       <div className="flex items-center justify-between gap-2">
@@ -218,18 +236,18 @@ export function ProfileDriveWorkspaceBrowser({
             <Server size={15} aria-hidden="true" />
           </span>
           <h3
-            id="librechat-profile-drive-label"
+            id={`librechat-${sourceId}-drive-label`}
             className="truncate text-xs font-semibold text-[var(--theme-text)]"
           >
-            个人文件
+            {title}
           </h3>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
             className="rounded p-1 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:opacity-50"
-            aria-label="刷新个人文件"
-            title="刷新个人文件"
+            aria-label={`刷新${title}`}
+            title={`刷新${title}`}
             disabled={loading || connected === false}
             onClick={() => void load(path)}
           >
@@ -244,7 +262,7 @@ export function ProfileDriveWorkspaceBrowser({
       {connected !== false && !error && (
         <>
           <nav
-            aria-label="个人文件路径"
+            aria-label={`${title}路径`}
             className="mt-2 flex min-h-7 items-center overflow-x-auto whitespace-nowrap border-y border-[var(--theme-border)] py-1 text-[11px]"
           >
             {breadcrumbs.map((breadcrumb, index) => {
@@ -265,7 +283,7 @@ export function ProfileDriveWorkspaceBrowser({
                     <span
                       aria-current="page"
                       className="max-w-32 truncate px-1 font-medium text-[var(--theme-text)]"
-                      title={breadcrumb.path || "个人文件"}
+                      title={breadcrumb.path || title}
                     >
                       {breadcrumb.label}
                     </span>
@@ -273,7 +291,7 @@ export function ProfileDriveWorkspaceBrowser({
                     <button
                       type="button"
                       className="max-w-32 truncate rounded px-1 text-[var(--theme-text-secondary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-                      title={breadcrumb.path || "个人文件"}
+                      title={breadcrumb.path || title}
                       onClick={() => void navigate(breadcrumb.path)}
                     >
                       {breadcrumb.label}
@@ -310,21 +328,21 @@ export function ProfileDriveWorkspaceBrowser({
             {error}
           </p>
         ) : connected === false ? (
-          <p className={workbenchSurface.mutedText}>个人文件服务器未连接。</p>
+          <p className={workbenchSurface.mutedText}>{title}服务器未连接。</p>
         ) : loading ? (
-          <p className={workbenchSurface.mutedText}>正在加载个人文件…</p>
+          <p className={workbenchSurface.mutedText}>正在加载{title}…</p>
         ) : entries.length === 0 ? (
           <p className={workbenchSurface.mutedText}>此目录为空。</p>
         ) : filteredEntries.length === 0 ? (
           <p className={workbenchSurface.mutedText}>当前目录没有匹配项。</p>
         ) : (
-          <div role="tree" aria-label="个人文件目录" className="space-y-0.5">
+          <div role="tree" aria-label={`${title}目录`} className="space-y-0.5">
             {filteredEntries.map((entry) => {
               const directory = entry.type === "directory";
               const previewable = !directory && previewableEntry(entry);
               const importing = importingPath === entry.path;
               const disabled = Boolean(importingPath) || (!directory && !sessionId);
-              const name = entryLabel(entry, path);
+              const name = entryLabel(entry, path, sourceId);
               const actionLabel = directory
                 ? `打开文件夹 ${name}`
                 : `${previewable ? "预览" : "下载"} ${name}`;
@@ -342,7 +360,10 @@ export function ProfileDriveWorkspaceBrowser({
                     event.dataTransfer.effectAllowed = "copy";
                     event.dataTransfer.setData(
                       PROFILE_DRIVE_DRAG_TYPE,
-                      entry.path,
+                      serializeProfileDriveDragReference({
+                        source_id: sourceId,
+                        path: entry.path,
+                      }),
                     );
                   }}
                 >
@@ -393,7 +414,12 @@ export function ProfileDriveWorkspaceBrowser({
                       aria-label={`添加 ${name} 到会话`}
                       title="添加到会话"
                       disabled={disabled}
-                      onClick={() => void onAddToConversation(entry.path)}
+                      onClick={() =>
+                        void onAddToConversation({
+                          source_id: sourceId,
+                          path: entry.path,
+                        })
+                      }
                       className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:text-[var(--theme-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
                     >
                       <Paperclip size={13} aria-hidden="true" />
