@@ -708,6 +708,25 @@ def test_xlsx_parser_reports_deterministic_truncation(tmp_path):
     assert len(first_data_row["cells"][2]["value"]) == MAX_XLSX_CELL_CHARS
 
 
+def test_xlsx_parser_accepts_a_full_bounded_preview_grid(tmp_path):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    for row in range(1, MAX_XLSX_ROWS_PER_SHEET + 1):
+        for column in range(1, MAX_XLSX_COLUMNS_PER_SHEET + 1):
+            sheet.cell(row=row, column=column, value=row * column)
+    workbook.save(path)
+    workbook.close()
+
+    parsed = parse_xlsx_preview_attachment(path=path, requirement=_requirement())
+
+    expected_cells = MAX_XLSX_ROWS_PER_SHEET * MAX_XLSX_COLUMNS_PER_SHEET
+    assert expected_cells > 2048
+    assert parsed.evidence.cells_examined == expected_cells
+    assert parsed.evidence.nonempty_cells == expected_cells
+    assert parsed.evidence.truncated is False
+
+
 def test_xlsx_parser_reads_dimensionless_workbook_with_positive_evidence(tmp_path):
     path = tmp_path / "book.xlsx"
     _write_dimensionless_validation_workbook(path)

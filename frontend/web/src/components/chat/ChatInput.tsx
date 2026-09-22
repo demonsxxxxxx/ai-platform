@@ -62,6 +62,10 @@ import {
   prepareSelectedSkillSubmission,
 } from "../../hooks/useSelectedSkillTask";
 import {
+  getProfileDriveDragPath,
+  hasProfileDriveDragData,
+} from "../workbench/profileDriveDrag";
+import {
   LibreChatComposerBox,
   LibreChatComposerFrame,
   LibreChatComposerRegion,
@@ -114,6 +118,7 @@ export const ChatInput = memo(function ChatInput({
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
   uploadControls: sharedUploadControls,
+  onProfileDriveFileDrop,
   pendingInput,
   onPendingInputConsumed,
   className,
@@ -845,6 +850,9 @@ export const ChatInput = memo(function ChatInput({
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    if (hasProfileDriveDragData(e.dataTransfer)) {
+      e.dataTransfer.dropEffect = "copy";
+    }
     setIsDraggingOver(true);
   };
 
@@ -856,6 +864,12 @@ export const ChatInput = memo(function ChatInput({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
+    const profileDrivePath = getProfileDriveDragPath(e.dataTransfer);
+    if (profileDrivePath && onProfileDriveFileDrop) {
+      e.stopPropagation();
+      void onProfileDriveFileDrop(profileDrivePath);
+      return;
+    }
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
     if (acceptedFileTypes?.length === 0) return;

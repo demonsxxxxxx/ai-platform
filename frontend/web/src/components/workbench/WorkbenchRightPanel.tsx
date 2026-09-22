@@ -9,11 +9,13 @@ export interface WorkbenchRightPanelProps
   extends Omit<LibreChatSidePanelProps, "additionalSections"> {
   sessionId: string | null;
   onProfileDriveFileImported: (file: SessionInputFile) => void;
+  onProfileDriveFileDrop: (path: string) => void | Promise<void>;
 }
 
 export function WorkbenchRightPanel({
   sessionId,
   onProfileDriveFileImported,
+  onProfileDriveFileDrop,
   ...props
 }: WorkbenchRightPanelProps) {
   return (
@@ -24,6 +26,7 @@ export function WorkbenchRightPanel({
           key={sessionId ?? "no-session"}
           sessionId={sessionId}
           onImported={onProfileDriveFileImported}
+          onAddToConversation={onProfileDriveFileDrop}
         />
       }
     />

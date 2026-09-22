@@ -3,6 +3,7 @@ import {
   Download,
   Eye,
   FileText,
+  Paperclip,
   RefreshCw,
   Search,
   Server,
@@ -18,6 +19,7 @@ import {
 } from "../../services/api/profileDrive";
 import { sessionApi } from "../../services/api/session";
 import { formatFileSize, getFileExtension } from "../documents/utils";
+import { PROFILE_DRIVE_DRAG_TYPE } from "./profileDriveDrag";
 import { workbenchSurface } from "./workbenchSurface";
 
 const PROFILE_DRIVE_PREVIEW_EXTENSIONS = new Set([
@@ -69,6 +71,7 @@ function previewableEntry(entry: ProfileDriveFileEntry): boolean {
 interface ProfileDriveWorkspaceBrowserProps {
   sessionId: string | null;
   onImported: (file: SessionInputFile) => void;
+  onAddToConversation: (path: string) => void | Promise<void>;
 }
 
 function profileDirectoryLabel(name: string): string {
@@ -94,6 +97,7 @@ function browserError(error: unknown): string {
 export function ProfileDriveWorkspaceBrowser({
   sessionId,
   onImported,
+  onAddToConversation,
 }: ProfileDriveWorkspaceBrowserProps) {
   const [connected, setConnected] = useState<boolean | null>(null);
   const [path, setPath] = useState("");
@@ -326,49 +330,76 @@ export function ProfileDriveWorkspaceBrowser({
                 : `${previewable ? "预览" : "下载"} ${name}`;
               const ActionIcon = previewable ? Eye : Download;
               return (
-                <button
+                <div
                   key={`${entry.type}:${entry.path}`}
-                  type="button"
                   role="treeitem"
-                  className="group flex h-8 w-full min-w-0 items-center gap-2 rounded px-1.5 text-left hover:bg-[var(--theme-workbench-panel)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
-                  aria-label={actionLabel}
-                  title={actionLabel}
-                  disabled={disabled}
-                  onClick={() =>
-                    directory ? void navigate(entry.path) : void preview(entry)
-                  }
+                  className={`group flex h-8 w-full min-w-0 items-center rounded hover:bg-[var(--theme-workbench-panel)] ${
+                    !directory && sessionId ? "cursor-grab active:cursor-grabbing" : ""
+                  }`}
+                  draggable={!directory && Boolean(sessionId) && !importing}
+                  onDragStart={(event) => {
+                    if (directory) return;
+                    event.dataTransfer.effectAllowed = "copy";
+                    event.dataTransfer.setData(
+                      PROFILE_DRIVE_DRAG_TYPE,
+                      entry.path,
+                    );
+                  }}
                 >
-                  {directory ? (
-                    <ChevronRight
-                      size={14}
-                      className="shrink-0 text-[var(--theme-text-tertiary)]"
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <FileText
-                      size={14}
-                      className="shrink-0 text-[var(--theme-text-tertiary)]"
-                      aria-hidden="true"
-                    />
-                  )}
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--theme-text)]">
-                    {name}
-                  </span>
-                  {!directory && entry.size !== null && (
-                    <span className="shrink-0 text-[10px] text-[var(--theme-text-tertiary)]">
-                      {formatFileSize(entry.size)}
+                  <button
+                    type="button"
+                    className="flex h-full min-w-0 flex-1 items-center gap-2 rounded px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
+                    aria-label={actionLabel}
+                    title={actionLabel}
+                    disabled={disabled}
+                    onClick={() =>
+                      directory ? void navigate(entry.path) : void preview(entry)
+                    }
+                  >
+                    {directory ? (
+                      <ChevronRight
+                        size={14}
+                        className="shrink-0 text-[var(--theme-text-tertiary)]"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <FileText
+                        size={14}
+                        className="shrink-0 text-[var(--theme-text-tertiary)]"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--theme-text)]">
+                      {name}
                     </span>
-                  )}
+                    {!directory && entry.size !== null && (
+                      <span className="shrink-0 text-[10px] text-[var(--theme-text-tertiary)]">
+                        {formatFileSize(entry.size)}
+                      </span>
+                    )}
+                    {!directory && (
+                      <ActionIcon
+                        size={13}
+                        aria-hidden="true"
+                        className={`shrink-0 text-[var(--theme-text-tertiary)] ${
+                          importing ? "animate-pulse" : ""
+                        }`}
+                      />
+                    )}
+                  </button>
                   {!directory && (
-                    <ActionIcon
-                      size={13}
-                      aria-hidden="true"
-                      className={`shrink-0 text-[var(--theme-text-tertiary)] ${
-                        importing ? "animate-pulse" : ""
-                      }`}
-                    />
+                    <button
+                      type="button"
+                      aria-label={`添加 ${name} 到会话`}
+                      title="添加到会话"
+                      disabled={disabled}
+                      onClick={() => void onAddToConversation(entry.path)}
+                      className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:text-[var(--theme-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
+                    >
+                      <Paperclip size={13} aria-hidden="true" />
+                    </button>
                   )}
-                </button>
+                </div>
               );
             })}
           </div>

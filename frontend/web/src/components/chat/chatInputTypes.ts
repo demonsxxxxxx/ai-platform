@@ -88,6 +88,8 @@ export interface ChatInputProps {
   ) => void;
   /** Optional shared controller used by page-level and Composer drops. */
   uploadControls?: FileUploadControls;
+  /** Imports one trusted ProfileDrive path when it is dropped on the Composer. */
+  onProfileDriveFileDrop?: (path: string) => void | Promise<void>;
   pendingInput?: string | null;
   onPendingInputConsumed?: () => void;
   className?: string;

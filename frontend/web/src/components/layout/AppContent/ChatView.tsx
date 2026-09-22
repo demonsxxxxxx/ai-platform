@@ -101,6 +101,10 @@ import { clearSidebarHistory } from "../../chat/ChatMessage/items/sidebarHistory
 import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
 import { sessionApi, type SessionInputFile } from "../../../services/api";
+import {
+  getProfileDriveDragPath,
+  hasProfileDriveDragData,
+} from "../../workbench/profileDriveDrag";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
 import type { ModelOption } from "../../../services/api/modelPublic";
 import { openAttachmentPreview } from "../../chat/attachmentPreviewStore";
@@ -120,7 +124,10 @@ import {
   type SessionWorkspaceFile,
   type SessionWorkspaceProjection,
 } from "./sessionWorkspaceFiles";
-import { mergeProjectedSessionFiles } from "./sessionInputFiles";
+import {
+  mergeProjectedSessionFiles,
+  sessionInputFileToAttachment,
+} from "./sessionInputFiles";
 import type { FileUploadControls } from "../../../hooks/useFileUpload";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
@@ -305,6 +312,9 @@ export function ChatView({
       files: [],
       status: "idle",
     });
+  const profileDriveDropInFlightRef = useRef(new Set<string>());
+  const activeSessionIdRef = useRef(sessionId);
+  activeSessionIdRef.current = sessionId;
   const visibleWorkspaceProjection = useMemo(
     () =>
       projectAssistantResponseFiles(
@@ -708,6 +718,60 @@ export function ChatView({
     [handleOpenWorkspaceFile, sessionId],
   );
 
+  const handleProfileDriveFileDrop = useCallback(
+    async (path: string) => {
+      if (!sessionId) return;
+      const requestKey = `${sessionId}\u0000${path}`;
+      if (profileDriveDropInFlightRef.current.has(requestKey)) return;
+      profileDriveDropInFlightRef.current.add(requestKey);
+      try {
+        const file = await sessionApi.importProfileDriveFile(sessionId, path);
+        if (activeSessionIdRef.current !== sessionId) return;
+        setWorkspaceProjection((current) =>
+          current.session_id === sessionId
+            ? addSessionInputFile(current, file)
+            : current,
+        );
+        const attachment = sessionInputFileToAttachment(file);
+        onAttachmentsChange((current) =>
+          current.some((item) => item.id === attachment.id)
+            ? current
+            : [...current, attachment],
+        );
+        toast.success(
+          t("profileDrive.addedToConversation", "已将个人文件添加到会话。"),
+        );
+      } catch (error) {
+        console.error("ProfileDrive drop import failed", {
+          kind: error instanceof Error ? error.name : "request_failed",
+        });
+        toast.error(t("profileDrive.importFailed", "导入个人文件失败。"));
+      } finally {
+        profileDriveDropInFlightRef.current.delete(requestKey);
+      }
+    },
+    [onAttachmentsChange, sessionId, t],
+  );
+
+  const handleProfileDriveDragOver = useCallback(
+    (event: React.DragEvent<HTMLElement>) => {
+      if (!hasProfileDriveDragData(event.dataTransfer)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    },
+    [],
+  );
+
+  const handleProfileDriveDrop = useCallback(
+    (event: React.DragEvent<HTMLElement>) => {
+      const path = getProfileDriveDragPath(event.dataTransfer);
+      if (!path) return;
+      event.preventDefault();
+      void handleProfileDriveFileDrop(path);
+    },
+    [handleProfileDriveFileDrop],
+  );
+
   const handleVirtuosoRangeChanged = useCallback(
     (range: ListRange) => {
       const current = visibleRangeRef.current;
@@ -838,6 +902,7 @@ export function ChatView({
     attachments,
     onAttachmentsChange,
     uploadControls,
+    onProfileDriveFileDrop: handleProfileDriveFileDrop,
   };
 
   const assistantUiActions = useMemo(
@@ -858,6 +923,7 @@ export function ChatView({
       onOpenFile={handleOpenWorkspaceFile}
       onDownloadFile={handleDownloadWorkspaceFile}
       onProfileDriveFileImported={handleProfileDriveFileImported}
+      onProfileDriveFileDrop={handleProfileDriveFileDrop}
     />
   );
 
@@ -976,6 +1042,8 @@ export function ChatView({
         ref={messagesContainerRef}
         data-chat-transcript
         data-session-id={sessionId ?? undefined}
+        onDragOver={handleProfileDriveDragOver}
+        onDrop={handleProfileDriveDrop}
         className={`relative min-h-0 flex-1 bg-[var(--theme-workbench-canvas)] ${
           messages.length > 0 ? "overflow-hidden" : ""
         }`}
