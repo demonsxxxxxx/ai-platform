@@ -1,5 +1,8 @@
+import subprocess
+import sys
 from importlib.metadata import version
 from inspect import signature
+from pathlib import Path
 
 
 def test_installed_claude_agent_sdk_02130_contract(tmp_path):
@@ -49,6 +52,17 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
             return []
 
     session_store = MinimalSessionStore()
+    cli_path = Path(sdk.__file__).parent / "_bundled" / (
+        "claude.exe" if sys.platform == "win32" else "claude"
+    )
+    cli_check = subprocess.run(
+        [str(cli_path), "--autocompact", "100000", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert cli_check.returncode == 0, cli_check.stderr
+
     bootstrap_options = sdk.ClaudeAgentOptions(
         cwd=str(tmp_path),
         model="model-a",
@@ -58,8 +72,8 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         disallowed_tools=["Write"],
         permission_mode="dontAsk",
         env={"PATH": ""},
-        cli_path="synthetic-claude",
-        extra_args={"autocompact": "76000"},
+        cli_path=str(cli_path),
+        extra_args={"autocompact": "100000"},
         skills=["qa-review"],
         session_id="session-a",
         session_store=session_store,
@@ -115,10 +129,10 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
 
     assert options.include_partial_messages is True
     assert options.setting_sources == ["project"]
-    assert options.extra_args == {"autocompact": "76000"}
+    assert options.extra_args == {"autocompact": "100000"}
     assert command[autocompact_index : autocompact_index + 2] == [
         "--autocompact",
-        "76000",
+        "100000",
     ]
     assert options.session_store is session_store
     assert options.session_store_flush == "eager"

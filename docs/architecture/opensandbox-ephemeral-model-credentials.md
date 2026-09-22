@@ -69,17 +69,12 @@ request. Anthropic version and beta headers are restricted to the installed
 CLI's fixed per-path allowlist; other upstream headers remain filtered. The
 proxy does not implement OpenSandbox lifecycle or capability admission.
 
-Model capacities are frozen into Run admission and ExecutionSpec v2. Every
-Anthropic messages request validates its requested output against the frozen
-output limit and uses the pinned upstream `/v1/messages/count_tokens` result for
-the input limit. If and only if that endpoint returns `404`, the platform uses a
-conservative local estimate equal to the canonical count-request UTF-8 byte
-length plus fixed protocol overhead; explicit SDK count requests receive the
-same estimate. Authentication, authorization, rate-limit, server, transport and
-malformed-success failures still fail closed. `native_resume`,
-`platform_bootstrap`, and `empty_start` overflows all return the same bounded
-Anthropic `invalid_request_error` with HTTP 400 so the pinned Claude CLI can
-run its native reactive compaction path.
+Model capacities are frozen into Run admission and ExecutionSpec v2. For Claude,
+the input capacity configures the SDK-owned automatic-compaction window; the
+model proxy does not recount `/v1/messages` requests or enforce a separate input
+limit. Explicit `/v1/messages/count_tokens` requests from Claude Code remain
+Run/Attempt-bound proxy traffic and retain their existing endpoint validation.
+The proxy still validates the requested output against the frozen output limit.
 
 Callbacks use the same stateless egress origin and are forwarded to the
 existing `/api/ai/runtime/callbacks/*` routes. Callback-token validation remains

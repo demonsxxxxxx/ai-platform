@@ -1108,8 +1108,6 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
     assert captured["query"] == "beta=true"
     assert captured["headers"]["anthropic-beta"] == "claude-code-20250219"
     assert captured["path"] == "/v1/messages"
-    assert captured["count"]["path"] == "/v1/messages/count_tokens"
-    assert captured["count"]["max_response_bytes"] == 8192
     for invalid_query in ("Beta=true", "beta=true&beta=true", "beta%3Dtrue"):
         captured.clear()
         with pytest.raises(PermissionError, match="model_proxy_query_not_allowed"):
@@ -1131,9 +1129,7 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
 
 
 @pytest.mark.asyncio
-async def test_anthropic_messages_recount_each_request_and_fail_closed_on_invalid_budget():
-    counts = iter([10, 32001, 32001, 32001])
-    count_bodies = []
+async def test_anthropic_messages_delegate_input_capacity_to_claude():
     forwarded = []
     mode = "platform_bootstrap"
 
@@ -1144,16 +1140,19 @@ async def test_anthropic_messages_recount_each_request_and_fail_closed_on_invali
     async def connection(_conn, **_kwargs):
         return SimpleNamespace(
             base_url="https://gateway.example", api_key="synthetic-key",
-            max_input_tokens=32000, max_output_tokens=2048, conversation_mode=mode,
+            max_input_tokens=32_000, max_output_tokens=2048, conversation_mode=mode,
         )
 
-    def count(**kwargs):
-        count_bodies.append(json.loads(kwargs["body"]))
-        return SimpleNamespace(status=200, body=json.dumps({"input_tokens": next(counts)}).encode())
+    def forbidden_count(**_kwargs):
+        raise AssertionError("platform must not count Claude input tokens")
 
     def forward(**kwargs):
         forwarded.append(kwargs)
-        return SimpleNamespace(status=200, content_type="application/json", body=lambda: iter([b"{}"] ))
+        return SimpleNamespace(
+            status=200,
+            content_type="application/json",
+            body=lambda: iter([b"{}"]),
+        )
 
     service = ModelControlPlaneService(
         transaction_factory=transaction,
@@ -1162,53 +1161,36 @@ async def test_anthropic_messages_recount_each_request_and_fail_closed_on_invali
             model_connection_encryption_key="synthetic-encryption",
             model_connection_allowed_internal_hosts="",
         ),
-        repository=SimpleNamespace(run_connection=connection), security=SimpleNamespace(),
-        upstream=SimpleNamespace(request=count, open_stream=forward),
+        repository=SimpleNamespace(run_connection=connection),
+        security=SimpleNamespace(),
+        upstream=SimpleNamespace(request=forbidden_count, open_stream=forward),
         attempt_capability_verifier=lambda **_kwargs: True,
     )
-    fields = dict(provider="anthropic", upstream_path="v1/messages", query="beta=true",
-                  headers={"anthropic-version": "2023-06-01"}, run_id="run-a", attempt_id="attempt-a",
-                  internal_token="synthetic-internal", model_proxy_capability="synthetic-capability")
-    payload = {"model": "model-a", "system": "current policy", "messages": [{"role": "user", "content": "read it"}],
-               "tools": [{"name": "Read"}], "thinking": {"type": "disabled"}, "stream": True, "max_tokens": 512}
-    await service.proxy(body=json.dumps(payload).encode(), **fields)
-    assert count_bodies == [{key: payload[key] for key in ("model", "system", "messages", "tools", "thinking")}]
+    fields = dict(
+        provider="anthropic", upstream_path="v1/messages", query="beta=true",
+        headers={"anthropic-version": "2023-06-01"}, run_id="run-a",
+        attempt_id="attempt-a", internal_token="synthetic-internal",
+        model_proxy_capability="synthetic-capability",
+    )
+    payload = {
+        "model": "model-a", "system": "current policy",
+        "messages": [{"role": "user", "content": "x" * 40_000}],
+        "tools": [{"name": "Read"}], "thinking": {"type": "disabled"},
+        "stream": True, "max_tokens": 512,
+    }
     for mode in ("platform_bootstrap", "empty_start", "native_resume"):
-        over_limit = await service.proxy(
-            body=json.dumps(
-                {**payload, "messages": [{"role": "user", "content": "tool output"}]}
-            ).encode(),
-            **fields,
-        )
-        assert over_limit.status == 400
-        assert json.loads(b"".join(over_limit.body)) == {
-            "type": "error",
-            "error": {
-                "type": "invalid_request_error",
-                "message": "prompt is too long: 32001 tokens > 32000 maximum",
-            },
-        }
-    assert len(forwarded) == 1
+        response = await service.proxy(body=json.dumps(payload).encode(), **fields)
+        assert response.status == 200
+    assert len(forwarded) == 3
+    assert all(call["path"] == "/v1/messages" for call in forwarded)
+
     for output in (True, 2049, 0):
         with pytest.raises(ValueError, match="model_proxy_max_tokens_invalid"):
-            await service.proxy(body=json.dumps({**payload, "max_tokens": output}).encode(), **fields)
-    assert len(count_bodies) == 4
-
-    def invalid_count(**_kwargs):
-        return SimpleNamespace(status=503, body=b'{}')
-
-    service._upstream = SimpleNamespace(request=invalid_count, open_stream=forward)
-    with pytest.raises(RuntimeError, match="model_proxy_count_tokens_unavailable"):
-        await service.proxy(body=json.dumps(payload).encode(), **fields)
-    assert len(forwarded) == 1
-
-    def malformed_count(**_kwargs):
-        return SimpleNamespace(status=200, body=b'{"input_tokens":true}')
-
-    service._upstream = SimpleNamespace(request=malformed_count, open_stream=forward)
-    with pytest.raises(RuntimeError, match="model_proxy_count_tokens_invalid"):
-        await service.proxy(body=json.dumps(payload).encode(), **fields)
-    assert len(forwarded) == 1
+            await service.proxy(
+                body=json.dumps({**payload, "max_tokens": output}).encode(),
+                **fields,
+            )
+    assert len(forwarded) == 3
 
 
 @pytest.mark.asyncio
@@ -1299,21 +1281,11 @@ async def test_anthropic_count_tokens_404_uses_bounded_local_fallback_only():
         return value
 
     service._repository = SimpleNamespace(run_connection=low_capacity_connection)
-    over_limit = await service.proxy(
+    response = await service.proxy(
         provider="anthropic", upstream_path="v1/messages", body=message_body, **fields,
     )
-    assert over_limit.status == 400
-    assert json.loads(b"".join(over_limit.body)) == {
-        "type": "error",
-        "error": {
-            "type": "invalid_request_error",
-            "message": (
-                f"prompt is too long: {len(count_body) + 4096} tokens > "
-                "4096 maximum"
-            ),
-        },
-    }
-    assert len(forwarded) == 1
+    assert response.status == 200
+    assert len(forwarded) == 2
 
 
 @pytest.mark.asyncio

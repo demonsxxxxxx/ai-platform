@@ -32,13 +32,12 @@ and 8192-byte conversation selectors are retired from production execution.
 The superseded provider-session infrastructure and direct SDK adapter tests
 have also been removed. Claude Code owns ongoing automatic compaction during
 both fresh and resumed execution; opening or resuming a provider session does
-not issue a platform-authored `/compact` command. The runner targets automatic
-compaction at 80% of the Run-frozen maximum input and bounds that target to the
-CLI's public 100k-1M window range. Claude Code retains its own output reserve
-and safety buffer, so the actual compact point may be earlier. Targets below
-the CLI minimum use 100k and rely on the model proxy's native prompt-too-long
-response for reactive compaction; targets above the maximum compact
-conservatively at 1M.
+not issue a platform-authored `/compact` command. The runner passes the
+Run-frozen maximum input through `--autocompact`, clamped to the CLI's public
+100k-1M window range. Claude Code retains its own output reserve and safety
+buffer, so the actual compact point may be earlier. The platform does not apply
+an additional percentage reduction or enforce a separate input-token hard gate;
+Claude Code and the upstream model own input-window handling.
 
 ## 1. Problem
 
@@ -179,11 +178,10 @@ runtime changes are in scope.
   degrades to the legacy top-level SDK `query()` path; selected MCP sessions
   are active before the client is constructed.
 - Fresh and resumed executions use the same CLI-owned automatic compaction
-  lifecycle. The runner passes an 80%-of-maximum-input target through
-  `--autocompact`, bounded to the CLI's public range, never issues `/compact`
-  on session open, and receives the same Anthropic-shaped prompt-too-long
-  response for `empty_start`, `platform_bootstrap`, and `native_resume` when
-  the hard input gate is crossed.
+  lifecycle. The runner passes the Run-frozen maximum input through
+  `--autocompact`, clamped to the CLI's public 100k-1M range, never issues
+  `/compact` on session open, and does not receive a platform-generated
+  prompt-too-long response from the ordinary `/v1/messages` path.
 - Focused unit, route, schema, worker-adapter, sandbox-executor, and installed
   SDK contract checks pass through the repository local test-stage runner.
 - Architecture governance reports no new frozen-hot-file growth.
@@ -196,8 +194,7 @@ At minimum, tests must fail if any of these regressions occur:
 - `session_id` and `resume` are passed together;
 - the runner issues `/compact` while opening or resuming a session;
 - the frozen input ceiling is not reflected in the CLI automatic-compaction
-  window, or a proxy over-limit response bypasses Claude Code's native
-  prompt-too-long handling;
+  window, or Claude/upstream input-window handling is bypassed;
 - a missing resume silently starts fresh;
 - append responds before commit or skips active-attempt authorization;
 - transcript scope can be selected by sandbox-provided tenant/user fields;
