@@ -1,7 +1,6 @@
 """Composition for model-control-plane and Run-snapshot services."""
 
 from fastapi import APIRouter
-from functools import partial
 
 from app.auth import is_ai_admin, require_principal
 from app.db import transaction
@@ -27,13 +26,10 @@ from app.runs.application.model_snapshot import (
     configure_run_model_snapshots,
 )
 from app.runs.application.execution_spec import configure_worker_dispatch_run_facts_loader
-from app.runs.application.provider_terminalization import configure_terminal_checkpoint_dependencies
 from app.runs.infrastructure.postgres import (
     PostgresRunModelSnapshotRepository,
     load_worker_dispatch_run_facts,
-    update_terminal_run_checkpoint_counts,
 )
-from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.settings import get_settings
 
 
@@ -79,9 +75,3 @@ def configure_model_services() -> None:
         RunModelSnapshotService(PostgresRunModelSnapshotRepository())
     )
     configure_worker_dispatch_run_facts_loader(load_worker_dispatch_run_facts)
-    configure_terminal_checkpoint_dependencies(
-        update_counts=update_terminal_run_checkpoint_counts,
-        validate_result=partial(
-            ensure_json_size, max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large",
-        ),
-    )

@@ -21,11 +21,12 @@ from app.worker_principal_authority import _payload_identity
 
 
 async def _materialize_scoped_worker_snapshot(conn, payload):
-    return await materialize_queued_worker_context_snapshot(
+    context, error_code = await materialize_queued_worker_context_snapshot(
         conn, payload=payload, run_identity=_payload_identity(payload),
         context_projector=_context_snapshot_ref_from_row,
-        prepared_checkpoint_id=None,
     )
+    assert error_code is None
+    return context
 
 
 @pytest.fixture(autouse=True)

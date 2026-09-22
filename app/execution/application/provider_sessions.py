@@ -20,8 +20,9 @@ def claude_provider_session_dispatch(
         provider_id = str(uuid.UUID(session_id))
     except (TypeError, ValueError, AttributeError) as exc:
         raise ValueError("provider_session_identity_invalid") from exc
-    if (mode not in {"native_resume", "platform_bootstrap", "empty_start"}
-        or not isinstance(epoch_id, str) or not epoch_id.startswith("pe_")
+    if mode not in {"native_resume", "empty_start"}:
+        raise ValueError("provider_session_execution_mode_invalid")
+    if (not isinstance(epoch_id, str) or not epoch_id.startswith("pe_")
         or not conversation_context.get("source_sha256")):
         raise ValueError("provider_session_spec_invalid")
     return {

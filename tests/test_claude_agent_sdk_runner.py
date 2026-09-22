@@ -2357,12 +2357,12 @@ async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
     monkeypatch, tmp_path
 ):
     captured, lifecycle_facts = {}, []
-    subject = internal_context_tool_policy_subjects(["read_session_messages"])[0]
+    subject = internal_context_tool_policy_subjects(["read_run_artifact"])[0]
     call_id = "mcp-call-denied"
     hook_input = {
         "tool_name": subject["identity"],
         "tool_use_id": call_id,
-        "tool_input": {"limit": 1, "offset": 0, "max_tokens": 10},
+        "tool_input": {"artifact_id": "artifact-a", "max_bytes": 10},
     }
     sdk = _scripted_sdk(
         captured,

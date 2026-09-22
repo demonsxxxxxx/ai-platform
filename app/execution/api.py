@@ -85,18 +85,6 @@ from app.execution.application.model_selection import (
 )
 
 
-async def count_checkpoint_input_for_run(*, run_id: str, source_text: str) -> int:
-    return await configured_model_control_plane().count_checkpoint_input_for_run(
-        run_id=run_id, source_text=source_text,
-    )
-
-
-async def summarize_context_for_run(*, run_id: str, source_text: str) -> dict[str, Any]:
-    return await configured_model_control_plane().summarize_context_for_run(
-        run_id=run_id, source_text=source_text,
-    )
-
-
 async def list_public_models(conn: Any) -> dict[str, object]:
     return await configured_model_control_plane().public_models(conn)
 
@@ -149,8 +137,6 @@ __all__ = [
     "submit_run_until_cancelled",
     "list_public_models",
     "bind_selected_run_model",
-    "count_checkpoint_input_for_run",
-    "summarize_context_for_run",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",
     "promote_artifact_reservations",

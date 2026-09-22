@@ -24,7 +24,7 @@ from app.capability_distribution import (
     capability_distribution_audit_payload,
     resolve_capability_access,
 )
-from app.bootstrap.context import materialize_queued_worker_context_snapshot, prepare_worker_checkpoint
+from app.bootstrap.context import materialize_queued_worker_context_snapshot
 from app.context_builder import (
     ensure_public_context_provenance,
     executor_context_pack_from_snapshot,
@@ -2310,11 +2310,6 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-        prepared_checkpoint_id, checkpoint_preparation_failed = await prepare_worker_checkpoint(
-            transaction_factory=transaction_factory, payload=payload,
-            principal=capability_authorization.principal,
-            reconciliation=reconciliation is not None, queue_identity=run_identity,
-        )
         async with transaction_factory() as conn:
             fence = await worker_dispatch_fence(
                 conn, run_identity=run_identity, locked_run=locked,
@@ -2323,25 +2318,28 @@ async def process_run_payload(
             )
             if fence == "stale":
                 return WorkerOutcome("skipped", payload.run_id, "stale_terminal_state")
-            checkpoint_preparation_failed |= fence != "ready"
-            context_ref = None if checkpoint_preparation_failed else await materialize_queued_worker_context_snapshot(
-                conn, payload=payload, run_identity=run_identity,
-                context_projector=_context_snapshot_ref_from_row,
-                prepared_checkpoint_id=prepared_checkpoint_id,
+            context_ref, context_error_code = (
+                await materialize_queued_worker_context_snapshot(
+                    conn, payload=payload, run_identity=run_identity,
+                    context_projector=_context_snapshot_ref_from_row,
+                ) if fence == "ready" else (None, None)
             )
             if context_ref is None:
+                error_code = "worker_dispatch_fence_invalid" if fence == "invalid" else context_error_code or "context_snapshot_unavailable"
+                error_message = (
+                    "Run dispatch authority changed" if fence == "invalid"
+                    else "A new conversation is required because native provider context is unavailable"
+                    if context_error_code else "Run context snapshot is unavailable"
+                )
                 terminal_after_transaction = await _fail_worker_pre_dispatch_error(
                     conn,
                     payload=payload,
                     run_identity=run_identity,
                     v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
-                    error_code="worker_dispatch_fence_invalid" if fence == "invalid" else "context_checkpoint_unavailable" if checkpoint_preparation_failed else "context_snapshot_unavailable",
-                    error_message="Run dispatch authority changed" if fence == "invalid" else "Conversation checkpoint is unavailable" if checkpoint_preparation_failed else "Run context snapshot is unavailable",
+                    error_code=error_code,
+                    error_message=error_message,
                     event_stage="context",
-                    event_payload={
-                        "visible_to_user": False,
-                        "error_code": "worker_dispatch_fence_invalid" if fence == "invalid" else "context_checkpoint_unavailable" if checkpoint_preparation_failed else "context_snapshot_unavailable",
-                    },
+                    event_payload={"visible_to_user": False, "error_code": error_code},
                 )
                 return terminal_after_transaction.outcome
             payload = payload.model_copy(update={"file_ids": context_ref["file_ids"]})

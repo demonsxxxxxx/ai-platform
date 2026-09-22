@@ -113,29 +113,6 @@ async def get_run_connection(
     return _connection_from_row(row, encryption_key=encryption_key) if row else None
 
 
-async def get_preparation_connection(
-    conn: AsyncConnection, *, run_id: str, encryption_key: str,
-) -> ActiveConnection | None:
-    cursor = await conn.execute(
-        """
-        select gateway.revision, gateway.base_url, gateway.api_key_ciphertext,
-               gateway.key_fingerprint, runs.model_value, runs.max_input_tokens,
-               runs.max_output_tokens
-        from runs
-        join model_gateway_revisions gateway on gateway.revision = runs.model_gateway_revision
-        join run_context_snapshots snapshot on snapshot.id = runs.context_snapshot_id
-          and snapshot.tenant_id = runs.tenant_id and snapshot.workspace_id = runs.workspace_id
-          and snapshot.user_id = runs.user_id and snapshot.session_id = runs.session_id
-          and snapshot.run_id = runs.id and snapshot.context_kind = 'executor'
-        where runs.id = %s and runs.status = 'queued'
-          and runs.model_value is not null and runs.model_gateway_revision > 0
-          and runs.max_input_tokens > 0 and runs.max_output_tokens > 0
-        """, (run_id,),
-    )
-    row = await cursor.fetchone()
-    return _connection_from_row(row, encryption_key=encryption_key) if row else None
-
-
 async def activate_connection_and_sync(
     conn: AsyncConnection,
     *,
@@ -361,9 +338,6 @@ class PostgresModelManagementRepository:
 
     async def run_connection(self, conn: AsyncConnection, **kwargs: Any) -> ActiveConnection | None:
         return await get_run_connection(conn, **kwargs)
-
-    async def preparation_connection(self, conn: AsyncConnection, **kwargs: Any) -> ActiveConnection | None:
-        return await get_preparation_connection(conn, **kwargs)
 
     async def admin_models(self, conn: AsyncConnection) -> list[dict[str, Any]]:
         return await list_admin_models(conn)

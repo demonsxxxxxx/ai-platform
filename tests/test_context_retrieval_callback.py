@@ -243,6 +243,21 @@ def test_context_retrieval_callback_rejects_missing_attempt_and_caller_tenant(mo
     assert calls == []
 
 
+def test_context_retrieval_callback_rejects_retired_session_message_action(monkeypatch):
+    calls = _patch_route(monkeypatch, tools=["read_session_messages"])
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers={"X-AI-Platform-Callback-Token": _token("secret")},
+        json=_payload(
+            action="read_session_messages",
+            arguments={"limit": 5, "offset": 0, "max_tokens": 20},
+        ),
+    )
+
+    assert response.status_code == 422
+    assert calls == []
+
+
 def test_context_retrieval_callback_rejects_unadvertised_action(monkeypatch):
     calls = _patch_route(monkeypatch, tools=["read_session_messages"])
     client = TestClient(create_app())

@@ -216,7 +216,7 @@ async def _locked_callback_epoch(
         attempt is None or not isinstance(private, dict)
         or private.get("provider_epoch_id") != epoch["id"]
         or private.get("provider_session_id") != provider_uuid
-        or private.get("execution_mode") not in {"native_resume", "platform_bootstrap", "empty_start"}
+        or private.get("execution_mode") not in {"native_resume", "empty_start"}
         or (private["execution_mode"] == "native_resume" and (
             epoch["current_epoch_id"] != epoch["id"] or epoch["coverage_source_sha256"] != private.get("source_sha256")
         ))
@@ -418,10 +418,12 @@ async def prepare_provider_epoch(
         mode = "native_resume"
     elif conversation_context.get("native_source_verified"):
         raise ProviderSessionConflictError("provider_session_epoch_changed")
+    elif count:
+        raise ProviderSessionConflictError("provider_session_requires_new_conversation")
     else:
         epoch_id = f"pe_{uuid.uuid4().hex}"
         provider_id = str(uuid.uuid4())
-        mode = "platform_bootstrap" if count else "empty_start"
+        mode = "empty_start"
         await conn.execute(
             """
             insert into provider_session_epochs (
@@ -548,7 +550,7 @@ async def commit_provider_turn(
         or (frozen.get("execution_mode") == "native_resume"
             and (row["current_epoch_id"] != row["epoch_id"]
                  or row["coverage_source_sha256"] != receipt["source_sha256"]))
-        or frozen.get("execution_mode") not in {"native_resume", "platform_bootstrap", "empty_start"}
+        or frozen.get("execution_mode") not in {"native_resume", "empty_start"}
     ):
         raise ProviderSessionConflictError("provider_session_terminal_coverage_invalid")
     ids = [assistant_message_id]

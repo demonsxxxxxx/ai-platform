@@ -849,9 +849,6 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
     async def no_publication(*_args, **_kwargs):
         return None
 
-    async def no_checkpoint_usage(_conn, **_kwargs):
-        return {"input_tokens": 0, "output_tokens": 0}
-
     async def no_provider_lineage(_conn, **_kwargs):
         return None
 
@@ -873,10 +870,6 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         materialize_run_skill_manifests,
     )
     monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-    monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.load_checkpoint_usage_for_run",
-        no_checkpoint_usage,
-    )
     monkeypatch.setattr(
         "app.runs.application.provider_terminalization.release_provider_lineage",
         no_provider_lineage,
@@ -1089,8 +1082,12 @@ async def test_adapter_catalog_question_stages_no_full_skill_but_prompt_contains
     assert prepared.allowed_skill_names == []
     assert prepared.staged_skill_names == []
     assert list((workspace / ".claude" / "skills").iterdir()) == []
-    assert "AUTHORIZED_SKILL_CATALOG_JSON=" in prepared.prompt
-    assert all(f"BODY_ONLY_{suffix.upper()}" not in prepared.prompt for suffix in "abcd")
+    assert prepared.prompt == "Choose the matching skill"
+    assert "AUTHORIZED_SKILL_CATALOG_JSON=" in prepared.system_prompt
+    assert all(
+        f"BODY_ONLY_{suffix.upper()}" not in prepared.system_prompt
+        for suffix in "abcd"
+    )
 
 
 @pytest.mark.asyncio
@@ -1193,12 +1190,13 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
         "ctd-32s73-stability-template-fill",
         "reference-fact-extraction",
     }
-    assert "BODY_ONLY_A" not in prepared.prompt
-    assert "BODY_ONLY_CTD" not in prepared.prompt
-    assert "BODY_ONLY_REFERENCE" not in prepared.prompt
-    assert "BODY_ONLY_UNRELATED" not in prepared.prompt
-    assert "reference-fact-extraction" not in prepared.prompt
-    assert "minimax-docx" not in prepared.prompt
+    assert prepared.prompt == "Route this request"
+    assert "BODY_ONLY_A" not in prepared.system_prompt
+    assert "BODY_ONLY_CTD" not in prepared.system_prompt
+    assert "BODY_ONLY_REFERENCE" not in prepared.system_prompt
+    assert "BODY_ONLY_UNRELATED" not in prepared.system_prompt
+    assert "reference-fact-extraction" not in prepared.system_prompt
+    assert "minimax-docx" not in prepared.system_prompt
     diagnostics = project_sdk_turn_diagnostics(
         {
             "counters": {"skill_invocations": 2},
@@ -1270,7 +1268,8 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
     assert prepared.allowed_skill_names == []
     assert prepared.staged_skill_names == []
     assert list((workspace / ".claude" / "skills").iterdir()) == []
-    assert '"skills":[]' in prepared.prompt
+    assert prepared.prompt == "hello"
+    assert '"skills":[]' in prepared.system_prompt
 
 
 def _sdk_settings():

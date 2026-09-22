@@ -54,6 +54,11 @@ def test_provider_dispatch_requires_the_current_epoch_contract():
         )
 
 
+def test_provider_dispatch_rejects_retired_platform_bootstrap_mode():
+    with pytest.raises(ValueError, match="provider_session_execution_mode_invalid"):
+        _provider_dispatch(_payload(), execution_mode="platform_bootstrap")
+
+
 def test_provider_resume_marker_is_derived_from_the_frozen_mode():
     assert _provider_dispatch(_payload(), execution_mode="native_resume")[
         "provider_session_resume_required"

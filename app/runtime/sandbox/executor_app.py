@@ -75,7 +75,7 @@ from app.runtime.sandbox.contracts import (
 )
 from app.settings import get_settings
 from app.skills.execution_profiles import PLATFORM_CONTROLLED
-from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+from app.validation import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
 
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
@@ -812,7 +812,7 @@ class _ServerOwnedSystemPromptConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    system_prompt: str = Field(max_length=MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS)
+    system_prompt: str = Field(max_length=MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS)
 
 
 class _ServerOwnedSystemPromptError(ValueError):

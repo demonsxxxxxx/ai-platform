@@ -2,14 +2,7 @@ from __future__ import annotations
 
 import secrets
 
-from app.context.application.checkpoint_build import (
-    fail_expired_checkpoint_builds,
-    prepare_checkpoint_for_run,
-)
-from app.context.application.checkpoints import (
-    load_ready_checkpoint as load_ready_checkpoint,
-    load_checkpoint_usage_for_run,
-)
+from app.context.application.checkpoints import load_ready_checkpoint as load_ready_checkpoint
 from app.context.domain.conversation_authority import (
     ConversationSourceChain as ConversationSourceChain,
     validate_authority_receipt as validate_authority_receipt,
@@ -200,7 +193,6 @@ async def materialize_worker_context_snapshot(
     message_loader,
     context_projector,
     history_page_loader=None,
-    prepared_checkpoint_id=None,
 ):
     result = await _materialize_worker_context_snapshot(
         conn,
@@ -211,7 +203,6 @@ async def materialize_worker_context_snapshot(
         context_projector=context_projector,
         history_page_loader=history_page_loader,
         provider_epoch_matcher=matching_ready_provider_epoch,
-        prepared_checkpoint_id=prepared_checkpoint_id,
     )
     if (result is not None and identity.get("engine") == PROVIDER_SESSION_ENGINE_CLAUDE
         and result["conversation_context"].get("schema_version") == EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2):
@@ -226,7 +217,9 @@ async def materialize_worker_context_snapshot(
                 run_id=identity["run_id"],
                 conversation_context=result["conversation_context"],
             )
-        except (ProviderSessionContinuityError, KeyError, TypeError):
+        except ProviderSessionContinuityError:
+            raise
+        except (KeyError, TypeError):
             return None
     return result
 
@@ -243,9 +236,6 @@ __all__ = [
     "ConversationSourceChain",
     "validate_authority_receipt",
     "load_ready_checkpoint",
-    "load_checkpoint_usage_for_run",
-    "fail_expired_checkpoint_builds",
-    "prepare_checkpoint_for_run",
     "normalize_context_file_error_code",
     "MAX_PROVIDER_SESSION_BATCH_BYTES",
     "MAX_PROVIDER_SESSION_BATCH_COUNT",

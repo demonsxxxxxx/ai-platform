@@ -144,30 +144,6 @@ class PlatformContextRetrievalClient:
             raise RuntimeError("context_retrieval_callback_invalid")
         return result
 
-    async def read_session_messages(
-        self,
-        *,
-        tenant_id: str,
-        workspace_id: str,
-        user_id: str,
-        session_id: str,
-        run_id: str,
-        limit: int = 20,
-        offset: int = 0,
-        max_tokens: int = 1200,
-    ) -> dict[str, Any]:
-        self._require_scope(
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-        )
-        return await self._request(
-            "read_session_messages",
-            {"limit": limit, "offset": offset, "max_tokens": max_tokens},
-        )
-
     async def read_run_artifact(
         self,
         *,
