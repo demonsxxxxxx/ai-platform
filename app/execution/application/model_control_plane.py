@@ -484,41 +484,6 @@ class ModelControlPlaneService:
                 or max_tokens > connection.max_output_tokens
             ):
                 raise ValueError("model_proxy_max_tokens_invalid")
-            count_body = _count_tokens_body(payload)
-            count_response = await asyncio.to_thread(
-                self._upstream.request,
-                base_url=connection.base_url,
-                allowed_internal_hosts=allowed_hosts,
-                api_key=connection.api_key,
-                method="POST",
-                path="/v1/messages/count_tokens",
-                provider="anthropic",
-                body=count_body,
-                headers=outbound_headers,
-                query=query,
-                max_response_bytes=8192,
-            )
-            counted_input_tokens = _input_token_count(
-                count_response, fallback_body=count_body
-            )
-            if counted_input_tokens > connection.max_input_tokens:
-                error = {
-                    "type": "error",
-                    "error": {
-                        "type": "invalid_request_error",
-                        "message": (
-                            f"prompt is too long: {counted_input_tokens} tokens > "
-                            f"{connection.max_input_tokens} maximum"
-                        ),
-                    },
-                }
-                return RuntimeProxyResponse(
-                    status=400,
-                    content_type="application/json",
-                    body=(
-                        json.dumps(error, separators=(",", ":")).encode("utf-8"),
-                    ),
-                )
         elif provider == "anthropic" and upstream_path == "v1/messages/count_tokens":
             count_response = await asyncio.to_thread(
                 self._upstream.request,

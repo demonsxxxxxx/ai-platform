@@ -80,16 +80,16 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
     ("model_max_input_tokens", "expected"),
     [
         (None, None),
-        (32_000, 25_600),
-        (95_000, 76_000),
-        (100_000, 80_000),
-        (125_000, 100_000),
-        (200_000, 160_000),
-        (1_000_000, 800_000),
+        (32_000, 100_000),
+        (95_000, 100_000),
+        (100_000, 100_000),
+        (125_000, 125_000),
+        (200_000, 200_000),
+        (1_000_000, 1_000_000),
         (2_000_000, 1_000_000),
     ],
 )
-def test_sdk_autocompact_window_targets_eighty_percent_and_caps_at_one_million(
+def test_sdk_autocompact_window_clamps_model_input_capacity_to_cli_bounds(
     model_max_input_tokens, expected
 ):
     assert _sdk_autocompact_window(model_max_input_tokens) == expected
@@ -5590,6 +5590,6 @@ async def test_native_client_delegates_compaction_to_cli_without_session_open_qu
         and captured["disconnected"]
     )
     assert captured["query_session_id"] == "stable-provider-id"
-    assert captured["extra_args"] == {"autocompact": "80000"}
+    assert captured["extra_args"] == {"autocompact": "100000"}
     assert captured["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "36500"
     assert captured["env"].get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") in {None, ""}
