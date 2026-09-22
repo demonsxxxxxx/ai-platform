@@ -5217,7 +5217,7 @@ def test_backend_runtime_rebuild_clears_current_subjects_before_target_copies():
     assert dockerfile.index(cleanup) < dockerfile.index("COPY app /app/app")
     assert dockerfile.index(cleanup) < dockerfile.index("COPY tools /app/tools")
     assert dockerfile.index(cleanup) < dockerfile.index("COPY scripts /app/scripts")
-    assert dockerfile.index(cleanup) < dockerfile.index("COPY skills /app/skills")
+    assert "COPY skills /app/skills" not in dockerfile
     assert dockerfile.index(cleanup) < dockerfile.index("COPY docs/release-evidence /app/docs/release-evidence")
     assert "/app/docker-entrypoint.sh" in dockerfile.split("COPY app /app/app", 1)[0]
     assert "/app/.ai-platform-source-snapshot.json" in dockerfile.split("COPY app /app/app", 1)[0]

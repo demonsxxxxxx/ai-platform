@@ -92,7 +92,7 @@ from app.skills.pinning import (
     MAX_SKILL_SNAPSHOT_FILE_BYTES,
     MAX_SKILL_SNAPSHOT_TOTAL_BYTES,
 )
-from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
+from app.skills.registry import BuiltinSkill, skill_content_hash
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage, ObjectStorageSizeLimitError, run_storage_io
 
@@ -785,9 +785,9 @@ class ClaudeAgentWorkerAdapter:
         workspace = _run_workspace(settings, payload)
         _prepare_run_workspace(settings.claude_agent_workspace_root, workspace)
 
-        skills = BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()
+        skills: list[BuiltinSkill] = []
         pinned_manifests = _pinned_skill_manifests(payload)
-        available_names = list(dict.fromkeys([skill.name for skill in skills] + list(pinned_manifests)))
+        available_names = list(pinned_manifests)
         allowed_skill_names = _allowed_skill_names(payload, available_names)
         _selected_skills, pin_mismatches = _select_pinned_skills(
             skills,
@@ -1069,16 +1069,8 @@ class ClaudeAgentWorkerAdapter:
                 return None, self._authorized_skill_catalog_failure_result(
                     "authorized_skill_selected_unavailable"
                 )
-            skills = (
-                []
-                if authorized_catalog is not None
-                else BuiltinSkillRegistry(
-                    settings.platform_skills_root
-                ).list_builtin_skills()
-            )
-            available_names = list(
-                dict.fromkeys([skill.name for skill in skills] + list(pinned_manifests))
-            )
+            skills = []
+            available_names = list(pinned_manifests)
             allowed_skill_names = _allowed_skill_names(
                 payload,
                 available_names,

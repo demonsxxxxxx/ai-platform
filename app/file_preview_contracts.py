@@ -23,7 +23,6 @@ import tempfile
 import threading
 import time
 from typing import Any, Callable, Literal, Mapping
-from zipfile import ZipFile
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -54,14 +53,6 @@ _MAX_XLSX_PREVIEW_IMAGE_BYTES = 512 * 1024
 _MAX_XLSX_PREVIEW_IMAGE_TOTAL_BYTES = 2 * 1024 * 1024
 _MAX_XLSX_PREVIEW_IMAGE_EMU = 95_250_000
 _XLSX_IMAGE_WARNINGS = frozenset({"images_not_rendered", "images_truncated"})
-_XLSX_IMAGE_MIME_TYPES = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "gif": "image/gif",
-    "webp": "image/webp",
-    "bmp": "image/bmp",
-}
 _PREVIEW_ADMISSION = threading.BoundedSemaphore(MAX_CONCURRENT_XLSX_PREVIEWS)
 _PREVIEW_EXECUTOR = ThreadPoolExecutor(
     max_workers=MAX_CONCURRENT_XLSX_PREVIEWS,
@@ -843,178 +834,6 @@ def _parse_xlsx_preview_child(
         )
     finally:
         send_conn.close()
-
-
-def _extract_xlsx_preview_images(
-    staged_path: Path,
-) -> tuple[dict[int, list[dict[str, Any]]], list[str]]:
-    """Extract only bounded, local worksheet images for the public preview DTO."""
-
-    try:
-        with ZipFile(staged_path) as archive:
-            if not any(
-                entry.filename.replace("\\", "/").casefold().startswith("xl/drawings/")
-                for entry in archive.infolist()
-            ):
-                return {}, []
-        from openpyxl import load_workbook
-
-        workbook = load_workbook(
-            staged_path,
-            read_only=False,
-            data_only=False,
-            keep_links=False,
-        )
-    except Exception:
-        return {}, ["images_not_rendered"]
-
-    images_by_sheet: dict[int, list[dict[str, Any]]] = {}
-    warnings: list[str] = []
-    total_bytes = 0
-    image_count = 0
-    images_seen = 0
-    try:
-        for sheet_index, worksheet in enumerate(
-            workbook.worksheets[:MAX_XLSX_SHEETS]
-        ):
-            worksheet_images = getattr(worksheet, "_images", [])
-            for image in worksheet_images:
-                images_seen += 1
-                if images_seen > _MAX_XLSX_PREVIEW_IMAGES:
-                    warnings.append("images_truncated")
-                    return images_by_sheet, list(dict.fromkeys(warnings))
-                image_payload = _public_xlsx_image_payload(
-                    image=image,
-                    sheet_index=sheet_index,
-                    order=image_count,
-                    remaining_bytes=_MAX_XLSX_PREVIEW_IMAGE_TOTAL_BYTES - total_bytes,
-                )
-                if image_payload is None:
-                    warnings.extend(("images_not_rendered", "images_truncated"))
-                    continue
-                image_bytes = len(base64.b64decode(image_payload["data_url"].split(",", 1)[1]))
-                total_bytes += image_bytes
-                image_count += 1
-                images_by_sheet.setdefault(sheet_index, []).append(image_payload)
-    except Exception:
-        warnings.append("images_not_rendered")
-    finally:
-        try:
-            workbook.close()
-        except Exception:
-            pass
-    return images_by_sheet, list(dict.fromkeys(warnings))
-
-
-def _public_xlsx_image_payload(
-    *,
-    image: Any,
-    sheet_index: int,
-    order: int,
-    remaining_bytes: int,
-) -> dict[str, Any] | None:
-    """Convert one openpyxl image without exposing package paths or active content."""
-
-    anchor = getattr(image, "anchor", None)
-    origin = _xlsx_image_anchor_point(getattr(anchor, "_from", None))
-    if origin is None:
-        return None
-    endpoint = _xlsx_image_anchor_point(getattr(anchor, "to", None))
-    extent = getattr(anchor, "ext", None)
-    image_extent = None
-    if endpoint is None:
-        width = _bounded_xlsx_image_emu(getattr(extent, "cx", None), positive=True)
-        height = _bounded_xlsx_image_emu(getattr(extent, "cy", None), positive=True)
-        if width is None or height is None:
-            return None
-        image_extent = {"width_emu": width, "height_emu": height}
-    elif (
-        endpoint["row"] < origin["row"]
-        or endpoint["col"] < origin["col"]
-        or (
-            endpoint["row"] == origin["row"]
-            and endpoint["row_offset_emu"] <= origin["row_offset_emu"]
-        )
-        or (
-            endpoint["col"] == origin["col"]
-            and endpoint["col_offset_emu"] <= origin["col_offset_emu"]
-        )
-    ):
-        return None
-
-    try:
-        image_bytes = image._data()
-    except Exception:
-        return None
-    if not isinstance(image_bytes, bytes) or not image_bytes:
-        return None
-    if len(image_bytes) > _MAX_XLSX_PREVIEW_IMAGE_BYTES or len(image_bytes) > remaining_bytes:
-        return None
-    mime_type = _xlsx_image_mime_type(image, image_bytes)
-    if mime_type is None:
-        return None
-    encoded = base64.b64encode(image_bytes).decode("ascii")
-    return {
-        "id": f"sheet-{sheet_index}-image-{order}",
-        "name": _bounded_xlsx_image_text(getattr(image, "name", None), "Embedded image"),
-        "description": _bounded_xlsx_image_text(getattr(image, "description", None), ""),
-        "mime_type": mime_type,
-        "data_url": f"data:{mime_type};base64,{encoded}",
-        "anchor_from": origin,
-        "anchor_to": endpoint,
-        "extent": image_extent,
-        "order": order,
-    }
-
-
-def _xlsx_image_anchor_point(point: Any) -> dict[str, int] | None:
-    """Return one bounded zero-based openpyxl anchor point."""
-
-    if point is None:
-        return None
-    values = {
-        "col": getattr(point, "col", None),
-        "row": getattr(point, "row", None),
-        "col_offset_emu": getattr(point, "colOff", None),
-        "row_offset_emu": getattr(point, "rowOff", None),
-    }
-    if any(not isinstance(value, int) or value < 0 for value in values.values()):
-        return None
-    if (
-        values["col"] >= MAX_XLSX_COLUMNS_PER_SHEET
-        or values["row"] >= MAX_XLSX_ROWS_PER_SHEET
-    ):
-        return None
-    if any(value > _MAX_XLSX_PREVIEW_IMAGE_EMU for value in values.values()):
-        return None
-    return values
-
-
-def _bounded_xlsx_image_emu(value: Any, *, positive: bool) -> int | None:
-    if not isinstance(value, int) or (value <= 0 if positive else value < 0):
-        return None
-    return value if value <= _MAX_XLSX_PREVIEW_IMAGE_EMU else None
-
-
-def _xlsx_image_mime_type(image: Any, image_bytes: bytes) -> str | None:
-    image_format = str(getattr(image, "format", "") or "").casefold()
-    mime_type = _XLSX_IMAGE_MIME_TYPES.get(image_format)
-    signatures = {
-        "image/png": image_bytes.startswith(b"\x89PNG\r\n\x1a\n"),
-        "image/jpeg": image_bytes.startswith(b"\xff\xd8\xff"),
-        "image/gif": image_bytes.startswith((b"GIF87a", b"GIF89a")),
-        "image/webp": image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP",
-        "image/bmp": image_bytes.startswith(b"BM"),
-    }
-    if mime_type is None or not signatures.get(mime_type, False):
-        return None
-    return mime_type
-
-
-def _bounded_xlsx_image_text(value: Any, fallback: str) -> str:
-    text = str(value or "")
-    safe = "".join(character if character >= " " else " " for character in text)
-    return safe[:256].strip() or fallback
 
 
 def _configure_isolated_xlsx_parser() -> None:

@@ -1063,8 +1063,6 @@ def _executor_environment(
             "Write,Edit,NotebookEdit",
         ),
         "CLAUDE_AGENT_WORKSPACE_ROOT": workspace_container_path,
-        "CLAUDE_AGENT_SDK_SKILLS": _env_value(settings, "claude_agent_sdk_skills"),
-        "PLATFORM_SKILLS_ROOT": _env_value(settings, "platform_skills_root", "skills"),
         "SKILL_STAGING_SUBDIR": _env_value(settings, "skill_staging_subdir", ".claude/skills"),
         "PUBLIC_SKILL_FILE_OVERLAY_MAX_BYTES": _env_value(
             settings,

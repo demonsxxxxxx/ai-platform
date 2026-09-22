@@ -1,5 +1,4 @@
 import pytest
-from pathlib import Path
 
 from app.skills.registry import BuiltinSkillRegistry, parse_skill_markdown_front_matter
 
@@ -51,16 +50,6 @@ description: Use when the user asks to review a Word document.
     assert str(skills[0].path).endswith("qa-file-reviewer")
     assert len(skills[0].version) == 64
 
-
-def test_shipped_platform_skills_include_general_chat():
-    skills_root = Path(__file__).resolve().parents[1] / "skills"
-    skills = BuiltinSkillRegistry(skills_root=skills_root).list_builtin_skills()
-    skill_names = {skill.name for skill in skills}
-    descriptions = {skill.name: skill.description for skill in skills}
-
-    assert "general-chat" in skill_names
-    assert "ragflow-knowledge-search" in skill_names
-    assert "read-only company SOP and policy knowledge" in descriptions["ragflow-knowledge-search"]
 
 
 def test_builtin_registry_rejects_missing_skill_markdown(tmp_path):

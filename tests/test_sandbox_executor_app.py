@@ -4,8 +4,6 @@ import gc
 import hashlib
 import json
 import logging
-import os
-import shutil
 import sys
 import threading
 import time
@@ -20,10 +18,7 @@ from fastapi.testclient import TestClient
 from tests.support.claude_sdk import native_client_factory
 
 from app.execution.api import ClaudeAgentEventCandidate
-from app.executors.claude_agent_sdk_runner import (
-    ClaudeAgentSdkNotAvailable,
-    build_skill_prompt,
-)
+from app.executors.claude_agent_sdk_runner import ClaudeAgentSdkNotAvailable
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
 from app.platform.public_payload import sanitize_public_payload
 from app.required_tool_contract import (
@@ -3283,51 +3278,6 @@ def test_executor_rejects_unsafe_materialized_file_name_without_executing(tmp_pa
     assert response.status_code == 200
     assert response.json()["error_code"] == "controlled_skill_input_name_invalid"
     assert not (workspace / "unexpected").exists()
-
-
-def test_executor_runs_real_staged_qa_entrypoint_with_minimal_environment(tmp_path, monkeypatch):
-    workspace = Path(tmp_path)
-    write_minimal_docx(workspace / "source.docx")
-    skills_root = Path(__file__).parents[1] / "skills"
-    staged_skills = workspace / ".claude" / "skills"
-
-    def copy_skill(source: Path, target: Path) -> None:
-        if os.name == "nt":
-            shutil.copytree(f"\\\\?\\{source.resolve()}", f"\\\\?\\{target.resolve()}")
-        else:
-            shutil.copytree(source, target)
-
-    copy_skill(skills_root / "qa-file-reviewer", staged_skills / "qa-file-reviewer")
-    copy_skill(skills_root / "minimax-docx", staged_skills / "minimax-docx")
-
-    async def sdk_must_not_run(**_kwargs):
-        raise AssertionError("the real staged QA Skill must not be left to SDK discretion")
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "model-token")
-    payload = task_payload()
-    payload["prompt"] = build_skill_prompt(
-        skill_id="qa-file-reviewer",
-        user_message="review this document",
-        file_names=["source.docx"],
-    )
-    payload["config"]["skill_ids"] = ["qa-file-reviewer", "minimax-docx"]
-    payload["config"]["materialized_file_names"] = ["source.docx"]
-    qa_policy = selected_file_skill_policy()
-    next(subject for subject in qa_policy if subject["identity"] == "Skill")["allowed_skill_names"] = [
-        "qa-file-reviewer"
-    ]
-    payload["config"]["tool_policy_subjects"] = qa_policy
-    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: callback_ack(payload))
-
-    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "completed"
-    output_docx = workspace / "output" / "source_reviewed.docx"
-    assert output_docx.is_file()
-    with zipfile.ZipFile(output_docx) as archive:
-        assert "word/document.xml" in archive.namelist()
 
 
 def test_executor_fails_closed_when_selected_file_skill_runner_fails(tmp_path, monkeypatch):

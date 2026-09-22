@@ -54,7 +54,6 @@ COPY app /app/app
 COPY tools /app/tools
 COPY scripts /app/scripts
 COPY --chmod=0755 docker-entrypoint.sh /app/docker-entrypoint.sh
-COPY skills /app/skills
 COPY docs/release-evidence /app/docs/release-evidence
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown

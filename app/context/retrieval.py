@@ -16,7 +16,7 @@ from app.context.file_content import (
 from app.context_manifest import truncate_utf8_text, utf8_token_estimate
 from app.control_plane_contracts import sanitize_public_payload
 from app.path_safety import ensure_creatable_inside
-from app.storage import ObjectStorageSizeLimitError, run_storage_io
+from app.storage import ObjectStorageSizeLimitError
 
 
 class ContextRetrievalDenied(PermissionError):

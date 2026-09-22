@@ -1306,16 +1306,16 @@ def build_skill_version_release_review(
 
 def build_skill_release_readiness(
     *,
-    skills_root: str | Path = "skills",
+    skills_root: str | Path | None = None,
     skill_release_evidence_root: str | Path | None = None,
     runtime_evidence_root: str | Path | None = _RUNTIME_EVIDENCE_ROOT,
 ) -> dict[str, Any]:
-    """Build a secret-safe, offline skill release governance evidence snapshot."""
-    root = Path(skills_root)
+    """Build a secret-safe, offline Skill release governance evidence snapshot."""
+    root = Path(skills_root) if skills_root is not None else None
     evidence_root = Path(skill_release_evidence_root) if skill_release_evidence_root is not None else None
     runtime_acceptance_evidence = _runtime_acceptance_evidence(runtime_evidence_root)
     dashboard_readiness = build_skill_release_dashboard_readiness()
-    builtin_skills = BuiltinSkillRegistry(root).list_builtin_skills()
+    builtin_skills = BuiltinSkillRegistry(root).list_builtin_skills() if root is not None else []
     available_skill_ids = {skill.name for skill in builtin_skills}
     skill_items: list[dict[str, Any]] = []
     for skill in builtin_skills:
@@ -1357,7 +1357,7 @@ def build_skill_release_readiness(
             }
         )
 
-    inventory_present = bool(root.exists() and skill_items)
+    inventory_present = bool(root is not None and root.exists() and skill_items)
     open_gaps = [
         *_open_gaps(
             skill_items,
@@ -1371,8 +1371,8 @@ def build_skill_release_readiness(
         "gate": GATE_NAME,
         "status": "partial_blocked" if open_gaps else "ready_for_verification",
         "source": {
-            "mode": "offline_repo_skill_inventory",
-            "root": "skills",
+            "mode": "offline_external_skill_inventory",
+            "root": str(root) if root is not None else None,
             "inventory_present": inventory_present,
             "external_evidence": {
                 "mode": "optional_external_release_evidence",
@@ -1447,7 +1447,7 @@ def _write_text(path: Path, content: str) -> None:
 
 def write_skill_release_evidence_scaffold(
     *,
-    skills_root: str | Path = "skills",
+    skills_root: str | Path,
     evidence_root: str | Path = "docs/release-evidence/skill-release",
     skill_id: str,
     generated_at: str | None = None,

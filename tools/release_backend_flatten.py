@@ -107,7 +107,6 @@ RUN rm -rf /app/app /app/tools /app/scripts /app/skills /app/docs/release-eviden
 COPY app /app/app
 COPY tools /app/tools
 COPY scripts /app/scripts
-COPY skills /app/skills
 COPY docs/release-evidence /app/docs/release-evidence
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod -R a+rX /app && chmod 0755 /app/docker-entrypoint.sh

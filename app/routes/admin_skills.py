@@ -1,5 +1,3 @@
-from copy import deepcopy
-
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from app import repositories
@@ -10,14 +8,12 @@ from app.models import (
     AdminSkillPromoteRequest,
     AdminSkillReleasePolicyResponse,
     AdminSkillRollbackRequest,
-    AdminSkillSyncResponse,
     AdminSkillUploadResponse,
     AdminSkillVersionDiffResponse,
     AdminSkillVersionResponse,
     AdminSkillVersionStatusRequest,
     PublicSkillImportPreviewResponse,
 )
-from app.settings import get_settings
 from app.skills.api import (
     AdminSkillListResponse,
     INTERNAL_DEPENDENCY_SKILL_IDS,
@@ -26,7 +22,7 @@ from app.skills.api import (
     next_uploaded_skill_display_version,
     resolve_uploaded_skill_display_versions,
 )
-from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, skill_dependency_policy
+from app.skills.dependencies import skill_dependency_policy
 from app.skills.lifecycle import (
     SKILL_VERSION_DEPRECATED,
     SKILL_VERSION_DISABLED,
@@ -46,13 +42,11 @@ from app.skills.packages import (
 )
 from app.skills.pinning import (
     SkillVersionMaterializationError,
-    build_skill_manifest_pins,
     build_skill_version_dependency_manifest_pins,
     build_skill_version_manifest_pin,
     validate_skill_version_dependency_policy,
 )
 from app.skills.release_readiness import build_skill_version_release_review
-from app.skills.registry import BuiltinSkillRegistry
 from app.storage import (
     ObjectStorage,
     StorageIOBusyError,
@@ -76,6 +70,10 @@ def _require_skill_upload_admin(principal: AuthPrincipal) -> None:
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
 
+def _current_builtin_skill_version(skill_id: str) -> str | None:
+    return None
+
+
 def _safe_skill_id(skill_id: str) -> str:
     try:
         return assert_safe_id(skill_id, "skill_id")
@@ -88,19 +86,6 @@ def _safe_version(value: str, field_name: str) -> str:
         return assert_safe_id(value, field_name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-def _current_builtin_skill_version(skill_id: str) -> str | None:
-    registry = BuiltinSkillRegistry(get_settings().platform_skills_root)
-    pins = build_skill_manifest_pins(
-        skill_id=skill_id,
-        input_payload={},
-        builtin_skills=registry.list_builtin_skills(),
-    )
-    for pin in pins:
-        if str(pin.get("skill_id") or "") == skill_id:
-            return str(pin.get("content_hash") or pin.get("version") or "") or None
-    return None
 
 
 async def _read_skill_package_upload(package: UploadFile) -> bytes:
@@ -135,11 +120,8 @@ def _require_rollback_target_skill_version(version: dict[str, object]) -> None:
     raise HTTPException(status_code=409, detail="skill_version_inactive")
 
 
-def _available_builtin_skill_ids_or_409() -> set[str]:
-    try:
-        return {skill.name for skill in BuiltinSkillRegistry(get_settings().platform_skills_root).list_builtin_skills()}
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
+def _available_dependency_skill_ids(skill_id: str) -> set[str]:
+    return {skill_id, *INTERNAL_DEPENDENCY_SKILL_IDS}
 
 
 def _require_materializable_skill_version(skill_id: str, version: dict[str, object]) -> None:
@@ -150,7 +132,7 @@ def _require_materializable_skill_version(skill_id: str, version: dict[str, obje
         build_skill_version_manifest_pin(version)
         validate_skill_version_dependency_policy(
             version,
-            available_skill_ids=_available_builtin_skill_ids_or_409(),
+            available_skill_ids=_available_dependency_skill_ids(skill_id),
         )
         build_skill_version_dependency_manifest_pins(version)
     except SkillVersionMaterializationError as exc:
@@ -180,7 +162,7 @@ def _require_reusable_uploaded_skill_version(skill_id: str, version: dict[str, o
         )
         validate_skill_version_dependency_policy(
             version,
-            available_skill_ids=_available_builtin_skill_ids_or_409(),
+            available_skill_ids=_available_dependency_skill_ids(skill_id),
         )
         build_skill_version_dependency_manifest_pins(version)
     except ValueError as exc:
@@ -348,106 +330,6 @@ async def admin_skill_detail(
         "dependency_policy": skill_dependency_policy(skill_id, available_skill_ids, dependency_ids),
     }
     return AdminSkillDetailResponse.model_validate(detail)
-
-
-@router.post("/admin/skills/sync-builtin", response_model=AdminSkillSyncResponse)
-async def admin_sync_builtin_skills(
-    principal: AuthPrincipal = Depends(require_principal),
-) -> AdminSkillSyncResponse:
-    _require_admin(principal)
-
-    registry = BuiltinSkillRegistry(get_settings().platform_skills_root)
-    managed_builtin_ids = PUBLIC_WORKBENCH_SKILL_IDS | INTERNAL_DEPENDENCY_SKILL_IDS
-    builtins = [
-        skill
-        for skill in registry.list_builtin_skills()
-        if skill.name in managed_builtin_ids
-    ]
-    available_skill_ids = {skill.name for skill in builtins}
-    try:
-        manifest_pins = build_skill_manifest_pins(
-            skill_id="",
-            input_payload={"skill_ids": [skill.name for skill in builtins]},
-            builtin_skills=builtins,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
-    manifest_by_skill_id = {str(item.get("skill_id") or ""): item for item in manifest_pins}
-    synced = []
-    async with transaction() as conn:
-        for skill in builtins:
-            manifest = manifest_by_skill_id.get(skill.name)
-            if manifest is None:
-                raise HTTPException(status_code=409, detail="skill_version_not_materializable")
-            existing_version = await repositories.get_skill_version(
-                conn,
-                skill_id=skill.name,
-                version=skill.version,
-            )
-            existing_source = (
-                existing_version.get("source")
-                if isinstance(existing_version, dict) and isinstance(existing_version.get("source"), dict)
-                else {}
-            )
-            if isinstance(existing_source.get("files"), list) and existing_source["files"]:
-                try:
-                    validate_skill_version_dependency_policy(
-                        existing_version,
-                        available_skill_ids=available_skill_ids,
-                    )
-                except SkillVersionMaterializationError as exc:
-                    raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
-                source_json = deepcopy(existing_source)
-                existing_dependency_ids = existing_version.get("dependency_ids")
-                dependency_ids = (
-                    list(existing_dependency_ids)
-                    if isinstance(existing_dependency_ids, list)
-                    and all(isinstance(item, str) for item in existing_dependency_ids)
-                    else []
-                )
-            else:
-                dependency_ids = []
-                source_json = dict(skill.source)
-                source_json["files"] = list(manifest.get("files") or [])
-            await repositories.upsert_skill_version(
-                conn,
-                skill_id=skill.name,
-                version=skill.version,
-                content_hash=skill.version,
-                description=skill.description,
-                source_json=source_json,
-                dependency_ids=dependency_ids,
-                status=SKILL_VERSION_DRAFT,
-                created_by=principal.user_id,
-            )
-            await repositories.backfill_builtin_skill_version_snapshot(
-                conn,
-                skill_id=skill.name,
-                version=skill.version,
-                source_json=source_json,
-                dependency_ids=dependency_ids,
-                description=skill.description,
-            )
-            await repositories.update_skill_catalog_version(
-                conn,
-                skill_id=skill.name,
-                version=skill.version,
-                description=skill.description,
-            )
-            synced.append(
-                {
-                    "skill_id": skill.name,
-                    "version": skill.version,
-                    "content_hash": skill.version,
-                    "description": skill.description,
-                    "source": source_json,
-                    "dependency_ids": dependency_ids,
-                    "status": SKILL_VERSION_DRAFT,
-                    "created_by": principal.user_id,
-                    "created_at": None,
-                }
-            )
-    return AdminSkillSyncResponse(synced=synced)
 
 
 @router.post("/admin/skills/{skill_id}/versions/upload", response_model=AdminSkillUploadResponse)

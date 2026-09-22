@@ -4218,7 +4218,6 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
     assert "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS" not in environment
     assert environment["CLAUDE_AGENT_ALLOWED_TOOLS"] == "Read,Glob,LS,Bash"
     assert environment["CLAUDE_AGENT_WORKSPACE_ROOT"] == "/workspace"
-    assert environment["CLAUDE_AGENT_SDK_SKILLS"] == "general-chat,qa-file-reviewer"
 
 
 @pytest.mark.asyncio

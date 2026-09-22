@@ -141,35 +141,33 @@ def test_schema_seeds_first_agent_apps():
     assert "update skills\nset status = 'inactive'\nwhere id = 'baoyu-translate';" in schema
     assert "update tenant_capability_distributions" in schema
     assert "where capability_kind = 'skill' and capability_id = 'baoyu-translate';" in schema
-    assert "where skill_id = 'general-chat';" in schema
-    assert "where capability_kind = 'skill' and capability_id = 'general-chat';" in schema
-    assert "update skills\nset status = 'inactive'\nwhere id = 'general-chat';" in schema
     assert "'translate', 'default'" not in agent_seed
     assert "'baoyu-translate', 'default'" not in agent_seed
     assert "'document-review', 'default'" in agent_seed
     assert "qa-word-review" in agent_seed
     assert "sop-assistant" in agent_seed
-    assert "Legacy alias for qa-word-review" in agent_seed
+    assert "Retired legacy document review agent." in agent_seed
     assert "'qa-word-review', 'default', '文档审核', 'file'" in agent_seed
 
 
-def test_schema_enables_read_only_ragflow_mcp_tool_poc():
+def test_schema_disables_retired_ragflow_mcp_tool():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
     skill_seed = schema[schema.index("insert into skills"):schema.index("insert into skill_versions")]
     mcp_tool_seed = schema[schema.index("insert into mcp_tools"):schema.index("insert into agents")]
 
     assert (
         "'ragflow-knowledge-search', 'RAGFlow Knowledge Search', '0.1.0', "
-        "'Query company knowledge base with scoped citations through the platform-managed MCP tool.', "
-        "'[\"chat\"]'::jsonb, '[\"answer\", \"citations\"]'::jsonb, 'claude-agent-worker')"
+        "'Retired repository Skill. Historical rows remain readable.', "
+        "'[\"chat\"]'::jsonb, '[\"answer\", \"citations\"]'::jsonb, "
+        "'claude-agent-worker', 'inactive')"
     ) in skill_seed
     assert "'ragflow')" not in skill_seed
     assert "'ragflow-knowledge-search'" in mcp_tool_seed
     assert "'[\"ragflow_search\"]'::jsonb" in mcp_tool_seed
-    assert "'active',\n    false,\n    'low'" in mcp_tool_seed
-    assert "'disabled',\n    false,\n    'low'" not in mcp_tool_seed
+    assert "'disabled',\n    false,\n    'low'" in mcp_tool_seed
+    assert "'active',\n    false,\n    'low'" not in mcp_tool_seed
     assert "insert into tool_policies" in mcp_tool_seed
-    assert "('default', 'ragflow-knowledge-search', 'active', false, 'low', true" in mcp_tool_seed
+    assert "('default', 'ragflow-knowledge-search', 'disabled', false, 'low', false" in mcp_tool_seed
 
 
 def test_schema_keeps_mcp_connection_material_encrypted_without_local_gateway_catalog():
@@ -187,7 +185,7 @@ def test_schema_seeds_internal_skill_dependencies_without_workbench_entry():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
     assert "'minimax-docx', 'Minimax DOCX', '0.1.0'" in schema
-    assert "Internal Word document composition dependency used by first-party document Skills." in schema
+    assert "Retired repository Skill dependency. Historical rows remain readable." in schema
     assert "('default', 'minimax-docx'" not in schema
 
 
@@ -622,6 +620,28 @@ def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependenc
     assert "do update set" not in skill_version_seed.split("insert into tenant_workbench_skills", 1)[0]
     assert "'[\"minimax-docx\"]'::jsonb" in schema
     assert "('default', 'minimax-docx'" not in schema
+
+
+def test_schema_repository_skill_retirement_preserves_uploaded_versions_and_history():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "and coalesce(source_json->>'kind', '') <> 'uploaded'" in schema
+    assert "release_policy.tenant_id = agents.tenant_id" in schema
+    assert "release_policy.tenant_id = tenant_workbench_skills.tenant_id" in schema
+    assert "release_policy.tenant_id = tenant_capability_distributions.tenant_id" in schema
+    assert "coalesce(\n         release_policy.current_version,\n         skill_catalog.version\n       )" in schema
+    assert "previous_version.source_json->>'kind' = 'uploaded'" in schema
+    assert "or release_policy.previous_version is null" in schema
+    assert "update skill_release_policies\nset status = 'disabled'" in schema
+    assert "selected_skill->>'expected_version'" not in schema
+    for table in (
+        "runs",
+        "run_skill_snapshots",
+        "run_skill_materializations",
+        "run_context_snapshots",
+        "audit_logs",
+    ):
+        assert f"delete from {table}" not in schema.lower()
 
 
 def test_schema_indexes_principal_scoped_agent_conversation_history():

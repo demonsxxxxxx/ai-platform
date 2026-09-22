@@ -508,7 +508,7 @@ class PolicyBuiltinRegistry:
 
 @pytest.fixture(autouse=True)
 def default_route_skill_materialization(monkeypatch):
-    monkeypatch.setattr(runs_module, "BuiltinSkillRegistry", PolicyBuiltinRegistry)
+    monkeypatch.setattr(runs_module, "BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
     monkeypatch.setattr(
         runs_module,
         "_skill_manifest_pins",
@@ -5859,7 +5859,7 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
         return 1
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", DependencyBuiltinRegistry)
+    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", DependencyBuiltinRegistry, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
         "app.routes.runs.repositories.get_effective_skill_version_for_policy",
@@ -6131,7 +6131,7 @@ async def test_create_run_rejects_uploaded_release_policy_without_snapshot_files
         raise AssertionError("run must not be created when uploaded snapshot cannot be materialized")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", PolicyBuiltinRegistry)
+    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(
         "app.routes.runs.repositories.get_effective_skill_version_for_policy",
@@ -6163,16 +6163,6 @@ async def test_create_run_maps_skill_snapshot_materialization_error_to_conflict(
             release_policy_version="hash-release",
         )
 
-    class FakeRegistry:
-        def __init__(self, root):
-            self.root = root
-
-        def list_builtin_skills(self):
-            return [object()]
-
-    def fail_build_skill_manifest_pins(**kwargs):
-        raise ValueError("skill snapshot too large")
-
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
         return None
 
@@ -6182,8 +6172,6 @@ async def test_create_run_maps_skill_snapshot_materialization_error_to_conflict(
         "app.routes.runs.repositories.get_effective_skill_version_for_policy",
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", FakeRegistry)
-    monkeypatch.setattr("app.routes.runs.build_skill_manifest_pins", fail_build_skill_manifest_pins)
 
     with pytest.raises(Exception) as exc_info:
         await create_run(
@@ -6795,7 +6783,7 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
         return {"status": status, "tenant_id": tenant_id}
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", PolicyBuiltinRegistry)
+    monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
     monkeypatch.setattr(
         "app.routes.runs.repositories.get_effective_skill_version_for_policy",

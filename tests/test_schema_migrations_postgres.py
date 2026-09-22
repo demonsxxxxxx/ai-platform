@@ -23,6 +23,12 @@ REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
 REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT = (
     "33f3ab0163cd05c412e2a3d25d5859a935a359a6"
 )
+REPOSITORY_SKILL_RETIREMENT_BASE_COMMIT = (
+    "e198bf7ca3b94b10ffaa90a4a615529ceab4b612"
+)
+REPOSITORY_SKILL_RETIREMENT_BASE_CHECKSUM = (
+    "a8aeca36bdc095c451f00ac9dc358c90528df2f837b5888b9af9249c6ef67019"
+)
 
 
 def _schema_source_at_commit(commit: str) -> str:
@@ -48,6 +54,20 @@ def _remote_run_attempt_reconciler_takeover_schema_sql(tmp_path: Path) -> str:
 
 def test_remote_run_attempt_reconciler_takeover_checksum_remains_pinned(tmp_path: Path) -> None:
     assert _remote_run_attempt_reconciler_takeover_schema_sql(tmp_path)
+
+
+def test_repository_skill_retirement_base_checksum_remains_pinned(
+    tmp_path: Path,
+) -> None:
+    exact_base = _load_schema_migrations_at_commit(
+        tmp_path,
+        REPOSITORY_SKILL_RETIREMENT_BASE_COMMIT,
+    )
+    try:
+        assert exact_base.TARGET_SCHEMA_VERSION == "2026.09.16.1"
+        assert exact_base.schema_checksum() == REPOSITORY_SKILL_RETIREMENT_BASE_CHECKSUM
+    finally:
+        sys.modules.pop(exact_base.__name__, None)
 
 
 def _postgres_dsn() -> str:
@@ -86,24 +106,22 @@ def _index_connection_factory(dsn: str, schema_name: str):
     return factory
 
 
-def _load_exact_base_schema_migrations(tmp_path: Path):
+def _load_schema_migrations_at_commit(tmp_path: Path, commit: str):
     root = Path(__file__).resolve().parents[1]
     module_source = subprocess.run(
         [
             "git",
             "show",
-            f"{REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT}:app/schema_migrations.py",
+            f"{commit}:app/schema_migrations.py",
         ],
         cwd=root,
         check=True,
         stdout=subprocess.PIPE,
         text=True,
     ).stdout
-    schema_source = _schema_source_at_commit(
-        REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT
-    )
-    module_path = tmp_path / "exact_base_schema_migrations.py"
-    schema_path = tmp_path / "exact_base_schema.sql"
+    schema_source = _schema_source_at_commit(commit)
+    module_path = tmp_path / f"schema_migrations_{commit[:12]}.py"
+    schema_path = tmp_path / f"schema_{commit[:12]}.sql"
     module_path.write_text(module_source, encoding="utf-8")
     schema_path.write_text(schema_source, encoding="utf-8")
     module_name = f"exact_base_schema_migrations_{uuid.uuid4().hex}"
@@ -118,6 +136,13 @@ def _load_exact_base_schema_migrations(tmp_path: Path):
         raise
     module.SCHEMA_PATH = schema_path
     return module
+
+
+def _load_exact_base_schema_migrations(tmp_path: Path):
+    return _load_schema_migrations_at_commit(
+        tmp_path,
+        REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_COMMIT,
+    )
 
 
 @pytest.mark.asyncio
@@ -326,6 +351,435 @@ async def test_real_postgres_cutover_rejects_an_older_binary_after_migration(
                 "target_version": schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
             }
         ]
+    finally:
+        sys.modules.pop(exact_base.__name__, None)
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(schema_name)
+            )
+        )
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_repository_skill_retirement_upgrades_exact_main_and_preserves_history(
+    tmp_path: Path,
+):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_repository_skill_retirement_{uuid.uuid4().hex}"
+    exact_base = _load_schema_migrations_at_commit(
+        tmp_path,
+        REPOSITORY_SKILL_RETIREMENT_BASE_COMMIT,
+    )
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    uploaded_version = "a" * 64
+    try:
+        assert exact_base.TARGET_SCHEMA_VERSION == "2026.09.16.1"
+        assert exact_base.schema_checksum() == REPOSITORY_SKILL_RETIREMENT_BASE_CHECKSUM
+        await admin.execute(
+            sql.SQL("create schema {}").format(sql.Identifier(schema_name))
+        )
+        await admin.execute(
+            sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
+        )
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        base_result = await exact_base.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert base_result["version"] == exact_base.TARGET_SCHEMA_VERSION
+
+        await admin.execute(
+            """
+            insert into skill_versions(
+              id, skill_id, version, content_hash, description, source_json,
+              dependency_ids, status, created_by
+            ) values (
+              'skv_uploaded_qa', 'qa-file-reviewer', %s, %s, 'Uploaded package',
+              '{"kind":"uploaded","files":[{"relative_path":"SKILL.md"}]}'::jsonb,
+              '[]'::jsonb, 'released', 'migration-test'
+            )
+            """,
+            (uploaded_version, uploaded_version),
+        )
+        await admin.execute(
+            """
+            update skills
+            set version = %s, description = 'Uploaded catalog', status = 'active'
+            where id = 'qa-file-reviewer'
+            """,
+            (uploaded_version,),
+        )
+        await admin.execute(
+            """
+            insert into tenants(id, name) values
+              ('other', 'Previous-only Tenant'),
+              ('mixed', 'Mixed Rollout Tenant')
+            """
+        )
+        await admin.execute(
+            """
+            insert into skill_release_policies(
+              id, tenant_id, skill_id, channel, current_version, previous_version,
+              rollout_percent, status, promoted_by
+            ) values
+              (
+                'skr_uploaded_qa', 'default', 'qa-file-reviewer', 'stable', %s,
+                null, 50, 'active', 'migration-test'
+              ),
+              (
+                'skr_repository_qa', 'other', 'qa-file-reviewer', 'stable', '0.1.0',
+                %s, 0, 'active', 'migration-test'
+              ),
+              (
+                'skr_mixed_qa', 'mixed', 'qa-file-reviewer', 'stable', %s,
+                '0.1.0', 50, 'active', 'migration-test'
+              )
+            """,
+            (uploaded_version, uploaded_version, uploaded_version),
+        )
+        await admin.execute(
+            """
+            update tenant_workbench_skills
+            set status = 'active', visible_to_user = true
+            where tenant_id = 'default' and skill_id = 'qa-file-reviewer'
+            """
+        )
+        await admin.execute(
+            """
+            insert into tenant_workbench_skills(
+              tenant_id, skill_id, status, visible_to_user
+            ) values
+              ('other', 'qa-file-reviewer', 'active', true),
+              ('mixed', 'qa-file-reviewer', 'active', true)
+            """
+        )
+        await admin.execute(
+            """
+            insert into tenant_capability_distributions(
+              id, tenant_id, capability_kind, capability_id, status, visible_to_user
+            ) values
+              (
+                'tcd_uploaded_qa', 'default', 'skill',
+                'qa-file-reviewer', 'active', true
+              ),
+              (
+                'tcd_repository_qa', 'other', 'skill',
+                'qa-file-reviewer', 'active', true
+              ),
+              (
+                'tcd_mixed_qa', 'mixed', 'skill',
+                'qa-file-reviewer', 'active', true
+              )
+            """
+        )
+        await admin.execute(
+            """
+            insert into agents(id, tenant_id, name, agent_type, status)
+            values
+              ('custom-repository-profile', 'other', 'Repository profile', 'chat', 'active'),
+              ('custom-mixed-profile', 'mixed', 'Mixed profile', 'chat', 'active'),
+              ('custom-uploaded-profile', 'default', 'Uploaded profile', 'chat', 'active')
+            """
+        )
+        await admin.execute(
+            """
+            insert into agent_profile_revisions(
+              tenant_id, agent_id, revision, revision_status, name, instructions,
+              skill_set, content_hash, avatar_ref, avatar_seed, visibility,
+              allowed_department_ids, allowed_roles, allowed_user_ids
+            ) values
+              (
+                'other', 'custom-repository-profile', 1, 'published',
+                'Repository profile', 'Use the tenant release.',
+                '[{"skill_id":"qa-file-reviewer"}]'::jsonb,
+                'repository-profile-hash', 'builtin:agent', 'repository-profile',
+                'tenant', '[]'::jsonb, '[]'::jsonb, '[]'::jsonb
+              ),
+              (
+                'mixed', 'custom-mixed-profile', 1, 'published',
+                'Mixed profile', 'Use the tenant release.',
+                '[{"skill_id":"qa-file-reviewer"}]'::jsonb,
+                'mixed-profile-hash', 'builtin:agent', 'mixed-profile',
+                'tenant', '[]'::jsonb, '[]'::jsonb, '[]'::jsonb
+              ),
+              (
+                'default', 'custom-uploaded-profile', 1, 'published',
+                'Uploaded profile', 'Use the tenant release.',
+                '[{"skill_id":"qa-file-reviewer"}]'::jsonb,
+                'uploaded-profile-hash', 'builtin:agent', 'uploaded-profile',
+                'tenant', '[]'::jsonb, '[]'::jsonb, '[]'::jsonb
+              )
+            """
+        )
+        await admin.execute(
+            """
+            insert into agent_profiles(
+              tenant_id, agent_id, lifecycle_status, latest_revision,
+              published_revision, published_hash
+            ) values
+              (
+                'other', 'custom-repository-profile', 'published', 1, 1,
+                'repository-profile-hash'
+              ),
+              (
+                'mixed', 'custom-mixed-profile', 'published', 1, 1,
+                'mixed-profile-hash'
+              ),
+              (
+                'default', 'custom-uploaded-profile', 'published', 1, 1,
+                'uploaded-profile-hash'
+              )
+            """
+        )
+        await admin.execute(
+            """
+            insert into users(id, tenant_id, display_name)
+            values ('retirement-history-user', 'default', 'History User')
+            """
+        )
+        await admin.execute(
+            """
+            insert into sessions(
+              id, tenant_id, workspace_id, user_id, agent_id, title, status
+            ) values (
+              'retirement-history-session', 'default', 'default',
+              'retirement-history-user', 'qa-word-review', 'History', 'archived'
+            )
+            """
+        )
+        await admin.execute(
+            """
+            insert into runs(
+              id, tenant_id, workspace_id, session_id, user_id, agent_id,
+              skill_id, status, result_json
+            ) values (
+              'retirement-history-run', 'default', 'default',
+              'retirement-history-session', 'retirement-history-user',
+              'qa-word-review', 'qa-file-reviewer', 'succeeded',
+              '{"preserved":"run"}'::jsonb
+            )
+            """
+        )
+        await admin.execute(
+            """
+            insert into run_skill_snapshots(
+              id, tenant_id, run_id, skill_id, skill_version, content_hash,
+              source_json, allowed, staged, used
+            ) values (
+              'retirement-history-snapshot', 'default', 'retirement-history-run',
+              'qa-file-reviewer', '0.1.0', '0.1.0',
+              '{"kind":"schema-seed","preserved":"snapshot"}'::jsonb,
+              true, true, true
+            )
+            """
+        )
+        await admin.execute(
+            """
+            insert into run_skill_materializations(
+              tenant_id, run_id, skill_id, materialization_sha256, manifest_json
+            ) values (
+              'default', 'retirement-history-run', 'qa-file-reviewer', %s,
+              '{"preserved":"materialization"}'::jsonb
+            )
+            """,
+            ("b" * 64,),
+        )
+        await admin.execute(
+            """
+            insert into run_context_snapshots(
+              id, tenant_id, workspace_id, user_id, session_id, run_id, payload_json
+            ) values (
+              'retirement-history-context', 'default', 'default',
+              'retirement-history-user', 'retirement-history-session',
+              'retirement-history-run', '{"preserved":"context"}'::jsonb
+            )
+            """
+        )
+        await admin.execute(
+            """
+            insert into audit_logs(
+              id, tenant_id, action, target_type, target_id, payload_json
+            ) values (
+              'retirement-history-audit', 'default', 'historical_action',
+              'skill', 'qa-file-reviewer', '{"preserved":"audit"}'::jsonb
+            )
+            """
+        )
+
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+
+        assert result["status"] == "applied"
+        assert result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
+        async with factory() as conn:
+            assert (await exact_base.schema_status(conn))["ready"] is True
+        ledger_rows = await (
+            await admin.execute(
+                "select version, checksum_sha256 from schema_migrations order by version"
+            )
+        ).fetchall()
+        assert ledger_rows == [
+            {
+                "version": exact_base.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": REPOSITORY_SKILL_RETIREMENT_BASE_CHECKSUM,
+            },
+            {
+                "version": schema_migrations.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": schema_migrations.schema_checksum(),
+            },
+        ]
+        assert await (
+            await admin.execute(
+                """
+                select version, description, status
+                from skills where id = 'qa-file-reviewer'
+                """
+            )
+        ).fetchone() == {
+            "version": uploaded_version,
+            "description": "Uploaded catalog",
+            "status": "active",
+        }
+        version_rows = await (
+            await admin.execute(
+                """
+                select version, source_json->>'kind' as source_kind, status
+                from skill_versions
+                where skill_id = 'qa-file-reviewer'
+                order by version
+                """
+            )
+        ).fetchall()
+        assert version_rows == [
+            {"version": "0.1.0", "source_kind": "schema-seed", "status": "inactive"},
+            {"version": uploaded_version, "source_kind": "uploaded", "status": "released"},
+        ]
+        release_policy_rows = await (
+            await admin.execute(
+                """
+                select tenant_id, current_version, previous_version,
+                       rollout_percent, status
+                from skill_release_policies
+                where skill_id = 'qa-file-reviewer' and channel = 'stable'
+                order by tenant_id
+                """
+            )
+        ).fetchall()
+        assert release_policy_rows == [
+            {
+                "tenant_id": "default",
+                "current_version": uploaded_version,
+                "previous_version": None,
+                "rollout_percent": 50,
+                "status": "active",
+            },
+            {
+                "tenant_id": "mixed",
+                "current_version": uploaded_version,
+                "previous_version": "0.1.0",
+                "rollout_percent": 50,
+                "status": "disabled",
+            },
+            {
+                "tenant_id": "other",
+                "current_version": "0.1.0",
+                "previous_version": uploaded_version,
+                "rollout_percent": 0,
+                "status": "disabled",
+            },
+        ]
+        workbench_rows = await (
+            await admin.execute(
+                """
+                select tenant_id, status, visible_to_user
+                from tenant_workbench_skills
+                where skill_id = 'qa-file-reviewer'
+                  and tenant_id in ('default', 'mixed', 'other')
+                order by tenant_id
+                """
+            )
+        ).fetchall()
+        assert workbench_rows == [
+            {"tenant_id": "default", "status": "active", "visible_to_user": True},
+            {"tenant_id": "mixed", "status": "disabled", "visible_to_user": False},
+            {"tenant_id": "other", "status": "disabled", "visible_to_user": False},
+        ]
+        distribution_rows = await (
+            await admin.execute(
+                """
+                select tenant_id, status, visible_to_user
+                from tenant_capability_distributions
+                where capability_kind = 'skill'
+                  and capability_id = 'qa-file-reviewer'
+                  and tenant_id in ('default', 'mixed', 'other')
+                order by tenant_id
+                """
+            )
+        ).fetchall()
+        assert distribution_rows == [
+            {"tenant_id": "default", "status": "active", "visible_to_user": True},
+            {"tenant_id": "mixed", "status": "disabled", "visible_to_user": False},
+            {"tenant_id": "other", "status": "disabled", "visible_to_user": False},
+        ]
+        agent_rows = await (
+            await admin.execute(
+                """
+                select id, status from agents
+                where id in (
+                  'custom-mixed-profile',
+                  'custom-repository-profile',
+                  'custom-uploaded-profile'
+                )
+                order by id
+                """
+            )
+        ).fetchall()
+        assert agent_rows == [
+            {"id": "custom-mixed-profile", "status": "inactive"},
+            {"id": "custom-repository-profile", "status": "inactive"},
+            {"id": "custom-uploaded-profile", "status": "active"},
+        ]
+        assert await (
+            await admin.execute(
+                """
+                select
+                  runs.result_json,
+                  snapshots.source_json,
+                  materializations.manifest_json,
+                  contexts.payload_json,
+                  audits.payload_json as audit_payload_json
+                from runs
+                join run_skill_snapshots snapshots
+                  on snapshots.tenant_id = runs.tenant_id
+                 and snapshots.run_id = runs.id
+                join run_skill_materializations materializations
+                  on materializations.tenant_id = runs.tenant_id
+                 and materializations.run_id = runs.id
+                 and materializations.skill_id = snapshots.skill_id
+                join run_context_snapshots contexts
+                  on contexts.tenant_id = runs.tenant_id
+                 and contexts.run_id = runs.id
+                join audit_logs audits
+                  on audits.tenant_id = runs.tenant_id
+                 and audits.id = 'retirement-history-audit'
+                where runs.id = 'retirement-history-run'
+                """
+            )
+        ).fetchone() == {
+            "result_json": {"preserved": "run"},
+            "source_json": {"kind": "schema-seed", "preserved": "snapshot"},
+            "manifest_json": {"preserved": "materialization"},
+            "payload_json": {"preserved": "context"},
+            "audit_payload_json": {"preserved": "audit"},
+        }
     finally:
         sys.modules.pop(exact_base.__name__, None)
         await admin.execute(
