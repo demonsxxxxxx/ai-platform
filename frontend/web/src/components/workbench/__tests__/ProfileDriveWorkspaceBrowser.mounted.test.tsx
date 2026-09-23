@@ -67,6 +67,31 @@ test("expands ProfileDrive folders and imports a file into the current workspace
   const requests: Array<{ url: string; init: RequestInit }> = [];
   let importRequestCount = 0;
   const pendingImport: { release?: () => void } = {};
+  const directoryFailures: Record<
+    string,
+    { code: string; message: string; status: number }
+  > = {
+    Restricted: {
+      code: "access_denied",
+      message: "Access to the path was denied.",
+      status: 403,
+    },
+    Missing: {
+      code: "path_not_found",
+      message: "The path was not found.",
+      status: 404,
+    },
+    Broken: {
+      code: "server_unavailable",
+      message: "The server is unavailable.",
+      status: 503,
+    },
+    Expired: {
+      code: "reauth_required",
+      message: "Authentication is required.",
+      status: 409,
+    },
+  };
   globalThis.fetch = (async (input, init = {}) => {
     const url = String(input);
     requests.push({ url, init });
@@ -90,6 +115,16 @@ test("expands ProfileDrive folders and imports a file into the current workspace
     }
     if (url.endsWith("/api/profile-drive/files/list")) {
       const body = JSON.parse(String(init.body)) as { path: string };
+      const failure = directoryFailures[body.path];
+      if (failure) {
+        return new Response(
+          JSON.stringify({ status: failure.code, message: failure.message }),
+          {
+            status: failure.status,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
       const entries =
         body.path === ""
           ? [
@@ -114,6 +149,13 @@ test("expands ProfileDrive folders and imports a file into the current workspace
                 size: null,
                 lastModifiedUtc: "2026-09-21T00:00:00Z",
               },
+              ...["Restricted", "Missing", "Broken", "Expired"].map((name) => ({
+                path: name,
+                name,
+                type: "directory",
+                size: null,
+                lastModifiedUtc: "2026-09-21T00:00:00Z",
+              })),
             ]
           : body.path === "Documents"
             ? [
@@ -213,7 +255,59 @@ test("expands ProfileDrive folders and imports a file into the current workspace
     await act(async () => changeInput(rootFilter, "文档"));
     assert.doesNotMatch(container.textContent ?? "", /桌面/);
     assert.match(container.textContent ?? "", /文档/);
+    await act(async () => changeInput(rootFilter, "Restricted"));
+
+    const restrictedButton = buttonByText(container, "Restricted");
+    await act(async () => {
+      restrictedButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    assert.equal(restrictedButton.getAttribute("aria-expanded"), "true");
+    assert.equal(rootFilter.value, "Restricted");
+    assert.match(container.textContent ?? "", /没有权限访问此文件夹/);
+    assert.doesNotMatch(container.textContent ?? "", /个人盘暂时不可用/);
     await act(async () => changeInput(rootFilter, ""));
+    assert.match(container.textContent ?? "", /桌面/);
+    assert.match(container.textContent ?? "", /文档/);
+    assert.match(container.textContent ?? "", /没有权限访问此文件夹/);
+    const returnButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="返回 Restricted"]',
+    );
+    assert.ok(returnButton);
+    await act(async () => {
+      returnButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+    });
+    assert.equal(restrictedButton.getAttribute("aria-expanded"), "false");
+    assert.doesNotMatch(container.textContent ?? "", /没有权限访问此文件夹/);
+    assert.equal(dom.window.document.activeElement, restrictedButton);
+
+    for (const [folder, expectedMessage] of [
+      ["Missing", "此文件夹不存在或已被移除"],
+      ["Broken", "暂时无法打开此文件夹"],
+    ]) {
+      const folderButton = buttonByText(container, folder);
+      await act(async () => {
+        folderButton.dispatchEvent(
+          new dom.window.MouseEvent("click", { bubbles: true }),
+        );
+        await flush();
+      });
+      assert.match(container.textContent ?? "", new RegExp(expectedMessage));
+      const backButton = container.querySelector<HTMLButtonElement>(
+        `button[aria-label="返回 ${folder}"]`,
+      );
+      assert.ok(backButton);
+      await act(async () => {
+        backButton.dispatchEvent(
+          new dom.window.MouseEvent("click", { bubbles: true }),
+        );
+      });
+      assert.equal(folderButton.getAttribute("aria-expanded"), "false");
+    }
 
     const documentsButton = buttonByText(container, "文档");
     assert.equal(documentsButton.getAttribute("aria-expanded"), "false");
@@ -355,8 +449,25 @@ test("expands ProfileDrive folders and imports a file into the current workspace
       await flush();
     });
     pendingImport.release();
-    await act(flush);
+    await act(async () => {
+      await flush();
+      await flush();
+    });
     assert.equal(imported.length, 1);
+
+    const profileSource = container.querySelector<HTMLElement>(
+      '[data-profile-drive-source="profile"]',
+    );
+    assert.ok(profileSource);
+    const expiredButton = buttonByText(profileSource, "Expired");
+    await act(async () => {
+      expiredButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    assert.match(profileSource.textContent ?? "", /个人盘服务器需要重新认证/);
+    assert.equal(profileSource.querySelector('[role="tree"]'), null);
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;

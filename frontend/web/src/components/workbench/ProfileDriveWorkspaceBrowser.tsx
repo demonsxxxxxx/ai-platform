@@ -107,9 +107,19 @@ interface ProfileDriveTreeStatusRow {
   text: string;
 }
 
+interface ProfileDriveTreeErrorRow {
+  kind: "error";
+  key: string;
+  depth: number;
+  path: string;
+  label: string;
+  text: string;
+}
+
 type ProfileDriveTreeRow =
   | ProfileDriveTreeEntryRow
-  | ProfileDriveTreeStatusRow;
+  | ProfileDriveTreeStatusRow
+  | ProfileDriveTreeErrorRow;
 
 function profileDirectoryLabel(name: string): string {
   return PROFILE_DIRECTORY_LABELS[name.toLowerCase()] ?? name;
@@ -125,14 +135,26 @@ function entryLabel(
     : entry.name;
 }
 
-function browserError(error: unknown, title: string): string {
-  if (
+function requiresReauthentication(error: unknown): boolean {
+  return (
     error instanceof ProfileDriveRequestError &&
     ["reauth_required", "credential_rejected"].includes(error.code)
-  ) {
+  );
+}
+
+function browserError(error: unknown, title: string): string {
+  if (requiresReauthentication(error)) {
     return `${title}服务器需要重新认证。`;
   }
   return `${title}暂时不可用。`;
+}
+
+function directoryError(error: unknown): string {
+  if (error instanceof ProfileDriveRequestError) {
+    if (error.code === "access_denied") return "没有权限访问此文件夹。";
+    if (error.code === "path_not_found") return "此文件夹不存在或已被移除。";
+  }
+  return "暂时无法打开此文件夹。";
 }
 
 function ProfileDriveSourceBrowser({
@@ -149,6 +171,9 @@ function ProfileDriveSourceBrowser({
   );
   const [expandedPaths, setExpandedPaths] = useState(() => new Set<string>());
   const [loadingPaths, setLoadingPaths] = useState(() => new Set<string>());
+  const [directoryErrors, setDirectoryErrors] = useState(
+    () => new Map<string, string>(),
+  );
   const [filter, setFilter] = useState("");
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -156,6 +181,7 @@ function ProfileDriveSourceBrowser({
   const [importingPath, setImportingPath] = useState<string | null>(null);
   const treeGenerationRef = useRef(0);
   const pendingPathsRef = useRef(new Set<string>());
+  const directoryButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const mountedRef = useRef(false);
 
   const loadRoot = useCallback(async () => {
@@ -166,6 +192,7 @@ function ProfileDriveSourceBrowser({
     setExpandedPaths(new Set());
     setChildrenByPath(new Map());
     setLoadingPaths(new Set());
+    setDirectoryErrors(new Map());
     try {
       const result = await profileDriveApi.listFiles("", sourceId);
       if (generation !== treeGenerationRef.current) return;
@@ -182,18 +209,42 @@ function ProfileDriveSourceBrowser({
     }
   }, [sourceId, title]);
 
+  const closeDirectory = useCallback((path: string) => {
+    setExpandedPaths((current) => {
+      const next = new Set(current);
+      next.delete(path);
+      return next;
+    });
+    setDirectoryErrors((current) => {
+      if (!current.has(path)) return current;
+      const next = new Map(current);
+      next.delete(path);
+      return next;
+    });
+  }, []);
+
+  const returnFromDirectory = useCallback(
+    (path: string) => {
+      directoryButtonRefs.current.get(path)?.focus();
+      closeDirectory(path);
+    },
+    [closeDirectory],
+  );
+
   const toggleDirectory = useCallback(
     async (entry: ProfileDriveFileEntry) => {
       if (expandedPaths.has(entry.path)) {
-        setExpandedPaths((current) => {
-          const next = new Set(current);
-          next.delete(entry.path);
-          return next;
-        });
+        closeDirectory(entry.path);
         return;
       }
 
       setExpandedPaths((current) => new Set(current).add(entry.path));
+      setDirectoryErrors((current) => {
+        if (!current.has(entry.path)) return current;
+        const next = new Map(current);
+        next.delete(entry.path);
+        return next;
+      });
       if (childrenByPath.has(entry.path) || pendingPathsRef.current.has(entry.path)) {
         return;
       }
@@ -214,12 +265,14 @@ function ProfileDriveSourceBrowser({
         });
       } catch (loadError) {
         if (generation !== treeGenerationRef.current) return;
-        setExpandedPaths((current) => {
-          const next = new Set(current);
-          next.delete(entry.path);
-          return next;
-        });
-        setError(browserError(loadError, title));
+        if (requiresReauthentication(loadError)) {
+          closeDirectory(entry.path);
+          setError(browserError(loadError, title));
+        } else {
+          setDirectoryErrors((current) =>
+            new Map(current).set(entry.path, directoryError(loadError)),
+          );
+        }
       } finally {
         if (generation === treeGenerationRef.current) {
           pendingPathsRef.current.delete(entry.path);
@@ -231,7 +284,7 @@ function ProfileDriveSourceBrowser({
         }
       }
     },
-    [childrenByPath, expandedPaths, sourceId, title],
+    [childrenByPath, closeDirectory, expandedPaths, sourceId, title],
   );
 
   useEffect(() => {
@@ -306,6 +359,18 @@ function ProfileDriveSourceBrowser({
         });
         continue;
       }
+      const directoryFailure = directoryErrors.get(entry.path);
+      if (directoryFailure) {
+        treeRows.push({
+          kind: "error",
+          key: `${entry.path}:error`,
+          depth: depth + 1,
+          path: entry.path,
+          label: entryLabel(entry, parentPath, sourceId),
+          text: directoryFailure,
+        });
+        continue;
+      }
       const loaded = childrenByPath.get(entry.path);
       if (!loaded) continue;
       if (loaded.entries.length === 0) {
@@ -331,13 +396,23 @@ function ProfileDriveSourceBrowser({
   appendRows(entries, 0, "");
 
   const normalizedFilter = filter.trim().toLocaleLowerCase();
-  const filteredRows = normalizedFilter
-    ? treeRows.filter(
-        (row) =>
+  const matchingPaths = normalizedFilter
+    ? new Set(
+        treeRows.flatMap((row) =>
           row.kind === "entry" &&
           entryLabel(row.entry, row.parentPath, sourceId)
             .toLocaleLowerCase()
-            .includes(normalizedFilter),
+            .includes(normalizedFilter)
+            ? [row.entry.path]
+            : [],
+        ),
+      )
+    : null;
+  const filteredRows = matchingPaths
+    ? treeRows.filter((row) =>
+        row.kind === "entry"
+          ? matchingPaths.has(row.entry.path)
+          : row.kind === "error" && matchingPaths.has(row.path),
       )
     : treeRows;
   const visibleEntryCount = filteredRows.filter(
@@ -403,6 +478,29 @@ function ProfileDriveSourceBrowser({
             className="min-w-0 max-w-full space-y-0.5 overflow-hidden"
           >
             {filteredRows.map((row) => {
+              if (row.kind === "error") {
+                return (
+                  <div
+                    key={row.key}
+                    role="alert"
+                    className="flex min-h-8 min-w-0 items-center gap-2 py-1 text-[11px]"
+                    style={{ paddingInlineStart: `${22 + row.depth * 16}px` }}
+                  >
+                    <span className="min-w-0 flex-1 text-[var(--theme-danger)]">
+                      {row.text}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`返回 ${row.label}`}
+                      className="shrink-0 rounded px-1.5 py-1 font-medium text-[var(--theme-primary)] hover:bg-[var(--theme-workbench-panel)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
+                      onClick={() => returnFromDirectory(row.path)}
+                    >
+                      返回
+                    </button>
+                  </div>
+                );
+              }
+
               if (row.kind === "status") {
                 return (
                   <p
@@ -452,6 +550,14 @@ function ProfileDriveSourceBrowser({
                   }}
                 >
                   <button
+                    ref={
+                      directory
+                        ? (node) => {
+                            if (node) directoryButtonRefs.current.set(entry.path, node);
+                            else directoryButtonRefs.current.delete(entry.path);
+                          }
+                        : undefined
+                    }
                     type="button"
                     className="flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-hidden rounded px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
                     style={{ paddingInlineStart: `${6 + depth * 16}px` }}
