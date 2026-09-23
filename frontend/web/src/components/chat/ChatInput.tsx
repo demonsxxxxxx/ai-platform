@@ -87,6 +87,7 @@ export const ChatInput = memo(function ChatInput({
   onSend,
   onStop,
   isLoading,
+  canStop = false,
   disabled,
   canSend = true,
   placeholder,
@@ -412,8 +413,10 @@ export const ChatInput = memo(function ChatInput({
       if (needsModifier) return;
 
       e.preventDefault();
-      if (isLoading) {
+      if (isLoading && canStop) {
         setStopConfirmOpen(true);
+      } else if (isLoading) {
+        return;
       } else {
         handleSubmit(e);
       }
@@ -981,6 +984,7 @@ export const ChatInput = memo(function ChatInput({
                 onActivePanelChange={handlePanelChange}
                 canSend={canSend}
                 isLoading={isLoading}
+                canStop={canStop}
                 canSubmit={canSubmit}
                 hasUploadingAttachment={hasUploadingAttachment}
                 enabledToolsCount={enabledToolsCount}

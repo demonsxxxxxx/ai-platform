@@ -9,7 +9,7 @@ import {
   getValidAccessToken,
   refreshAccessToken,
 } from "../../services/api/tokenManager";
-import { getRefreshToken } from "../../services/api/token";
+import { getAccessToken, getRefreshToken } from "../../services/api/token";
 import {
   handlePublicRunStreamFrameV4Result,
   setMessageSnapshot,
@@ -126,7 +126,8 @@ export type NonRetryableSSEAuthenticationFailure =
   | "refresh_retry_exhausted"
   | "refresh_unavailable"
   | "refresh_failed"
-  | "forced_relogin";
+  | "forced_relogin"
+  | "auth_incarnation_changed";
 
 /** Stable, sanitized authentication error surfaced to stream owners. */
 export class NonRetryableSSEAuthenticationError extends Error {
@@ -150,7 +151,8 @@ export function isNonRetryableSSEAuthenticationError(
     (error.failure === "refresh_retry_exhausted" ||
       error.failure === "refresh_unavailable" ||
       error.failure === "refresh_failed" ||
-      error.failure === "forced_relogin")
+      error.failure === "forced_relogin" ||
+      error.failure === "auth_incarnation_changed")
   );
 }
 
@@ -667,6 +669,12 @@ export async function connectToSSE(
     return;
   }
 
+  // Capture the browser auth incarnation that owns this stream. A delayed
+  // 401 from an older connection must not force the replacement principal out.
+  const streamAuthMarker = getAccessToken();
+  const streamAuthMarkerIsCurrent = () =>
+    streamAuthMarker === getAccessToken();
+
   if (isConnectingRef.current) {
     console.log("[SSE] Connection already in progress, skipping...");
     return;
@@ -790,6 +798,11 @@ export async function connectToSSE(
             return;
           }
           if (response.status === 401) {
+            if (!streamAuthMarkerIsCurrent()) {
+              throw new NonRetryableSSEAuthenticationError(
+                "auth_incarnation_changed",
+              );
+            }
             if (response.headers.get("X-Force-Relogin") === "true") {
               notifyForcedRelogin();
               throw new NonRetryableSSEAuthenticationError("forced_relogin");
@@ -797,11 +810,13 @@ export async function connectToSSE(
             if (hasRetried) {
               // The first attempt already granted the only refresh opportunity
               // for this stream. Do not turn a second 401 into a reconnect.
+              notifyForcedRelogin();
               throw new NonRetryableSSEAuthenticationError(
                 "refresh_retry_exhausted",
               );
             }
             if (!getCurrentRefreshToken()) {
+              notifyForcedRelogin();
               throw new NonRetryableSSEAuthenticationError(
                 "refresh_unavailable",
               );
@@ -809,6 +824,7 @@ export async function connectToSSE(
             try {
               await refreshCurrentAccessToken();
             } catch {
+              notifyForcedRelogin();
               throw new NonRetryableSSEAuthenticationError("refresh_failed");
             }
             // Refresh is asynchronous. A session switch, clear, unmount, or

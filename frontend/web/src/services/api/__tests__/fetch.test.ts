@@ -237,6 +237,26 @@ test("authFetch exposes only the safe server status and detail code to governanc
   }
 });
 
+test("authFetch emits recovery for a current ordinary 401", async () => {
+  const stubs = installFetchAuthStubs({
+    initialLocalStorage: {
+      ai_platform_session_present: "session-marker",
+    },
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ detail: "unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+  });
+
+  try {
+    await assert.rejects(() => authFetch("/api/ai/auth/me"), ApiRequestError);
+    assert.deepEqual(stubs.events, ["auth:force-relogin"]);
+  } finally {
+    stubs.restore();
+  }
+});
+
 test("authFetch never replays a stale POST or mutates a replacement marker after 401", async () => {
   const calls: Array<{ url: string; body: BodyInit | null | undefined }> = [];
   const stubs = installFetchAuthStubs({
@@ -283,6 +303,28 @@ test("authFetch never replays a stale POST or mutates a replacement marker after
     assert.equal(stubs.sessionStore.has("redirect_after_login"), false);
   } finally {
     unregister();
+    stubs.restore();
+  }
+});
+
+test("authFetch ignores a forced relogin from a request started before login", async () => {
+  const stubs = installFetchAuthStubs({
+    fetchImpl: async () => {
+      localStorage.setItem("ai_platform_session_present", "marker-b");
+      return new Response(JSON.stringify({ detail: "unauthorized" }), {
+        status: 401,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Force-Relogin": "true",
+        },
+      });
+    },
+  });
+
+  try {
+    await assert.rejects(() => authFetch("/api/ai/auth/me"), ApiRequestError);
+    assert.deepEqual(stubs.events, []);
+  } finally {
     stubs.restore();
   }
 });

@@ -2,6 +2,7 @@
 
 import i18n from "../../i18n";
 import { projectSafeBackendError } from "../../utils/backendErrors";
+import { getAccessToken } from "./token";
 
 // ============================================
 // 带认证的 fetch 封装
@@ -124,14 +125,24 @@ export async function authFetch<T>(
   // Cookie-session transport behavior is identical either way.
   void skipAuth;
 
+  const requestAuthMarker = getAccessToken();
   const response = await cookieSessionFetch(url, {
     ...restOptions,
     headers: finalHeaders,
   });
 
-  // Cookie-session callers own identity recovery. A forced re-login response
-  // emits one recovery signal; AuthProvider owns the state transition.
-  if (response.headers.get("X-Force-Relogin") === "true") {
+  // Cookie-session callers own identity recovery. Only the request's current
+  // auth incarnation may invalidate the browser presentation; an older
+  // response must not log out a replacement principal.
+  const authMarkerIsCurrent = requestAuthMarker === getAccessToken();
+  const forceReloginHeader =
+    response.headers.get("X-Force-Relogin") === "true";
+  if (
+    (response.status === 401 &&
+      requestAuthMarker !== null &&
+      authMarkerIsCurrent) ||
+    (forceReloginHeader && authMarkerIsCurrent)
+  ) {
     const error = await apiRequestErrorFromResponse(response, 401);
     notifyForcedRelogin();
     throw error;

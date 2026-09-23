@@ -514,10 +514,12 @@ export const sessionApi = {
       searchParams.set("compact_message_chunks", "true");
     }
 
-    const url = `${API_BASE}/api/sessions/${sessionId}/events${
+    const url = `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/events${
       searchParams.toString() ? `?${searchParams}` : ""
     }`;
-    return authFetch<SessionEventsResponse & { run_id?: string }>(url, { signal: options?.signal });
+    return authFetch<SessionEventsResponse & { run_id?: string }>(url, {
+      signal: options?.signal,
+    });
   },
 
   /**

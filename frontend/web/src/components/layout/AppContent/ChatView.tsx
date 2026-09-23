@@ -149,6 +149,7 @@ interface ChatViewProps {
   sessionId: string | null;
   conversationIdentityKey: string;
   currentRunId: string | null;
+  canStopGeneration: boolean;
   isLoading: boolean;
   isLoadingHistory: boolean;
   connectionStatus?: ConnectionStatus;
@@ -225,6 +226,7 @@ export function ChatView({
   sessionId,
   conversationIdentityKey,
   currentRunId,
+  canStopGeneration,
   isLoading,
   isLoadingHistory,
   connectionStatus,
@@ -865,6 +867,7 @@ export function ChatView({
     draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
     onStop: onStopGeneration,
+    canStop: canStopGeneration && currentRunId !== null,
     isLoading: sessionRunning,
     canSend: canSendInCurrentView,
     placeholder: composerPlaceholder,
