@@ -269,7 +269,6 @@ function ProfileDriveSourceBrowser({
           closeDirectory(entry.path);
           setError(browserError(loadError, title));
         } else {
-          setFilter("");
           setDirectoryErrors((current) =>
             new Map(current).set(entry.path, directoryError(loadError)),
           );
@@ -397,13 +396,23 @@ function ProfileDriveSourceBrowser({
   appendRows(entries, 0, "");
 
   const normalizedFilter = filter.trim().toLocaleLowerCase();
-  const filteredRows = normalizedFilter
-    ? treeRows.filter(
-        (row) =>
+  const matchingPaths = normalizedFilter
+    ? new Set(
+        treeRows.flatMap((row) =>
           row.kind === "entry" &&
           entryLabel(row.entry, row.parentPath, sourceId)
             .toLocaleLowerCase()
-            .includes(normalizedFilter),
+            .includes(normalizedFilter)
+            ? [row.entry.path]
+            : [],
+        ),
+      )
+    : null;
+  const filteredRows = matchingPaths
+    ? treeRows.filter((row) =>
+        row.kind === "entry"
+          ? matchingPaths.has(row.entry.path)
+          : row.kind === "error" && matchingPaths.has(row.path),
       )
     : treeRows;
   const visibleEntryCount = filteredRows.filter(
