@@ -290,7 +290,7 @@ export function SidebarRail({
               new CustomEvent("workbench-menu-open", {
                 detail: {
                   bottom: window.innerHeight - rect.top + 8,
-                  right: window.innerWidth - rect.right,
+                  left: rect.right + 8,
                 },
               }),
             );

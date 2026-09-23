@@ -15,6 +15,12 @@ import { notificationPublicApi } from "../../../services/api/notificationPublic"
 import { NotificationDialog } from "../../notification/NotificationDialog";
 import type { TabType } from "./types";
 
+interface WorkbenchMenuPosition {
+  bottom: number;
+  left?: number;
+  right?: number;
+}
+
 interface WorkbenchMenuHostProps {
   activeTab: TabType;
   onNewSession: () => void;
@@ -42,7 +48,10 @@ export function WorkbenchMenuHost({
   const [menuOpen, setMenuOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
   const [activeNotifCount, setActiveNotifCount] = useState(0);
-  const [menuPosition, setMenuPosition] = useState({ bottom: 8, right: 8 });
+  const [menuPosition, setMenuPosition] = useState<WorkbenchMenuPosition>({
+    bottom: 8,
+    right: 8,
+  });
   const menuRef = useRef<HTMLDivElement>(null);
 
   const refreshNotifCount = useCallback(() => {
@@ -58,7 +67,7 @@ export function WorkbenchMenuHost({
   useEffect(() => {
     const handleOpen = (event: Event) => {
       setMenuPosition(
-        (event as CustomEvent<{ bottom: number; right: number }>).detail,
+        (event as CustomEvent<WorkbenchMenuPosition>).detail,
       );
       setMenuOpen(true);
     };
@@ -93,6 +102,7 @@ export function WorkbenchMenuHost({
               className="fixed z-[301] w-56 overflow-hidden rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
               style={{
                 bottom: menuPosition.bottom,
+                left: menuPosition.left,
                 right: menuPosition.right,
                 backgroundColor: "var(--theme-bg-card)",
                 borderColor: "var(--theme-border)",
