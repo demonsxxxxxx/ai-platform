@@ -421,7 +421,7 @@ async def admin_run_trajectory(
             limit=limit + 1,
         )
     page_rows = source_rows[:limit]
-    projection = project_admin_trajectory_page(page_rows)
+    projection = project_admin_trajectory_page(page_rows, sanitize_text=sanitize_public_text)
     response.headers["Cache-Control"] = "no-store"
     return {
         "contract_version": ADMIN_TRAJECTORY_CONTRACT_VERSION,

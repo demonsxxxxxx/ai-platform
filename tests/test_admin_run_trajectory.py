@@ -30,7 +30,7 @@ def test_trajectory_projects_typed_committed_events_without_private_payloads():
         {**_row(8, "message.delta", {"delta": "legacy"}), "stage": "legacy"},
     ]
 
-    result = project_admin_trajectory_page(rows)
+    result = project_admin_trajectory_page(rows, sanitize_text=lambda value: value)
 
     assert [event["kind"] for event in result["events"]] == ["message", "action", "observation", "error"]
     assert [event["sequence"] for event in result["events"]] == [1, 2, 3, 4]
@@ -50,7 +50,7 @@ def test_trajectory_does_not_accept_unknown_fields_or_forged_event_ids():
         {**_row(2, "message.started", {}), "id": "evt/unsafe"},
         _row(3, "message.delta", {"delta": "x", "prompt": "private"}),
     ]
-    result = project_admin_trajectory_page(rows)
+    result = project_admin_trajectory_page(rows, sanitize_text=lambda value: value)
     assert len(result["events"]) == 1
     assert result["events"][0]["kind"] == "error"
     assert result["events"][0]["outcome"] == "run_failed"

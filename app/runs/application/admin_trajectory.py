@@ -7,11 +7,10 @@ re-executes an action and never promotes private executor payloads to events.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from app.control_plane_contracts import sanitize_public_text
 from app.streaming.api import (
     V4_METADATA_KEY,
     V4_METADATA_VERSION,
@@ -49,6 +48,8 @@ def _recorded_at(value: object) -> str | None:
 
 def project_admin_trajectory_page(
     rows: Sequence[Mapping[str, Any]],
+    *,
+    sanitize_text: Callable[[str], str],
 ) -> dict[str, object]:
     """Project one source page; cursor advancement belongs to the route.
 
@@ -108,7 +109,8 @@ def project_admin_trajectory_page(
             item["summary"] = "Agent 开始输出"
         elif source_type.startswith("tool."):
             item["category"] = payload["category"]
-            item["summary"] = sanitize_public_text(payload["display_name"])[:128]
+            summary = sanitize_text(payload["display_name"])
+            item["summary"] = summary[:128] if isinstance(summary, str) else "工具"
             if source_type == "tool.completed":
                 item["duration_ms"] = payload["duration_ms"]
                 item["outcome"] = "completed"
@@ -127,6 +129,7 @@ def project_admin_trajectory_page(
             item["outcome"] = payload["stop_category"]
         elif source_type == "run.failed":
             item["summary"] = "运行失败"
-            item["outcome"] = sanitize_public_text(payload["code"])[:128]
+            code = sanitize_text(payload["code"])
+            item["outcome"] = code[:128] if isinstance(code, str) else "run_failed"
         events.append(item)
     return {"events": events, "omitted": omitted}
