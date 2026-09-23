@@ -38,7 +38,9 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   assert.doesNotMatch(`${rail}\n${sidebar}`, /rect\.top - 220/);
   assert.match(menuHost, /workbench-menu-open/);
   assert.doesNotMatch(menuHost, /data-workbench-header|data-workbench-menu-host/);
-  assert.match(userMenu, /showLabel \? rect\.top - \(menuRef\.current\?\.offsetHeight \|\| 120\) - 8/);
+  assert.match(userMenu, /top: rect\.top - \(menuRef\.current\?\.offsetHeight \|\| 120\) - 8/);
+  assert.match(userMenu, /left: showLabel \? rect\.left : rect\.right \+ 8/);
+  assert.doesNotMatch(userMenu, /rect\.bottom \+ 8|window\.innerWidth - rect\.right/);
   assert.match(panel, /source\.sessions/);
   assert.match(panel, /source\.loadMore/);
   assert.match(panel, /source\.removeSession/);
