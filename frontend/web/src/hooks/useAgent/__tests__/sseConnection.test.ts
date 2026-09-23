@@ -1854,6 +1854,7 @@ test("SSE delayed 401 cannot force a replacement auth incarnation to logout", as
   }
 });
 
+test("SSE force-relogin 401 emits the shared recovery signal", async () => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const events: string[] = [];
   Object.defineProperty(globalThis, "window", {
