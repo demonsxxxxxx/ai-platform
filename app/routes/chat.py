@@ -1,10 +1,6 @@
-import base64
-import binascii
 import hashlib
-import json
 import logging
 import re
-from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -27,6 +23,10 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.conversations.api import (
+    decode_message_cursor as _decode_message_cursor_contract,
+    encode_message_cursor as _encode_message_cursor_contract,
+    message_content as _message_content_projection,
+    message_metadata as _message_metadata_projection,
     resolve_chat_submission,
     submission_resolution_projection,
 )
@@ -124,7 +124,6 @@ _CHAT_SUBMISSION_INTERNAL_ERROR_CODE = "chat_submission_internal_error"
 _QUEUE_PAYLOAD_INVALID_CODE = "queue_payload_invalid"
 _SAFE_SUBMISSION_DETAIL_CODES = frozenset({_REQUIRED_CAPABILITY_UNAVAILABLE_CODE})
 _SAFE_SUBMISSION_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_MESSAGE_CURSOR_VERSION = 1
 
 
 def _safe_submission_code(value: object, fallback: str = "chat_submission_rejected") -> str:
@@ -181,40 +180,30 @@ def _submission_error_detail(
 
 
 def _encode_message_cursor(row: dict[str, Any], *, session_id: str) -> str:
-    created_at = row.get("created_at")
-    if isinstance(created_at, datetime):
-        created_at = created_at.isoformat()
-    if not isinstance(created_at, str) or not created_at:
-        raise ValueError("message_cursor_invalid")
-    payload = {
-        "v": _MESSAGE_CURSOR_VERSION,
-        "session_id": session_id,
-        "created_at": created_at,
-        "message_id": str(row.get("id") or ""),
-    }
-    if not payload["message_id"]:
-        raise ValueError("message_cursor_invalid")
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+    return _encode_message_cursor_contract(row, session_id=session_id)
 
 
-def _decode_message_cursor(value: str, *, session_id: str) -> tuple[datetime, str]:
+def _decode_message_cursor(value: str, *, session_id: str):
     try:
-        padding = "=" * (-len(value) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(f"{value}{padding}").decode("utf-8"))
-        if (
-            not isinstance(payload, dict)
-            or payload.get("v") != _MESSAGE_CURSOR_VERSION
-            or payload.get("session_id") != session_id
-        ):
-            raise ValueError
-        created_at = datetime.fromisoformat(str(payload["created_at"]).replace("Z", "+00:00"))
-        message_id = str(payload["message_id"])
-        if created_at.tzinfo is None or not message_id or len(message_id) > 200:
-            raise ValueError
-        return created_at, message_id
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
+        return _decode_message_cursor_contract(value, session_id=session_id)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail="message_cursor_invalid") from exc
+
+
+def _message_metadata(row: dict[str, object], principal: AuthPrincipal) -> dict[str, Any]:
+    return _message_metadata_projection(
+        row,
+        is_admin=is_ai_admin(principal),
+        redactor=sanitize_user_control_input,
+    )
+
+
+def _message_content(row: dict[str, object], principal: AuthPrincipal) -> str:
+    return _message_content_projection(
+        row,
+        is_admin=is_ai_admin(principal),
+        sanitizer=sanitize_public_text,
+    )
 
 
 class _ChatSubmissionNoStoreRoute(APIRoute):
@@ -1193,23 +1182,6 @@ def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, o
         "confirmed_by_user": True,
         "suggestions": [],
     }
-
-
-def _message_metadata(row: dict[str, object], principal: AuthPrincipal) -> dict[str, Any]:
-    metadata = row.get("metadata_json") or {}
-    if not isinstance(metadata, dict):
-        return {}
-    if is_ai_admin(principal):
-        return metadata
-    redacted = sanitize_user_control_input(metadata)
-    return redacted if isinstance(redacted, dict) else {}
-
-
-def _message_content(row: dict[str, object], principal: AuthPrincipal) -> str:
-    content = str(row["content"])
-    if is_ai_admin(principal):
-        return content
-    return sanitize_public_text(content)
 
 
 async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -> None:

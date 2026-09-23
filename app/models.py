@@ -11,6 +11,14 @@ from pydantic import (
     model_validator,
 )
 
+from app.compat.conversation_message_compat import (
+    AgentConversationIdentity as AgentConversationIdentity,
+    ChatMessageResponse as ChatMessageResponse,
+    ChatMessagesResponse as ChatMessagesResponse,
+    ChatSessionResponse as ChatSessionResponse,
+    ChatSessionsResponse as ChatSessionsResponse,
+    SessionRenameRequest as SessionRenameRequest,
+)
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,
     RUN_EXECUTION_KIND_HARNESS_CHAT,
@@ -465,21 +473,6 @@ class CreateAgentConversationRequest(BaseModel):
         if value.int == 0 or value.version != 4 or value.variant != RFC_4122:
             raise ValueError("operation_id must be an RFC 4122 UUID v4")
         return value
-
-
-class AgentConversationIdentity(BaseModel):
-    """Only safe immutable Agent identity retained in public conversation recovery."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    agent_id: str
-    revision: int = Field(ge=1)
-    name: str
-    description: str = ""
-    starter_prompts: list[str] = Field(default_factory=list)
-    avatar_ref: AgentProfileAvatarRef = "builtin:agent"
-    avatar_seed: str = ""
-    published_at: Any | None = None
 
 
 class CreateRunRequest(BaseModel):
@@ -1043,45 +1036,6 @@ class ChatSessionRequest(BaseModel):
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
-
-
-class ChatSessionResponse(BaseModel):
-    session_id: str
-    workspace_id: str
-    agent_id: str
-    title: str
-    purpose: Literal["conversation", "builder_test"] = "conversation"
-    agent_conversation: AgentConversationIdentity | None = None
-    created_at: Any | None = None
-    updated_at: Any | None = None
-
-
-class SessionRenameRequest(BaseModel):
-    """Public rename payload for an active Session."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(min_length=1, max_length=200)
-
-
-class ChatSessionsResponse(BaseModel):
-    sessions: list[ChatSessionResponse]
-    next_cursor: str | None = None
-
-
-class ChatMessageResponse(BaseModel):
-    message_id: str
-    session_id: str
-    run_id: str | None = None
-    role: str
-    content: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: Any | None = None
-
-
-class ChatMessagesResponse(BaseModel):
-    messages: list[ChatMessageResponse]
-    next_cursor: str | None = None
 
 
 class ChatStreamRequest(BaseModel):

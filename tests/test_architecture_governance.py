@@ -2949,7 +2949,7 @@ def test_skills_persistence_bridge_authority_is_exact() -> None:
     }
 
 
-def test_sandbox_workspace_transfer_bridge_authority_is_exact_and_pending() -> None:
+def test_sandbox_workspace_transfer_bridge_is_exact_and_active() -> None:
     bridge = _migration_bridge(
         source_path="app/runtime/sandbox/container_provider.py",
         target_module="app.sandbox.infrastructure.workspace_transfer",
@@ -2999,19 +2999,11 @@ def test_sandbox_workspace_transfer_bridge_authority_is_exact_and_pending() -> N
         ),
     }
 
-    assert not (
-        REPO_ROOT / "app/sandbox/infrastructure/workspace_transfer.py"
-    ).exists()
-    source_tree = ast.parse(
-        (
-            REPO_ROOT / "app/runtime/sandbox/container_provider.py"
-        ).read_text(encoding="utf-8")
-    )
-    assert not any(
-        isinstance(node, ast.Import)
-        and any(imported.name == bridge["target_module"] for imported in node.names)
-        for node in source_tree.body
-    )
+    from app.runtime.sandbox import container_provider
+    from app.sandbox.infrastructure import workspace_transfer
+
+    for symbol in bridge["symbols"]:
+        assert getattr(container_provider, symbol) is getattr(workspace_transfer, symbol)
 
 
 @pytest.mark.parametrize(
