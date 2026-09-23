@@ -28,6 +28,7 @@ from app.routes.sandbox_runtime_cleanup import (
 )
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.streaming.api import (
+    V4_METADATA_KEY,
     V4PublicationTransportUnavailable,
     admit_v4_stream,
     publish_run_event,
@@ -360,6 +361,22 @@ async def admin_run_detail(
         detail.get("events", []),
         sanitize_text=sanitize_public_text,
     )
+    # The Worker projection needs persisted identities to join message chunks.
+    # Keep private events and internal stream metadata out of the browser detail.
+    detail["events"] = [
+        {
+            **event,
+            "payload": {
+                key: value
+                for key, value in event["payload"].items()
+                if key != V4_METADATA_KEY
+            },
+        }
+        if isinstance(event.get("payload"), dict)
+        else event
+        for event in detail.get("events", [])
+        if event.get("visible_to_user") is not False
+    ]
     detail["run"]["model_output"] = detail["worker_execution"]["response"]
     detail["run"] = await attach_live_queue_context(detail["run"], tenant_id=principal.tenant_id)
     for collection in (

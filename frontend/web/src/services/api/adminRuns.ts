@@ -277,6 +277,8 @@ export interface AdminRunArtifact {
 
 export interface AdminWorkerExecutionAction {
   ordinal: number;
+  sequence?: number;
+  invocation_id?: string | null;
   label: string;
   category: string;
   status: string;
@@ -287,8 +289,17 @@ export interface AdminWorkerExecutionAction {
   finished_at?: string | null;
 }
 
+export interface AdminWorkerExecutionMessage {
+  ordinal: number;
+  kind: "answer" | "commentary";
+  text: string;
+  sequence: number;
+  created_at?: string | null;
+}
+
 export interface AdminWorkerExecution {
   response: string;
+  messages?: AdminWorkerExecutionMessage[];
   actions: AdminWorkerExecutionAction[];
   model: {
     turn_count?: number | null;

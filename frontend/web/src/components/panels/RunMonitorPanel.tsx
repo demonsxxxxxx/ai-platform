@@ -26,6 +26,7 @@ import {
   type AdminRunDiagnosticsResponse,
   type AdminRunDetailResponse,
   type AdminRunSummary,
+  type AdminWorkerExecution,
 } from "../../services/api/adminRuns";
 import { formatDateTimeShort } from "../../utils/datetime";
 import {
@@ -239,6 +240,30 @@ function diagnosticCoverageLabel(value: string): string {
   );
 }
 
+const DIAGNOSTIC_STAGE_LABELS: Record<string, string> = {
+  attachment_materialization: "准备附件",
+  skill_staging: "准备 Skill",
+  sandbox_preparation: "准备运行环境",
+  sandbox_submission: "提交执行任务",
+  model_wait: "等待模型响应",
+  artifact_validation: "检查产物",
+  artifact_recovery: "恢复产物",
+  terminalization: "整理最终结果",
+};
+
+const DIAGNOSTIC_SOURCE_LABELS: Record<string, string> = {
+  sdk_result_error: "模型执行返回错误",
+  sandbox_terminal_normalization: "沙箱终态整理",
+  executor_reconciler: "执行结果对账",
+};
+
+function diagnosticLocation(stage: string | null | undefined, source: string | null | undefined): string {
+  return [
+    stage ? DIAGNOSTIC_STAGE_LABELS[stage] ?? stage : "阶段未知",
+    source ? DIAGNOSTIC_SOURCE_LABELS[source] ?? source : "来源未知",
+  ].join(" · ");
+}
+
 function elapsedBetween(
   startedAt: string | null | undefined,
   finishedAt: string | null | undefined,
@@ -374,47 +399,126 @@ function IdentityField({ label, value }: { label: string; value?: string | null 
   );
 }
 
-function DiagnosticsOverview({
+function FailureTraceOverview({
+  run,
   diagnostics,
+  leases,
   loading,
 }: {
+  run: AdminRunSummary;
   diagnostics: AdminRunDiagnosticsResponse | null;
+  leases: AdminRunDetailResponse["sandbox_leases"];
   loading: boolean;
 }) {
   if (loading && !diagnostics) {
-    return <p className="mt-3 text-xs text-[var(--theme-text-secondary)]">正在读取诊断摘要…</p>;
+    return <p className="mt-3 text-xs text-[var(--theme-text-secondary)]">正在定位失败断点…</p>;
   }
-  if (!diagnostics) return null;
+  if (!diagnostics) {
+    return (
+      <section className="mt-3 rounded-md border border-[var(--theme-border)] p-3 text-xs text-[var(--theme-text-secondary)]" data-run-failure-trace>
+        失败断点暂不可用；请重新读取诊断，不能仅凭终态错误码推断失败阶段。
+      </section>
+    );
+  }
+  const root = diagnostics.root;
+  const attempt = root?.attempt_id
+    ? diagnostics.attempts.find((item) => item.attempt_id === root.attempt_id)
+    : null;
+  const handling = diagnostics.handling.at(-1);
+  const lease = root?.lease_id
+    ? leases.find((item) => (item.lease_id ?? item.id) === root.lease_id)
+    : null;
+  const rootEvidence = root?.observation_id
+    ? diagnostics.details.observations?.find((item) => item.observation_id === root.observation_id)
+    : null;
+  const toolEvidence = rootEvidence?.tool_policy_denials.at(-1)
+    ?? rootEvidence?.tool_calls.at(-1)
+    ?? rootEvidence?.tool_lifecycles.at(-1);
+  const evidenceGap = diagnostics.losses.length + diagnostics.counts.omitted_observations;
   return (
-    <div className="mt-3 grid gap-2 sm:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3" data-run-diagnostics-overview>
-      <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5">
-        <p className="text-[11px] text-[var(--theme-text-tertiary)]">最早留存异常</p>
-        <p className="mt-1 break-words text-xs font-medium text-[var(--theme-text)]">
-          {diagnostics.root?.message || diagnostics.root?.error_code || "没有可展示的根异常"}
-        </p>
-        <p className="mt-1 text-[11px] text-[var(--theme-text-secondary)]">
-          {[diagnostics.root?.source, diagnostics.root?.stage].filter(Boolean).join(" · ") || "阶段未知"}
-        </p>
-      </div>
-      <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5">
-        <p className="text-[11px] text-[var(--theme-text-tertiary)]">最近处理</p>
-        <p className="mt-1 break-words text-xs font-medium text-[var(--theme-text)]">
-          {diagnostics.handling.at(-1)?.message || diagnostics.handling.at(-1)?.error_code || "没有后续处理观察"}
-        </p>
-        <p className="mt-1 text-[11px] text-[var(--theme-text-secondary)]">
-          {diagnostics.handling.length} 条处理观察
-        </p>
-      </div>
-      <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5">
-        <p className="text-[11px] text-[var(--theme-text-tertiary)]">证据完整性</p>
-        <p className="mt-1 text-xs font-medium text-[var(--theme-text)]">
-          {diagnosticCoverageLabel(diagnostics.coverage)}
-        </p>
-        <p className="mt-1 text-[11px] text-[var(--theme-text-secondary)]">
-          保留 {diagnostics.counts.retained_observations} 条 · 缺失/裁剪 {diagnostics.losses.length + diagnostics.counts.omitted_observations} 条
-        </p>
-      </div>
-    </div>
+    <section className="mt-3 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3" data-run-failure-trace>
+      <h4 className="text-xs font-semibold text-[var(--theme-text)]">故障链 · 已留存证据</h4>
+      <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+        <div>
+          <dt className="text-[11px] text-[var(--theme-text-tertiary)]">最早留存的断点</dt>
+          <dd className="mt-0.5 break-words font-medium text-[var(--theme-text)]">
+            {root ? diagnosticLocation(root.stage, root.source) : "断点未知"}
+          </dd>
+          <dd className="mt-0.5 text-[11px] text-[var(--theme-text-secondary)]">
+            {root ? (attempt ? `第 ${attempt.ordinal} 次尝试` : "执行尝试未能关联") : "没有留存失败观察"}
+          </dd>
+          {root ? (
+            <dd className="mt-0.5 font-mono text-[10px] text-[var(--theme-text-tertiary)]">
+              {[root.stage, root.source].filter(Boolean).join(" · ")}
+            </dd>
+          ) : null}
+          {root?.message ? (
+            <dd className="mt-1 break-words text-[11px] text-[var(--theme-text-secondary)]">
+              留存异常摘要：{root.message}
+            </dd>
+          ) : null}
+        </div>
+        <div>
+          <dt className="text-[11px] text-[var(--theme-text-tertiary)]">错误如何变化</dt>
+          <dd className="mt-0.5 break-all font-mono text-[11px] text-[var(--theme-text)]">
+            {root?.error_code || "来源错误未知"} → {run.status === "running" || run.status === "queued" ? "运行尚未终态" : run.error_code || "终态错误未知"}
+          </dd>
+          <dd className="mt-0.5 text-[11px] text-[var(--theme-text-secondary)]">
+            {handling ? `最近处理：${handling.stage || "阶段未知"} · ${handling.error_code || "错误码未知"}` : "没有后续处理观察"}
+          </dd>
+        </div>
+        {toolEvidence ? (
+          <div>
+            <dt className="text-[11px] text-[var(--theme-text-tertiary)]">同一观察中的工具证据</dt>
+            <dd className="mt-0.5 break-words text-[var(--theme-text)]">
+              {[toolEvidence.tool_name, toolEvidence.last_stage || toolEvidence.state, toolEvidence.reason].filter(Boolean).join(" · ")}
+            </dd>
+          </div>
+        ) : null}
+        {root?.lease_id ? (
+          <div>
+            <dt className="text-[11px] text-[var(--theme-text-tertiary)]">关联运行环境</dt>
+            <dd className="mt-0.5 text-[var(--theme-text)]">
+              {lease ? `${lease.provider || "平台沙箱"} · ${statusLabel(lease.status)}` : "运行环境未能关联"}
+            </dd>
+          </div>
+        ) : null}
+        <div>
+          <dt className="text-[11px] text-[var(--theme-text-tertiary)]">证据完整性</dt>
+          <dd className="mt-0.5 text-[var(--theme-text)]">
+            {diagnosticCoverageLabel(diagnostics.coverage)} · {diagnostics.counts.retained_observations} 条观察
+          </dd>
+          <dd className="mt-0.5 text-[11px] text-[var(--theme-text-secondary)]">
+            {evidenceGap ? `${evidenceGap} 项缺失或裁剪` : "未报告证据缺口"}
+          </dd>
+        </div>
+      </dl>
+      <p className="mt-2 text-[11px] text-[var(--theme-text-tertiary)]">
+        最早留存异常不等于已证明的根因；缺失证据不能据此补全。
+      </p>
+    </section>
+  );
+}
+
+type ExecutionJournalEntry =
+  | { kind: "tool"; sequence: number; ordinal: number; action: AdminWorkerExecution["actions"][number] }
+  | { kind: "message"; sequence: number; ordinal: number; message: NonNullable<AdminWorkerExecution["messages"]>[number] };
+
+function executionJournal(execution: AdminWorkerExecution): ExecutionJournalEntry[] {
+  const actions: ExecutionJournalEntry[] = execution.actions.map((action) => ({
+    kind: "tool",
+    sequence: action.sequence ?? Number.MAX_SAFE_INTEGER,
+    ordinal: action.ordinal,
+    action,
+  }));
+  const messages: ExecutionJournalEntry[] = (execution.messages ?? []).map((message) => ({
+    kind: "message",
+    sequence: message.sequence,
+    ordinal: message.ordinal,
+    message,
+  }));
+  return [...actions, ...messages].sort((left, right) =>
+    left.sequence - right.sequence || left.ordinal - right.ordinal,
   );
 }
 
@@ -433,7 +537,7 @@ function AttemptSection({ diagnostics }: { diagnostics: AdminRunDiagnosticsRespo
           <li key={attempt.attempt_id} className="rounded-md border border-[var(--theme-border)] p-2.5">
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-medium text-[var(--theme-text)]">
-                Attempt {attempt.ordinal}
+                第 {attempt.ordinal} 次尝试
                 {attempt.attempt_id === currentAttempt ? " · 当前" : ""}
               </p>
               <StatusBadge status={attempt.status} />
@@ -446,9 +550,10 @@ function AttemptSection({ diagnostics }: { diagnostics: AdminRunDiagnosticsRespo
             {attempt.error_code ? (
               <p className="mt-1 break-words font-mono text-[11px] text-[var(--theme-danger)]">{attempt.error_code}</p>
             ) : null}
-            <p className="mt-1 truncate font-mono text-[10px] text-[var(--theme-text-tertiary)]" title={attempt.attempt_id}>
-              {compactIdentifier(attempt.attempt_id)}
-            </p>
+            <details className="mt-1 text-[10px] text-[var(--theme-text-tertiary)]">
+              <summary className="cursor-pointer">尝试编号</summary>
+              <p className="mt-1 break-all font-mono">{attempt.attempt_id}</p>
+            </details>
           </li>
         ))}
       </ol>
@@ -605,9 +710,21 @@ function RunDetail({
     : null;
   const workerExecution = detail?.worker_execution ?? {
     response: monitorView?.modelOutput ?? "",
+    messages: [],
     actions: [],
     model: {},
   };
+  const journal = executionJournal(workerExecution);
+  const toolEvidenceById = new Map(
+    (diagnostics?.details.observations ?? [])
+      .flatMap((observation) => [
+        ...observation.tool_lifecycles,
+        ...observation.tool_calls,
+        ...observation.tool_policy_denials,
+      ])
+      .filter((evidence) => evidence.invocation_id)
+      .map((evidence) => [evidence.invocation_id, evidence] as const),
+  );
   const artifacts = detail?.artifacts ?? [];
   const failureGuidance = detail ? buildAdminFailureGuidance(detail) : null;
   const eventDiagnostics = monitorView?.eventDiagnostics ?? [];
@@ -707,22 +824,20 @@ function RunDetail({
                 <p className="mt-1 text-[var(--theme-text)]">{estimatedCostLabel(detail.run.estimated_cost_minor)}</p>
               </div>
             </div>
+            {detail.run.status === "failed" || diagnostics?.root ? (
+              <FailureTraceOverview
+                run={detail.run}
+                diagnostics={diagnostics}
+                leases={detail.sandbox_leases}
+                loading={diagnosticsLoading}
+              />
+            ) : null}
             {failureGuidance ? (
               <FailureGuidanceCard
                 guidance={failureGuidance}
                 className="mt-3"
               />
             ) : null}
-            {detail.run.error_code ? (
-              <div className="mt-3 border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-xs text-[var(--theme-danger)]">
-                <p className="font-medium">内部错误码</p>
-                <p className="mt-1 break-all font-mono">{detail.run.error_code}</p>
-                {detail.run.error_message ? (
-                  <p className="mt-1 leading-5">{detail.run.error_message}</p>
-                ) : null}
-              </div>
-            ) : null}
-            <DiagnosticsOverview diagnostics={diagnostics} loading={diagnosticsLoading} />
             <details className="mt-4 rounded-md border border-[var(--theme-border)] px-3 py-2">
               <summary className="cursor-pointer text-xs font-medium text-[var(--theme-text-secondary)]">
                 技术信息
@@ -730,6 +845,11 @@ function RunDetail({
               <p className="mt-2 text-[11px] leading-5 text-[var(--theme-text-tertiary)]">
                 以下标识用于精确检索、跨系统关联和研发排查。
               </p>
+              {detail.run.error_message ? (
+                <p className="mt-2 break-words text-[11px] text-[var(--theme-text-secondary)]">
+                  终态记录说明（不等于失败断点）：{detail.run.error_message}
+                </p>
+              ) : null}
               <dl className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
                 <IdentityField label="Run ID" value={detail.run.run_id} />
                 <IdentityField label="Session ID" value={detail.run.session_id} />
@@ -748,12 +868,10 @@ function RunDetail({
 
           <AttemptSection diagnostics={diagnostics} />
 
-          <SemanticTimeline items={monitorView?.recentActivity ?? []} />
-
           <section className="p-4" data-worker-execution-content>
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h3 className="text-xs font-semibold text-[var(--theme-text)]">
-                Worker 执行内容
+                Agent 与工具记录
               </h3>
               <span className="text-[11px] text-[var(--theme-text-tertiary)]">
                 {[
@@ -765,61 +883,68 @@ function RunDetail({
               </span>
             </div>
 
-            <div className="mt-3 rounded-md border border-[var(--theme-border)] p-3">
-              <h4 className="text-xs font-semibold text-[var(--theme-text)]">
-                Worker 返回
-              </h4>
-              {workerExecution.response ? (
+            <p className="mt-2 text-[11px] text-[var(--theme-text-tertiary)]">
+              {workerExecution.messages?.length ?? 0} 条公开 Agent 输出 · {workerExecution.actions.length} 次工具调用。工具仅显示脱敏后的执行概要。
+            </p>
+            {journal.length ? (
+              <ol className="mt-3 space-y-2" data-run-execution-journal>
+                {journal.map((entry) => entry.kind === "message" ? (
+                  <li key={`message-${entry.ordinal}`} className="rounded-md border border-[var(--theme-border)] p-3" data-run-agent-output>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[var(--theme-text)]">
+                        {entry.message.kind === "commentary" ? "Agent 过程说明" : "Agent 输出"} {entry.ordinal}
+                      </span>
+                      <time className="text-[11px] text-[var(--theme-text-tertiary)]">{dateTime(entry.message.created_at)}</time>
+                    </div>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--theme-text-secondary)]">
+                      {entry.message.text}
+                    </p>
+                  </li>
+                ) : (
+                  <li key={`tool-${entry.ordinal}`} className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5" data-run-tool-call>
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--theme-text)]">
+                        工具调用 {entry.ordinal} · {entry.action.label}
+                      </span>
+                      <StatusBadge status={entry.action.status} />
+                    </div>
+                    <p className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
+                      {[entry.action.category, durationMillisecondsLabel(entry.action.duration_ms)].filter(Boolean).join(" · ") || "耗时未知"}
+                    </p>
+                    {entry.action.input_summary ? (
+                      <p className="mt-1.5 text-xs leading-5 text-[var(--theme-text-secondary)]">执行：{entry.action.input_summary}</p>
+                    ) : null}
+                    {entry.action.result_summary ? (
+                      <p className="mt-1 text-xs leading-5 text-[var(--theme-text)]">结果：{entry.action.result_summary}</p>
+                    ) : null}
+                    {entry.action.invocation_id && toolEvidenceById.has(entry.action.invocation_id) ? (
+                      <p className="mt-1 text-xs leading-5 text-[var(--theme-text)]">
+                        关联诊断：{[
+                          toolEvidenceById.get(entry.action.invocation_id)?.last_stage,
+                          toolEvidenceById.get(entry.action.invocation_id)?.state,
+                          toolEvidenceById.get(entry.action.invocation_id)?.reason,
+                        ].filter(Boolean).join(" · ") || "已找到同一调用的证据"}
+                      </p>
+                    ) : null}
+                    {entry.action.invocation_id ? (
+                      <details className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
+                        <summary className="cursor-pointer">调用编号</summary>
+                        <p className="mt-1 break-all font-mono">{entry.action.invocation_id}</p>
+                      </details>
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
+            ) : null}
+            {!workerExecution.messages?.length && workerExecution.response ? (
+              <div className="mt-3 rounded-md border border-[var(--theme-border)] p-3">
+                <h4 className="text-xs font-semibold text-[var(--theme-text)]">Worker 返回</h4>
                 <p className="mt-2 max-h-80 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {workerExecution.response}
                 </p>
-              ) : (
-                <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">
-                  未记录可展示的 Worker 返回
-                </p>
-              )}
-            </div>
-
-            {workerExecution.actions.length ? (
-              <div className="mt-3">
-                <h4 className="text-xs font-semibold text-[var(--theme-text)]">
-                  执行动作 ({workerExecution.actions.length})
-                </h4>
-                <ol className="mt-2 space-y-2">
-                  {workerExecution.actions.map((action) => (
-                    <li
-                      key={action.ordinal}
-                      className="rounded-md bg-[var(--theme-bg-sidebar)] p-2.5"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--theme-text)]">
-                          {action.ordinal}. {action.label}
-                        </span>
-                        <StatusBadge status={action.status} />
-                      </div>
-                      {[action.category, durationMillisecondsLabel(action.duration_ms)]
-                        .filter(Boolean)
-                        .length ? (
-                        <p className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
-                          {[action.category, durationMillisecondsLabel(action.duration_ms)]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </p>
-                      ) : null}
-                      {action.input_summary ? (
-                        <p className="mt-1.5 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                          执行：{action.input_summary}
-                        </p>
-                      ) : null}
-                      {action.result_summary ? (
-                        <p className="mt-1 text-xs leading-5 text-[var(--theme-text)]">
-                          返回：{action.result_summary}
-                        </p>
-                      ) : null}
-                    </li>
-                  ))}
-                </ol>
               </div>
+            ) : !journal.length ? (
+              <p className="mt-3 text-xs text-[var(--theme-text-tertiary)]">尚无可展示的 Agent 输出或工具调用</p>
             ) : null}
 
             {artifacts.length ? (
@@ -847,6 +972,8 @@ function RunDetail({
               </div>
             ) : null}
           </section>
+
+          <SemanticTimeline items={monitorView?.recentActivity ?? []} />
 
           <details className="p-4">
             <summary className="cursor-pointer text-xs font-semibold text-[var(--theme-text)]">
@@ -1049,14 +1176,18 @@ function RunDetail({
                     className="rounded-md border border-[var(--theme-border)] p-2.5"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="truncate font-mono text-xs text-[var(--theme-text)]">
-                        {lease.lease_id ?? lease.id ?? "lease"}
+                      <span className="truncate text-xs font-medium text-[var(--theme-text)]">
+                        运行环境 {index + 1} · {lease.provider || "平台沙箱"}
                       </span>
                       <StatusBadge status={lease.status} />
                     </div>
                     <p className="mt-1.5 text-[11px] text-[var(--theme-text-tertiary)]">
-                      {[lease.provider, lease.sandbox_mode].filter(Boolean).join(" · ") || "平台沙箱"}
+                      {lease.sandbox_mode || "运行模式未知"}
                     </p>
+                    <details className="mt-1 text-[10px] text-[var(--theme-text-tertiary)]">
+                      <summary className="cursor-pointer">租约编号</summary>
+                      <p className="mt-1 break-all font-mono">{lease.lease_id ?? lease.id ?? "未记录"}</p>
+                    </details>
                   </div>
                 ))}
               </div>
@@ -1610,7 +1741,7 @@ export function RunMonitorPanel() {
               aria-label="关闭运行详情遮罩"
               onClick={closeDetail}
             />
-            <div className="absolute inset-y-0 right-0 w-full xl:w-[420px] xl:p-2">
+            <div className="absolute inset-y-0 right-0 w-full xl:w-[640px] 2xl:w-[760px] xl:p-2">
               <RunDetail
                 detail={detail}
                 diagnostics={diagnostics}

@@ -238,6 +238,7 @@ export function buildAdminRunEventDiagnostics(
 ): AdminRunEventDiagnostic[] {
   return events
     .map((event, index) => {
+      if (event.visible_to_user === false) return null;
       const type = eventType(event);
       if (!MODEL_OUTPUT_TYPES.has(type) && !TERMINAL_TYPES.has(type)) return null;
       const metadata = diagnosticMetadata(event);
@@ -367,8 +368,13 @@ export function buildAdminRunMonitorView(
   };
 
   events.forEach((event, index) => {
+    if (event.visible_to_user === false) return;
     const type = eventType(event);
-    if (HEARTBEAT_TYPES.has(type) || NOISY_EVENT_TYPES.has(type)) return;
+    if (
+      HEARTBEAT_TYPES.has(type) ||
+      NOISY_EVENT_TYPES.has(type) ||
+      (type === "run_started" && event.payload?.heartbeat === true)
+    ) return;
 
     if (QUEUE_EVENT_TYPES.has(type)) {
       const queueItem: AdminRunTimelineItem = {

@@ -387,7 +387,29 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
                 },
                 "result": {"message": "完成"},
             },
-            "events": [{"event_id": "evt_a", "type": "run_succeeded", "stage": "worker", "message": "Run succeeded"}],
+            "events": [
+                {
+                    "event_id": "evt_delta",
+                    "sequence": 1,
+                    "type": "message.delta",
+                    "visible_to_user": True,
+                    "payload": {
+                        "delta": "完成",
+                        "__stream_v4": {
+                            "message_id": "msg-a",
+                            "attempt_id": "attempt-private",
+                            "authorization_epoch": 3,
+                        },
+                    },
+                },
+                {
+                    "event_id": "evt_private",
+                    "type": "message.delta",
+                    "visible_to_user": False,
+                    "payload": {"delta": "PRIVATE_OUTPUT", "__stream_v4": {"attempt_id": "secret"}},
+                },
+                {"event_id": "evt_a", "type": "run_succeeded", "stage": "worker", "message": "Run succeeded"},
+            ],
             "artifacts": [{"artifact_id": "art_a", "label": "审核 Word", "artifact_type": "reviewed_docx"}],
             "sandbox_leases": [
                 {
@@ -456,6 +478,10 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
     assert data["run"]["agent_name"] == "合同审阅助手"
     assert data["run"]["workspace_name"] == "法务工作区"
     assert data["run"]["input"]["intent"]["selected_capability"] == "document_review"
+    assert data["worker_execution"]["messages"][0]["text"] == "完成"
+    assert data["events"][0]["payload"] == {"delta": "完成"}
+    assert len(data["events"]) == 2
+    assert "PRIVATE_OUTPUT" not in response.text
     assert data["artifacts"][0]["artifact_id"] == "art_a"
     assert data["sandbox_leases"][0]["lease_id"] == "lease-a"
     assert data["sandbox_leases"][0]["lease_payload"] == {"source": "foundation_runtime_lifecycle_probe"}
