@@ -28,8 +28,13 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   assert.match(rail, /<UserMenu \/>[\s\S]*workbench-menu-open/);
   assert.match(sidebar, /workbench-menu-open/);
   assert.match(rail, /bottom: window\.innerHeight - rect\.top \+ 8/);
+  assert.match(rail, /left: rect\.right \+ 8/);
+  assert.doesNotMatch(rail, /right: window\.innerWidth - rect\.right/);
   assert.match(sidebar, /bottom: window\.innerHeight - rect\.top \+ 8/);
+  assert.match(sidebar, /right: window\.innerWidth - rect\.right/);
   assert.match(menuHost, /bottom: menuPosition\.bottom/);
+  assert.match(menuHost, /left: menuPosition\.left/);
+  assert.match(menuHost, /right: menuPosition\.right/);
   assert.doesNotMatch(`${rail}\n${sidebar}`, /rect\.top - 220/);
   assert.match(menuHost, /workbench-menu-open/);
   assert.doesNotMatch(menuHost, /data-workbench-header|data-workbench-menu-host/);
