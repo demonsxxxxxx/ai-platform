@@ -35,6 +35,7 @@ import {
   type AdminRunTimelineItem,
 } from "./adminRunTimeline";
 import { RunDiagnosticsSection } from "./RunDiagnosticsSection";
+import { AdminRunTrajectoryReplay } from "./AdminRunTrajectoryReplay";
 import { FailureGuidanceCard } from "../common/FailureGuidanceCard";
 import { buildAdminFailureGuidance } from "./runFailureGuidance";
 
@@ -972,6 +973,13 @@ function RunDetail({
               </div>
             ) : null}
           </section>
+
+          <AdminRunTrajectoryReplay
+            key={detail.run.run_id}
+            runId={detail.run.run_id}
+            attempts={diagnostics?.attempts ?? []}
+            messages={workerExecution.messages ?? []}
+          />
 
           <SemanticTimeline items={monitorView?.recentActivity ?? []} />
 
