@@ -90,6 +90,15 @@ test("expands ProfileDrive folders and imports a file into the current workspace
     }
     if (url.endsWith("/api/profile-drive/files/list")) {
       const body = JSON.parse(String(init.body)) as { path: string };
+      if (body.path === "Restricted") {
+        return new Response(
+          JSON.stringify({
+            status: "access_denied",
+            message: "Access to the path was denied.",
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        );
+      }
       const entries =
         body.path === ""
           ? [
@@ -110,6 +119,13 @@ test("expands ProfileDrive folders and imports a file into the current workspace
               {
                 path: "Documents",
                 name: "Documents",
+                type: "directory",
+                size: null,
+                lastModifiedUtc: "2026-09-21T00:00:00Z",
+              },
+              {
+                path: "Restricted",
+                name: "Restricted",
                 type: "directory",
                 size: null,
                 lastModifiedUtc: "2026-09-21T00:00:00Z",
@@ -214,6 +230,31 @@ test("expands ProfileDrive folders and imports a file into the current workspace
     assert.doesNotMatch(container.textContent ?? "", /桌面/);
     assert.match(container.textContent ?? "", /文档/);
     await act(async () => changeInput(rootFilter, ""));
+
+    const restrictedButton = buttonByText(container, "Restricted");
+    await act(async () => {
+      restrictedButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    assert.equal(restrictedButton.getAttribute("aria-expanded"), "true");
+    assert.match(container.textContent ?? "", /没有权限访问此文件夹/);
+    assert.match(container.textContent ?? "", /桌面/);
+    assert.match(container.textContent ?? "", /文档/);
+    assert.doesNotMatch(container.textContent ?? "", /个人盘暂时不可用/);
+    const returnButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="返回 Restricted"]',
+    );
+    assert.ok(returnButton);
+    await act(async () => {
+      returnButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+    });
+    assert.equal(restrictedButton.getAttribute("aria-expanded"), "false");
+    assert.doesNotMatch(container.textContent ?? "", /没有权限访问此文件夹/);
+    assert.equal(dom.window.document.activeElement, restrictedButton);
 
     const documentsButton = buttonByText(container, "文档");
     assert.equal(documentsButton.getAttribute("aria-expanded"), "false");
