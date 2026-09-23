@@ -693,19 +693,6 @@ export function ChatView({
     [t],
   );
 
-  const handleDownloadWorkspaceFile = useCallback(
-    (file: SessionWorkspaceFile) => {
-      if (!file.download_url) return;
-      void downloadPreviewUrl({
-        url: file.download_url,
-        fileName: file.name,
-      }).catch(() =>
-        toast.error(t("documents.failedToDownload", "Download failed")),
-      );
-    },
-    [t],
-  );
-
   const handleProfileDriveFileImported = useCallback(
     (file: SessionInputFile) => {
       const workspaceFile = sessionInputFileToWorkspaceFile(file);
@@ -925,10 +912,6 @@ export function ChatView({
   const rightPanel = (
     <WorkbenchRightPanel
       sessionId={sessionId}
-      files={visibleWorkspaceProjection.files}
-      filesStatus={visibleWorkspaceProjection.status}
-      onOpenFile={handleOpenWorkspaceFile}
-      onDownloadFile={handleDownloadWorkspaceFile}
       onProfileDriveFileImported={handleProfileDriveFileImported}
       onProfileDriveFileDrop={handleProfileDriveFileDrop}
     />

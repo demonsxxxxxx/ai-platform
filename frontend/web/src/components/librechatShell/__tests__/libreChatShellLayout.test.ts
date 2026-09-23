@@ -76,6 +76,9 @@ test("composer and right panel expose LibreChat-style regions without backend au
     "src/components/librechatShell/LibreChatSidePanel.tsx",
   );
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
+  const driveBrowser = read(
+    "src/components/workbench/ProfileDriveWorkspaceBrowser.tsx",
+  );
   const chatInput = read("src/components/chat/ChatInput.tsx");
   const composer = read("src/librechat-ui/Composer.tsx");
   const chatCss = read("src/styles/chat.css");
@@ -86,11 +89,16 @@ test("composer and right panel expose LibreChat-style regions without backend au
     sidePanel,
     /<section\b[^>]*aria-labelledby="librechat-context-overview-label"[^>]*>[\s\S]*?<h2\b[^>]*id="librechat-context-overview-label"[^>]*>[\s\S]*?workbench\.workspaceContext/,
   );
-  assert.match(sidePanel, /data-librechat-context-section="files"/);
+  assert.doesNotMatch(sidePanel, /data-librechat-context-section="files"/);
   assert.doesNotMatch(sidePanel, /section="run"/);
   assert.doesNotMatch(sidePanel, /data-librechat-side-tab=/);
   assert.doesNotMatch(sidePanel, /role="tablist"|role="tab"/);
   assert.doesNotMatch(sidePanel, /activeTab|setActiveTab/);
+  assert.doesNotMatch(sidePanel, /filesStatus|SessionFilesList/);
+  assert.match(driveBrowser, /data-librechat-context-section="files"/);
+  assert.match(driveBrowser, /role="tablist"/);
+  assert.match(driveBrowser, /role="tab"/);
+  assert.match(driveBrowser, /activeSource|setActiveSource/);
   assert.match(legacySidePanel, /\.\.\/\.\.\/librechat-ui/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(rightPanel, /librechat-ui\/SidePanel/);
@@ -121,8 +129,9 @@ test("empty chat keeps the first task prompt reachable and context uses one quie
   assert.match(welcomeCss, /html\[data-mobile-keyboard="true"\] \.welcome-root\.welcome-chat-start[\s\S]*?justify-content:\s*flex-start/);
   assert.doesNotMatch(welcomeCss, /\.welcome-root\.welcome-chat-start[\s\S]{0,300}h-screen|\.welcome-root\.welcome-chat-start[\s\S]{0,300}min-height:\s*100vh/);
 
-  assert.match(surface, /context:[\s\S]*?border-l border-\[var\(--theme-border\)\]/);
-  assert.match(surface, /context:[\s\S]*?min-w-0 w-full/);
+  assert.match(surface, /context:[\s\S]*?fixed inset-y-0 right-0/);
+  assert.match(surface, /context:[\s\S]*?min-w-0 w-\[calc\(100vw-3\.25rem\)\]/);
+  assert.match(surface, /context:[\s\S]*?xl:static[\s\S]*?xl:w-full/);
   assert.match(surface, /workspaceWithContext:[\s\S]*?minmax\(18rem,20rem\)/);
   assert.doesNotMatch(sidePanel, /workbenchSurface\.secondaryPanel/);
   assert.match(sidePanel, /className="min-h-0 flex-1 overflow-y-auto pr-1"/);

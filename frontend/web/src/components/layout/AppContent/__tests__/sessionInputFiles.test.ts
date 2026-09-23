@@ -65,18 +65,14 @@ test("hydrates a persisted user card only from files bound to that message run",
   assert.equal(merged[1].attachments, undefined);
 });
 
-test("side panel combines session inputs with structured assistant response files", () => {
+test("session file projection remains authoritative without a duplicate side card", () => {
   const source = readFileSync(
     new URL("../../../../librechat-ui/SidePanel.tsx", import.meta.url),
     "utf8",
   );
   const chatView = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /filesStatus === "error"/);
-  assert.match(source, /status === "partial"/);
-  assert.match(source, /workbench\.contextPanel\.filesUnavailable/);
-  assert.match(source, /onOpenFile/);
-  assert.match(source, /onDownloadFile/);
+  assert.doesNotMatch(source, /filesStatus|onOpenFile|onDownloadFile|SessionFilesList/);
   assert.match(chatView, /sessionApi\.getInputFiles\(sessionId\)/);
   assert.doesNotMatch(chatView, /sessionApi\.getArtifactFiles\(sessionId\)/);
   assert.match(chatView, /projectSessionWorkspaceFiles/);
@@ -86,6 +82,7 @@ test("side panel combines session inputs with structured assistant response file
     chatView,
     /\[sessionId, currentRunId, attachments\.length\]/,
   );
-  assert.match(chatView, /files=\{visibleWorkspaceProjection\.files\}/);
+  assert.doesNotMatch(chatView, /files=\{visibleWorkspaceProjection\.files\}/);
+  assert.match(chatView, /onProfileDriveFileImported=\{handleProfileDriveFileImported\}/);
   assert.doesNotMatch(chatView, /<WorkbenchRightPanel[\s\S]{0,400}attachments=\{attachments\}/);
 });

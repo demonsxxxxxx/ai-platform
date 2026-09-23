@@ -198,44 +198,61 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   const shell = read("src/librechat-ui/Shell.tsx");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
   const sidePanel = read("src/librechat-ui/SidePanel.tsx");
+  const driveBrowser = read(
+    "src/components/workbench/ProfileDriveWorkspaceBrowser.tsx",
+  );
   const chatInput = read("src/components/chat/ChatInput.tsx");
   const composer = read("src/librechat-ui/Composer.tsx");
 
   assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4"/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(surface, /context:[\s\S]*fixed inset-y-0 right-0/);
+  assert.match(surface, /context:[\s\S]*xl:static/);
   assert.match(surface, /workspaceWithContext:[\s\S]*18rem/);
   assert.match(shell, /data-librechat-context-toggle/);
+  assert.match(shell, /aria-controls="librechat-context-panel"/);
+  assert.match(shell, /fixed inset-0 z-40[\s\S]*xl:hidden/);
+  assert.match(shell, /event\.key === "Escape"/);
   assert.match(shell, /contextOpen/);
   assert.match(shell, /useState\(false\)/);
   assert.doesNotMatch(shell, /useState\(true\)/);
   assert.match(shell, /aria-expanded=\{contextOpen\}/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(sidePanel, /workbenchSurface\.compactPanel/);
+  assert.match(driveBrowser, /workbenchSurface\.compactPanel/);
   assert.match(chatInput, /LibreChatComposerFrame/);
   assert.doesNotMatch(chatInput, /ChatInputHelpMenu/);
   assert.match(composer, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });
 
-test("workbench right context is a session file-only panel", () => {
+test("workbench right context exposes one lazy two-drive file tree", () => {
   const sidePanel = read("src/librechat-ui/SidePanel.tsx");
+  const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
+  const driveBrowser = read(
+    "src/components/workbench/ProfileDriveWorkspaceBrowser.tsx",
+  );
 
   assert.match(sidePanel, /data-librechat-context-overview/);
-  assert.match(sidePanel, /data-librechat-context-section="files"/);
-  assert.match(sidePanel, /workbench\.contextPanel\.files/);
-  assert.match(sidePanel, /filesStatus/);
-  assert.match(sidePanel, /formatFileSize/);
+  assert.doesNotMatch(sidePanel, /data-librechat-context-section="files"/);
+  assert.doesNotMatch(sidePanel, /filesStatus|formatFileSize|SessionFilesList/);
+  assert.match(rightPanel, /<ProfileDriveWorkspaceBrowser/);
+  assert.equal((rightPanel.match(/<ProfileDriveWorkspaceBrowser/g) ?? []).length, 1);
+  assert.match(driveBrowser, /data-librechat-context-section="files"/);
+  assert.match(driveBrowser, /role="tablist"/);
+  assert.match(driveBrowser, /role="tab"/);
+  assert.match(driveBrowser, /"profile"/);
+  assert.match(driveBrowser, /"public"/);
+  assert.match(driveBrowser, /toggleDirectory/);
+  assert.match(driveBrowser, /childrenByPath/);
+  assert.match(driveBrowser, /aria-expanded/);
+  assert.match(driveBrowser, /role="tree"/);
+  assert.match(driveBrowser, /role="treeitem"/);
+  assert.doesNotMatch(driveBrowser, /breadcrumbs|navigate\(/);
   assert.doesNotMatch(sidePanel, /section="run"/);
   assert.doesNotMatch(sidePanel, /section="skills"/);
   assert.doesNotMatch(sidePanel, /section="mcp"/);
   assert.doesNotMatch(sidePanel, /section="permissions"/);
-  assert.doesNotMatch(sidePanel, /selectedSkillsCount/);
-  assert.doesNotMatch(sidePanel, /selectedToolsCount/);
-  assert.doesNotMatch(sidePanel, /approvalCount/);
-  assert.doesNotMatch(sidePanel, /workbench\.contextPanel\.selectedSkills/);
-  assert.doesNotMatch(sidePanel, /workbench\.contextPanel\.selectedTools/);
-  assert.doesNotMatch(sidePanel, /workbench\.contextPanel\.permissions/);
 });
 
 test("post-login projection panels share workbench surface tokens", () => {
