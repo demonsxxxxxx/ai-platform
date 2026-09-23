@@ -18,9 +18,93 @@ from tools.release_image_manifest import (
     assemble_manifest,
     validate_manifest,
 )
-from tools import release_image_manifest
+from tools import release_compose_package, release_image_manifest
 from tools.release_compose_package import DATA_IMAGES, build_package
 from tools.oci_image_manifest import MAX_OCI_DOCUMENT_BYTES
+
+
+def test_pin_data_images_retries_failed_pull_before_recording_digest(monkeypatch):
+    pulls = []
+    inspections = []
+    delays = []
+
+    def pull(command, *, check, timeout):
+        assert command[:4] == ["docker", "pull", "--platform", "linux/amd64"]
+        assert check and 0 < timeout <= 600
+        tag = command[-1]
+        pulls.append(tag)
+        if tag == DATA_IMAGES["minio"] and pulls.count(tag) < 3:
+            raise subprocess.CalledProcessError(1, command)
+
+    def inspect(command, *, text, timeout):
+        assert command[:3] == ["docker", "image", "inspect"]
+        assert text and timeout == 30
+        tag = command[-1]
+        inspections.append(tag)
+        return json.dumps([{"RepoDigests": [tag.rsplit(":", 1)[0] + "@sha256:" + "a" * 64]}])
+
+    monkeypatch.setattr(release_compose_package.subprocess, "run", pull)
+    monkeypatch.setattr(release_compose_package.subprocess, "check_output", inspect)
+    monkeypatch.setattr(release_compose_package.time, "sleep", delays.append)
+
+    result = release_compose_package.pin_data_images()
+
+    assert pulls == [*DATA_IMAGES.values(), DATA_IMAGES["minio"], DATA_IMAGES["minio"]]
+    assert inspections == list(DATA_IMAGES.values())
+    assert delays == [5, 10]
+    assert result == {
+        service: tag.rsplit(":", 1)[0] + "@sha256:" + "a" * 64
+        for service, tag in DATA_IMAGES.items()
+    }
+
+
+@pytest.mark.parametrize("failure", ["nonzero_exit", "timeout"])
+def test_pin_data_images_stops_after_bounded_failed_pulls(monkeypatch, failure):
+    pulls = []
+    delays = []
+
+    def pull(command, *, check, timeout):
+        pulls.append(command)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, timeout)
+        raise subprocess.CalledProcessError(1, command)
+
+    def unexpected_inspect(*args, **kwargs):
+        pytest.fail("a failed data image pull must not produce a digest")
+
+    monkeypatch.setattr(release_compose_package.subprocess, "run", pull)
+    monkeypatch.setattr(release_compose_package.subprocess, "check_output", unexpected_inspect)
+    monkeypatch.setattr(release_compose_package.time, "sleep", delays.append)
+
+    error = subprocess.TimeoutExpired if failure == "timeout" else subprocess.CalledProcessError
+    with pytest.raises(error):
+        release_compose_package.pin_data_images()
+
+    assert pulls == [["docker", "pull", "--platform", "linux/amd64", DATA_IMAGES["postgres"]]] * 3
+    assert delays == [5, 10]
+
+
+def test_pin_data_images_does_not_retry_after_total_pull_budget(monkeypatch):
+    now = [0]
+    pulls = []
+
+    def pull(command, *, check, timeout):
+        pulls.append(command)
+        now[0] = 595
+        raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(release_compose_package.subprocess, "run", pull)
+    monkeypatch.setattr(release_compose_package.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        release_compose_package.time,
+        "sleep",
+        lambda delay: pytest.fail("the remaining budget must not be consumed by backoff"),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        release_compose_package.pin_data_images()
+
+    assert pulls == [["docker", "pull", "--platform", "linux/amd64", DATA_IMAGES["postgres"]]]
 
 
 @pytest.mark.parametrize("profile", ["internal-test", "production"])
