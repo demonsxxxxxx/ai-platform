@@ -4,6 +4,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Callable, Protocol
 
 from app.skills.api import restore_admitted_skill_manifest_authority
+from app.settings import get_settings
 
 
 class ExecutorResult(Protocol):
@@ -23,6 +24,31 @@ _FORBIDDEN_ARTIFACT_KEYS = {
     "executable_path",
     "cwd",
 }
+
+
+def artifact_download_url(artifact_id: str) -> str:
+    return f"/api/ai/artifacts/{artifact_id}/download"
+
+
+def _sdk_import_status() -> str:
+    try:
+        import claude_agent_sdk  # noqa: F401
+    except Exception as exc:  # noqa: BLE001 - optional SDK imports may fail arbitrarily.
+        return f"unavailable:{exc.__class__.__name__}"
+    return "ok"
+
+
+def worker_runtime_evidence(
+    *, worker_id: str | None, executor_type: str
+) -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "worker_id": worker_id,
+        "executor_type": executor_type,
+        "claude_agent_sdk_enabled": bool(settings.claude_agent_sdk_enabled),
+        "claude_agent_model": settings.claude_agent_model,
+        "claude_agent_sdk_import": _sdk_import_status(),
+    }
 
 
 def sanitize_artifact_manifest(value: Any) -> Any:

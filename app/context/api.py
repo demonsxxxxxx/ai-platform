@@ -17,6 +17,7 @@ from app.context.application.provider_sessions import (
     execute_provider_session_callback,
 )
 from app.context.application.worker_snapshot import (
+    context_snapshot_ref_from_row as context_snapshot_ref_from_row,
     materialize_worker_context_snapshot as _materialize_worker_context_snapshot,
 )
 from app.context.domain.file_staging import (
