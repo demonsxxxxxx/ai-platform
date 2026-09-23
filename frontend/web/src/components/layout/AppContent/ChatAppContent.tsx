@@ -138,7 +138,12 @@ export function clearAgentConversationOperationId({
   revision: number;
   storage: Pick<Storage, "removeItem"> | null;
 }): void {
-  storage?.removeItem(agentConversationOperationStorageKey(agentId, revision));
+  if (!storage) return;
+  try {
+    storage.removeItem(agentConversationOperationStorageKey(agentId, revision));
+  } catch {
+    // Session reset remains best-effort when browser storage is unavailable.
+  }
 }
 
 interface AgentFirstSendCoordinator {
@@ -477,6 +482,7 @@ export function ChatAppContent({
     messages,
     sessionId,
     currentRunId,
+    canStopGeneration,
     isLoading,
     isLoadingHistory,
     connectionStatus,
@@ -1028,6 +1034,11 @@ export function ChatAppContent({
 
   const handleNewSessionWithReset = useCallback(() => {
     if (agentWorkspace) {
+      clearAgentConversationOperationId({
+        agentId: agentWorkspace.agent_id,
+        revision: agentWorkspace.expected_revision,
+        storage: browserSessionStorage(),
+      });
       invalidateAgentWorkspaceFirstSend();
       setAgentWorkspaceError(null);
       clearMessages();
@@ -1376,6 +1387,9 @@ export function ChatAppContent({
             sessionId={visibleSessionId}
             conversationIdentityKey={conversationIdentityKey}
             currentRunId={visibleCurrentRunId}
+            canStopGeneration={
+              agentWorkspaceTranscriptReady && canStopGeneration
+            }
             isLoading={isLoading}
             isLoadingHistory={isLoadingHistory}
             connectionStatus={connectionStatus}

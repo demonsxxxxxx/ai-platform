@@ -53,6 +53,24 @@ export const PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS = {
     "chat.runStatus.event.modelServiceUnavailable",
     "模型服务不可用",
   ),
+  model_proxy_authorization_failed: failed(
+    "chat.runTerminal.modelProxyAuthorizationFailed",
+    "模型代理授权未通过。请重新开始任务；如问题持续，请联系管理员。",
+    "chat.runStatus.event.modelProxyAuthorizationFailed",
+    "模型代理授权失败",
+  ),
+  model_proxy_run_binding_failed: failed(
+    "chat.runTerminal.modelProxyRunBindingFailed",
+    "任务与模型运行绑定失效。请重新开始任务；如问题持续，请联系管理员。",
+    "chat.runStatus.event.modelProxyRunBindingFailed",
+    "模型运行绑定失效",
+  ),
+  model_proxy_configuration_invalid: failed(
+    "chat.runTerminal.modelProxyConfigurationInvalid",
+    "模型运行配置不可用。请联系管理员确认模型代理配置。",
+    "chat.runStatus.event.modelProxyConfigurationInvalid",
+    "模型运行配置不可用",
+  ),
   execution_service_unavailable: failed(
     "chat.runTerminal.executionServiceUnavailable",
     "AI 执行服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
@@ -84,6 +102,13 @@ export const PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS = {
     "工具调用证据未完整确认（tool_invocation_evidence_mismatch）。请重试；如问题持续，请联系管理员。",
     "chat.runStatus.event.toolInvocationEvidenceMismatch",
     "工具调用证据未完整确认",
+    "tool_evidence",
+  ),
+  tool_execution_outcome_unconfirmed: failed(
+    "chat.runTerminal.toolExecutionOutcomeUnconfirmed",
+    "工具执行结果尚未确认。为避免重复操作，请勿重试；请联系管理员并提供任务编号。",
+    "chat.runStatus.event.toolExecutionOutcomeUnconfirmed",
+    "工具执行结果尚未确认",
     "tool_evidence",
   ),
   required_capability_unavailable: failed(

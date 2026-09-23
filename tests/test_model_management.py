@@ -1471,6 +1471,7 @@ async def test_internal_runtime_proxy_rejects_invalid_capability_before_database
 )
 async def test_internal_runtime_proxy_rejects_malformed_tokens_before_database(
     monkeypatch,
+    caplog,
     internal_token: str,
     model_authorization: str,
     model_api_key: str,
@@ -1531,6 +1532,26 @@ async def test_internal_runtime_proxy_rejects_malformed_tokens_before_database(
 
     assert captured.value.status_code == 403
     assert captured.value.detail == expected_detail
+    denial = next(
+        record
+        for record in reversed(caplog.records)
+        if record.name == model_routes.__name__
+        and record.getMessage() == "model_proxy_denied"
+    )
+    assert denial.reason_code == expected_detail
+    assert denial.provider == "openai"
+    assert denial.upstream_path == "v1/chat/completions"
+    assert denial.run_id == "run-123"
+    assert denial.attempt_id == "attempt-123"
+    serialized_record = repr(denial.__dict__)
+    for secret in (
+        internal_token,
+        model_authorization,
+        model_api_key,
+        '"model":"openai/gpt-5"',
+    ):
+        if secret:
+            assert secret not in serialized_record
 
 
 @pytest.mark.asyncio

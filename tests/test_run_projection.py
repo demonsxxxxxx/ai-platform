@@ -299,6 +299,21 @@ def test_required_capability_terminal_projection_is_stable_for_users_and_admins(
     assert public_terminal_projection("failed", "claude_agent_sdk_upstream_error")[
         "detail_code"
     ] == "model_service_unavailable"
+    assert public_terminal_projection("failed", "model_proxy_capability_invalid")[
+        "detail_code"
+    ] == "model_proxy_authorization_failed"
+    assert public_terminal_projection("failed", "model_proxy_run_binding_invalid")[
+        "detail_code"
+    ] == "model_proxy_run_binding_failed"
+    assert public_terminal_projection("failed", "model_capacity_missing")[
+        "detail_code"
+    ] == "model_proxy_configuration_invalid"
+    assert public_terminal_projection("failed", "model_proxy_count_tokens_invalid")[
+        "detail_code"
+    ] == "model_service_unavailable"
+    assert "token" not in str(
+        public_terminal_projection("failed", "model_proxy_capability_invalid")
+    )
     assert public_terminal_projection(
         "failed", "required_tool_completion_evidence_mismatch"
     )["detail_code"] == "required_capability_unavailable"

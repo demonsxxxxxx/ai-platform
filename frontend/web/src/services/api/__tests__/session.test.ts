@@ -167,7 +167,7 @@ test("preserves legacy session get while adding safe authoritative recovery", as
   }
 });
 
-test("history requests opt into compact message chunks", async () => {
+test("history requests encode opaque session ids and opt into compact message chunks", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
   globalThis.fetch = (async (input) => {
@@ -177,9 +177,11 @@ test("history requests opt into compact message chunks", async () => {
 
   try {
     await sessionApi.getEvents("session-a", { run_id: "run-a" });
+    await sessionApi.getEvents("session/with space", { run_id: "run/a" });
     await sessionApi.getEvents("session-a", { compact_message_chunks: false });
     assert.deepEqual(calls, [
       "/api/sessions/session-a/events?run_id=run-a&compact_message_chunks=true",
+      "/api/sessions/session%2Fwith%20space/events?run_id=run%2Fa&compact_message_chunks=true",
       "/api/sessions/session-a/events",
     ]);
   } finally {

@@ -16,6 +16,7 @@ const {
   exposeGenericChatControl,
   getChatToolAccess,
   getOrCreateAgentConversationOperationId,
+  clearAgentConversationOperationId,
   ensureAgentConversationForFirstSend,
   submitAgentFirstMessageSingleFlight,
   isExactAgentWorkspaceBinding,
@@ -72,6 +73,17 @@ test("Agent first send leaves route mutation to the shared session synchronizer"
     source,
     /useSessionSync\(\{[\s\S]*?sessionRouteBasePath: agentWorkspaceRouteBasePath/,
   );
+});
+
+test("explicit Agent new-task reset clears the pinned operation id", () => {
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  const handlerStart = source.indexOf("const handleNewSessionWithReset");
+  const handlerEnd = source.indexOf("const handleNewSessionAndClose", handlerStart);
+  assert.notEqual(handlerStart, -1);
+  assert.notEqual(handlerEnd, -1);
+  const handler = source.slice(handlerStart, handlerEnd);
+  assert.match(handler, /clearAgentConversationOperationId\([\s\S]*agentWorkspace\.agent_id[\s\S]*agentWorkspace\.expected_revision/);
+  assert.match(handler, /clearAgentConversationOperationId[\s\S]*invalidateAgentWorkspaceFirstSend/);
 });
 
 test("stale model selection is cleared and blocks send until explicit selection", () => {
@@ -297,6 +309,59 @@ test("persists one Agent Conversation operation identity across a response-loss 
 
   assert.equal(first, replay);
 });
+
+test("explicit new Agent task clears an old operation after bind failure", async () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
+  const firstOperationId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  const secondOperationId = "6ed64d27-bbdb-486b-9b2c-1ece2cad1ee1";
+
+  await assert.rejects(
+    ensureAgentConversationForFirstSend({
+      coordinator: { current: null },
+      profile: safeWorkspace,
+      createConversation: async () => ({
+        session_id: "session-old",
+        workspace_id: "default",
+        agent_id: safeIdentity.agent_id,
+        title: safeIdentity.name,
+        purpose: "conversation" as const,
+        agent_conversation: safeIdentity,
+      }),
+      bindConversation: async () => false,
+    }),
+    /agent_conversation_history_unavailable/,
+  );
+  assert.equal(
+    getOrCreateAgentConversationOperationId({
+      agentId: safeWorkspace.agent_id,
+      revision: safeWorkspace.expected_revision,
+      storage,
+      createId: () => firstOperationId,
+    }),
+    firstOperationId,
+  );
+
+  clearAgentConversationOperationId({
+    agentId: safeWorkspace.agent_id,
+    revision: safeWorkspace.expected_revision,
+    storage,
+  });
+  assert.equal(
+    getOrCreateAgentConversationOperationId({
+      agentId: safeWorkspace.agent_id,
+      revision: safeWorkspace.expected_revision,
+      storage,
+      createId: () => secondOperationId,
+    }),
+    secondOperationId,
+  );
+});
+
 
 test("first-send Agent creation is single-flight and binds before returning", async () => {
   const coordinator = { current: null as Promise<string> | null };

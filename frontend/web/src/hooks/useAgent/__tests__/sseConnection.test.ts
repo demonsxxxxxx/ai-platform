@@ -1542,6 +1542,17 @@ test("retries a current 401 once and aborts only its captured stream controller"
 });
 
 test("fails closed when the refreshed SSE retry is still unauthorized", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const events: string[] = [];
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      dispatchEvent: (event: Event) => {
+        events.push((event as CustomEvent).type);
+        return true;
+      },
+    },
+  });
   const { context, connectionStates } = createTokenRefreshContext();
   let fetchCalls = 0;
   let refreshCalls = 0;
@@ -1589,6 +1600,9 @@ test("fails closed when the refreshed SSE retry is still unauthorized", async ()
   assert.equal(fetchCalls, 2);
   assert.equal(context.isConnectingRef.current, false);
   assert.equal(connectionStates.at(-1), "disconnected");
+  assert.deepEqual(events, ["auth:force-relogin"]);
+  if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+  else delete (globalThis as { window?: Window }).window;
 });
 
 test("propagates a post-refresh transport failure through the original owner", async () => {
@@ -1636,6 +1650,17 @@ test("propagates a post-refresh transport failure through the original owner", a
 });
 
 test("fails closed when a current 401 has no refresh marker or refresh fails", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const events: string[] = [];
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      dispatchEvent: (event: Event) => {
+        events.push((event as CustomEvent).type);
+        return true;
+      },
+    },
+  });
   for (const scenario of [
     {
       name: "no refresh marker",
@@ -1682,7 +1707,11 @@ test("fails closed when a current 401 has no refresh marker or refresh fails", a
 
     assert.equal(context.isConnectingRef.current, false);
     assert.equal(connectionStates.at(-1), "disconnected");
+    assert.deepEqual(events, ["auth:force-relogin"]);
+    events.length = 0;
   }
+  if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+  else delete (globalThis as { window?: Window }).window;
 });
 
 test("production cookie-session SSE 401 never probes auth or opens a refreshed stream", async () => {
@@ -1694,6 +1723,7 @@ test("production cookie-session SSE 401 never probes auth or opens a refreshed s
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   let authProbeCalls = 0;
   let streamCalls = 0;
+  const events: string[] = [];
   const markerStore = new Map([
     ["ai_platform_session_present", "session-marker"],
   ]);
@@ -1717,7 +1747,12 @@ test("production cookie-session SSE 401 never probes auth or opens a refreshed s
   });
   Object.defineProperty(globalThis, "window", {
     configurable: true,
-    value: { dispatchEvent: () => true },
+    value: {
+      dispatchEvent: (event: Event) => {
+        events.push((event as CustomEvent).type);
+        return true;
+      },
+    },
   });
   const { context } = createTokenRefreshContext();
 
@@ -1746,6 +1781,7 @@ test("production cookie-session SSE 401 never probes auth or opens a refreshed s
       markerStore.get("ai_platform_session_present"),
       "session-marker",
     );
+    assert.deepEqual(events, ["auth:force-relogin"]);
   } finally {
     if (originalFetch) Object.defineProperty(globalThis, "fetch", originalFetch);
     else delete (globalThis as { fetch?: typeof fetch }).fetch;
@@ -1757,7 +1793,67 @@ test("production cookie-session SSE 401 never probes auth or opens a refreshed s
   }
 });
 
-test("SSE force-relogin 401 emits the shared recovery signal", async () => {
+
+test("SSE delayed 401 cannot force a replacement auth incarnation to logout", async () => {
+  const originalLocalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage",
+  );
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const markerStore = new Map([
+    ["ai_platform_session_present", "marker-a"],
+  ]);
+  const events: string[] = [];
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => markerStore.get(key) ?? null,
+      setItem: (key: string, value: string) => markerStore.set(key, value),
+      removeItem: (key: string) => markerStore.delete(key),
+    },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      dispatchEvent: (event: Event) => {
+        events.push((event as CustomEvent).type);
+        return true;
+      },
+    },
+  });
+  const { context } = createTokenRefreshContext();
+
+  try {
+    await assert.rejects(
+      connectToSSE(
+        "session-old",
+        "run-old",
+        "assistant-old",
+        context,
+        false,
+        async (_input, init) => {
+          markerStore.set("ai_platform_session_present", "marker-b");
+          await init.onopen?.(new Response(null, { status: 401 }));
+        },
+      ),
+      (error: unknown) => {
+        assert.equal(isNonRetryableSSEAuthenticationError(error), true);
+        if (isNonRetryableSSEAuthenticationError(error)) {
+          assert.equal(error.failure, "auth_incarnation_changed");
+        }
+        return true;
+      },
+    );
+    assert.deepEqual(events, []);
+  } finally {
+    if (originalLocalStorage) {
+      Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
+    } else delete (globalThis as { localStorage?: Storage }).localStorage;
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else delete (globalThis as { window?: Window }).window;
+  }
+});
+
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const events: string[] = [];
   Object.defineProperty(globalThis, "window", {
