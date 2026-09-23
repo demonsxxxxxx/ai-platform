@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.context.application.checkpoints import load_ready_checkpoint
+from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, sanitize_context_manifest_payload
 from app.context.domain.conversation import (
     ConversationContextError,
     build_executor_conversation_context,
@@ -223,3 +224,98 @@ async def materialize_worker_context_snapshot(
         },
         "file_ids": selected_file_ids,
     }
+
+
+def _included_count(
+    row: dict[str, Any],
+    field: str,
+    payload: dict[str, Any],
+    payload_field: str,
+) -> int:
+    raw = row.get(field)
+    if isinstance(raw, list):
+        return len(raw)
+    try:
+        return int(payload.get(payload_field) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_context_memory_policy(raw: object) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    source = str(raw.get("source") or "default").strip()
+    if source not in {"default", "stored", "not_recorded"}:
+        source = "stored"
+    try:
+        retention_days = int(raw.get("retention_days") or 90)
+    except (TypeError, ValueError):
+        retention_days = 90
+    if retention_days <= 0:
+        retention_days = 90
+    return {
+        "source": source,
+        "memory_enabled": bool(raw.get("memory_enabled", True)),
+        "long_term_memory_enabled": False,
+        "retention_days": retention_days,
+    }
+
+
+def context_snapshot_ref_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    from app.context_builder import ensure_public_context_provenance
+    from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION
+
+    payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    public_payload = ensure_public_context_provenance(
+        payload,
+        source="stored_context_snapshot",
+        message_count=_included_count(
+            row, "included_message_ids", payload, "message_count"
+        ),
+        file_count=_included_count(row, "included_file_ids", payload, "file_count"),
+        artifact_count=_included_count(
+            row, "included_artifact_ids", payload, "artifact_count"
+        ),
+        memory_record_count=_included_count(
+            row,
+            "included_memory_record_ids",
+            payload,
+            "memory_record_count",
+        ),
+        memory_policy_source="not_recorded",
+        long_term_memory_read=False,
+        preserve_stored_input_keys=True,
+    )
+    context_ref: dict[str, Any] = {
+        "schema_version": str(
+            row.get("schema_version")
+            or payload.get("schema_version")
+            or CONTEXT_SNAPSHOT_SCHEMA_VERSION
+        ),
+        "context_snapshot_id": str(row["id"]),
+        "source": public_payload["used_context_summary"]["source"],
+        "message_count": public_payload["referenced_materials"]["message_count"],
+        "file_count": public_payload["referenced_materials"]["file_count"],
+        "memory_record_count": public_payload["referenced_materials"][
+            "memory_record_count"
+        ],
+        "referenced_materials": public_payload["referenced_materials"],
+        "used_context_summary": public_payload["used_context_summary"],
+        "latest_artifact_version": public_payload["latest_artifact_version"],
+        "execution_tier": public_payload["execution_tier"],
+        "context_pack_version": public_payload["context_pack_version"],
+        "context_pack_generated_at": public_payload["context_pack_generated_at"],
+    }
+    memory_policy = _safe_context_memory_policy(payload.get("memory_policy"))
+    if memory_policy is not None:
+        context_ref["memory_policy"] = memory_policy
+    context_manifest = payload.get("context_manifest")
+    if (
+        isinstance(context_manifest, dict)
+        and context_manifest.get("schema_version")
+        == CONTEXT_MANIFEST_SCHEMA_VERSION
+    ):
+        context_ref["context_manifest"] = sanitize_context_manifest_payload(
+            context_manifest
+        )
+    return context_ref

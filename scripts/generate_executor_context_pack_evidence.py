@@ -25,7 +25,7 @@ from app import repositories  # noqa: E402
 from app.context_builder import executor_context_pack_from_snapshot  # noqa: E402
 from app.db import transaction  # noqa: E402
 from app.executors.claude_agent_sdk_runner import build_skill_prompt  # noqa: E402
-from app.worker import _context_snapshot_ref_from_row  # noqa: E402
+from app.context.api import context_snapshot_ref_from_row  # noqa: E402
 
 
 SOURCE_PROBE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v2"
@@ -152,7 +152,7 @@ def _base_evidence(
             "app.context_builder.executor_context_pack_from_snapshot",
             "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
             "app.executors.claude.prompts.build_skill_prompt",
-            "app.worker._context_snapshot_ref_from_row",
+            "app.context.api.context_snapshot_ref_from_row",
         ],
         "prompt_checks": _prompt_checks(prompt, context_pack=context_pack),
         "scope_checks": _scope_checks_from_context_pack(context_pack),
@@ -272,7 +272,7 @@ async def build_live_run_evidence(*, run_id: str) -> dict[str, Any]:
     async with transaction() as conn:
         run, snapshot_row = await _load_live_context_snapshot(conn, run_id=run_id)
         dispatch_proof = await _load_worker_dispatch_proof(conn, run=run)
-    context_ref = _context_snapshot_ref_from_row(snapshot_row)
+    context_ref = context_snapshot_ref_from_row(snapshot_row)
     context_pack = executor_context_pack_from_snapshot(context_ref)
     prompt = build_skill_prompt(
         skill_id=_required_string(run, "skill_id") or "general-chat",

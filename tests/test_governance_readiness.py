@@ -331,7 +331,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "app.context_builder.executor_context_pack_from_snapshot" in context_evidence[
         "executor_context_pack_runtime_acceptance_contract"
     ]["source_functions"]
-    assert "app.worker._context_snapshot_ref_from_row" in context_evidence[
+    assert "app.context.api.context_snapshot_ref_from_row" in context_evidence[
         "executor_context_pack_runtime_acceptance_contract"
     ]["source_functions"]
     assert "observed_worker_dispatch" in context_evidence[

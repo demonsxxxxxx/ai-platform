@@ -25,7 +25,7 @@ def _valid_executor_context_pack_evidence() -> dict:
             "app.context_builder.executor_context_pack_from_snapshot",
             "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
             "app.executors.claude.prompts.build_skill_prompt",
-            "app.worker._context_snapshot_ref_from_row",
+            "app.context.api.context_snapshot_ref_from_row",
         ],
         "prompt_checks": {
             "bounded_summary_present": True,
@@ -472,7 +472,7 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
             "app.context_builder.executor_context_pack_from_snapshot",
             "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
             "app.executors.claude.prompts.build_skill_prompt",
-            "app.worker._context_snapshot_ref_from_row",
+            "app.context.api.context_snapshot_ref_from_row",
         ],
         "required_runtime_evidence": [
             "observed_worker_dispatch",

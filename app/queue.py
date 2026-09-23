@@ -14,6 +14,7 @@ from redis.asyncio import Redis
 from app.models import QueueRunPayload
 from app.redis_client import RedisClientHandle, get_redis_client
 from app.settings import get_settings
+from app.validation import assert_safe_id
 from app.skills.pinning import SkillVersionMaterializationError, validate_skill_manifest_refs
 
 
@@ -1114,6 +1115,44 @@ class QueueHeartbeatOutcome:
 
 
 QUEUE_ATTEMPT_ID_FIELD = "_queue_attempt_id"
+
+
+@dataclass(frozen=True)
+class LeasedQueueEnvelope:
+    """Validated business payload paired with its immutable queue attempt."""
+
+    payload: QueueRunPayload
+    attempt_id: str
+
+
+class InvalidLeasedQueueEnvelope(ValueError):
+    """The queue-private lease identity is missing or cannot be trusted."""
+
+
+def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
+    return QueueRunPayload.model_validate(raw)
+
+
+def parse_leased_queue_envelope(
+    raw: dict[str, Any],
+    *,
+    payload_parser: Any | None = None,
+) -> LeasedQueueEnvelope:
+    """Validate queue authority before removing its private attempt field."""
+
+    attempt_id = raw.get(QUEUE_ATTEMPT_ID_FIELD)
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise InvalidLeasedQueueEnvelope("Queue lease attempt identity is required.")
+    try:
+        assert_safe_id(attempt_id, "attempt_id")
+    except ValueError as exc:
+        raise InvalidLeasedQueueEnvelope("Queue lease attempt identity is invalid.") from exc
+    parseable_raw = dict(raw)
+    parseable_raw.pop(QUEUE_ATTEMPT_ID_FIELD)
+    return LeasedQueueEnvelope(
+        payload=(payload_parser or parse_queue_payload)(parseable_raw),
+        attempt_id=attempt_id,
+    )
 
 
 def _new_lease_secret(prefix: str) -> str:

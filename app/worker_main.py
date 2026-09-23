@@ -68,7 +68,7 @@ from app.tool_permission_lifecycle import (
     fail_run_with_v4,
     reconcile_terminalized_permission_run,
 )
-from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
+from app.worker import WorkerOutcome, process_run_payload
 from app.streaming.api import (
     WorkerV4Capabilities,
     publish_run_event,
@@ -768,7 +768,7 @@ async def _terminalize_escaped_process_exception(
     """Converge one valid claimed run after processing escapes its normal terminal path."""
 
     try:
-        envelope = parse_leased_queue_envelope(message.payload)
+        envelope = queue.parse_leased_queue_envelope(message.payload)
         payload = envelope.payload
         queue_attempt_id = envelope.attempt_id
         attempt_id = run_attempt_id_for_queue_attempt(
