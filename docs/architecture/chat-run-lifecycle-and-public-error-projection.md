@@ -300,6 +300,49 @@ certainty.
 
 ## Private diagnostics and reconciliation
 
+### Administrator trajectory replay
+
+`ai-platform.admin-run-trajectory.v1` is an additive, read-only administrator
+projection of committed PostgreSQL `run_events`, paged by the per-Run database
+sequence. It groups validated public v4 source events into four display kinds:
+Assistant message lifecycle, Tool action start, Tool/phase/model observations,
+and Tool/Run errors. The source event type and stable event ID remain available
+for diagnosis; safe Attempt, message, operation, and causation references are
+technical correlation fields, not primary UI labels. Pagination advances over
+all source rows, including omitted rows, so private or unsupported records do
+not stall replay. The response states how many source rows were omitted in the
+page; omission is not evidence that no work occurred.
+
+This is evidence playback, not Tool re-execution, a new Run/Attempt authority,
+or a second SSE transport. It validates the v4 field allowlist on read and
+never returns arbitrary `payload_json`, raw Tool inputs/results, private
+events, `__stream_v4`, or message delta text. Cross-chunk secrets mean the
+Agent's public text is displayed separately only after whole-message redaction
+by the existing Run Monitor projection. A Tool completion observation records
+the disclosure-safe outcome, not the complete Tool response. Private failure
+observations remain in the separately authorized, bounded Runs diagnostics
+view, and cannot be interleaved into the database sequence by guessed wall
+clock order. Legacy, malformed and uncollected events remain explicit evidence
+gaps; this view does not replace service/provider logs.
+
+The endpoint requires the existing AI-admin role and tenant-bound Run lookup,
+limits each source page to 500 rows, and disables browser caching. It adds no
+new persisted raw data or retention setting: the existing Run-event lifecycle
+still governs available history. Current retention configuration does not yet
+provide an implemented positive-day Run-event expiry; a replay window must not
+be advertised as an enforced deletion period.
+
+**Change Contract:** Runs owns the administrator read model; Streaming owns the
+validated v4 source contract. Preserve tenant authorization, Run/Attempt
+authority, private-event exclusion, whole-message redaction, stable sequence
+and no-side-effect reads. Acceptance requires auth/tenant/404, cursor,
+malformed/hidden/raw-payload rejection, frontend step/reload and source-test
+coverage. A read-only projection can be rolled back by removing the endpoint
+and panel without data migration. Stop if implementation needs raw Tool/model
+payloads, inferred causal ordering, a second event store, or a replay action
+that invokes external capabilities. No superseded production path, selector,
+configuration or document is retired by this additive view.
+
 Ordinary-user routes, SSE, history and status cards must never render private SDK
 or executor envelopes, credentials, storage keys or private execution identities.
 User-visible narration and Tool details pass through the content policy above;

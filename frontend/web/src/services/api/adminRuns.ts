@@ -337,6 +337,35 @@ export interface AdminRunDetailResponse {
   audit: Array<Record<string, unknown>>;
 }
 
+export interface AdminRunTrajectoryEvent {
+  event_id: string;
+  sequence: number;
+  kind: "message" | "action" | "observation" | "error";
+  source_type: string;
+  recorded_at: string | null;
+  attempt_id: string | null;
+  message_id: string | null;
+  causation_event_id: string | null;
+  operation_id: string | null;
+  summary?: string;
+  text_length?: number;
+  category?: string;
+  stage?: string;
+  duration_ms?: number;
+  outcome?: string;
+}
+
+export interface AdminRunTrajectoryPage {
+  contract_version: "ai-platform.admin-run-trajectory.v1";
+  run_id: string;
+  after_sequence: number;
+  next_after_sequence: number;
+  has_more: boolean;
+  source_count: number;
+  omitted: { private: number; unsupported: number; invalid: number };
+  events: AdminRunTrajectoryEvent[];
+}
+
 export interface AdminRunDiagnosticExport {
   blob: Blob;
   filename: string;
@@ -411,6 +440,32 @@ export async function fetchAdminRunDiagnostics(
   return response;
 }
 
+export async function fetchAdminRunTrajectory(
+  runId: string,
+  afterSequence = 0,
+  client: AdminRunsApiClient = defaultClient,
+): Promise<AdminRunTrajectoryPage> {
+  const params = new URLSearchParams({
+    after_sequence: String(afterSequence),
+    limit: "100",
+  });
+  const response = await client.request<AdminRunTrajectoryPage>(
+    `/api/ai/admin/runs/${encodeURIComponent(runId)}/trajectory?${params}`,
+    { method: "GET" },
+  );
+  if (
+    !response ||
+    response.contract_version !== "ai-platform.admin-run-trajectory.v1" ||
+    response.run_id !== runId ||
+    !Array.isArray(response.events) ||
+    !Number.isSafeInteger(response.next_after_sequence) ||
+    response.next_after_sequence < afterSequence
+  ) {
+    throw new Error("admin_run_trajectory_response_invalid");
+  }
+  return response;
+}
+
 function diagnosticExportFilename(response: Response, runId: string): string {
   const disposition = response.headers.get("Content-Disposition") ?? "";
   const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
@@ -445,5 +500,6 @@ export const adminRunsApi = {
   list: fetchAdminRuns,
   detail: fetchAdminRunDetail,
   diagnostics: fetchAdminRunDiagnostics,
+  trajectory: fetchAdminRunTrajectory,
   exportDiagnostics: exportAdminRunDiagnostics,
 };

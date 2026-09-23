@@ -14,11 +14,13 @@ from app.runs.api import (
     AdminRunDetailResponse,
     AdminRunListResponse,
     AdminRunDiagnosticsResponse,
+    ADMIN_TRAJECTORY_CONTRACT_VERSION,
     ADMIN_DIAGNOSTIC_EXPORT_SCHEMA_VERSION,
     AdminDiagnosticExportTooLarge,
     RunCancellationUseCase,
     RunDiagnosticsService,
     build_admin_worker_execution,
+    project_admin_trajectory_page,
     build_admin_diagnostic_export,
 )
 from app.routes.sandbox_runtime_cleanup import (
@@ -389,6 +391,47 @@ async def admin_run_detail(
     ):
         detail.setdefault(collection, [])
     return detail
+
+
+@router.get("/admin/runs/{run_id}/trajectory")
+async def admin_run_trajectory(
+    run_id: str,
+    response: Response,
+    after_sequence: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    """Replay a page of committed, disclosure-safe event facts without execution."""
+
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    try:
+        run_id = assert_safe_id(run_id, "run_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async with transaction() as conn:
+        run = await repositories.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        source_rows = await repositories.list_run_events(
+            conn,
+            tenant_id=principal.tenant_id,
+            run_id=run_id,
+            after_sequence=after_sequence,
+            limit=limit + 1,
+        )
+    page_rows = source_rows[:limit]
+    projection = project_admin_trajectory_page(page_rows, sanitize_text=sanitize_public_text)
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "contract_version": ADMIN_TRAJECTORY_CONTRACT_VERSION,
+        "run_id": run_id,
+        "after_sequence": after_sequence,
+        "next_after_sequence": int(page_rows[-1]["sequence"]) if page_rows else after_sequence,
+        "has_more": len(source_rows) > limit,
+        "source_count": len(page_rows),
+        **projection,
+    }
 
 
 @router.get(
