@@ -163,6 +163,38 @@ test("Run Monitor keeps the full semantic phase history with measured duration",
   assert.equal(view.recentActivity[0]?.duration_ms, 1_250);
 });
 
+test("Run Monitor hides repeated heartbeats and private event details", () => {
+  const events = [
+    { event_id: "start", type: "run_started", message: "Worker 已领取请求" },
+    {
+      event_id: "heartbeat",
+      type: "run_started",
+      message: "任务仍在处理中",
+      payload: { heartbeat: true },
+    },
+    { event_id: "heartbeat-v4", type: "stream.heartbeat" },
+    { event_id: "heartbeat-legacy", type: "heartbeat" },
+    {
+      event_id: "private-tool",
+      type: "tool.completed",
+      visible_to_user: false,
+      message: "PRIVATE_EVENT_MARKER",
+      payload: { display_name: "PrivateTool", operation_id: "private-operation" },
+    },
+    {
+      event_id: "private-message",
+      type: "message.delta",
+      visible_to_user: false,
+      payload: { delta: "PRIVATE_OUTPUT_MARKER" },
+    },
+  ];
+
+  const view = buildAdminRunMonitorView(runs[0], events);
+  assert.deepEqual(view.recentActivity.map((item) => item.label), ["开始执行"]);
+  assert.deepEqual(view.eventDiagnostics, []);
+  assert.doesNotMatch(JSON.stringify(view), /PRIVATE_EVENT_MARKER|PRIVATE_OUTPUT_MARKER/);
+});
+
 test("Run Monitor filters only the explicitly projected Run identities", () => {
   assert.deepEqual(filterAdminRuns(runs, "running", "chat_2026").map((run) => run.run_id), [
     "run_running",
@@ -216,6 +248,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
   const originalList = adminRunsApi.list;
   const originalDetail = adminRunsApi.detail;
   const originalDiagnostics = adminRunsApi.diagnostics;
+  const originalTrajectory = adminRunsApi.trajectory;
   const originalExportDiagnostics = adminRunsApi.exportDiagnostics;
   const calls: string[] = [];
 
@@ -245,9 +278,27 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     },
     worker_execution: {
       response: "WORKER_EFFECTIVE_RESPONSE",
+      messages: [
+        {
+          ordinal: 1,
+          kind: "commentary",
+          text: "正在确认日志来源",
+          sequence: 1,
+          created_at: "2026-04-01T09:00:01Z",
+        },
+        {
+          ordinal: 2,
+          kind: "answer",
+          text: "WORKER_EFFECTIVE_RESPONSE",
+          sequence: 22,
+          created_at: "2026-04-01T09:00:04Z",
+        },
+      ],
       actions: [
         {
           ordinal: 1,
+          sequence: 10,
+          invocation_id: "tool-call-7",
           label: "Read",
           category: "read",
           status: "succeeded",
@@ -476,6 +527,37 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     calls.push(`diagnostics:${runId}`);
     return diagnostics;
   };
+  adminRunsApi.trajectory = async (runId: string, afterSequence = 0) => {
+    calls.push(`trajectory:${runId}:${afterSequence}`);
+    if (afterSequence === 2) {
+      return {
+        contract_version: "ai-platform.admin-run-trajectory.v1",
+        run_id: runId,
+        after_sequence: 2,
+        next_after_sequence: 23,
+        has_more: false,
+        source_count: 2,
+        omitted: { private: 0, unsupported: 0, invalid: 0 },
+        events: [
+          { event_id: "evt_22", sequence: 22, kind: "message", source_type: "message.completed", recorded_at: null, attempt_id: "attempt-a", message_id: "msg_a", causation_event_id: null, operation_id: null, summary: "Agent 输出完成", text_length: 25 },
+          { event_id: "evt_23", sequence: 23, kind: "error", source_type: "tool.failed", recorded_at: null, attempt_id: "attempt-a", message_id: null, causation_event_id: "evt_22", operation_id: "op_b", summary: "Execute", outcome: "timeout" },
+        ],
+      };
+    }
+    return {
+      contract_version: "ai-platform.admin-run-trajectory.v1",
+      run_id: runId,
+      after_sequence: afterSequence,
+      next_after_sequence: 2,
+      has_more: true,
+      source_count: 2,
+      omitted: { private: 1, unsupported: 0, invalid: 0 },
+      events: [
+        { event_id: "evt_1", sequence: 1, kind: "action", source_type: "tool.started", recorded_at: null, attempt_id: "attempt-a", message_id: null, causation_event_id: null, operation_id: "op_a", summary: "Read", category: "read" },
+        { event_id: "evt_2", sequence: 2, kind: "observation", source_type: "tool.completed", recorded_at: null, attempt_id: "attempt-a", message_id: null, causation_event_id: "evt_1", operation_id: "op_a", summary: "Read", outcome: "completed" },
+      ],
+    };
+  };
   adminRunsApi.exportDiagnostics = async (runId: string) => {
     calls.push(`export:${runId}`);
     return {
@@ -548,13 +630,37 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
 
     assert.ok(calls.includes("detail:run_running"));
     assert.ok(calls.includes("diagnostics:run_running"));
+    await waitFor(() => calls.includes("trajectory:run_running:0"));
+    assert.match(container.textContent ?? "", /事件回放/);
+    const trajectoryButtons = Array.from(
+      container.querySelectorAll("[data-run-trajectory-replay] button"),
+    ) as HTMLButtonElement[];
+    const nextTrajectoryStep = trajectoryButtons.find((button) => button.textContent === "下一步");
+    assert.ok(nextTrajectoryStep);
+    await act(async () => {
+      nextTrajectoryStep.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    assert.match(container.querySelector("[data-run-trajectory-current]")?.textContent ?? "", /动作.*Read/);
+    const loadMoreTrajectory = Array.from(container.querySelectorAll("[data-run-trajectory-replay] button"))
+      .find((button) => (button as HTMLButtonElement).textContent === "加载后续事件") as HTMLButtonElement | undefined;
+    assert.ok(loadMoreTrajectory);
+    await act(async () => {
+      loadMoreTrajectory.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    await waitFor(() => calls.includes("trajectory:run_running:2"));
+    assert.match(container.querySelector("[data-run-trajectory-replay]")?.textContent ?? "", /1 \/ 4 条/);
+    await act(async () => {
+      nextTrajectoryStep.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      nextTrajectoryStep.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    assert.match(container.querySelector("[data-run-trajectory-message]")?.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
     assert.match(container.textContent ?? "", /审核季度采购合同/);
     assert.match(container.textContent ?? "", /技术信息/);
     assert.match(container.textContent ?? "", /Run ID/);
     assert.match(container.textContent ?? "", /trace-a/);
     assert.match(container.textContent ?? "", /worker_setup/);
     assert.match(container.textContent ?? "", /lease-a/);
-    assert.match(container.textContent ?? "", /Worker 执行内容/);
+    assert.match(container.textContent ?? "", /Agent 与工具记录/);
     assert.match(container.textContent ?? "", /处理时间线/);
     assert.match(container.textContent ?? "", /执行尝试/);
     assert.match(container.textContent ?? "", /138/);
@@ -571,6 +677,23 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     await waitFor(() => calls.includes("download-click"));
     assert.ok(calls.includes("export:run_running"));
     assert.match(container.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
+    assert.match(container.textContent ?? "", /正在确认日志来源/);
+    const journalEntries = Array.from(
+      container.querySelectorAll("[data-run-execution-journal] > li"),
+    ) as HTMLElement[];
+    assert.equal(journalEntries.length, 3);
+    assert.match(journalEntries[0].textContent ?? "", /Agent 过程说明/);
+    assert.match(journalEntries[1].textContent ?? "", /工具调用 1/);
+    assert.match(journalEntries[2].textContent ?? "", /Agent 输出 2/);
+    const failureTrace = container.querySelector("[data-run-failure-trace]");
+    assert.ok(failureTrace);
+    assert.match(failureTrace.textContent ?? "", /model_wait · sdk_result_error/);
+    assert.match(failureTrace.textContent ?? "", /第 1 次尝试/);
+    assert.match(failureTrace.textContent ?? "", /claude_agent_sdk_tool_admission_failed/);
+    assert.match(failureTrace.textContent ?? "", /同一观察中的工具证据/);
+    assert.match(failureTrace.textContent ?? "", /留存异常摘要：ACTUAL_SDK_FAILURE_MARKER/);
+    assert.match(journalEntries[1].textContent ?? "", /关联诊断：tool_parameters_not_authorized/);
+    assert.match(journalEntries[1].textContent ?? "", /调用编号/);
     assert.match(container.textContent ?? "", /读取 3 个文件/);
     assert.match(container.textContent ?? "", /已识别 2 个问题/);
     assert.match(container.textContent ?? "", /步骤返回摘要/);
@@ -627,6 +750,24 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     });
     await waitFor(() => container.querySelector('[role="dialog"]') === null);
     assert.equal(dom.window.document.activeElement, openButtons[0]);
+
+    adminRunsApi.detail = async () => ({
+      ...detail,
+      worker_execution: { ...detail.worker_execution, messages: undefined },
+    });
+    await act(async () => {
+      openButtons[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    await waitFor(() => container.querySelector('[role="dialog"]') !== null);
+    assert.match(container.textContent ?? "", /Worker 返回/);
+    assert.match(container.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
+    assert.match(container.textContent ?? "", /工具调用 1/);
+    await act(async () => {
+      dom.window.document.dispatchEvent(
+        new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    await waitFor(() => container.querySelector('[role="dialog"]') === null);
 
     adminRunsApi.list = async () => ({ runs: [], limit: 50 });
     openButtons[0].focus();
@@ -750,6 +891,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     adminRunsApi.list = originalList;
     adminRunsApi.detail = originalDetail;
     adminRunsApi.diagnostics = originalDiagnostics;
+    adminRunsApi.trajectory = originalTrajectory;
     adminRunsApi.exportDiagnostics = originalExportDiagnostics;
     dom.window.close();
     for (const [key, descriptor] of previousDescriptors) {

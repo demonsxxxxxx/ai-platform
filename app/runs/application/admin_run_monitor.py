@@ -6,6 +6,7 @@ from typing import Any
 from app.streaming.api import V4_METADATA_KEY
 
 _V4_MESSAGE_TYPES = frozenset({"message.delta", "message.completed"})
+_V4_COMMENTARY_TYPE = "commentary.delta"
 _LEGACY_MESSAGE_TYPE = "assistant_delta"
 _TOOL_START_TYPES = frozenset({"mcp_tool_call_started", "tool_call_started", "tool.started"})
 _TOOL_SUCCESS_TYPES = frozenset({"mcp_tool_call_completed", "tool_call_completed", "tool.completed"})
@@ -55,7 +56,7 @@ def assemble_admin_model_output(
 
     ordered = sorted(enumerate(events), key=lambda item: _sequence(item[1], item[0]))
     has_v4_message = any(
-        event.get("type") in _V4_MESSAGE_TYPES
+        event.get("type") in _V4_MESSAGE_TYPES and event.get("visible_to_user") is True
         for _, event in ordered
     )
     if has_v4_message:
@@ -111,6 +112,96 @@ def assemble_admin_model_output(
     return sanitized if isinstance(sanitized, str) else ""
 
 
+def assemble_admin_public_messages(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    sanitize_text: Callable[[str], str],
+) -> list[dict[str, Any]]:
+    """Project each visible Assistant message after whole-message redaction.
+
+    Message identities are only grouping keys. They and private v4 metadata must
+    not become display fields. Legacy deltas lack an identity and form one block.
+    """
+
+    ordered = sorted(enumerate(events), key=lambda item: _sequence(item[1], item[0]))
+    has_v4_answer = any(
+        event.get("visible_to_user") is True and event.get("type") in _V4_MESSAGE_TYPES
+        for _, event in ordered
+    )
+    blocks: dict[tuple[str, str, str], dict[str, Any]] = {}
+    seen_legacy_ids: set[str] = set()
+    for index, event in ordered:
+        if event.get("visible_to_user") is not True:
+            continue
+        event_type = event.get("type")
+        if event_type in _V4_MESSAGE_TYPES | {_V4_COMMENTARY_TYPE}:
+            identity = _message_identity(event)
+            if identity is None:
+                continue
+            kind = "commentary" if event_type == _V4_COMMENTARY_TYPE else "answer"
+            summary_id = ""
+            if kind == "commentary":
+                commentary_id = _text_field(event, "summary_id")
+                if commentary_id is None:
+                    continue
+                summary_id = commentary_id
+            key = (kind, identity, summary_id)
+        elif event_type == _LEGACY_MESSAGE_TYPE and not has_v4_answer:
+            event_id = event.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                if event_id in seen_legacy_ids:
+                    continue
+                seen_legacy_ids.add(event_id)
+            kind = "answer"
+            key = (kind, "legacy", "")
+        else:
+            continue
+        block = blocks.setdefault(
+            key,
+            {
+                "kind": kind,
+                "sequence": _sequence(event, index)[0],
+                "created_at": event.get("created_at"),
+                "last_sequence": _sequence(event, index)[0],
+                "last_created_at": event.get("created_at"),
+                "parts": [],
+                "completed": None,
+            },
+        )
+        block["last_sequence"] = _sequence(event, index)[0]
+        block["last_created_at"] = event.get("created_at")
+        if event_type == "message.completed":
+            content = _text_field(event, "content")
+            if content is not None:
+                block["completed"] = content
+        else:
+            delta = _text_field(event, "delta")
+            if delta is None and event_type == _LEGACY_MESSAGE_TYPE:
+                value = event.get("message")
+                delta = value if isinstance(value, str) and value else None
+            if delta is not None:
+                block["parts"].append(delta)
+
+    messages: list[dict[str, Any]] = []
+    for block in blocks.values():
+        body = block["completed"] or "".join(block["parts"])
+        if not body:
+            continue
+        sanitized = sanitize_text(body)
+        if not isinstance(sanitized, str) or not sanitized:
+            continue
+        messages.append(
+            {
+                "ordinal": len(messages) + 1,
+                "kind": block["kind"],
+                "text": sanitized,
+                "sequence": block["last_sequence"] if block["kind"] == "answer" else block["sequence"],
+                "created_at": block["last_created_at"] if block["kind"] == "answer" else block["created_at"],
+            }
+        )
+    return messages
+
+
 def _safe_text(value: object, sanitize_text: Callable[[str], str]) -> str:
     if not isinstance(value, str) or not value.strip():
         return ""
@@ -118,13 +209,20 @@ def _safe_text(value: object, sanitize_text: Callable[[str], str]) -> str:
     return sanitized.strip() if isinstance(sanitized, str) else ""
 
 
-def _tool_identity(event: Mapping[str, Any], index: int) -> str:
+def _tool_invocation_id(event: Mapping[str, Any]) -> str | None:
     payload = event.get("payload")
     if isinstance(payload, Mapping):
         for key in ("operation_id", "tool_call_id", "tool_use_id"):
             value = payload.get(key)
             if isinstance(value, str) and value:
                 return value
+    return None
+
+
+def _tool_identity(event: Mapping[str, Any], index: int) -> str:
+    invocation_id = _tool_invocation_id(event)
+    if invocation_id is not None:
+        return invocation_id
     event_id = event.get("event_id")
     return event_id if isinstance(event_id, str) and event_id else f"tool-{index}"
 
@@ -184,6 +282,12 @@ def build_admin_worker_execution(
                     break
             action = {
                 "ordinal": len(actions) + 1,
+                "sequence": _sequence(event, index)[0],
+                "invocation_id": (
+                    _safe_text(identity, sanitize_text)[:512]
+                    if _tool_invocation_id(event) is not None
+                    else None
+                ),
                 "label": label or "工具调用",
                 "category": _safe_text(payload.get("category"), sanitize_text),
                 "status": _tool_status(event_type),
@@ -224,6 +328,7 @@ def build_admin_worker_execution(
 
     return {
         "response": assemble_admin_model_output(events, sanitize_text=sanitize_text),
+        "messages": assemble_admin_public_messages(events, sanitize_text=sanitize_text),
         "actions": actions,
         "model": model,
     }

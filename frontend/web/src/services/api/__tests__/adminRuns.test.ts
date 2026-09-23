@@ -6,6 +6,7 @@ import {
   exportAdminRunDiagnostics,
   fetchAdminRunDiagnostics,
   fetchAdminRunDetail,
+  fetchAdminRunTrajectory,
   fetchAdminRuns,
   type AdminRunsApiClient,
 } from "../adminRuns";
@@ -29,6 +30,33 @@ test("admin Runs list uses the bounded tenant-scoped administrator endpoint", as
       init: { method: "GET" },
     },
   ]);
+});
+
+test("admin Run trajectory reads a bounded cursor page and rejects a mismatched Run", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client: AdminRunsApiClient = {
+    async request<T>(url: string, init?: RequestInit): Promise<T> {
+      calls.push({ url, init });
+      return {
+        contract_version: "ai-platform.admin-run-trajectory.v1",
+        run_id: "run/a",
+        after_sequence: 10,
+        next_after_sequence: 12,
+        has_more: false,
+        source_count: 2,
+        omitted: { private: 0, unsupported: 0, invalid: 0 },
+        events: [],
+      } as T;
+    },
+  };
+
+  const page = await fetchAdminRunTrajectory("run/a", 10, client);
+  assert.equal(page.next_after_sequence, 12);
+  assert.deepEqual(calls, [{
+    url: "/api/ai/admin/runs/run%2Fa/trajectory?after_sequence=10&limit=100",
+    init: { method: "GET" },
+  }]);
+  await assert.rejects(fetchAdminRunTrajectory("run/b", 10, client), /admin_run_trajectory_response_invalid/);
 });
 
 test("admin Runs list binds a user scope for deep-linked diagnostics", async () => {
