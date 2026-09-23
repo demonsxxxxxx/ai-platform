@@ -28,7 +28,7 @@ function changeInput(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-test("navigates ProfileDrive and imports a file into the current workspace", async () => {
+test("expands ProfileDrive folders and imports a file into the current workspace", async () => {
   const dom = new JSDOM(
     "<!doctype html><html><body><div id='root'></div></body></html>",
     { url: "http://localhost/chat/session-a", pretendToBeVisual: true },
@@ -207,7 +207,7 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
     assert.match(container.textContent ?? "", /桌面/);
     assert.match(container.textContent ?? "", /文档/);
     const rootFilter = container.querySelector<HTMLInputElement>(
-      'input[aria-label="筛选当前目录"]',
+      'input[aria-label="筛选文件树"]',
     );
     assert.ok(rootFilter);
     await act(async () => changeInput(rootFilter, "文档"));
@@ -215,30 +215,59 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
     assert.match(container.textContent ?? "", /文档/);
     await act(async () => changeInput(rootFilter, ""));
 
+    const documentsButton = buttonByText(container, "文档");
+    assert.equal(documentsButton.getAttribute("aria-expanded"), "false");
     await act(async () => {
-      buttonByText(container, "文档").dispatchEvent(
+      documentsButton.dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
       await flush();
     });
-    assert.equal(
-      container.querySelector('[aria-current="page"]')?.textContent,
-      "文档",
-    );
+    assert.equal(documentsButton.getAttribute("aria-expanded"), "true");
+    assert.match(container.textContent ?? "", /reports/);
 
+    const reportsButton = buttonByText(container, "reports");
+    assert.equal(reportsButton.getAttribute("aria-expanded"), "false");
     await act(async () => {
-      buttonByText(container, "reports").dispatchEvent(
+      reportsButton.dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
       await flush();
     });
+    assert.equal(reportsButton.getAttribute("aria-expanded"), "true");
+    assert.match(container.textContent ?? "", /桌面/);
     assert.match(container.textContent ?? "", /report\.pdf/);
+    const reportsLoadCount = requests.filter((request) => {
+      if (!request.url.endsWith("/api/profile-drive/files/list")) return false;
+      return JSON.parse(String(request.init.body)).path === "Documents/reports";
+    }).length;
+    await act(async () => {
+      reportsButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+    });
+    assert.equal(reportsButton.getAttribute("aria-expanded"), "false");
+    assert.doesNotMatch(container.textContent ?? "", /report\.pdf/);
+    await act(async () => {
+      reportsButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+    });
+    assert.equal(reportsButton.getAttribute("aria-expanded"), "true");
+    assert.match(container.textContent ?? "", /report\.pdf/);
+    assert.equal(
+      requests.filter((request) => {
+        if (!request.url.endsWith("/api/profile-drive/files/list")) return false;
+        return JSON.parse(String(request.init.body)).path === "Documents/reports";
+      }).length,
+      reportsLoadCount,
+    );
     assert.doesNotMatch(container.textContent ?? "", /~\$draft\.doc/);
     assert.ok(container.querySelector('button[aria-label="预览 report.pdf"]'));
     assert.ok(container.querySelector('button[aria-label="下载 shortcut.lnk"]'));
 
     const filter = container.querySelector<HTMLInputElement>(
-      'input[aria-label="筛选当前目录"]',
+      'input[aria-label="筛选文件树"]',
     );
     assert.ok(filter);
     await act(async () => changeInput(filter, "shortcut"));
@@ -339,7 +368,7 @@ test("navigates ProfileDrive and imports a file into the current workspace", asy
   }
 });
 
-test("mounts the public drive with source-correct navigation and import", async () => {
+test("mounts the public drive with source-correct expansion and import", async () => {
   const dom = new JSDOM(
     "<!doctype html><html><body><div id='root'></div></body></html>",
     { url: "http://localhost/chat/session-a", pretendToBeVisual: true },
@@ -456,8 +485,6 @@ test("mounts the public drive with source-correct navigation and import", async 
       root.render(
         createElement(ProfileDriveWorkspaceBrowser, {
           sessionId: "session-a",
-          sourceId: "public",
-          title: "公盘",
           onImported: () => undefined,
           onAddToConversation: () => undefined,
         }),
@@ -466,39 +493,82 @@ test("mounts the public drive with source-correct navigation and import", async 
       await flush();
     });
 
-    assert.ok(container.querySelector('button[aria-label="刷新公盘"]'));
-    assert.ok(container.querySelector('nav[aria-label="公盘路径"]'));
-    assert.equal(container.querySelector('[aria-current="page"]')?.getAttribute("title"), "公盘");
+    const profileTab = buttonByText(container, "个人盘");
+    const publicTab = buttonByText(container, "公盘");
+    assert.equal(profileTab.getAttribute("aria-selected"), "true");
+    assert.equal(publicTab.getAttribute("aria-selected"), "false");
+    assert.equal(
+      container.querySelectorAll('[data-librechat-context-section="files"]').length,
+      1,
+    );
+
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('button[aria-label="刷新公盘"]')?.dispatchEvent(
+      publicTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    const publicPanel = container.querySelector<HTMLElement>(
+      '#profile-drive-public-panel',
+    );
+    const profilePanel = container.querySelector<HTMLElement>(
+      '#profile-drive-profile-panel',
+    );
+    assert.ok(publicPanel);
+    assert.ok(profilePanel);
+    assert.equal(publicPanel.hidden, false);
+    assert.equal(profilePanel.hidden, true);
+    assert.ok(publicPanel.querySelector('button[aria-label="刷新公盘"]'));
+    let publicFolder = buttonByText(publicPanel, "01-研发部");
+    assert.equal(publicFolder.getAttribute("aria-expanded"), "false");
+    await act(async () => {
+      publicPanel.querySelector<HTMLButtonElement>('button[aria-label="刷新公盘"]')?.dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
       await flush();
     });
+    publicFolder = buttonByText(publicPanel, "01-研发部");
     await act(async () => {
-      buttonByText(container, "01-研发部").dispatchEvent(
+      publicFolder.dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
       await flush();
     });
+    assert.equal(publicFolder.getAttribute("aria-expanded"), "true");
+    assert.match(publicPanel.textContent ?? "", /report\.pdf/);
     await act(async () => {
-      buttonByText(container, "report.pdf").dispatchEvent(
+      profileTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      publicTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+    });
+    assert.equal(publicFolder.getAttribute("aria-expanded"), "true");
+    assert.match(publicPanel.textContent ?? "", /report\.pdf/);
+    await act(async () => {
+      buttonByText(publicPanel, "report.pdf").dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
       await flush();
     });
 
-    assert.deepEqual(bodies[0], { source: "public", path: "", maxEntries: 200 });
-    assert.deepEqual(bodies[1], { source: "public", path: "", maxEntries: 200 });
-    assert.deepEqual(bodies[2], {
+    const publicLists = bodies.filter((body) => body.source === "public");
+    assert.deepEqual(publicLists[0], {
+      source: "public",
+      path: "",
+      maxEntries: 200,
+    });
+    assert.deepEqual(publicLists[1], {
+      source: "public",
+      path: "",
+      maxEntries: 200,
+    });
+    assert.deepEqual(publicLists[2], {
       source: "public",
       path: "01-研发部",
       maxEntries: 200,
     });
-    assert.deepEqual(bodies[3], {
-      source_id: "public",
-      path: "01-研发部/report.pdf",
-    });
+    assert.deepEqual(
+      bodies.find((body) => body.source_id === "public"),
+      {
+        source_id: "public",
+        path: "01-研发部/report.pdf",
+      },
+    );
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;

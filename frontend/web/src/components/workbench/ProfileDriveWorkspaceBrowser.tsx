@@ -1,12 +1,16 @@
 import {
+  Building2,
+  ChevronDown,
   ChevronRight,
   Download,
   Eye,
   FileText,
+  FolderClosed,
+  FolderOpen,
   Paperclip,
   RefreshCw,
   Search,
-  Server,
+  UserRound,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
@@ -75,11 +79,37 @@ function previewableEntry(entry: ProfileDriveFileEntry): boolean {
 
 interface ProfileDriveWorkspaceBrowserProps {
   sessionId: string | null;
-  sourceId?: ProfileDriveSourceId;
-  title?: string;
   onImported: (file: SessionInputFile) => void;
   onAddToConversation: (reference: ProfileDriveFileReference) => void | Promise<void>;
 }
+
+interface ProfileDriveSourceBrowserProps extends ProfileDriveWorkspaceBrowserProps {
+  sourceId: ProfileDriveSourceId;
+  title: string;
+}
+
+interface LoadedDirectory {
+  entries: ProfileDriveFileEntry[];
+  truncated: boolean;
+}
+
+interface ProfileDriveTreeEntryRow {
+  kind: "entry";
+  entry: ProfileDriveFileEntry;
+  depth: number;
+  parentPath: string;
+}
+
+interface ProfileDriveTreeStatusRow {
+  kind: "status";
+  key: string;
+  depth: number;
+  text: string;
+}
+
+type ProfileDriveTreeRow =
+  | ProfileDriveTreeEntryRow
+  | ProfileDriveTreeStatusRow;
 
 function profileDirectoryLabel(name: string): string {
   return PROFILE_DIRECTORY_LABELS[name.toLowerCase()] ?? name;
@@ -105,55 +135,108 @@ function browserError(error: unknown, title: string): string {
   return `${title}暂时不可用。`;
 }
 
-export function ProfileDriveWorkspaceBrowser({
+function ProfileDriveSourceBrowser({
   sessionId,
-  sourceId = "profile",
-  title = "个人文件",
+  sourceId,
+  title,
   onImported,
   onAddToConversation,
-}: ProfileDriveWorkspaceBrowserProps) {
+}: ProfileDriveSourceBrowserProps) {
   const [connected, setConnected] = useState<boolean | null>(null);
-  const [path, setPath] = useState("");
   const [entries, setEntries] = useState<ProfileDriveFileEntry[]>([]);
+  const [childrenByPath, setChildrenByPath] = useState(
+    () => new Map<string, LoadedDirectory>(),
+  );
+  const [expandedPaths, setExpandedPaths] = useState(() => new Set<string>());
+  const [loadingPaths, setLoadingPaths] = useState(() => new Set<string>());
   const [filter, setFilter] = useState("");
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [importingPath, setImportingPath] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
+  const treeGenerationRef = useRef(0);
+  const pendingPathsRef = useRef(new Set<string>());
   const mountedRef = useRef(false);
 
-  const load = useCallback(async (nextPath: string) => {
-    const requestId = ++requestIdRef.current;
+  const loadRoot = useCallback(async () => {
+    const generation = ++treeGenerationRef.current;
+    pendingPathsRef.current.clear();
     setLoading(true);
     setError(null);
+    setExpandedPaths(new Set());
+    setChildrenByPath(new Map());
+    setLoadingPaths(new Set());
     try {
-      const result = await profileDriveApi.listFiles(nextPath, sourceId);
-      if (requestId !== requestIdRef.current) return;
-      setPath(result.path);
+      const result = await profileDriveApi.listFiles("", sourceId);
+      if (generation !== treeGenerationRef.current) return;
       setEntries(result.entries.filter(visibleEntry));
       setTruncated(result.truncated);
       setConnected(true);
     } catch (loadError) {
-      if (requestId !== requestIdRef.current) return;
+      if (generation !== treeGenerationRef.current) return;
       setEntries([]);
       setTruncated(false);
       setError(browserError(loadError, title));
     } finally {
-      if (requestId === requestIdRef.current) setLoading(false);
+      if (generation === treeGenerationRef.current) setLoading(false);
     }
   }, [sourceId, title]);
 
-  const navigate = useCallback(
-    (nextPath: string) => {
-      setFilter("");
-      return load(nextPath);
+  const toggleDirectory = useCallback(
+    async (entry: ProfileDriveFileEntry) => {
+      if (expandedPaths.has(entry.path)) {
+        setExpandedPaths((current) => {
+          const next = new Set(current);
+          next.delete(entry.path);
+          return next;
+        });
+        return;
+      }
+
+      setExpandedPaths((current) => new Set(current).add(entry.path));
+      if (childrenByPath.has(entry.path) || pendingPathsRef.current.has(entry.path)) {
+        return;
+      }
+
+      const generation = treeGenerationRef.current;
+      pendingPathsRef.current.add(entry.path);
+      setLoadingPaths((current) => new Set(current).add(entry.path));
+      try {
+        const result = await profileDriveApi.listFiles(entry.path, sourceId);
+        if (generation !== treeGenerationRef.current) return;
+        setChildrenByPath((current) => {
+          const next = new Map(current);
+          next.set(entry.path, {
+            entries: result.entries.filter(visibleEntry),
+            truncated: result.truncated,
+          });
+          return next;
+        });
+      } catch (loadError) {
+        if (generation !== treeGenerationRef.current) return;
+        setExpandedPaths((current) => {
+          const next = new Set(current);
+          next.delete(entry.path);
+          return next;
+        });
+        setError(browserError(loadError, title));
+      } finally {
+        if (generation === treeGenerationRef.current) {
+          pendingPathsRef.current.delete(entry.path);
+          setLoadingPaths((current) => {
+            const next = new Set(current);
+            next.delete(entry.path);
+            return next;
+          });
+        }
+      }
     },
-    [load],
+    [childrenByPath, expandedPaths, sourceId, title],
   );
 
   useEffect(() => {
     let active = true;
+    const pendingPaths = pendingPathsRef.current;
     mountedRef.current = true;
     setLoading(true);
     void profileDriveApi
@@ -161,7 +244,7 @@ export function ProfileDriveWorkspaceBrowser({
       .then((status) => {
         if (!active) return;
         setConnected(status.connected);
-        if (status.connected) return load("");
+        if (status.connected) return loadRoot();
         setLoading(false);
         return undefined;
       })
@@ -174,9 +257,10 @@ export function ProfileDriveWorkspaceBrowser({
     return () => {
       active = false;
       mountedRef.current = false;
-      requestIdRef.current += 1;
+      treeGenerationRef.current += 1;
+      pendingPaths.clear();
     };
-  }, [load, title]);
+  }, [loadRoot, title]);
 
   const preview = useCallback(
     async (entry: ProfileDriveFileEntry) => {
@@ -204,122 +288,99 @@ export function ProfileDriveWorkspaceBrowser({
     [importingPath, onImported, sessionId, sourceId],
   );
 
+  const treeRows: ProfileDriveTreeRow[] = [];
+  const appendRows = (
+    directoryEntries: ProfileDriveFileEntry[],
+    depth: number,
+    parentPath: string,
+  ): void => {
+    for (const entry of directoryEntries) {
+      treeRows.push({ kind: "entry", entry, depth, parentPath });
+      if (entry.type !== "directory" || !expandedPaths.has(entry.path)) continue;
+      if (loadingPaths.has(entry.path)) {
+        treeRows.push({
+          kind: "status",
+          key: `${entry.path}:loading`,
+          depth: depth + 1,
+          text: "正在加载…",
+        });
+        continue;
+      }
+      const loaded = childrenByPath.get(entry.path);
+      if (!loaded) continue;
+      if (loaded.entries.length === 0) {
+        treeRows.push({
+          kind: "status",
+          key: `${entry.path}:empty`,
+          depth: depth + 1,
+          text: "目录为空",
+        });
+      } else {
+        appendRows(loaded.entries, depth + 1, entry.path);
+      }
+      if (loaded.truncated) {
+        treeRows.push({
+          kind: "status",
+          key: `${entry.path}:truncated`,
+          depth: depth + 1,
+          text: "目录内容已截断",
+        });
+      }
+    }
+  };
+  appendRows(entries, 0, "");
+
   const normalizedFilter = filter.trim().toLocaleLowerCase();
-  const filteredEntries = normalizedFilter
-    ? entries.filter((entry) =>
-        entryLabel(entry, path, sourceId)
-          .toLocaleLowerCase()
-          .includes(normalizedFilter),
+  const filteredRows = normalizedFilter
+    ? treeRows.filter(
+        (row) =>
+          row.kind === "entry" &&
+          entryLabel(row.entry, row.parentPath, sourceId)
+            .toLocaleLowerCase()
+            .includes(normalizedFilter),
       )
-    : entries;
-  const pathSegments = path ? path.split("/") : [];
-  const breadcrumbs = [
-    { label: title, path: "" },
-    ...pathSegments.map((segment, index) => ({
-      label:
-        sourceId === "profile" && index === 0
-          ? profileDirectoryLabel(segment)
-          : segment,
-      path: pathSegments.slice(0, index + 1).join("/"),
-    })),
-  ];
+    : treeRows;
+  const visibleEntryCount = filteredRows.filter(
+    (row) => row.kind === "entry",
+  ).length;
 
   return (
-    <section
-      data-librechat-context-section={`${sourceId}-drive`}
-      aria-labelledby={`librechat-${sourceId}-drive-label`}
-      className={`${workbenchSurface.compactPanel} mt-3 p-3`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className={workbenchSurface.catalog.compactIconBox}>
-            <Server size={15} aria-hidden="true" />
-          </span>
-          <h3
-            id={`librechat-${sourceId}-drive-label`}
-            className="truncate text-xs font-semibold text-[var(--theme-text)]"
-          >
-            {title}
-          </h3>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            className="rounded p-1 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:opacity-50"
-            aria-label={`刷新${title}`}
-            title={`刷新${title}`}
-            disabled={loading || connected === false}
-            onClick={() => void load(path)}
-          >
-            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-          </button>
-          <span className={workbenchSurface.catalog.chip}>
-            {loading ? "…" : connected ? filteredEntries.length : "!"}
-          </span>
-        </div>
+    <div data-profile-drive-source={sourceId}>
+      <div className="mt-2 flex min-h-8 items-center gap-1 border-y border-[var(--theme-border)] py-1">
+        <span className="min-w-0 flex-1 truncate px-1 text-[11px] font-medium text-[var(--theme-text)]">
+          {title}
+        </span>
+        <button
+          type="button"
+          className="flex size-6 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:opacity-50"
+          aria-label={`刷新${title}`}
+          title={`刷新${title}`}
+          disabled={loading || connected === false}
+          onClick={() => void loadRoot()}
+        >
+          <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+        </button>
+        <span className={workbenchSurface.catalog.chip}>
+          {loading ? "…" : connected ? visibleEntryCount : "!"}
+        </span>
       </div>
 
-      {connected !== false && !error && (
-        <>
-          <nav
-            aria-label={`${title}路径`}
-            className="mt-2 flex min-h-7 items-center overflow-x-auto whitespace-nowrap border-y border-[var(--theme-border)] py-1 text-[11px]"
-          >
-            {breadcrumbs.map((breadcrumb, index) => {
-              const current = index === breadcrumbs.length - 1;
-              return (
-                <span
-                  key={breadcrumb.path || "root"}
-                  className="flex min-w-0 items-center"
-                >
-                  {index > 0 && (
-                    <ChevronRight
-                      size={12}
-                      className="shrink-0 text-[var(--theme-text-tertiary)]"
-                      aria-hidden="true"
-                    />
-                  )}
-                  {current ? (
-                    <span
-                      aria-current="page"
-                      className="max-w-32 truncate px-1 font-medium text-[var(--theme-text)]"
-                      title={breadcrumb.path || title}
-                    >
-                      {breadcrumb.label}
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      className="max-w-32 truncate rounded px-1 text-[var(--theme-text-secondary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-                      title={breadcrumb.path || title}
-                      onClick={() => void navigate(breadcrumb.path)}
-                    >
-                      {breadcrumb.label}
-                    </button>
-                  )}
-                </span>
-              );
-            })}
-          </nav>
-
-          {!loading && entries.length > 0 && (
-            <label className="mt-2 flex h-8 items-center gap-2 rounded-md bg-[var(--theme-bg-sidebar)] px-2 ring-1 ring-[var(--theme-border)] focus-within:ring-2 focus-within:ring-[var(--theme-primary)]">
-              <Search
-                size={13}
-                className="shrink-0 text-[var(--theme-text-tertiary)]"
-                aria-hidden="true"
-              />
-              <input
-                type="search"
-                aria-label="筛选当前目录"
-                className="min-w-0 flex-1 bg-transparent text-xs text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-tertiary)]"
-                placeholder="筛选当前目录"
-                value={filter}
-                onChange={(event) => setFilter(event.target.value)}
-              />
-            </label>
-          )}
-        </>
+      {connected !== false && !error && !loading && entries.length > 0 && (
+        <label className="mt-2 flex h-8 items-center gap-2 rounded-md bg-[var(--theme-bg-sidebar)] px-2 ring-1 ring-[var(--theme-border)] focus-within:ring-2 focus-within:ring-[var(--theme-primary)]">
+          <Search
+            size={13}
+            className="shrink-0 text-[var(--theme-text-tertiary)]"
+            aria-hidden="true"
+          />
+          <input
+            type="search"
+            aria-label="筛选文件树"
+            className="min-w-0 flex-1 bg-transparent text-xs text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-tertiary)]"
+            placeholder="筛选文件树"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+          />
+        </label>
       )}
 
       <div className="mt-2">
@@ -333,25 +394,48 @@ export function ProfileDriveWorkspaceBrowser({
           <p className={workbenchSurface.mutedText}>正在加载{title}…</p>
         ) : entries.length === 0 ? (
           <p className={workbenchSurface.mutedText}>此目录为空。</p>
-        ) : filteredEntries.length === 0 ? (
-          <p className={workbenchSurface.mutedText}>当前目录没有匹配项。</p>
+        ) : filteredRows.length === 0 ? (
+          <p className={workbenchSurface.mutedText}>文件树中没有匹配项。</p>
         ) : (
-          <div role="tree" aria-label={`${title}目录`} className="space-y-0.5">
-            {filteredEntries.map((entry) => {
+          <div
+            role="tree"
+            aria-label={`${title}目录`}
+            className="min-w-0 max-w-full space-y-0.5 overflow-hidden"
+          >
+            {filteredRows.map((row) => {
+              if (row.kind === "status") {
+                return (
+                  <p
+                    key={row.key}
+                    role="status"
+                    className="flex h-7 items-center truncate text-[11px] text-[var(--theme-text-tertiary)]"
+                    style={{ paddingInlineStart: `${22 + row.depth * 16}px` }}
+                  >
+                    {row.text}
+                  </p>
+                );
+              }
+
+              const { entry, depth, parentPath } = row;
               const directory = entry.type === "directory";
+              const expanded = directory && expandedPaths.has(entry.path);
+              const folderLoading = directory && loadingPaths.has(entry.path);
               const previewable = !directory && previewableEntry(entry);
               const importing = importingPath === entry.path;
-              const disabled = Boolean(importingPath) || (!directory && !sessionId);
-              const name = entryLabel(entry, path, sourceId);
+              const disabled = !directory && (Boolean(importingPath) || !sessionId);
+              const name = entryLabel(entry, parentPath, sourceId);
               const actionLabel = directory
-                ? `打开文件夹 ${name}`
+                ? `${expanded ? "收起" : "展开"}文件夹 ${name}`
                 : `${previewable ? "预览" : "下载"} ${name}`;
               const ActionIcon = previewable ? Eye : Download;
+              const ExpandIcon = expanded ? ChevronDown : ChevronRight;
               return (
                 <div
                   key={`${entry.type}:${entry.path}`}
                   role="treeitem"
-                  className={`group flex h-8 w-full min-w-0 items-center rounded hover:bg-[var(--theme-workbench-panel)] ${
+                  aria-level={depth + 1}
+                  aria-expanded={directory ? expanded : undefined}
+                  className={`group flex h-8 w-full min-w-0 max-w-full items-center overflow-hidden rounded hover:bg-[var(--theme-workbench-panel)] ${
                     !directory && sessionId ? "cursor-grab active:cursor-grabbing" : ""
                   }`}
                   draggable={!directory && Boolean(sessionId) && !importing}
@@ -369,20 +453,39 @@ export function ProfileDriveWorkspaceBrowser({
                 >
                   <button
                     type="button"
-                    className="flex h-full min-w-0 flex-1 items-center gap-2 rounded px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
+                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-hidden rounded px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
+                    style={{ paddingInlineStart: `${6 + depth * 16}px` }}
                     aria-label={actionLabel}
+                    aria-expanded={directory ? expanded : undefined}
                     title={actionLabel}
                     disabled={disabled}
                     onClick={() =>
-                      directory ? void navigate(entry.path) : void preview(entry)
+                      directory ? void toggleDirectory(entry) : void preview(entry)
                     }
                   >
                     {directory ? (
-                      <ChevronRight
-                        size={14}
+                      <ExpandIcon
+                        size={13}
                         className="shrink-0 text-[var(--theme-text-tertiary)]"
                         aria-hidden="true"
                       />
+                    ) : (
+                      <span className="w-[13px] shrink-0" aria-hidden="true" />
+                    )}
+                    {directory ? (
+                      expanded ? (
+                        <FolderOpen
+                          size={14}
+                          className="shrink-0 text-[var(--theme-text-tertiary)]"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <FolderClosed
+                          size={14}
+                          className="shrink-0 text-[var(--theme-text-tertiary)]"
+                          aria-hidden="true"
+                        />
+                      )
                     ) : (
                       <FileText
                         size={14}
@@ -393,6 +496,13 @@ export function ProfileDriveWorkspaceBrowser({
                     <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--theme-text)]">
                       {name}
                     </span>
+                    {folderLoading && (
+                      <RefreshCw
+                        size={12}
+                        className="shrink-0 animate-spin text-[var(--theme-text-tertiary)]"
+                        aria-hidden="true"
+                      />
+                    )}
                     {!directory && entry.size !== null && (
                       <span className="shrink-0 text-[10px] text-[var(--theme-text-tertiary)]">
                         {formatFileSize(entry.size)}
@@ -436,6 +546,90 @@ export function ProfileDriveWorkspaceBrowser({
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+const DRIVE_TABS = [
+  { id: "profile", label: "个人盘", Icon: UserRound },
+  { id: "public", label: "公盘", Icon: Building2 },
+] as const;
+
+export function ProfileDriveWorkspaceBrowser({
+  sessionId,
+  onImported,
+  onAddToConversation,
+}: ProfileDriveWorkspaceBrowserProps) {
+  const [activeSource, setActiveSource] =
+    useState<ProfileDriveSourceId>("profile");
+
+  return (
+    <section
+      data-librechat-context-section="files"
+      aria-labelledby="librechat-drive-files-label"
+      className={`${workbenchSurface.compactPanel} mt-3 overflow-hidden`}
+    >
+      <div className="p-3 pb-0">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={workbenchSurface.catalog.compactIconBox}>
+            <FolderOpen size={15} aria-hidden="true" />
+          </span>
+          <h3
+            id="librechat-drive-files-label"
+            className="truncate text-xs font-semibold text-[var(--theme-text)]"
+          >
+            文件
+          </h3>
+        </div>
+        <div
+          role="tablist"
+          aria-label="文件盘"
+          className="mt-3 grid h-9 grid-cols-2 gap-0.5 rounded-md bg-[var(--theme-bg-sidebar)] p-0.5 ring-1 ring-[var(--theme-border)]"
+        >
+          {DRIVE_TABS.map(({ id, label, Icon }) => {
+            const active = activeSource === id;
+            return (
+              <button
+                key={id}
+                id={`profile-drive-${id}-tab`}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                aria-controls={`profile-drive-${id}-panel`}
+                data-active={active ? "true" : "false"}
+                className={`flex h-8 min-w-0 items-center justify-center gap-1.5 rounded px-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
+                  active
+                    ? "bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)] ring-1 ring-[var(--theme-border)]"
+                    : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)]"
+                }`}
+                onClick={() => setActiveSource(id)}
+              >
+                <Icon size={14} className="shrink-0" aria-hidden="true" />
+                <span className="truncate">{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {DRIVE_TABS.map(({ id, label }) => (
+        <div
+          key={id}
+          id={`profile-drive-${id}-panel`}
+          role="tabpanel"
+          aria-labelledby={`profile-drive-${id}-tab`}
+          hidden={activeSource !== id}
+          className="px-3 pb-3"
+        >
+          <ProfileDriveSourceBrowser
+            sessionId={sessionId}
+            sourceId={id}
+            title={label}
+            onImported={onImported}
+            onAddToConversation={onAddToConversation}
+          />
+        </div>
+      ))}
     </section>
   );
 }
