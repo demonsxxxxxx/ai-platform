@@ -19,6 +19,7 @@ import pytest
 
 from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
+from app.sandbox.infrastructure import workspace_transfer
 
 
 requires_secure_opensandbox_transfer = pytest.mark.skipif(
@@ -124,6 +125,16 @@ def workspace(**overrides) -> WorkspaceLease:
     if prepare_staged_skills and workspace_path.is_dir():
         (workspace_path / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
     return WorkspaceLease(**values)
+
+
+def opensandbox_workspace_manifest(
+    runtime_request: SandboxRuntimeRequest,
+    lease_workspace: WorkspaceLease,
+):
+    return workspace_transfer._build_opensandbox_workspace_manifest(
+        runtime_request,
+        lease_workspace,
+    )
 
 
 def governed_docker_settings(**overrides: Any) -> SimpleNamespace:
@@ -1279,17 +1290,16 @@ def test_secure_workspace_transfer_preflight_requires_openat_and_renameat(
     has_renameat,
     expected,
 ):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     supported = set()
     if has_openat:
-        supported.add(container_provider.os.open)
+        supported.add(workspace_transfer.os.open)
     if has_renameat:
-        supported.add(container_provider.os.rename)
-    monkeypatch.setattr(container_provider.os, "O_DIRECTORY", 1, raising=False)
-    monkeypatch.setattr(container_provider.os, "O_NOFOLLOW", 1, raising=False)
-    monkeypatch.setattr(container_provider.os, "supports_dir_fd", supported)
+        supported.add(workspace_transfer.os.rename)
+    monkeypatch.setattr(workspace_transfer.os, "O_DIRECTORY", 1, raising=False)
+    monkeypatch.setattr(workspace_transfer.os, "O_NOFOLLOW", 1, raising=False)
+    monkeypatch.setattr(workspace_transfer.os, "supports_dir_fd", supported)
 
-    assert container_provider._secure_workspace_transfer_supported() is expected
+    assert workspace_transfer.secure_workspace_transfer_supported() is expected
 
 
 @pytest.mark.asyncio
@@ -1298,7 +1308,7 @@ async def test_opensandbox_workspace_transfer_fails_closed_without_secure_contro
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
     monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    monkeypatch.setattr(container_provider, "_secure_workspace_transfer_supported", lambda: False)
+    monkeypatch.setattr(workspace_transfer, "secure_workspace_transfer_supported", lambda: False)
     local_workspace = tmp_path / "controller-local" / "workspace"
     local_workspace.mkdir(parents=True)
     runtime_request = request()
@@ -1668,19 +1678,11 @@ async def test_opensandbox_collects_authorized_skill_output_without_skill_source
 
 @pytest.mark.parametrize("relative_path", ["", "/absolute.txt", "../escape.txt", "nested/../escape.txt", "nul\x00.txt"])
 def test_opensandbox_workspace_transfer_rejects_unsafe_relative_paths(relative_path):
-    from app.runtime.sandbox.container_provider import ContainerStartFailedError, _safe_workspace_relative_path
-
-    with pytest.raises(ContainerStartFailedError):
-        _safe_workspace_relative_path(relative_path)
+    with pytest.raises(workspace_transfer.ContainerStartFailedError):
+        workspace_transfer.safe_workspace_relative_path(relative_path)
 
 
 def test_opensandbox_workspace_manifest_rejects_hardlinks_and_detects_source_drift(tmp_path):
-    from app.runtime.sandbox.container_provider import (
-        ContainerStartFailedError,
-        _build_opensandbox_workspace_manifest,
-        _read_stable_workspace_file,
-    )
-
     local_workspace = tmp_path / "workspace"
     local_workspace.mkdir()
     source = local_workspace / "report.txt"
@@ -1690,68 +1692,64 @@ def test_opensandbox_workspace_manifest_rejects_hardlinks_and_detects_source_dri
     runtime_request = request()
     lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
 
-    with pytest.raises(ContainerStartFailedError, match="source is invalid"):
-        _build_opensandbox_workspace_manifest(runtime_request, lease_workspace)
+    with pytest.raises(workspace_transfer.ContainerStartFailedError, match="source is invalid"):
+        opensandbox_workspace_manifest(runtime_request, lease_workspace)
 
     linked.unlink()
-    _directories, files = _build_opensandbox_workspace_manifest(runtime_request, lease_workspace)
+    _directories, files = opensandbox_workspace_manifest(runtime_request, lease_workspace)
     source.write_text("after", encoding="utf-8")
-    with pytest.raises(ContainerStartFailedError, match="changed during read"):
-        _read_stable_workspace_file(next(entry for entry in files if entry.relative_path == "report.txt"))
+    with pytest.raises(workspace_transfer.ContainerStartFailedError, match="changed during read"):
+        workspace_transfer.read_stable_workspace_file(
+            next(entry for entry in files if entry.relative_path == "report.txt")
+        )
 
 
 def test_opensandbox_workspace_manifest_enforces_explicit_upload_bounds(monkeypatch, tmp_path):
-    from app.runtime.sandbox import container_provider
-
     local_workspace = tmp_path / "workspace"
     local_workspace.mkdir()
     (local_workspace / "first.txt").write_bytes(b"a")
     (local_workspace / "second.txt").write_bytes(b"b")
     lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    monkeypatch.setattr(container_provider, "_OPENSANDBOX_STAGE_MAX_FILES", 1)
+    monkeypatch.setattr(workspace_transfer, "OPENSANDBOX_STAGE_MAX_FILES", 1)
 
-    with pytest.raises(container_provider.ContainerStartFailedError, match="file count"):
-        container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+    with pytest.raises(workspace_transfer.ContainerStartFailedError, match="file count"):
+        opensandbox_workspace_manifest(request(), lease_workspace)
 
 
 def test_opensandbox_workspace_manifest_allows_1024_files_and_rejects_1025(tmp_path):
-    from app.runtime.sandbox import container_provider
-
     local_workspace = tmp_path / "workspace"
     local_workspace.mkdir()
     for index in range(1024):
         (local_workspace / f"file-{index:04d}.txt").write_bytes(b"x")
     lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
 
-    _directories, files = container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+    _directories, files = opensandbox_workspace_manifest(request(), lease_workspace)
     assert len(files) == 1024
 
     (local_workspace / "file-1024.txt").write_bytes(b"x")
-    with pytest.raises(container_provider.ContainerStartFailedError, match="file count"):
-        container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+    with pytest.raises(workspace_transfer.ContainerStartFailedError, match="file count"):
+        opensandbox_workspace_manifest(request(), lease_workspace)
 
 
 def test_opensandbox_workspace_manifest_enforces_upload_file_and_total_bytes(monkeypatch, tmp_path):
-    from app.runtime.sandbox import container_provider
-
     local_workspace = tmp_path / "workspace"
     local_workspace.mkdir()
     oversized = local_workspace / "oversized.txt"
     oversized.write_bytes(b"ab")
     lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    monkeypatch.setattr(container_provider, "_OPENSANDBOX_STAGE_MAX_FILE_BYTES", 1)
+    monkeypatch.setattr(workspace_transfer, "OPENSANDBOX_STAGE_MAX_FILE_BYTES", 1)
 
-    with pytest.raises(container_provider.ContainerStartFailedError, match="file byte"):
-        container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+    with pytest.raises(workspace_transfer.ContainerStartFailedError, match="file byte"):
+        opensandbox_workspace_manifest(request(), lease_workspace)
 
     oversized.unlink()
     (local_workspace / "first.txt").write_bytes(b"a")
     (local_workspace / "second.txt").write_bytes(b"b")
-    monkeypatch.setattr(container_provider, "_OPENSANDBOX_STAGE_MAX_FILE_BYTES", 8)
-    monkeypatch.setattr(container_provider, "_OPENSANDBOX_STAGE_MAX_TOTAL_BYTES", 1)
+    monkeypatch.setattr(workspace_transfer, "OPENSANDBOX_STAGE_MAX_FILE_BYTES", 8)
+    monkeypatch.setattr(workspace_transfer, "OPENSANDBOX_STAGE_MAX_TOTAL_BYTES", 1)
 
-    with pytest.raises(container_provider.ContainerStartFailedError, match="total byte"):
-        container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+    with pytest.raises(workspace_transfer.ContainerStartFailedError, match="total byte"):
+        opensandbox_workspace_manifest(request(), lease_workspace)
 
 
 @pytest.mark.asyncio
@@ -1971,8 +1969,6 @@ async def test_opensandbox_collection_rolls_back_already_published_files_when_lo
 
 
 def test_opensandbox_workspace_manifest_rejects_directory_symlink_swap_after_listing(monkeypatch, tmp_path):
-    from app.runtime.sandbox import container_provider
-
     local_workspace = tmp_path / "workspace"
     inputs = local_workspace / "inputs"
     outside = tmp_path / "outside"
@@ -2000,8 +1996,8 @@ def test_opensandbox_workspace_manifest_rejects_directory_symlink_swap_after_lis
 
     monkeypatch.setattr(Path, "iterdir", swap_after_listing)
     try:
-        with pytest.raises(container_provider.ContainerStartFailedError):
-            container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+        with pytest.raises(workspace_transfer.ContainerStartFailedError):
+            opensandbox_workspace_manifest(request(), lease_workspace)
     finally:
         if inputs.is_symlink():
             inputs.unlink()
@@ -2009,16 +2005,14 @@ def test_opensandbox_workspace_manifest_rejects_directory_symlink_swap_after_lis
 
 
 def test_opensandbox_workspace_file_read_rejects_ancestor_directory_drift(monkeypatch, tmp_path):
-    from app.runtime.sandbox import container_provider
-
     local_workspace = tmp_path / "workspace"
     inputs = local_workspace / "inputs"
     inputs.mkdir(parents=True)
     (inputs / "input.txt").write_text("trusted", encoding="utf-8")
     lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    _directories, files = container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
+    _directories, files = opensandbox_workspace_manifest(request(), lease_workspace)
     entry = next(item for item in files if item.relative_path == "inputs/input.txt")
-    original_directory_snapshot = container_provider._assert_workspace_directory
+    original_directory_snapshot = workspace_transfer.assert_workspace_directory
 
     def drifted_directory_snapshot(path: Path):
         snapshot = original_directory_snapshot(path)
@@ -2026,9 +2020,9 @@ def test_opensandbox_workspace_file_read_rejects_ancestor_directory_drift(monkey
             return replace(snapshot, inode=snapshot.inode + 1)
         return snapshot
 
-    monkeypatch.setattr(container_provider, "_assert_workspace_directory", drifted_directory_snapshot)
-    with pytest.raises(container_provider.ContainerStartFailedError, match="changed during read"):
-        container_provider._read_stable_workspace_file(entry)
+    monkeypatch.setattr(workspace_transfer, "assert_workspace_directory", drifted_directory_snapshot)
+    with pytest.raises(workspace_transfer.ContainerStartFailedError, match="changed during read"):
+        workspace_transfer.read_stable_workspace_file(entry)
 
 
 

@@ -12,6 +12,7 @@ binds deployed evidence separately.
 | What runs, and where are the trust and data boundaries? | [System architecture](architecture/system-architecture.md) |
 | Which context owns a business decision? | [Runtime authorities](architecture/runtime-authorities.md) |
 | Where does code belong, and how can old code be removed? | [Source architecture](architecture/source-code-architecture.md) |
+| Where do the frozen backend aggregates migrate, and what compatibility remains? | [Frozen module disposition](architecture/frozen-module-responsibility-disposition.md) |
 | Which cross-process changes are proposed, and in what order? | [Runtime convergence](architecture/runtime-convergence.md) |
 | What observable results must a slice prove? | [System acceptance matrix](acceptance/system-architecture-matrix.md) |
 | What does a test, build, or deployment result actually prove? | [Evidence governance](architecture/ci-test-readiness-governance.md) |

@@ -1,5 +1,7 @@
 import asyncio
 
+import app.models as legacy_models
+from app.conversations.transport import message_history_contracts
 from app.main import create_app
 from app.routes import health as health_routes
 from app.executors.base import RunPayload
@@ -59,6 +61,18 @@ def test_legacy_synthetic_chat_identity_is_exact_and_never_matches_v2_harness():
         skill_id="other-skill",
         execution_kind="skill",
     )
+
+
+def test_legacy_conversation_message_contracts_preserve_canonical_identity():
+    for name in (
+        "AgentConversationIdentity",
+        "ChatMessageResponse",
+        "ChatMessagesResponse",
+        "ChatSessionResponse",
+        "ChatSessionsResponse",
+        "SessionRenameRequest",
+    ):
+        assert getattr(legacy_models, name) is getattr(message_history_contracts, name)
 
 
 def test_create_run_request_uses_file_ids_contract_only():
