@@ -27,6 +27,7 @@ from app.files.application.profile_drive import (
 )
 from app.files.application.session_files import (
     get_owned_session_file,
+    get_owned_unbound_file,
     list_owned_session_files,
 )
 
@@ -198,6 +199,7 @@ __all__ = [
     "expire_file_upload_sessions",
     "get_authorized_file_upload_session",
     "get_owned_session_file",
+    "get_owned_unbound_file",
     "get_file_storage_usage",
     "is_direct_file_upload_session",
     "list_owned_session_files",

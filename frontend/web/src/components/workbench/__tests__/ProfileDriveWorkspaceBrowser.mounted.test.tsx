@@ -232,6 +232,16 @@ test("expands ProfileDrive folders and imports a file into the current workspace
   const root = createRoot(container);
   const imported: Array<{ file_id: string; preview_url: string | null }> = [];
   const addedPaths: Array<{ source_id: string; path: string }> = [];
+  const stagedFile = {
+    file_id: "file-profile-staged",
+    run_id: null,
+    name: "report.pdf",
+    mime_type: "application/pdf",
+    size_bytes: 42,
+    preview_url: "/api/ai/files/file-profile-staged/preview",
+    download_url: "/api/ai/files/file-profile-staged/download",
+    created_at: "2026-09-21T00:00:00Z",
+  };
 
   try {
     await act(async () => {
@@ -457,6 +467,71 @@ test("expands ProfileDrive folders and imports a file into the current workspace
       await flush();
     });
     assert.equal(imported.length, 1);
+
+    await act(async () => {
+      root.render(
+        createElement(ProfileDriveWorkspaceBrowser, {
+          key: "no-session",
+          sessionId: null,
+          onImported: (file) => imported.push(file),
+          onAddToConversation: (reference) => {
+            addedPaths.push(reference);
+            return stagedFile;
+          },
+        }),
+      );
+      await flush();
+      await flush();
+    });
+    await act(async () => {
+      buttonByText(container, "文档").dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    await act(async () => {
+      buttonByText(container, "reports").dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    const stagedReportButton = buttonByText(container, "report.pdf");
+    const stagedReportRow = stagedReportButton.closest<HTMLElement>(
+      '[role="treeitem"]',
+    );
+    assert.ok(stagedReportRow);
+    assert.equal(stagedReportButton.disabled, false);
+    assert.equal(stagedReportRow.draggable, true);
+    await act(async () => {
+      stagedReportButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    assert.equal(imported[1]?.file_id, "file-profile-staged");
+    assert.equal(
+      imported[1]?.preview_url,
+      "/api/ai/files/file-profile-staged/preview",
+    );
+    assert.deepEqual(addedPaths.at(-1), {
+      source_id: "profile",
+      path: "Documents/reports/report.pdf",
+    });
+    const stagedAddButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="添加 report.pdf 到会话"]',
+    );
+    assert.ok(stagedAddButton);
+    assert.equal(stagedAddButton.disabled, false);
+    await act(async () => {
+      stagedAddButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+    assert.deepEqual(addedPaths.at(-1), {
+      source_id: "profile",
+      path: "Documents/reports/report.pdf",
+    });
 
     const profileSource = container.querySelector<HTMLElement>(
       '[data-profile-drive-source="profile"]',

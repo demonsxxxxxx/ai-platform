@@ -8,7 +8,7 @@ export interface WorkbenchRightPanelProps {
   onProfileDriveFileImported: (file: SessionInputFile) => void;
   onProfileDriveFileDrop: (
     reference: ProfileDriveFileReference,
-  ) => void | Promise<void>;
+  ) => SessionInputFile | void | Promise<SessionInputFile | void>;
 }
 
 export function WorkbenchRightPanel({

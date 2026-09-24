@@ -33,6 +33,7 @@ from app.routes.files import (
     list_session_input_files,
     preview_artifact,
     preview_input_file,
+    stage_profile_drive_file,
     upload_file,
 )
 from app.routes.context import list_run_context_snapshots
@@ -1785,10 +1786,12 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     assert "storage_key" not in payload
 
 
+@pytest.mark.parametrize("session_id", ["session-a", None])
 @pytest.mark.asyncio
-async def test_profile_drive_import_creates_an_owned_previewable_session_file(
+async def test_profile_drive_import_creates_an_owned_previewable_file(
     monkeypatch,
     tmp_path,
+    session_id,
 ):
     raw = b"profile workspace preview"
     source = tmp_path / "report.txt"
@@ -1796,8 +1799,18 @@ async def test_profile_drive_import_creates_an_owned_previewable_session_file(
     created = {}
 
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        assert session_id is not None
         assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "session-a")
         return {"id": session_id, "workspace_id": "workspace-a"}
+
+    async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
+        assert session_id is None
+        assert (tenant_id, workspace_id) == ("tenant-a", "default")
+
+    async def fake_ensure_user(conn, *, tenant_id, user_id, display_name):
+        assert session_id is None
+        assert (tenant_id, user_id) == ("tenant-a", "user-a")
+        assert display_name
 
     class Upstream:
         async def aclose(self):
@@ -1857,6 +1870,8 @@ async def test_profile_drive_import_creates_an_owned_previewable_session_file(
     ids = iter(["file_profile", "upload_profile", "upload_owner_profile"])
     monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.routes.files.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.files._cleanup_expired_upload_sessions", noop)
     monkeypatch.setattr("app.routes.files._open_profile_drive_file", fake_open_profile_drive_file)
     monkeypatch.setattr("app.routes.files._download_profile_drive_file", fake_download_profile_drive_file)
@@ -1878,22 +1893,28 @@ async def test_profile_drive_import_creates_an_owned_previewable_session_file(
     )
     monkeypatch.setattr("app.routes.files.new_id", lambda _prefix: next(ids))
 
-    response = await import_profile_drive_file(
-        "session-a",
-        ProfileDriveFileImportRequest(path="reports/report.txt"),
-        principal=principal(permissions=["file:upload", "file:upload:document"]),
+    response = (
+        await import_profile_drive_file(
+            "session-a",
+            ProfileDriveFileImportRequest(path="reports/report.txt"),
+            principal=principal(permissions=["file:upload", "file:upload:document"]),
+        )
+        if session_id
+        else await stage_profile_drive_file(
+            ProfileDriveFileImportRequest(path="reports/report.txt"),
+            principal=principal(permissions=["file:upload", "file:upload:document"]),
+        )
     )
     payload = response.model_dump()
 
-    assert created["file"]["session_id"] == "session-a"
+    assert created["file"]["session_id"] == session_id
+    assert created["reservation"]["session_id"] == session_id
+    assert created["file"]["workspace_id"] == ("workspace-a" if session_id else "default")
     assert created["file"]["original_name"] == "report.txt"
     assert payload["run_id"] is None
-    assert payload["preview_url"] == (
-        "/api/ai/files/file_profile/preview?session_id=session-a"
-    )
-    assert payload["download_url"] == (
-        "/api/ai/files/file_profile/download?session_id=session-a"
-    )
+    suffix = "?session_id=session-a" if session_id else ""
+    assert payload["preview_url"] == f"/api/ai/files/file_profile/preview{suffix}"
+    assert payload["download_url"] == f"/api/ai/files/file_profile/download{suffix}"
 
 
 @pytest.mark.asyncio
@@ -2237,6 +2258,51 @@ async def test_preview_session_owned_import_without_a_run_snapshot(monkeypatch):
     response = await preview_input_file(
         "file-profile",
         session_id="session-a",
+        run_id=None,
+        principal=principal(),
+    )
+
+    assert response.body == raw
+    assert response.headers["x-input-file-id"] == "file-profile"
+
+
+@pytest.mark.asyncio
+async def test_preview_user_owned_unbound_file_before_first_chat_submission(monkeypatch):
+    raw = b"profile preview"
+
+    async def fake_get_owned_unbound_file(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "file_id": "file-profile",
+        }
+        return {
+            "id": "file-profile",
+            "session_id": None,
+            "run_id": None,
+            "original_name": "report.txt",
+            "content_type": "text/plain",
+            "storage_key": "private/unbound/report.txt",
+            "size_bytes": len(raw),
+        }
+
+    async def forbidden_session_lookup(conn, **kwargs):
+        raise AssertionError("unbound preview must not require a chat session")
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            assert storage_key == "private/unbound/report.txt"
+            return raw
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_owned_unbound_file", fake_get_owned_unbound_file)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", forbidden_session_lookup)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+
+    response = await preview_input_file(
+        "file-profile",
+        session_id=None,
         run_id=None,
         principal=principal(),
     )

@@ -288,6 +288,10 @@ export function buildProfileDriveImportUrl(sessionId: string): string {
   return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/profile-drive-files`;
 }
 
+export function buildProfileDriveStageUrl(): string {
+  return `${API_BASE}/api/ai/files/profile-drive`;
+}
+
 export function buildSessionArtifactFilesUrl(sessionId: string): string {
   return `${API_BASE}/api/files/revealed/session/${encodeURIComponent(sessionId)}`;
 }
@@ -551,6 +555,16 @@ export const sessionApi = {
   /** Load the authoritative persistent input-file projection for a session. */
   async getInputFiles(sessionId: string): Promise<SessionInputFilesResponse> {
     return authFetch(buildSessionInputFilesUrl(sessionId));
+  },
+
+  /** Stage one user-confirmed ProfileDrive file before the first chat submission. */
+  async stageProfileDriveFile(
+    reference: ProfileDriveFileReference,
+  ): Promise<SessionInputFile> {
+    return authFetch(buildProfileDriveStageUrl(), {
+      method: "POST",
+      body: JSON.stringify(reference),
+    });
   },
 
   /** Import one user-confirmed ProfileDrive file into the current session workspace. */

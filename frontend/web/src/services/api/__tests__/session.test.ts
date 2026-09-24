@@ -11,6 +11,7 @@ import {
   buildAuthoritativeChatSessionListUrl,
   projectAuthoritativeSessionList,
   buildProfileDriveImportUrl,
+  buildProfileDriveStageUrl,
   buildSessionInputFilesUrl,
   buildSessionRunsUrl,
   buildChatSubmissionUrl,
@@ -233,6 +234,10 @@ test("builds the ProfileDrive workspace import url with an opaque session id", (
     buildProfileDriveImportUrl("session/a"),
     "/api/ai/chat/sessions/session%2Fa/profile-drive-files",
   );
+});
+
+test("builds the ProfileDrive pre-session staging url", () => {
+  assert.equal(buildProfileDriveStageUrl(), "/api/ai/files/profile-drive");
 });
 
 test("builds the authoritative session input-file projection url with opaque session id", () => {

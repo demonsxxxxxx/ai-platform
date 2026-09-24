@@ -12,7 +12,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import agent_conversation_repository, repositories
-from app.files.api import get_owned_session_file, list_owned_session_files
+from app.files.api import get_owned_session_file, get_owned_unbound_file, list_owned_session_files
 from app.execution.application import stale_terminalization
 from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
@@ -4100,6 +4100,39 @@ async def test_owned_session_file_queries_include_unbound_imports_and_bind_full_
         "workspace-a",
         "user-a",
         "session-a",
+        "file-profile",
+    )
+
+
+@pytest.mark.asyncio
+async def test_owned_unbound_file_query_binds_full_owner_scope():
+    row = {
+        "id": "file-profile",
+        "session_id": None,
+        "run_id": None,
+        "lifecycle_state": "active",
+    }
+    conn = SingleRowConnection(row)
+
+    selected = await get_owned_unbound_file(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        file_id="file-profile",
+    )
+
+    assert selected == row
+    assert "tenant_id = %s" in conn.sql
+    assert "workspace_id = %s" in conn.sql
+    assert "user_id = %s" in conn.sql
+    assert "session_id is null" in conn.sql
+    assert "run_id is null" in conn.sql
+    assert "lifecycle_state = 'active'" in conn.sql
+    assert conn.params == (
+        "tenant-a",
+        "workspace-a",
+        "user-a",
         "file-profile",
     )
 
