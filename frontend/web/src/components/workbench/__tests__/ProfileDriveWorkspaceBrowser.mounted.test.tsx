@@ -626,16 +626,9 @@ test("mounts the public drive with source-correct expansion and import", async (
     assert.ok(profilePanel);
     assert.equal(publicPanel.hidden, false);
     assert.equal(profilePanel.hidden, true);
-    assert.ok(publicPanel.querySelector('button[aria-label="刷新公盘"]'));
-    let publicFolder = buttonByText(publicPanel, "01-研发部");
-    assert.equal(publicFolder.getAttribute("aria-expanded"), "false");
-    await act(async () => {
-      publicPanel.querySelector<HTMLButtonElement>('button[aria-label="刷新公盘"]')?.dispatchEvent(
-        new dom.window.MouseEvent("click", { bubbles: true }),
-      );
-      await flush();
-    });
-    publicFolder = buttonByText(publicPanel, "01-研发部");
+    const publicFolder = buttonByText(publicPanel, "01-研发部");
+    assert.doesNotMatch(publicPanel.textContent ?? "", /刷新公盘/);
+    assert.doesNotMatch(publicPanel.textContent ?? "", /!|…/);
     await act(async () => {
       publicFolder.dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
@@ -658,17 +651,16 @@ test("mounts the public drive with source-correct expansion and import", async (
     });
 
     const publicLists = bodies.filter((body) => body.source === "public");
-    assert.deepEqual(publicLists[0], {
+    const publicRootList = publicLists.find((body) => body.path === "");
+    assert.deepEqual(publicRootList, {
       source: "public",
       path: "",
       maxEntries: 200,
     });
-    assert.deepEqual(publicLists[1], {
-      source: "public",
-      path: "",
-      maxEntries: 200,
-    });
-    assert.deepEqual(publicLists[2], {
+    const publicFolderList = publicLists.find(
+      (body) => body.path === "01-研发部",
+    );
+    assert.deepEqual(publicFolderList, {
       source: "public",
       path: "01-研发部",
       maxEntries: 200,
