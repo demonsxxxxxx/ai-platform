@@ -17,6 +17,7 @@ import toast from "react-hot-toast";
 
 import type { SessionInputFile } from "../../services/api";
 import {
+  PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
   profileDriveApi,
   ProfileDriveRequestError,
   type ProfileDriveFileEntry,
@@ -328,6 +329,21 @@ function ProfileDriveSourceBrowser({
       pendingPaths.clear();
     };
   }, [loadRoot, title]);
+
+  useEffect(() => {
+    const handleConnectionChange = () => {
+      void loadRoot();
+    };
+    window.addEventListener(
+      PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
+      handleConnectionChange,
+    );
+    return () =>
+      window.removeEventListener(
+        PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
+        handleConnectionChange,
+      );
+  }, [loadRoot]);
 
   const preview = useCallback(
     async (entry: ProfileDriveFileEntry) => {
@@ -753,6 +769,14 @@ export function ProfileDriveWorkspaceBrowser({
           <span
             className={workbenchSurface.catalog.chip}
             data-profile-drive-count={activeSource}
+            aria-label={`${activeTab.label}可见条目数：${
+              activeControls.loading
+                ? "加载中"
+                : activeControls.connected
+                  ? activeControls.visibleEntryCount
+                  : "不可用"
+            }`}
+            aria-live="polite"
           >
             {activeControls.loading
               ? "…"

@@ -1,5 +1,8 @@
 import { authApi } from "./auth";
 
+export const PROFILE_DRIVE_CONNECTION_CHANGED_EVENT =
+  "profile-drive:connection-changed";
+
 export type ProfileDriveSourceId = "profile" | "public";
 
 export interface ProfileDriveFileReference {

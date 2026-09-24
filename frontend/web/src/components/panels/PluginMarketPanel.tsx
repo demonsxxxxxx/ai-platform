@@ -22,7 +22,11 @@ import {
 import { createPortal } from "react-dom";
 
 import { PanelHeader } from "../common/PanelHeader";
-import { profileDriveApi, ProfileDriveRequestError } from "../../services/api/profileDrive";
+import {
+  PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
+  profileDriveApi,
+  ProfileDriveRequestError,
+} from "../../services/api/profileDrive";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 
 const plugin = {
@@ -140,6 +144,7 @@ function AuthenticationDialog({
         return;
       }
       onAuthenticated();
+      window.dispatchEvent(new Event(PROFILE_DRIVE_CONNECTION_CHANGED_EVENT));
       resetAndClose();
     } catch (submissionError) {
       setError(profileDriveErrorMessage(submissionError));
