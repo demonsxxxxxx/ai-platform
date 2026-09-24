@@ -4,6 +4,9 @@ import test from "node:test";
 // jsdom is the pinned mounted-test runtime and does not ship declarations here.
 // @ts-expect-error jsdom runtime import.
 import { JSDOM } from "jsdom";
+import {
+  PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
+} from "../../../services/api/profileDrive";
 function buttonByText(root: ParentNode, label: string): HTMLButtonElement {
   const button = Array.from(root.querySelectorAll("button")).find(
     (candidate) => candidate.textContent?.trim() === label,
@@ -31,6 +34,10 @@ test("personal file server authentication sends only the password through the au
     "<!doctype html><html><body><div id='root'></div></body></html>",
     { url: "http://localhost/plugins", pretendToBeVisual: true },
   );
+  let connectionChanged = 0;
+  dom.window.addEventListener(PROFILE_DRIVE_CONNECTION_CHANGED_EVENT, () => {
+    connectionChanged += 1;
+  });
   const originalNavigator = Object.getOwnPropertyDescriptor(
     globalThis,
     "navigator",
@@ -109,7 +116,7 @@ test("personal file server authentication sends only the password through the au
       root.render(createElement(PluginMarketPanel));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    assert.match(container.textContent ?? "", /个人文件服务器/);
+    assert.match(container.textContent ?? "", /本地文件服务器/);
     assert.match(container.textContent ?? "", /列出文件/);
     assert.match(container.textContent ?? "", /搜索文件/);
     assert.match(container.textContent ?? "", /读取文本/);
@@ -145,6 +152,7 @@ test("personal file server authentication sends only the password through the au
     });
 
     assert.equal(dom.window.document.querySelector('[role="dialog"]'), null);
+    assert.equal(connectionChanged, 1);
     assert.match(container.textContent ?? "", /已连接/);
     assert.equal(requests.length, 4);
     const statusHandoffRequest = requests[0];

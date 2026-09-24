@@ -4,6 +4,9 @@ import test from "node:test";
 // jsdom is the pinned mounted-test runtime and does not ship declarations here.
 // @ts-expect-error jsdom runtime import.
 import { JSDOM } from "jsdom";
+import {
+  PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
+} from "../../../services/api/profileDrive";
 import { PROFILE_DRIVE_DRAG_TYPE } from "../profileDriveDrag";
 
 function buttonByText(root: ParentNode, label: string): HTMLButtonElement {
@@ -516,6 +519,24 @@ test("mounts the public drive with source-correct expansion and import", async (
     ]);
   const originalFetch = globalThis.fetch;
   const bodies: Array<Record<string, unknown>> = [];
+  const pendingStatusResolvers: Array<(response: Response) => void> = [];
+  const releaseStatus = () => {
+    const statusPayload = JSON.stringify({
+      status: "disconnected",
+      connected: false,
+      reauthRequired: false,
+      connectedAtUtc: null,
+      lastUsedAtUtc: null,
+    });
+    while (pendingStatusResolvers.length > 0) {
+      pendingStatusResolvers.shift()!(
+        new Response(statusPayload, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+  };
   globalThis.fetch = (async (input, init = {}) => {
     const url = String(input);
     if (url.endsWith("/api/ai/auth/company-credential-handoff")) {
@@ -525,27 +546,29 @@ test("mounts the public drive with source-correct expansion and import", async (
       });
     }
     if (url.endsWith("/api/profile-drive/status")) {
-      return new Response(
-        JSON.stringify({
-          status: "connected",
-          connected: true,
-          reauthRequired: false,
-          connectedAtUtc: null,
-          lastUsedAtUtc: null,
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      return new Promise<Response>((resolve) => {
+        pendingStatusResolvers.push(resolve);
+      });
     }
     if (url.endsWith("/api/profile-drive/files/list")) {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       bodies.push(body);
       const path = String(body.path);
+      const publicRootRequestCount = bodies.filter(
+        (request) => request.source === "public" && request.path === "",
+      ).length;
+      if (path === "" && body.source === "public" && publicRootRequestCount > 2) {
+        return new Response(
+          JSON.stringify({ status: "drive_unavailable", message: "retry later" }),
+          { status: 503, headers: { "Content-Type": "application/json" } },
+        );
+      }
       return new Response(
         JSON.stringify({
           status: "success",
           path,
           entries:
-            path === ""
+            path === "" && body.source === "public" && publicRootRequestCount > 1
               ? [
                   {
                     path: "01-研发部",
@@ -554,8 +577,25 @@ test("mounts the public drive with source-correct expansion and import", async (
                     size: null,
                     lastModifiedUtc: "1970-01-01T00:00:00Z",
                   },
+                  {
+                    path: "公告.txt",
+                    name: "公告.txt",
+                    type: "file",
+                    size: 18,
+                    lastModifiedUtc: "2026-09-22T00:00:00Z",
+                  },
                 ]
-              : [
+              : path === ""
+                ? [
+                    {
+                      path: "01-研发部",
+                      name: "01-研发部",
+                      type: "directory",
+                      size: null,
+                      lastModifiedUtc: "1970-01-01T00:00:00Z",
+                    },
+                  ]
+                : [
                   {
                     path: "01-研发部/report.pdf",
                     name: "report.pdf",
@@ -626,9 +666,62 @@ test("mounts the public drive with source-correct expansion and import", async (
     assert.ok(profilePanel);
     assert.equal(publicPanel.hidden, false);
     assert.equal(profilePanel.hidden, true);
-    const publicFolder = buttonByText(publicPanel, "01-研发部");
-    assert.doesNotMatch(publicPanel.textContent ?? "", /刷新公盘文件/);
-    assert.doesNotMatch(publicPanel.textContent ?? "", /!|…/);
+    const refreshPublicButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="刷新公盘文件"]',
+    );
+    assert.ok(refreshPublicButton);
+    assert.equal(refreshPublicButton.disabled, true);
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.getAttribute("aria-label"),
+      "公盘文件可见条目数：加载中",
+    );
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.textContent,
+      "…",
+    );
+    await act(async () => {
+      dom.window.dispatchEvent(
+        new dom.window.Event(PROFILE_DRIVE_CONNECTION_CHANGED_EVENT),
+      );
+      await flush();
+      await flush();
+    });
+    releaseStatus();
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+    let publicFolder = buttonByText(publicPanel, "01-研发部");
+    assert.equal(refreshPublicButton.disabled, false);
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.textContent,
+      "1",
+    );
+    const publicRootRequestCount = () =>
+      bodies.filter((body) => body.source === "public" && body.path === "").length;
+    const rootRequestsBeforeRefresh = publicRootRequestCount();
+    await act(async () => {
+      refreshPublicButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+      await flush();
+    });
+    assert.equal(publicRootRequestCount(), rootRequestsBeforeRefresh + 1);
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.textContent,
+      "2",
+    );
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.getAttribute("aria-label"),
+      "公盘文件可见条目数：2",
+    );
+    publicFolder = buttonByText(publicPanel, "01-研发部");
     await act(async () => {
       publicFolder.dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
@@ -639,7 +732,21 @@ test("mounts the public drive with source-correct expansion and import", async (
     assert.match(publicPanel.textContent ?? "", /report\.pdf/);
     await act(async () => {
       profileTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    const refreshProfileButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="刷新本地文件"]',
+    );
+    assert.ok(refreshProfileButton);
+    assert.equal(refreshProfileButton.disabled, false);
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="profile"]')
+        ?.getAttribute("aria-label"),
+      "本地文件可见条目数：1",
+    );
+    await act(async () => {
       publicTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      await flush();
     });
     assert.equal(publicFolder.getAttribute("aria-expanded"), "true");
     assert.match(publicPanel.textContent ?? "", /report\.pdf/);
@@ -649,6 +756,26 @@ test("mounts the public drive with source-correct expansion and import", async (
       );
       await flush();
     });
+
+    await act(async () => {
+      refreshPublicButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+      await flush();
+    });
+    assert.equal(refreshPublicButton.disabled, false);
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.textContent,
+      "!",
+    );
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.getAttribute("aria-label"),
+      "公盘文件可见条目数：不可用",
+    );
+    assert.match(publicPanel.textContent ?? "", /公盘文件暂时不可用/);
 
     const publicLists = bodies.filter((body) => body.source === "public");
     const publicRootList = publicLists.find((body) => body.path === "");

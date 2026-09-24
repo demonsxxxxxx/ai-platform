@@ -17,6 +17,7 @@ import toast from "react-hot-toast";
 
 import type { SessionInputFile } from "../../services/api";
 import {
+  PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
   profileDriveApi,
   ProfileDriveRequestError,
   type ProfileDriveFileEntry,
@@ -86,6 +87,18 @@ interface ProfileDriveWorkspaceBrowserProps {
 interface ProfileDriveSourceBrowserProps extends ProfileDriveWorkspaceBrowserProps {
   sourceId: ProfileDriveSourceId;
   title: string;
+  onControlsChange: (
+    sourceId: ProfileDriveSourceId,
+    controls: ProfileDriveSourceControls,
+  ) => void;
+}
+
+interface ProfileDriveSourceControls {
+  loading: boolean;
+  connected: boolean | null;
+  error: string | null;
+  visibleEntryCount: number;
+  refresh: () => Promise<void>;
 }
 
 interface LoadedDirectory {
@@ -157,12 +170,15 @@ function directoryError(error: unknown): string {
   return "暂时无法打开此文件夹。";
 }
 
+const noopRefresh = async () => undefined;
+
 function ProfileDriveSourceBrowser({
   sessionId,
   sourceId,
   title,
   onImported,
   onAddToConversation,
+  onControlsChange,
 }: ProfileDriveSourceBrowserProps) {
   const [connected, setConnected] = useState<boolean | null>(null);
   const [entries, setEntries] = useState<ProfileDriveFileEntry[]>([]);
@@ -289,20 +305,21 @@ function ProfileDriveSourceBrowser({
 
   useEffect(() => {
     let active = true;
+    const statusGeneration = treeGenerationRef.current;
     const pendingPaths = pendingPathsRef.current;
     mountedRef.current = true;
     setLoading(true);
     void profileDriveApi
       .status()
       .then((status) => {
-        if (!active) return;
+        if (!active || statusGeneration !== treeGenerationRef.current) return;
         setConnected(status.connected);
         if (status.connected) return loadRoot();
         setLoading(false);
         return undefined;
       })
       .catch((statusError) => {
-        if (!active) return;
+        if (!active || statusGeneration !== treeGenerationRef.current) return;
         setConnected(false);
         setError(browserError(statusError, title));
         setLoading(false);
@@ -314,6 +331,22 @@ function ProfileDriveSourceBrowser({
       pendingPaths.clear();
     };
   }, [loadRoot, title]);
+
+  useEffect(() => {
+    const handleConnectionChange = () => {
+      setConnected(true);
+      void loadRoot();
+    };
+    window.addEventListener(
+      PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
+      handleConnectionChange,
+    );
+    return () =>
+      window.removeEventListener(
+        PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
+        handleConnectionChange,
+      );
+  }, [loadRoot]);
 
   const preview = useCallback(
     async (entry: ProfileDriveFileEntry) => {
@@ -415,6 +448,28 @@ function ProfileDriveSourceBrowser({
           : row.kind === "error" && matchingPaths.has(row.path),
       )
     : treeRows;
+  const visibleEntryCount = filteredRows.filter(
+    (row) => row.kind === "entry",
+  ).length;
+
+  useEffect(() => {
+    onControlsChange(sourceId, {
+      loading,
+      connected,
+      error,
+      visibleEntryCount,
+      refresh: loadRoot,
+    });
+  }, [
+    connected,
+    error,
+    loadRoot,
+    loading,
+    onControlsChange,
+    sourceId,
+    visibleEntryCount,
+  ]);
+
   return (
     <div data-profile-drive-source={sourceId}>
       {connected !== false && !error && !loading && entries.length > 0 && (
@@ -645,6 +700,47 @@ export function ProfileDriveWorkspaceBrowser({
 }: ProfileDriveWorkspaceBrowserProps) {
   const [activeSource, setActiveSource] =
     useState<ProfileDriveSourceId>("profile");
+  const [sourceControls, setSourceControls] = useState<
+    Record<ProfileDriveSourceId, ProfileDriveSourceControls>
+  >(() => ({
+    profile: {
+      loading: true,
+      connected: null,
+      error: null,
+      visibleEntryCount: 0,
+      refresh: noopRefresh,
+    },
+    public: {
+      loading: true,
+      connected: null,
+      error: null,
+      visibleEntryCount: 0,
+      refresh: noopRefresh,
+    },
+  }));
+  const handleControlsChange = useCallback(
+    (
+      sourceId: ProfileDriveSourceId,
+      controls: ProfileDriveSourceControls,
+    ) => {
+      setSourceControls((current) => {
+        const previous = current[sourceId];
+        if (
+          previous.loading === controls.loading &&
+          previous.connected === controls.connected &&
+          previous.error === controls.error &&
+          previous.visibleEntryCount === controls.visibleEntryCount &&
+          previous.refresh === controls.refresh
+        ) {
+          return current;
+        }
+        return { ...current, [sourceId]: controls };
+      });
+    },
+    [],
+  );
+  const activeTab = DRIVE_TABS.find(({ id }) => id === activeSource)!;
+  const activeControls = sourceControls[activeSource];
 
   return (
     <section
@@ -654,15 +750,48 @@ export function ProfileDriveWorkspaceBrowser({
     >
       <div className="p-3 pb-0">
         <div className="flex min-w-0 items-center gap-2">
-          <span className={workbenchSurface.catalog.compactIconBox}>
-            <FolderOpen size={15} aria-hidden="true" />
-          </span>
-          <h3
-            id="librechat-drive-files-label"
-            className="truncate text-xs font-semibold text-[var(--theme-text)]"
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <span className={workbenchSurface.catalog.compactIconBox}>
+              <FolderOpen size={15} aria-hidden="true" />
+            </span>
+            <h3
+              id="librechat-drive-files-label"
+              className="truncate text-xs font-semibold text-[var(--theme-text)]"
+            >
+              文件
+            </h3>
+          </div>
+          <button
+            type="button"
+            className="flex size-6 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:opacity-50"
+            aria-label={`刷新${activeTab.label}`}
+            title={`刷新${activeTab.label}`}
+            disabled={activeControls.loading || activeControls.connected === false}
+            onClick={() => void activeControls.refresh()}
           >
-            文件
-          </h3>
+            <RefreshCw
+              size={13}
+              className={activeControls.loading ? "animate-spin" : ""}
+            />
+          </button>
+          <span
+            className={workbenchSurface.catalog.chip}
+            data-profile-drive-count={activeSource}
+            aria-label={`${activeTab.label}可见条目数：${
+              activeControls.loading
+                ? "加载中"
+                : activeControls.error || activeControls.connected !== true
+                  ? "不可用"
+                  : activeControls.visibleEntryCount
+            }`}
+            aria-live="polite"
+          >
+            {activeControls.loading
+              ? "…"
+              : activeControls.error || !activeControls.connected
+                ? "!"
+                : activeControls.visibleEntryCount}
+          </span>
         </div>
         <div
           role="tablist"
@@ -710,6 +839,7 @@ export function ProfileDriveWorkspaceBrowser({
             title={label}
             onImported={onImported}
             onAddToConversation={onAddToConversation}
+            onControlsChange={handleControlsChange}
           />
         </div>
       ))}
