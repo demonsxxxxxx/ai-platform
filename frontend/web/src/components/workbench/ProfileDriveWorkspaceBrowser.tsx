@@ -634,8 +634,8 @@ function ProfileDriveSourceBrowser({
 }
 
 const DRIVE_TABS = [
-  { id: "profile", label: "个人盘", Icon: UserRound },
-  { id: "public", label: "公盘", Icon: Building2 },
+  { id: "profile", label: "本地文件", Icon: UserRound },
+  { id: "public", label: "公盘文件", Icon: Building2 },
 ] as const;
 
 export function ProfileDriveWorkspaceBrowser({

@@ -731,7 +731,7 @@ export function ChatView({
         toast.success(
           reference.source_id === "public"
             ? t("profileDrive.publicAddedToConversation", "已将公盘文件添加到会话。")
-            : t("profileDrive.addedToConversation", "已将个人文件添加到会话。"),
+            : t("profileDrive.addedToConversation", "已将本地文件添加到会话。"),
         );
       } catch (error) {
         console.error("ProfileDrive drop import failed", {
@@ -740,7 +740,7 @@ export function ChatView({
         toast.error(
           reference.source_id === "public"
             ? t("profileDrive.publicImportFailed", "导入公盘文件失败。")
-            : t("profileDrive.importFailed", "导入个人文件失败。"),
+            : t("profileDrive.importFailed", "导入本地文件失败。"),
         );
       } finally {
         profileDriveDropInFlightRef.current.delete(requestKey);
