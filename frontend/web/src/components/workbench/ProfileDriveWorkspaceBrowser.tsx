@@ -96,6 +96,7 @@ interface ProfileDriveSourceBrowserProps extends ProfileDriveWorkspaceBrowserPro
 interface ProfileDriveSourceControls {
   loading: boolean;
   connected: boolean | null;
+  error: string | null;
   visibleEntryCount: number;
   refresh: () => Promise<void>;
 }
@@ -304,20 +305,21 @@ function ProfileDriveSourceBrowser({
 
   useEffect(() => {
     let active = true;
+    const statusGeneration = treeGenerationRef.current;
     const pendingPaths = pendingPathsRef.current;
     mountedRef.current = true;
     setLoading(true);
     void profileDriveApi
       .status()
       .then((status) => {
-        if (!active) return;
+        if (!active || statusGeneration !== treeGenerationRef.current) return;
         setConnected(status.connected);
         if (status.connected) return loadRoot();
         setLoading(false);
         return undefined;
       })
       .catch((statusError) => {
-        if (!active) return;
+        if (!active || statusGeneration !== treeGenerationRef.current) return;
         setConnected(false);
         setError(browserError(statusError, title));
         setLoading(false);
@@ -332,6 +334,7 @@ function ProfileDriveSourceBrowser({
 
   useEffect(() => {
     const handleConnectionChange = () => {
+      setConnected(true);
       void loadRoot();
     };
     window.addEventListener(
@@ -453,11 +456,13 @@ function ProfileDriveSourceBrowser({
     onControlsChange(sourceId, {
       loading,
       connected,
+      error,
       visibleEntryCount,
       refresh: loadRoot,
     });
   }, [
     connected,
+    error,
     loadRoot,
     loading,
     onControlsChange,
@@ -701,12 +706,14 @@ export function ProfileDriveWorkspaceBrowser({
     profile: {
       loading: true,
       connected: null,
+      error: null,
       visibleEntryCount: 0,
       refresh: noopRefresh,
     },
     public: {
       loading: true,
       connected: null,
+      error: null,
       visibleEntryCount: 0,
       refresh: noopRefresh,
     },
@@ -721,6 +728,7 @@ export function ProfileDriveWorkspaceBrowser({
         if (
           previous.loading === controls.loading &&
           previous.connected === controls.connected &&
+          previous.error === controls.error &&
           previous.visibleEntryCount === controls.visibleEntryCount &&
           previous.refresh === controls.refresh
         ) {
@@ -772,17 +780,15 @@ export function ProfileDriveWorkspaceBrowser({
             aria-label={`${activeTab.label}可见条目数：${
               activeControls.loading
                 ? "加载中"
-                : activeControls.connected
-                  ? activeControls.visibleEntryCount
-                  : "不可用"
+                : activeControls.error || activeControls.connected !== true
+                  ? "不可用"
+                  : activeControls.visibleEntryCount
             }`}
             aria-live="polite"
           >
-            {activeControls.loading
-              ? "…"
-              : activeControls.connected
-                ? activeControls.visibleEntryCount
-                : "!"}
+            {activeControls.loading || activeControls.error || !activeControls.connected
+              ? "!"
+              : activeControls.visibleEntryCount}
           </span>
         </div>
         <div

@@ -519,6 +519,24 @@ test("mounts the public drive with source-correct expansion and import", async (
     ]);
   const originalFetch = globalThis.fetch;
   const bodies: Array<Record<string, unknown>> = [];
+  const pendingStatusResolvers: Array<(response: Response) => void> = [];
+  const releaseStatus = () => {
+    const statusPayload = JSON.stringify({
+      status: "disconnected",
+      connected: false,
+      reauthRequired: false,
+      connectedAtUtc: null,
+      lastUsedAtUtc: null,
+    });
+    while (pendingStatusResolvers.length > 0) {
+      pendingStatusResolvers.shift()!(
+        new Response(statusPayload, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+  };
   globalThis.fetch = (async (input, init = {}) => {
     const url = String(input);
     if (url.endsWith("/api/ai/auth/company-credential-handoff")) {
@@ -528,16 +546,9 @@ test("mounts the public drive with source-correct expansion and import", async (
       });
     }
     if (url.endsWith("/api/profile-drive/status")) {
-      return new Response(
-        JSON.stringify({
-          status: "disconnected",
-          connected: false,
-          reauthRequired: false,
-          connectedAtUtc: null,
-          lastUsedAtUtc: null,
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      return new Promise<Response>((resolve) => {
+        pendingStatusResolvers.push(resolve);
+      });
     }
     if (url.endsWith("/api/profile-drive/files/list")) {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -546,6 +557,12 @@ test("mounts the public drive with source-correct expansion and import", async (
       const publicRootRequestCount = bodies.filter(
         (request) => request.source === "public" && request.path === "",
       ).length;
+      if (path === "" && body.source === "public" && publicRootRequestCount > 2) {
+        return new Response(
+          JSON.stringify({ status: "drive_unavailable", message: "retry later" }),
+          { status: 503, headers: { "Content-Type": "application/json" } },
+        );
+      }
       return new Response(
         JSON.stringify({
           status: "success",
@@ -657,12 +674,17 @@ test("mounts the public drive with source-correct expansion and import", async (
     assert.equal(
       container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
         ?.getAttribute("aria-label"),
-      "公盘文件可见条目数：不可用",
+      "公盘文件可见条目数：加载中",
     );
     await act(async () => {
       dom.window.dispatchEvent(
         new dom.window.Event(PROFILE_DRIVE_CONNECTION_CHANGED_EVENT),
       );
+      await flush();
+      await flush();
+    });
+    releaseStatus();
+    await act(async () => {
       await flush();
       await flush();
     });
@@ -729,6 +751,26 @@ test("mounts the public drive with source-correct expansion and import", async (
       );
       await flush();
     });
+
+    await act(async () => {
+      refreshPublicButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+      await flush();
+    });
+    assert.equal(refreshPublicButton.disabled, false);
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.textContent,
+      "!",
+    );
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.getAttribute("aria-label"),
+      "公盘文件可见条目数：不可用",
+    );
+    assert.match(publicPanel.textContent ?? "", /公盘文件暂时不可用/);
 
     const publicLists = bodies.filter((body) => body.source === "public");
     const publicRootList = publicLists.find((body) => body.path === "");
