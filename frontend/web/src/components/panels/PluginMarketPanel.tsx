@@ -27,7 +27,7 @@ import { workbenchSurface } from "../workbench/workbenchSurface";
 
 const plugin = {
   id: "personal-file-server",
-  name: "个人文件服务器",
+  name: "本地文件服务器",
   description: "连接你的企业个人目录，让 AI 在授权范围内查找和读取 Desktop 文件。",
   provider: "企业 IT",
   category: "企业资源",
@@ -44,7 +44,7 @@ function profileDriveErrorMessage(error: unknown): string {
       return "企业账号或密码不正确。";
     }
     if (error.code === "profile_drive_not_configured") {
-      return "当前用户尚未配置个人文件服务器。";
+      return "当前用户尚未配置本地文件服务器。";
     }
     if (error.code === "drive_unavailable") {
       return "文件服务器暂不可用，请稍后重试。";
@@ -152,7 +152,7 @@ function AuthenticationDialog({
     <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
       <button
         type="button"
-        aria-label="关闭个人文件服务器认证"
+        aria-label="关闭本地文件服务器认证"
         className="absolute inset-0 cursor-default bg-[var(--theme-overlay-strong)]"
         onClick={resetAndClose}
       />
@@ -172,7 +172,7 @@ function AuthenticationDialog({
               id="file-server-auth-title"
               className="text-base font-semibold text-[var(--theme-text)]"
             >
-              认证个人文件服务器
+              认证本地文件服务器
             </h2>
             <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
               使用当前登录账号建立个人 Desktop 的受控连接。

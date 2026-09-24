@@ -109,7 +109,7 @@ test("personal file server authentication sends only the password through the au
       root.render(createElement(PluginMarketPanel));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    assert.match(container.textContent ?? "", /个人文件服务器/);
+    assert.match(container.textContent ?? "", /本地文件服务器/);
     assert.match(container.textContent ?? "", /列出文件/);
     assert.match(container.textContent ?? "", /搜索文件/);
     assert.match(container.textContent ?? "", /读取文本/);
