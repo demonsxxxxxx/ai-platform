@@ -8,13 +8,11 @@ import socket
 import threading
 import time
 import traceback
-from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import httpx
 import pytest
 
 from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
@@ -28,7 +26,7 @@ requires_secure_opensandbox_transfer = pytest.mark.skipif(
         and os.open in os.supports_dir_fd
         and os.rename in os.supports_dir_fd
     ),
-    reason="OpenSandbox workspace transfer requires controller openat and O_NOFOLLOW support",
+    reason="OpenSandbox Host bind validation requires controller openat and O_NOFOLLOW support",
 )
 
 
@@ -108,11 +106,11 @@ def workspace(**overrides) -> WorkspaceLease:
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
-        "host_root": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a",
-        "workspace_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/workspace",
+        "host_root": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/qat-test-attempt",
+        "workspace_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/qat-test-attempt/workspace",
         "workspace_container_path": "/workspace",
-        "inputs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/inputs",
-        "logs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/logs",
+        "inputs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/qat-test-attempt/workspace/inputs",
+        "logs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/qat-test-attempt/logs",
     }
     values.update(overrides)
     if "workspace_host_path" in overrides and "host_root" not in overrides:
@@ -1000,6 +998,7 @@ class FakeOpenSandboxManager:
 
 class OpenSandboxSettings:
     sandbox_container_provider = "opensandbox"
+    sandbox_workspace_root = "/runtime"
     sandbox_container_start_timeout_seconds = 30
     sandbox_executor_health_timeout_seconds = 60
     sandbox_executor_image = "registry.example/ai-platform@sha256:" + "a" * 64
@@ -1035,6 +1034,43 @@ class InternalTestOpenSandboxSettings(OpenSandboxSettings):
     openai_api_key = "test-newapi-token"
     anthropic_base_url = "http://direct-model.invalid"
     anthropic_auth_token = "test-anthropic-token"
+
+
+def local_opensandbox_workspace(tmp_path, runtime_request=None):
+    runtime_request = runtime_request or request()
+    root = (
+        Path(".pytest-tmp")
+        / f"opensandbox-{hashlib.sha256(str(tmp_path).encode()).hexdigest()[:8]}"
+    ).resolve()
+    attempt = (
+        root
+        / "tenants"
+        / runtime_request.tenant_id
+        / "workspaces"
+        / runtime_request.workspace_id
+        / "users"
+        / runtime_request.user_id
+        / "sessions"
+        / runtime_request.session_id
+        / "runs"
+        / runtime_request.run_id
+        / "attempts"
+        / runtime_request.attempt_id
+    )
+    workspace_path = attempt / "workspace"
+    (workspace_path / "inputs").mkdir(parents=True)
+    (workspace_path / ".claude" / "skills").mkdir(parents=True)
+    (attempt / "logs").mkdir()
+    settings = OpenSandboxSettings()
+    settings.sandbox_workspace_root = str(root)
+    leased_workspace = workspace(
+        host_root=str(attempt),
+        workspace_host_path=str(workspace_path),
+        inputs_host_path=str(workspace_path / "inputs"),
+        logs_host_path=str(attempt / "logs"),
+        prepare_staged_skills=False,
+    )
+    return settings, leased_workspace, workspace_path
 
 
 @pytest.mark.asyncio
@@ -1247,789 +1283,134 @@ async def test_opensandbox_renew_rejects_identity_drift_before_remote_renewal(mo
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_create_never_serializes_controller_workspace_paths(monkeypatch, tmp_path):
+async def test_opensandbox_create_mounts_only_the_exact_attempt_workspace(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "controller-local" / "workspace"
-    local_workspace.mkdir(parents=True)
-
-    await opensandbox_provider().create_or_reuse(
-        request(),
-        workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False),
+    runtime_request = request()
+    settings, leased_workspace, workspace_path = local_opensandbox_workspace(
+        tmp_path,
+        runtime_request,
     )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
-    create_request = FakeOpenSandbox.created[0]
-    assert create_request["volumes"] == []
-    assert str(local_workspace) not in repr(create_request)
+    await opensandbox_provider().create_or_reuse(runtime_request, leased_workspace)
 
-
-@pytest.mark.parametrize(
-    ("has_openat", "has_renameat", "expected"),
-    [
-        (True, True, True),
-        (True, False, False),
-        (False, True, False),
-    ],
-)
-def test_secure_workspace_transfer_preflight_requires_openat_and_renameat(
-    monkeypatch,
-    has_openat,
-    has_renameat,
-    expected,
-):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    supported = set()
-    if has_openat:
-        supported.add(container_provider.os.open)
-    if has_renameat:
-        supported.add(container_provider.os.rename)
-    monkeypatch.setattr(container_provider.os, "O_DIRECTORY", 1, raising=False)
-    monkeypatch.setattr(container_provider.os, "O_NOFOLLOW", 1, raising=False)
-    monkeypatch.setattr(container_provider.os, "supports_dir_fd", supported)
-
-    assert container_provider._secure_workspace_transfer_supported() is expected
+    volumes = FakeOpenSandbox.created[0]["volumes"]
+    assert len(volumes) == 1
+    assert volumes[0].name == "attempt-workspace"
+    assert volumes[0].host.path == str(workspace_path)
+    assert volumes[0].mount_path == "/workspace"
+    assert volumes[0].read_only is False
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_workspace_transfer_fails_closed_without_secure_controller_primitives(monkeypatch, tmp_path):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    FakeOpenSandboxManager.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    monkeypatch.setattr(container_provider, "_secure_workspace_transfer_supported", lambda: False)
-    local_workspace = tmp_path / "controller-local" / "workspace"
-    local_workspace.mkdir(parents=True)
-    runtime_request = request()
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-
-    with pytest.raises(container_provider.ContainerStartFailedError, match="secure workspace transfer is unavailable"):
-        await provider.stage_workspace(lease, runtime_request, lease_workspace)
-    with pytest.raises(container_provider.ContainerStartFailedError, match="secure workspace transfer is unavailable"):
-        await provider.collect_workspace(
-            lease,
-            runtime_request,
-            lease_workspace,
-            ["output/result.txt"],
-        )
-
-
-@pytest.mark.parametrize("fail_second_batch", (False, True))
-@pytest.mark.asyncio
-async def test_opensandbox_stage_batches_files_without_bypassing_sentinel(
-    monkeypatch, tmp_path, fail_second_batch
+async def test_opensandbox_create_rejects_workspace_outside_authoritative_root(
+    monkeypatch, tmp_path
 ):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    # Batch boundaries are portable; the no-follow reader has separate Linux coverage.
-    monkeypatch.setattr(container_provider, "_require_secure_workspace_transfer", lambda: None)
-    monkeypatch.setattr(
-        container_provider,
-        "_read_stable_workspace_file",
-        lambda entry: entry.source_path.read_bytes(),
-    )
-    local_workspace = tmp_path / "attempt" / "workspace"
-    local_workspace.mkdir(parents=True)
-    for index in range(33):
-        (local_workspace / f"file-{index:02d}.bin").write_bytes(b"x")
-    (local_workspace / "file-33.bin").write_bytes(b"x" * (1024 * 1024 + 1))
-    for index in (34, 35):
-        (local_workspace / f"file-{index:02d}.bin").write_bytes(b"x" * (700 * 1024))
-
     runtime_request = request()
-    leased_workspace = workspace(
-        workspace_host_path=str(local_workspace), prepare_staged_skills=False
+    settings, leased_workspace, _workspace_path = local_opensandbox_workspace(
+        tmp_path,
+        runtime_request,
     )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    escaped = leased_workspace.model_copy(
+        update={"workspace_host_path": str(tmp_path / "outside" / "workspace")}
+    )
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="bind is invalid"):
+        await opensandbox_provider().create_or_reuse(runtime_request, escaped)
+
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+@requires_secure_opensandbox_transfer
+async def test_opensandbox_stage_uses_only_the_bounded_sentinel_control_write(
+    monkeypatch, tmp_path
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    runtime_request = request()
+    settings, leased_workspace, workspace_path = local_opensandbox_workspace(
+        tmp_path,
+        runtime_request,
+    )
+    (workspace_path / "brief.txt").write_text("already shared", encoding="utf-8")
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(runtime_request, leased_workspace)
     remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    batches = []
-    write_files = remote_files.write_files
+    original_write = remote_files.write_files
 
-    def capture(entries):
-        batches.append(list(entries))
-        if fail_second_batch and len(batches) == 2:
-            raise RuntimeError("synthetic batch write failed")
-        write_files(entries)
+    def mirror_sentinel(entries):
+        original_write(entries)
+        assert len(entries) == 1
+        entry = entries[0]
+        marker = workspace_path / ".ai-platform-opensandbox-lease.json"
+        marker.write_text(str(entry.data), encoding="utf-8")
+        marker.chmod(0o600)
 
-    remote_files.write_files = capture
-    if fail_second_batch:
-        with pytest.raises(container_provider.ContainerStartFailedError, match="workspace staging failed"):
-            await provider.stage_workspace(lease, runtime_request, leased_workspace)
-        assert not any(
-            entry.path == "/workspace/.ai-platform-opensandbox-lease.json"
-            for entry in remote_files.written
-        )
-        return
+    remote_files.write_files = mirror_sentinel
+
     await provider.stage_workspace(lease, runtime_request, leased_workspace)
 
-    assert [len(batch) for batch in batches] == [32, 1, 1, 1, 1, 1]
-    assert sum(len(batch) for batch in batches[:-1]) == 36
-    assert all(
-        sum(len(entry.data) for entry in batch) <= 1024 * 1024 or len(batch) == 1
-        for batch in batches[:-1]
-    )
-    assert batches[-1][0].path == "/workspace/.ai-platform-opensandbox-lease.json"
-    assert json.loads(remote_files.read_file(batches[-1][0].path))["attempt_id"] == runtime_request.attempt_id
+    assert remote_files.operations == ["write"]
+    assert [entry.path for entry in remote_files.written] == [
+        "/workspace/.ai-platform-opensandbox-lease.json"
+    ]
+    assert (workspace_path / "brief.txt").read_text(encoding="utf-8") == "already shared"
 
 
 @pytest.mark.asyncio
 @requires_secure_opensandbox_transfer
-async def test_opensandbox_stages_skills_inputs_and_attempt_sentinel_after_ready_create(monkeypatch, tmp_path):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "attempt" / "workspace"
-    (local_workspace / "inputs").mkdir(parents=True)
-    (local_workspace / ".ai-platform").mkdir()
-    (local_workspace / ".claude" / "skills" / "reporting").mkdir(parents=True)
-    (local_workspace / "brief.txt").write_text("brief", encoding="utf-8")
-    (local_workspace / "CLAUDE.md").write_text("默认使用简体中文回复用户。", encoding="utf-8")
-    (local_workspace / "inputs" / "input.txt").write_text("input", encoding="utf-8")
-    (local_workspace / ".ai-platform" / "manifest.json").write_text("{}", encoding="utf-8")
-    (local_workspace / ".claude" / "skills" / "reporting" / "SKILL.md").write_text(
-        "# reporting\n",
-        encoding="utf-8",
-    )
-    skill_subject = {
-        **native_tool_subjects()[0],
-        "allowed_skill_names": ["reporting"],
-    }
-    runtime_request = request(
-        skill_ids=["reporting"],
-        tool_policy_subjects=[skill_subject],
-    )
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-
-    await provider.stage_workspace(lease, runtime_request, lease_workspace)
-
-    sandbox_files = FakeOpenSandbox.instances[lease.container_id].files
-    remote_files = {entry.path: entry.data for entry in sandbox_files.written}
-    assert sandbox_files.operations[:1] == ["mkdir"]
-    assert remote_files["/workspace/brief.txt"] == b"brief"
-    assert remote_files["/workspace/CLAUDE.md"] == "默认使用简体中文回复用户。".encode()
-    assert remote_files["/workspace/inputs/input.txt"] == b"input"
-    assert remote_files["/workspace/.ai-platform/manifest.json"] == b"{}"
-    assert remote_files["/workspace/.claude/skills/reporting/SKILL.md"] == (
-        local_workspace / ".claude" / "skills" / "reporting" / "SKILL.md"
-    ).read_bytes()
-    sentinel = remote_files["/workspace/.ai-platform-opensandbox-lease.json"]
-    assert isinstance(sentinel, str)
-    assert json.loads(sentinel)["attempt_id"] == runtime_request.attempt_id
-    assert str(local_workspace) not in repr(FakeOpenSandbox.created[0])
-
-
-@pytest.mark.asyncio
-async def test_opensandbox_filesystem_modes_use_execd_octal_digit_wire_values():
-    """Mirror the real SDK requests accepted by the deployed execd filesystem API."""
-
-    from opensandbox.adapters.filesystem_adapter import FilesystemAdapter
-    from opensandbox.config import ConnectionConfig
-    from opensandbox.models.filesystem import WriteEntry
-    from opensandbox.models.sandboxes import SandboxEndpoint
-    from app.runtime.sandbox.filesystem_contract import encode_execd_mode
-
-    captured: list[tuple[str, bytes]] = []
-
-    async def capture_request(request: httpx.Request) -> httpx.Response:
-        captured.append((request.url.path, await request.aread()))
-        return httpx.Response(200, request=request)
-
-    adapter = FilesystemAdapter(
-        ConnectionConfig(transport=httpx.MockTransport(capture_request)),
-        SandboxEndpoint(endpoint="execd.test"),
-    )
-    try:
-        await adapter.create_directories(
-            [
-                WriteEntry(
-                    path="/workspace",
-                    mode=encode_execd_mode(0o700),
-                )
-            ]
-        )
-        await adapter.write_files(
-            [
-                WriteEntry(
-                    path="/workspace/.ai-platform-opensandbox-lease.json",
-                    data=b"sentinel",
-                    mode=encode_execd_mode(0o600),
-                )
-            ]
-        )
-    finally:
-        await adapter._httpx_client.aclose()
-
-    assert captured[0][0] == "/directories"
-    assert json.loads(captured[0][1]) == {
-        "/workspace": {"mode": 700, "owner": None, "group": None}
-    }
-    assert captured[1][0] == "/files/upload"
-    assert b'"mode": 600' in captured[1][1]
-    assert b'"mode": 384' not in captured[1][1]
-
-
-@pytest.mark.parametrize("mode", ("sdk", "direct", "sync", "nonbytes", "oversize"))
-@pytest.mark.asyncio
-async def test_opensandbox_workspace_stream_contract(mode):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    provider = container_provider.OpenSandboxContainerProvider()
-
-    async def chunks():
-        if mode == "oversize":
-            chunk = b"x" * (64 * 1024)
-            for _ in range(1024):
-                yield chunk
-            yield b"x"
-        else:
-            yield "not-bytes" if mode == "nonbytes" else b"artifact"
-
-    class Files:
-        def read_bytes_stream(self, _path, *, chunk_size):
-            assert chunk_size == 64 * 1024
-            if mode == "sync":
-                return [b"artifact"]
-            stream = chunks()
-            if mode != "sdk":
-                return stream
-
-            async def resolve():
-                return stream
-
-            return resolve()
-
-    if mode == "oversize":
-        assert container_provider._OPENSANDBOX_COLLECT_MAX_FILE_BYTES == 64 * 1024 * 1024
-    error = "per-file byte limit" if mode == "oversize" else "collection is invalid"
-    if mode in {"sync", "nonbytes", "oversize"}:
-        with pytest.raises(container_provider.ContainerStartFailedError, match=error):
-            await provider._stream_remote_workspace_file(Files(), "/workspace/output/artifact")
-    else:
-        total, digest = await provider._stream_remote_workspace_file(Files(), "/workspace/output/artifact")
-        assert (total, digest) == (8, hashlib.sha256(b"artifact").hexdigest())
-
-
-@pytest.mark.asyncio
-@requires_secure_opensandbox_transfer
-async def test_opensandbox_collects_only_terminal_declared_workspace_files_atomically(monkeypatch, tmp_path):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "attempt" / "workspace"
-    local_workspace.mkdir(parents=True)
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    provider = opensandbox_provider()
-    runtime_request = request()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-    remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    remote_files.write_files(
-        [
-            FakeOpenSandboxFile(path="/workspace/output/legacy.txt", data=b"legacy"),
-            FakeOpenSandboxFile(path="/workspace/outputs/review/delivery/final.txt", data=b"final"),
-            FakeOpenSandboxFile(path="/workspace/outputs/review/private.txt", data=b"private"),
-            FakeOpenSandboxFile(path="/workspace/tasks/facts.json", data=b"{}"),
-            FakeOpenSandboxFile(path="/workspace/CLAUDE.md", data=b"platform instructions"),
-        ]
-    )
-
-    await provider.collect_workspace(
-        lease,
-        runtime_request,
-        lease_workspace,
-        ["outputs/review/delivery/final.txt"],
-    )
-
-    assert (local_workspace / "outputs" / "review" / "delivery" / "final.txt").read_bytes() == b"final"
-    assert not (local_workspace / "output" / "legacy.txt").exists()
-    assert not (local_workspace / "outputs" / "review" / "private.txt").exists()
-    assert not (local_workspace / "tasks" / "facts.json").exists()
-    assert not (local_workspace / "CLAUDE.md").exists()
-
-
-@pytest.mark.asyncio
-@requires_secure_opensandbox_transfer
-async def test_opensandbox_process_files_do_not_consume_delivery_file_limit(
+async def test_opensandbox_collect_snapshots_shared_response_without_remote_transfer(
     monkeypatch, tmp_path
 ):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "attempt" / "workspace"
-    local_workspace.mkdir(parents=True)
-    lease_workspace = workspace(
-        workspace_host_path=str(local_workspace),
-        prepare_staged_skills=False,
-    )
     runtime_request = request()
+    settings, leased_workspace, workspace_path = local_opensandbox_workspace(
+        tmp_path,
+        runtime_request,
+    )
+    output = workspace_path / "outputs" / "delivery"
+    output.mkdir(parents=True)
+    result = output / "result.txt"
+    result.write_text("complete", encoding="utf-8")
+    result.chmod(0o600)
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr(container_provider, "RUNTIME_UID", os.getuid())
+    monkeypatch.setattr(container_provider, "RUNTIME_GID", os.getgid())
     provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
+    lease = await provider.create_or_reuse(runtime_request, leased_workspace)
     remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    remote_files.write_files(
-        [FakeOpenSandboxFile(path="/workspace/output/final.txt", data=b"final")]
-        + [
-            FakeOpenSandboxFile(
-                path=f"/workspace/tasks/temp-{index:03d}.json",
-                data=b"{}",
-            )
-            for index in range(128)
-        ]
+    remote_files.get_file_info = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("Host bind collection must not use the Files API")
+    )
+    remote_files.read_bytes_stream = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("Host bind collection must not download response files")
     )
 
-    await provider.collect_workspace(
+    snapshot = await provider.collect_workspace(
         lease,
         runtime_request,
-        lease_workspace,
-        ["output/final.txt"],
+        leased_workspace,
+        ["outputs/delivery/result.txt"],
     )
 
-    assert (local_workspace / "output" / "final.txt").read_bytes() == b"final"
-    assert not (local_workspace / "tasks").exists()
-
-
-@pytest.mark.asyncio
-@requires_secure_opensandbox_transfer
-async def test_opensandbox_collects_authorized_skill_output_without_skill_sources(
-    monkeypatch, tmp_path
-):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "attempt" / "workspace"
-    local_workspace.mkdir(parents=True)
-    lease_workspace = workspace(
-        workspace_host_path=str(local_workspace),
-        prepare_staged_skills=False,
-    )
-    skill_subject = {
-        **native_tool_subjects()[0],
-        "allowed_skill_names": ["reporting"],
-    }
-    runtime_request = request(
-        skill_ids=["reporting"],
-        tool_policy_subjects=[skill_subject],
-    )
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-    remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    remote_files.write_files(
-        [
-            FakeOpenSandboxFile(
-                path="/workspace/.claude/skills/reporting/output/report.txt",
-                data=b"report",
-            ),
-            FakeOpenSandboxFile(
-                path="/workspace/.claude/skills/reporting/SKILL.md",
-                data=b"private instructions",
-            ),
-        ]
-    )
-
-    await provider.collect_workspace(
-        lease,
-        runtime_request,
-        lease_workspace,
-        [".claude/skills/reporting/output/report.txt"],
-    )
-
-    assert (
-        local_workspace / ".claude" / "skills" / "reporting" / "output" / "report.txt"
-    ).read_bytes() == b"report"
-    assert not (
-        local_workspace / ".claude" / "skills" / "reporting" / "SKILL.md"
-    ).exists()
-
-    with pytest.raises(
-        container_provider.ContainerStartFailedError,
-        match="selection is invalid",
-    ):
-        await provider.collect_workspace(
-            lease,
-            runtime_request,
-            lease_workspace,
-            [".claude/skills/reporting/SKILL.md"],
-        )
-    with pytest.raises(
-        container_provider.ContainerStartFailedError,
-        match="selection is invalid",
-    ):
-        await provider.collect_workspace(
-            lease,
-            request(skill_ids=["reporting"]),
-            lease_workspace,
-            [".claude/skills/reporting/output/report.txt"],
-        )
-
-
-@pytest.mark.parametrize("relative_path", ["", "/absolute.txt", "../escape.txt", "nested/../escape.txt", "nul\x00.txt"])
-def test_opensandbox_workspace_transfer_rejects_unsafe_relative_paths(relative_path):
-    from app.runtime.sandbox.container_provider import ContainerStartFailedError, _safe_workspace_relative_path
-
-    with pytest.raises(ContainerStartFailedError):
-        _safe_workspace_relative_path(relative_path)
-
-
-def test_opensandbox_workspace_manifest_rejects_hardlinks_and_detects_source_drift(tmp_path):
-    from app.runtime.sandbox.container_provider import (
-        ContainerStartFailedError,
-        _build_opensandbox_workspace_manifest,
-        _read_stable_workspace_file,
-    )
-
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    source = local_workspace / "report.txt"
-    source.write_text("before", encoding="utf-8")
-    linked = local_workspace / "report-copy.txt"
-    os.link(source, linked)
-    runtime_request = request()
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-
-    with pytest.raises(ContainerStartFailedError, match="source is invalid"):
-        _build_opensandbox_workspace_manifest(runtime_request, lease_workspace)
-
-    linked.unlink()
-    _directories, files = _build_opensandbox_workspace_manifest(runtime_request, lease_workspace)
-    source.write_text("after", encoding="utf-8")
-    with pytest.raises(ContainerStartFailedError, match="changed during read"):
-        _read_stable_workspace_file(next(entry for entry in files if entry.relative_path == "report.txt"))
-
-
-def test_opensandbox_workspace_manifest_enforces_explicit_upload_bounds(monkeypatch, tmp_path):
-    from app.runtime.sandbox import container_provider
-
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    (local_workspace / "first.txt").write_bytes(b"a")
-    (local_workspace / "second.txt").write_bytes(b"b")
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    monkeypatch.setattr(container_provider, "_OPENSANDBOX_STAGE_MAX_FILES", 1)
-
-    with pytest.raises(container_provider.ContainerStartFailedError, match="file count"):
-        container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
-
-
-def test_opensandbox_workspace_manifest_allows_1024_files_and_rejects_1025(tmp_path):
-    from app.runtime.sandbox import container_provider
-
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    for index in range(1024):
-        (local_workspace / f"file-{index:04d}.txt").write_bytes(b"x")
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-
-    _directories, files = container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
-    assert len(files) == 1024
-
-    (local_workspace / "file-1024.txt").write_bytes(b"x")
-    with pytest.raises(container_provider.ContainerStartFailedError, match="file count"):
-        container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
-
-
-def test_opensandbox_workspace_manifest_enforces_upload_file_and_total_bytes(monkeypatch, tmp_path):
-    from app.runtime.sandbox import container_provider
-
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    oversized = local_workspace / "oversized.txt"
-    oversized.write_bytes(b"ab")
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    monkeypatch.setattr(container_provider, "_OPENSANDBOX_STAGE_MAX_FILE_BYTES", 1)
-
-    with pytest.raises(container_provider.ContainerStartFailedError, match="file byte"):
-        container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
-
-    oversized.unlink()
-    (local_workspace / "first.txt").write_bytes(b"a")
-    (local_workspace / "second.txt").write_bytes(b"b")
-    monkeypatch.setattr(container_provider, "_OPENSANDBOX_STAGE_MAX_FILE_BYTES", 8)
-    monkeypatch.setattr(container_provider, "_OPENSANDBOX_STAGE_MAX_TOTAL_BYTES", 1)
-
-    with pytest.raises(container_provider.ContainerStartFailedError, match="total byte"):
-        container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
-
-
-@pytest.mark.asyncio
-async def test_opensandbox_collection_rejects_declared_remote_symlink(monkeypatch, tmp_path):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    runtime_request = request()
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-    remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    monkeypatch.setattr(container_provider, "_require_secure_workspace_transfer", lambda: None)
-    remote_files.get_file_info = lambda paths: {
-        paths[0]: {"path": paths[0], "type": "symlink", "size": 0}
-    }
-    with pytest.raises(
-        container_provider.ContainerStartFailedError,
-        match="response file is unavailable",
-    ):
-        await provider.collect_workspace(
-            lease,
-            runtime_request,
-            lease_workspace,
-            ["output/escape"],
-        )
-    assert not (local_workspace / "output").exists()
-
-
-def test_opensandbox_collection_rejects_out_of_workspace_symlink_entry():
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    provider = opensandbox_provider()
-
-    with pytest.raises(container_provider.ContainerStartFailedError, match="path is invalid"):
-        provider._remote_workspace_entry(
-            {"path": "/outside/private", "type": "symlink", "size": 0},
-            workspace(),
-        )
-
-
-@pytest.mark.asyncio
-async def test_opensandbox_collection_rejects_unknown_remote_entry_type(monkeypatch, tmp_path):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    runtime_request = request()
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-    remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    monkeypatch.setattr(container_provider, "_require_secure_workspace_transfer", lambda: None)
-    remote_files.get_file_info = lambda paths: {
-        paths[0]: {"path": paths[0], "type": "device", "size": 0}
-    }
-
-    with pytest.raises(container_provider.ContainerStartFailedError, match="entry is invalid"):
-        await provider.collect_workspace(
-            lease,
-            runtime_request,
-            lease_workspace,
-            ["unknown"],
-        )
-
-
-@pytest.mark.asyncio
-@requires_secure_opensandbox_transfer
-async def test_opensandbox_collection_rejects_drift_and_does_not_publish_partial_file(monkeypatch, tmp_path):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    runtime_request = request()
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-    remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    remote_files.write_files([FakeOpenSandboxFile(path="/workspace/output/result.txt", data=b"result")])
-    original_get_file_info = remote_files.get_file_info
-
-    def drifted_file_info(paths):
-        details = original_get_file_info(paths)
-        details[paths[0]]["size"] = 99
-        return details
-
-    remote_files.get_file_info = drifted_file_info
-    with pytest.raises(container_provider.ContainerStartFailedError, match="changed during download"):
-        await provider.collect_workspace(
-            lease,
-            runtime_request,
-            lease_workspace,
-            ["output/result.txt"],
-        )
-    assert not (local_workspace / "output" / "result.txt").exists()
-    assert not list((local_workspace / "output").glob(".ai-platform-download-*"))
-
-
-@pytest.mark.asyncio
-@requires_secure_opensandbox_transfer
-async def test_opensandbox_collection_rejects_same_size_remote_content_drift(monkeypatch, tmp_path):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    runtime_request = request()
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-    remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    remote_files.write_files([FakeOpenSandboxFile(path="/workspace/output/result.txt", data=b"first")])
-    stream_calls = 0
-
-    async def same_size_drifting_stream(_path, *, chunk_size=65536):
-        nonlocal stream_calls
-        stream_calls += 1
-        yield b"first" if stream_calls == 1 else b"other"
-
-    remote_files.read_bytes_stream = same_size_drifting_stream
-    with pytest.raises(container_provider.ContainerStartFailedError, match="changed during download"):
-        await provider.collect_workspace(
-            lease,
-            runtime_request,
-            lease_workspace,
-            ["output/result.txt"],
-        )
-
-    assert stream_calls == 2
-    assert not (local_workspace / "output" / "result.txt").exists()
-
-
-@pytest.mark.asyncio
-@requires_secure_opensandbox_transfer
-async def test_opensandbox_collection_does_not_publish_earlier_files_when_later_file_drifts(monkeypatch, tmp_path):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    runtime_request = request()
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-    remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    remote_files.write_files(
-        [
-            FakeOpenSandboxFile(path="/workspace/output/first.txt", data=b"first"),
-            FakeOpenSandboxFile(path="/workspace/output/second.txt", data=b"second"),
-        ]
-    )
-    original_get_file_info = remote_files.get_file_info
-
-    def second_file_drifts(paths):
-        details = original_get_file_info(paths)
-        if paths == ["/workspace/output/second.txt"]:
-            details[paths[0]]["size"] = 99
-        return details
-
-    remote_files.get_file_info = second_file_drifts
-    with pytest.raises(container_provider.ContainerStartFailedError, match="changed during download"):
-        await provider.collect_workspace(
-            lease,
-            runtime_request,
-            lease_workspace,
-            ["output/first.txt", "output/second.txt"],
-        )
-
-    assert not (local_workspace / "output" / "first.txt").exists()
-    assert not (local_workspace / "output" / "second.txt").exists()
-    assert not list(local_workspace.parent.glob(".ai-platform-collect-*"))
-
-
-@pytest.mark.asyncio
-@requires_secure_opensandbox_transfer
-async def test_opensandbox_collection_rolls_back_already_published_files_when_local_publish_fails(monkeypatch, tmp_path):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    local_workspace = tmp_path / "workspace"
-    output_directory = local_workspace / "output"
-    output_directory.mkdir(parents=True)
-    (output_directory / "first.txt").write_bytes(b"prior")
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    runtime_request = request()
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(runtime_request, lease_workspace)
-    remote_files = FakeOpenSandbox.instances[lease.container_id].files
-    remote_files.write_files(
-        [
-            FakeOpenSandboxFile(path="/workspace/output/first.txt", data=b"first"),
-            FakeOpenSandboxFile(path="/workspace/output/second.txt", data=b"second"),
-        ]
-    )
-    original_replace = container_provider.os.replace
-
-    def fail_second_publish(source, target, *args, **kwargs):
-        if source == "second.txt" and target == "second.txt":
-            raise OSError("publish failed")
-        return original_replace(source, target, *args, **kwargs)
-
-    monkeypatch.setattr(container_provider.os, "replace", fail_second_publish)
-    with pytest.raises(container_provider.ContainerStartFailedError, match="publication failed"):
-        await provider.collect_workspace(
-            lease,
-            runtime_request,
-            lease_workspace,
-            ["output/first.txt", "output/second.txt"],
-        )
-
-    assert (output_directory / "first.txt").read_bytes() == b"prior"
-    assert not (output_directory / "second.txt").exists()
-    assert not list(local_workspace.parent.glob(".ai-platform-collect-*"))
-
-
-def test_opensandbox_workspace_manifest_rejects_directory_symlink_swap_after_listing(monkeypatch, tmp_path):
-    from app.runtime.sandbox import container_provider
-
-    local_workspace = tmp_path / "workspace"
-    inputs = local_workspace / "inputs"
-    outside = tmp_path / "outside"
-    inputs.mkdir(parents=True)
-    outside.mkdir()
-    (inputs / "input.txt").write_text("trusted", encoding="utf-8")
-    (outside / "leak.txt").write_text("outside", encoding="utf-8")
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    original_iterdir = Path.iterdir
-    swapped = False
-
-    def swap_after_listing(path: Path):
-        nonlocal swapped
-        entries = list(original_iterdir(path))
-        if path == inputs and not swapped:
-            swapped = True
-            (inputs / "input.txt").unlink()
-            inputs.rmdir()
-            try:
-                inputs.symlink_to(outside, target_is_directory=True)
-            except OSError:
-                inputs.mkdir()
-                pytest.skip("directory symlinks are unavailable on this test host")
-        return iter(entries)
-
-    monkeypatch.setattr(Path, "iterdir", swap_after_listing)
-    try:
-        with pytest.raises(container_provider.ContainerStartFailedError):
-            container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
-    finally:
-        if inputs.is_symlink():
-            inputs.unlink()
-            inputs.mkdir()
-
-
-def test_opensandbox_workspace_file_read_rejects_ancestor_directory_drift(monkeypatch, tmp_path):
-    from app.runtime.sandbox import container_provider
-
-    local_workspace = tmp_path / "workspace"
-    inputs = local_workspace / "inputs"
-    inputs.mkdir(parents=True)
-    (inputs / "input.txt").write_text("trusted", encoding="utf-8")
-    lease_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    _directories, files = container_provider._build_opensandbox_workspace_manifest(request(), lease_workspace)
-    entry = next(item for item in files if item.relative_path == "inputs/input.txt")
-    original_directory_snapshot = container_provider._assert_workspace_directory
-
-    def drifted_directory_snapshot(path: Path):
-        snapshot = original_directory_snapshot(path)
-        if path == inputs:
-            return replace(snapshot, inode=snapshot.inode + 1)
-        return snapshot
-
-    monkeypatch.setattr(container_provider, "_assert_workspace_directory", drifted_directory_snapshot)
-    with pytest.raises(container_provider.ContainerStartFailedError, match="changed during read"):
-        container_provider._read_stable_workspace_file(entry)
-
+    assert snapshot is not None
+    assert snapshot.parent == Path(leased_workspace.host_root)
+    assert not snapshot.is_relative_to(workspace_path)
+    assert (snapshot / "outputs" / "delivery" / "result.txt").read_text(
+        encoding="utf-8"
+    ) == "complete"
+    result.write_text("changed after collection", encoding="utf-8")
+    assert (snapshot / "outputs" / "delivery" / "result.txt").read_text(
+        encoding="utf-8"
+    ) == "complete"
 
 
 @pytest.mark.asyncio
@@ -4279,7 +3660,12 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert created["env"]["APP_MODULE"] == "app.runtime.sandbox.executor_app:create_executor_app"
     assert created["env"]["AI_PLATFORM_RUN_ID"] == "run-a"
     assert created["resource"] == {"cpu": "2", "memory": "512Mi", "pids": "64"}
-    assert created["volumes"] == []
+    volume = created["volumes"][0]
+    assert len(created["volumes"]) == 1
+    assert volume.name == "attempt-workspace"
+    assert volume.host.path == str(Path(os.path.abspath(workspace().workspace_host_path)))
+    assert volume.mount_path == "/workspace"
+    assert volume.read_only is False
     assert created["network_policy"] is None
 
     sandbox = FakeOpenSandbox.instances["osb-run-a"]
@@ -4346,48 +3732,30 @@ async def test_opensandbox_provider_tracks_parallel_same_run_attempts_independen
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_skill_bash_run_never_uses_controller_claude_mount(
+async def test_opensandbox_skill_bash_run_uses_only_attempt_workspace_bind(
     monkeypatch,
     tmp_path,
 ):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    workspace_path = tmp_path / "run" / "workspace"
-    workspace_path.mkdir(parents=True)
-    leased_workspace = workspace(workspace_host_path=str(workspace_path))
-
-    await opensandbox_provider().create_or_reuse(
-        request(tool_policy_subjects=native_tool_subjects()),
-        leased_workspace,
+    runtime_request = request(tool_policy_subjects=native_tool_subjects())
+    settings, leased_workspace, workspace_path = local_opensandbox_workspace(
+        tmp_path,
+        runtime_request,
     )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
-    assert FakeOpenSandbox.created[0]["volumes"] == []
-    assert str(workspace_path) not in repr(FakeOpenSandbox.created[0])
+    await opensandbox_provider().create_or_reuse(runtime_request, leased_workspace)
 
-
-@pytest.mark.asyncio
-async def test_opensandbox_skill_bash_run_does_not_require_volume_support(
-    monkeypatch,
-    tmp_path,
-):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    FakeOpenSandboxManager.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
-    workspace_path = tmp_path / "run" / "workspace"
-    workspace_path.mkdir(parents=True)
-    leased_workspace = workspace(workspace_host_path=str(workspace_path))
-
-    provider = opensandbox_provider()
-    lease = await provider.create_or_reuse(
-        request(tool_policy_subjects=native_tool_subjects()),
-        leased_workspace,
-    )
-
-    assert lease.provider == "opensandbox"
-    assert FakeOpenSandbox.created[0]["volumes"] == []
+    volumes = FakeOpenSandbox.created[0]["volumes"]
+    assert len(volumes) == 2
+    assert volumes[0].host.path == str(workspace_path)
+    assert volumes[0].mount_path == "/workspace"
+    assert volumes[0].read_only is False
+    assert volumes[1].host.path == str(workspace_path / ".claude")
+    assert volumes[1].mount_path == "/workspace/.claude"
+    assert volumes[1].read_only is True
 
 
 @pytest.mark.asyncio
@@ -4396,22 +3764,32 @@ async def test_opensandbox_provider_accepts_byte_readback_from_attempt_sentinel(
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    runtime_request = request()
+    settings, leased_workspace, workspace_path = local_opensandbox_workspace(
+        tmp_path,
+        runtime_request,
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
     original_create = FakeOpenSandbox.create
 
     def create_with_byte_readback(**kwargs):
         sandbox = original_create(**kwargs)
         sandbox.files.read_returns_bytes = True
+        original_write = sandbox.files.write_files
+
+        def mirror_sentinel(entries):
+            original_write(entries)
+            marker = workspace_path / ".ai-platform-opensandbox-lease.json"
+            marker.write_bytes(str(entries[0].data).encode("utf-8"))
+            marker.chmod(0o600)
+
+        sandbox.files.write_files = mirror_sentinel
         return sandbox
 
     monkeypatch.setattr(FakeOpenSandbox, "create", create_with_byte_readback)
     provider = opensandbox_provider()
 
-    workspace_path = tmp_path / "workspace"
-    workspace_path.mkdir()
-    leased_workspace = workspace(workspace_host_path=str(workspace_path), prepare_staged_skills=False)
-    runtime_request = request()
     lease = await provider.create_or_reuse(runtime_request, leased_workspace)
     await provider.stage_workspace(lease, runtime_request, leased_workspace)
 
@@ -4425,7 +3803,12 @@ async def test_opensandbox_provider_fails_when_attempt_sentinel_readback_mismatc
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    runtime_request = request()
+    settings, leased_workspace, _workspace_path = local_opensandbox_workspace(
+        tmp_path,
+        runtime_request,
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
     original_create = FakeOpenSandbox.create
 
@@ -4436,10 +3819,6 @@ async def test_opensandbox_provider_fails_when_attempt_sentinel_readback_mismatc
 
     monkeypatch.setattr(FakeOpenSandbox, "create", create_with_bad_readback)
     provider = opensandbox_provider()
-    workspace_path = tmp_path / "workspace"
-    workspace_path.mkdir()
-    leased_workspace = workspace(workspace_host_path=str(workspace_path), prepare_staged_skills=False)
-    runtime_request = request()
     lease = await provider.create_or_reuse(runtime_request, leased_workspace)
 
     with pytest.raises(container_provider.ContainerStartFailedError) as exc_info:
@@ -4597,7 +3976,12 @@ async def test_opensandbox_provider_defers_created_sandbox_cleanup_to_runtime_on
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    runtime_request = request()
+    settings, leased_workspace, _workspace_path = local_opensandbox_workspace(
+        tmp_path,
+        runtime_request,
+    )
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
     provider = opensandbox_provider()
 
@@ -4606,10 +3990,6 @@ async def test_opensandbox_provider_defers_created_sandbox_cleanup_to_runtime_on
 
     monkeypatch.setattr(provider, "_write_and_verify_sentinel", cancel_after_create)
 
-    local_workspace = tmp_path / "workspace"
-    local_workspace.mkdir()
-    leased_workspace = workspace(workspace_host_path=str(local_workspace), prepare_staged_skills=False)
-    runtime_request = request()
     lease = await provider.create_or_reuse(runtime_request, leased_workspace)
 
     with pytest.raises(asyncio.CancelledError):

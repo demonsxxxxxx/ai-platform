@@ -6,6 +6,7 @@ import asyncio
 import logging
 import threading
 import uuid
+from pathlib import Path
 from typing import Any
 
 from app import repositories
@@ -228,6 +229,12 @@ def _reconciliation_request(
     lease_row: dict[str, Any],
     run_payload: RunPayload,
 ) -> SandboxRuntimeRequest:
+    raw_subjects = run_payload.input.get("_runtime_tool_policy_subjects") if isinstance(run_payload.input, dict) else None
+    tool_policy_subjects = [
+        {key: value for key, value in subject.items() if key != "mcp_server_config"}
+        for subject in raw_subjects
+        if isinstance(subject, dict)
+    ] if isinstance(raw_subjects, list) else []
     return SandboxRuntimeRequest(
         tenant_id=run_payload.tenant_id,
         workspace_id=run_payload.workspace_id,
@@ -237,6 +244,7 @@ def _reconciliation_request(
         attempt_id=run_payload.attempt_id,
         agent_id=run_payload.agent_id,
         skill_ids=[run_payload.skill_id] if run_payload.skill_id else [],
+        tool_policy_subjects=tool_policy_subjects,
         input_message="",
         system_prompt="",
         file_ids=[],
@@ -566,13 +574,14 @@ async def _collect_workspace_and_convert_result(
     lease = lease.model_copy(update={"workspace_host_path": workspace.workspace_host_path})
     provider = _container_provider_for_lease(lease)
     collection_error: Exception | None = None
+    artifact_workspace: Path | None = None
     try:
         raw_response_files = terminal_result.get("response_files", [])
         if not isinstance(raw_response_files, list) or not all(
             isinstance(path, str) for path in raw_response_files
         ):
             raise ValueError("executor response file selection is invalid")
-        await provider.collect_workspace(
+        artifact_workspace = await provider.collect_workspace(
             lease,
             request,
             workspace,
@@ -583,6 +592,10 @@ async def _collect_workspace_and_convert_result(
     except Exception as exc:  # noqa: BLE001 - converted into a controlled terminal result.
         collection_error = exc
     adapter_context = dict(context.get("adapter_context") or {})
+    if artifact_workspace is not None:
+        adapter_context["_artifact_workspace"] = str(artifact_workspace)
+    else:
+        adapter_context.pop("_artifact_workspace", None)
     if collection_error is not None:
         exception_chain_losses: list[dict[str, object]] = []
         terminal_result = {

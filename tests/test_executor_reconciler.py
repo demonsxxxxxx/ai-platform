@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from app.executor_reconciler import (
     PermanentExecutorReconciliationError,
     SandboxReconciliationStopError,
     _context_payload,
+    _reconciliation_request,
     _finish_terminal_reconciliation_failure as _finish_terminal_reconciliation_failure_impl,
     _persist_probe_terminal,
     _release_reconciled_lease,
@@ -104,6 +106,41 @@ def _lease_row() -> dict[str, object]:
         "executor_reconciliation_claim_token": "claim-a",
         "executor_terminal_json": {"status": "succeeded", "message": "done"},
     }
+
+
+
+
+def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
+    subject = {
+        "identity": "Skill",
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "declared_identities": ["Skill"],
+        "allowed_skill_names": ["qa-file-reviewer"],
+        "mcp_server_config": {"secret": "must not persist"},
+    }
+    payload = SimpleNamespace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        agent_id="agent-a",
+        skill_id="qa-file-reviewer",
+        model_value="model-a",
+        model_id=None,
+        trace_id="trace-a",
+        input={"_runtime_tool_policy_subjects": [subject]},
+    )
+
+    request = _reconciliation_request({"sandbox_mode": "persistent"}, payload)
+
+    assert request.tool_policy_subjects == [
+        {key: value for key, value in subject.items() if key != "mcp_server_config"}
+    ]
 
 
 def test_reconciler_restores_top_level_run_payload_context():
@@ -233,6 +270,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
             assert list(response_files) == ["output/final.txt"]
             if self.fail_collection:
                 raise RuntimeError("workspace collection failed")
+            return Path("/private/artifact-snapshot")
 
     class Adapter:
         def reconcile_sandbox_terminal(self, **_kwargs):
@@ -319,6 +357,9 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
     assert actual_lease is lease
     assert bridged == ["reconcile_sandbox_terminal"]
     assert adapter_contexts[0]["_artifact_storage_scope"] == "attempt-a"
+    assert adapter_contexts[0]["_artifact_workspace"] == str(
+        Path("/private/artifact-snapshot")
+    )
     assert (
         abandonment_callbacks[0].__self__
         is adapter_contexts[0]["_artifact_collection_abandoned"]

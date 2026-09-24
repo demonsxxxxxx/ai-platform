@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import PurePosixPath
-from typing import Any
 
 PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME = "CLAUDE.md"
 
@@ -94,56 +93,6 @@ def workspace_mutation_allowed(relative_path: str | PurePosixPath) -> bool:
     if lowered[0] in _MUTATION_PROTECTED_ROOTS:
         return False
     return not (len(lowered) == 1 and lowered[0] in _MUTATION_PROTECTED_ROOT_FILES)
-
-
-def _opensandbox_entry_value(entry: Any, name: str) -> Any:
-    if isinstance(entry, dict):
-        if name == "entry_type":
-            return entry.get("entry_type", entry.get("type"))
-        return entry.get(name)
-    if name == "entry_type":
-        return getattr(entry, "entry_type", getattr(entry, "type", None))
-    return getattr(entry, name, None)
-
-
-def opensandbox_collection_entry(
-    entry: Any,
-    workspace_container_path: str,
-    *,
-    safe_relative_path: Callable[[str], str],
-) -> tuple[str, str | None, int]:
-    """Validate one SDK entry and omit non-collectible filesystem types."""
-
-    raw_path = _opensandbox_entry_value(entry, "path")
-    remote_root = workspace_container_path.rstrip("/")
-    if not isinstance(raw_path, str) or "\x00" in raw_path or not raw_path.startswith(f"{remote_root}/"):
-        raise ValueError("OpenSandbox workspace collection path is invalid")
-    relative_path = safe_relative_path(raw_path[len(remote_root) + 1 :])
-    entry_type = str(_opensandbox_entry_value(entry, "entry_type") or "").lower()
-    if entry_type in {"symlink", "other"}:
-        collectible_type = None
-    elif entry_type in {"file", "directory"}:
-        collectible_type = entry_type
-    else:
-        raise ValueError("OpenSandbox workspace collection entry is invalid")
-    try:
-        size = int(_opensandbox_entry_value(entry, "size"))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("OpenSandbox workspace collection entry is invalid") from exc
-    if size < 0:
-        raise ValueError("OpenSandbox workspace collection entry is invalid")
-    return relative_path, collectible_type, size
-
-
-def opensandbox_listing_matches_file(entry: Any, expected_size: int) -> bool:
-    """Match a readback entry to one listed regular file."""
-
-    entry_type = _opensandbox_entry_value(entry, "entry_type")
-    try:
-        size = int(_opensandbox_entry_value(entry, "size"))
-    except (TypeError, ValueError):
-        return False
-    return str(entry_type or "").lower() == "file" and size == expected_size
 
 
 def workspace_collection_directory_allowed(relative_path: str | PurePosixPath) -> bool:

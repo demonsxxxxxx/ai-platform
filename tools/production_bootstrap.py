@@ -34,14 +34,14 @@ from tools import release_authority as authority  # noqa: E402
 from tools import s75_opensandbox_transition as transition  # noqa: E402
 
 
-MANAGED_ROOT = Path("/data/ai-platform-prod")
 SERVER_ENV_FILE = Path("/etc/ai-platform/opensandbox/server.env")
 SERVER_CONFIG_FILE = Path("/etc/ai-platform/opensandbox/server.toml")
 SYSTEMD_UNIT = Path("/etc/systemd/system/opensandbox.service")
 UNIT_TEMPLATE = Path("deploy/opensandbox/opensandbox-production.service")
 DOCKER_SOCKET = Path("/var/run/docker.sock")
 SERVER_STATE_ROOT = Path("/var/lib/ai-platform-opensandbox")
-PLATFORM_WORKSPACE_ROOT = MANAGED_ROOT / "runtime-workspaces"
+OPENSANDBOX_WORKSPACE_ALLOWLIST_ROOT = Path("/data/opensandbox/workspaces")
+PLATFORM_WORKSPACE_ROOT = OPENSANDBOX_WORKSPACE_ALLOWLIST_ROOT / "ai-platform-production"
 PLATFORM_WORKSPACE_UID = 10001
 PLATFORM_WORKSPACE_GID = 10001
 SERVER_CONTAINER = "ai-platform-opensandbox-server"
@@ -426,7 +426,8 @@ def load_opensandbox_host_config(
         and server.get("max_sandbox_timeout_seconds") == 86400
         and config["log"].get("level") == "INFO"
         and runtime.get("type") == "docker"
-        and storage.get("allowed_host_paths") == []
+        and storage.get("allowed_host_paths")
+        == [str(OPENSANDBOX_WORKSPACE_ALLOWLIST_ROOT)]
         and storage.get("volume_default_size") == "1Gi"
         and store.get("type") == "sqlite"
         and store.get("path") == str(SERVER_STATE_ROOT / "opensandbox.db")

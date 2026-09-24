@@ -57,7 +57,7 @@ def _server_config(**changes: str) -> str:
         "egress_image": EGRESS_IMAGE,
         "host_ip": "10.40.0.10",
         "network_mode": bootstrap.authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
-        "allowed_host_paths": "[]",
+        "allowed_host_paths": '["/data/opensandbox/workspaces"]',
         "sandbox_env": "{}",
         "sandbox_binds": "[]",
         "egress_mode": "dns+nft",
@@ -205,7 +205,7 @@ def test_host_config_requires_secure_consistent_production_values(
         ({}, {"host_ip": "10.40.0.12"}, "violates production policy"),
         (
             {},
-            {"allowed_host_paths": '["/data/opensandbox/workspaces"]'},
+            {"allowed_host_paths": '["/data"]'},
             "violates production policy",
         ),
         ({}, {"sandbox_binds": '["/:/host:rw"]'}, "violates production policy"),
@@ -1044,6 +1044,6 @@ def test_readme_runbook_and_examples_expose_the_production_package() -> None:
         'network_mode = "ai-platform-opensandbox-egress-internal-v1"' in config
     )
     assert 'mode = "dns+nft"' in config
-    assert "allowed_host_paths = []" in config
+    assert 'allowed_host_paths = ["/data/opensandbox/workspaces"]' in config
     assert "sandbox_binds = []" in config
     assert "server/v0.1.13-or-newer" in environment

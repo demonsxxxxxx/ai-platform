@@ -609,7 +609,14 @@ def _unbound_skill_evidence(skill_id, *phases):
     ]
 
 
-def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="completed", provider="docker"):
+def install_sandbox_runtime(
+    monkeypatch,
+    *,
+    executor_response=None,
+    status="completed",
+    provider="docker",
+    artifact_workspace_path=None,
+):
     requests = []
 
     class FakeSandboxRuntime:
@@ -645,6 +652,11 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="comp
             }
             resolved_response = dict(response or default_response)
             resolved_response.setdefault(TOOL_INVOCATION_EVIDENCE_KEY, [])
+            resolved_artifact_workspace = (
+                artifact_workspace_path(request)
+                if callable(artifact_workspace_path)
+                else artifact_workspace_path
+            )
             return types.SimpleNamespace(
                 status=status,
                 provider=provider,
@@ -652,6 +664,11 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="comp
                 run_id=request.run_id,
                 executor_response=resolved_response,
                 timings={},
+                artifact_workspace_path=(
+                    str(resolved_artifact_workspace)
+                    if resolved_artifact_workspace is not None
+                    else None
+                ),
             )
 
     monkeypatch.setattr(
@@ -3896,10 +3913,15 @@ async def test_sandbox_projection_omission_keeps_worker_success_and_artifact(
                 size_bytes=len(content),
             )
 
+    snapshot_workspace = tmp_path / "private-artifact-snapshot"
+
     def completed_response(_request):
         output = sandbox_workspace_path(current_settings) / "output"
         output.mkdir(parents=True, exist_ok=True)
-        (output / "result.txt").write_text("artifact survived", encoding="utf-8")
+        (output / "result.txt").write_text("mutable workspace value", encoding="utf-8")
+        snapshot_output = snapshot_workspace / "output"
+        snapshot_output.mkdir(parents=True)
+        (snapshot_output / "result.txt").write_text("artifact survived", encoding="utf-8")
         return {
             "status": "completed",
             "message": "",
@@ -3926,7 +3948,11 @@ async def test_sandbox_projection_omission_keeps_worker_success_and_artifact(
     )
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
     monkeypatch.setattr(claude_agent_worker, "ObjectStorage", RecordingStorage)
-    install_sandbox_runtime(monkeypatch, executor_response=completed_response)
+    install_sandbox_runtime(
+        monkeypatch,
+        executor_response=completed_response,
+        artifact_workspace_path=snapshot_workspace,
+    )
 
     result = await adapter.submit_run(
         sandbox_writing_payload(

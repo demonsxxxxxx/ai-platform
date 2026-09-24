@@ -19,7 +19,10 @@ disable_ipv6 = true
 readiness_timeout_seconds = 30.0
 
 [storage]
-allowed_host_paths = []
+# Allow only the dedicated platform workspace parent. The application mounts one
+# exact Attempt workspace below SANDBOX_WORKSPACE_ROOT; never allow /, /data, or
+# Docker's data-root.
+allowed_host_paths = ["/data/opensandbox/workspaces"]
 volume_default_size = "1Gi"
 
 [store]
