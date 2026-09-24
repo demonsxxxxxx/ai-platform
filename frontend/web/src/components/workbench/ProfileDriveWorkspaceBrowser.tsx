@@ -786,9 +786,11 @@ export function ProfileDriveWorkspaceBrowser({
             }`}
             aria-live="polite"
           >
-            {activeControls.loading || activeControls.error || !activeControls.connected
-              ? "!"
-              : activeControls.visibleEntryCount}
+            {activeControls.loading
+              ? "…"
+              : activeControls.error || !activeControls.connected
+                ? "!"
+                : activeControls.visibleEntryCount}
           </span>
         </div>
         <div

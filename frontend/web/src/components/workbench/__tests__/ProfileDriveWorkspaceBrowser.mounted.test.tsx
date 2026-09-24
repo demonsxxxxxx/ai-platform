@@ -676,6 +676,11 @@ test("mounts the public drive with source-correct expansion and import", async (
         ?.getAttribute("aria-label"),
       "公盘文件可见条目数：加载中",
     );
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.textContent,
+      "…",
+    );
     await act(async () => {
       dom.window.dispatchEvent(
         new dom.window.Event(PROFILE_DRIVE_CONNECTION_CHANGED_EVENT),
