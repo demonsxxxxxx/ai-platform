@@ -2526,7 +2526,7 @@ async def test_escaped_terminalization_rejects_stale_owner_or_fence_before_trans
         return LeaseMutationOutcome(stale_status)
 
     monkeypatch.setattr(
-        worker_main,
+        worker_main.queue,
         "parse_leased_queue_envelope",
         lambda _value: SimpleNamespace(payload=payload, attempt_id="attempt-a"),
     )
@@ -2591,7 +2591,7 @@ async def test_escaped_terminalization_rejects_missing_durable_attempt(monkeypat
         raise AssertionError("missing attempt authority must stop escaped terminalization")
 
     monkeypatch.setattr(
-        worker_main,
+        worker_main.queue,
         "parse_leased_queue_envelope",
         lambda _value: SimpleNamespace(payload=payload, attempt_id="attempt-a"),
     )
@@ -2672,7 +2672,7 @@ async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transact
         return {"id": "rat-run-a", "status": "running"}
 
     monkeypatch.setattr(
-        worker_main,
+        worker_main.queue,
         "parse_leased_queue_envelope",
         lambda _value: SimpleNamespace(payload=payload, attempt_id="attempt-a"),
     )

@@ -5,7 +5,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.context.application.checkpoints import load_ready_checkpoint
-from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, sanitize_context_manifest_payload
 from app.context.domain.conversation import (
     ConversationContextError,
     build_executor_conversation_context,
@@ -263,6 +262,10 @@ def _safe_context_memory_policy(raw: object) -> dict[str, Any] | None:
 
 def context_snapshot_ref_from_row(row: dict[str, Any]) -> dict[str, Any]:
     from app.context_builder import ensure_public_context_provenance
+    from app.context_manifest import (
+        CONTEXT_MANIFEST_SCHEMA_VERSION,
+        sanitize_context_manifest_payload,
+    )
     from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION
 
     payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
