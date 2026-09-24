@@ -94,7 +94,7 @@ export interface ChatInputProps {
   /** Imports one trusted ProfileDrive reference when it is dropped on the Composer. */
   onProfileDriveFileDrop?: (
     reference: ProfileDriveFileReference,
-  ) => void | Promise<void>;
+  ) => void | Promise<unknown>;
   pendingInput?: string | null;
   onPendingInputConsumed?: () => void;
   className?: string;

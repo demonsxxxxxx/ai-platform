@@ -100,7 +100,7 @@ import {
 import { clearSidebarHistory } from "../../chat/ChatMessage/items/sidebarHistoryStore";
 import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
-import { sessionApi, type SessionInputFile } from "../../../services/api";
+import { sessionApi, uploadApi, type SessionInputFile } from "../../../services/api";
 import type { ProfileDriveFileReference } from "../../../services/api/profileDrive";
 import {
   getProfileDriveDragReference,
@@ -130,6 +130,7 @@ import {
   sessionInputFileToAttachment,
 } from "./sessionInputFiles";
 import type { FileUploadControls } from "../../../hooks/useFileUpload";
+import { uuid } from "../../../utils/uuid";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
 
@@ -698,42 +699,74 @@ export function ChatView({
   const handleProfileDriveFileImported = useCallback(
     (file: SessionInputFile) => {
       const workspaceFile = sessionInputFileToWorkspaceFile(file);
-      setWorkspaceProjection((current) =>
-        current.session_id === sessionId
-          ? addSessionInputFile(current, file)
-          : current,
-      );
-      handleOpenWorkspaceFile(workspaceFile);
-    },
-    [handleOpenWorkspaceFile, sessionId],
-  );
-
-  const handleProfileDriveFileDrop = useCallback(
-    async (reference: ProfileDriveFileReference) => {
-      if (!sessionId) return;
-      const requestKey = `${sessionId}\u0000${reference.source_id}\u0000${reference.path}`;
-      if (profileDriveDropInFlightRef.current.has(requestKey)) return;
-      profileDriveDropInFlightRef.current.add(requestKey);
-      try {
-        const file = await sessionApi.importProfileDriveFile(sessionId, reference);
-        if (activeSessionIdRef.current !== sessionId) return;
+      if (sessionId) {
         setWorkspaceProjection((current) =>
           current.session_id === sessionId
             ? addSessionInputFile(current, file)
             : current,
         );
+      } else {
         const attachment = sessionInputFileToAttachment(file);
         onAttachmentsChange((current) =>
-          current.some((item) => item.id === attachment.id)
+          current.some((item) => item.key === attachment.key)
             ? current
             : [...current, attachment],
+        );
+      }
+      handleOpenWorkspaceFile(workspaceFile);
+    },
+    [handleOpenWorkspaceFile, onAttachmentsChange, sessionId],
+  );
+
+  const handleProfileDriveFileDrop = useCallback(
+    async (reference: ProfileDriveFileReference) => {
+      const requestKey = `${sessionId ?? "new"}\u0000${reference.source_id}\u0000${reference.path}`;
+      if (profileDriveDropInFlightRef.current.has(requestKey)) return;
+      profileDriveDropInFlightRef.current.add(requestKey);
+      const pendingId = `profile-drive-${uuid()}`;
+      const pendingAttachment: MessageAttachment = {
+        id: pendingId,
+        key: "",
+        name: reference.path.split("/").pop() || "文件",
+        type: "document",
+        mimeType: "application/octet-stream",
+        size: 0,
+        isUploading: true,
+        uploadStatus: "uploading",
+      };
+      onAttachmentsChange((current) => [...current, pendingAttachment]);
+      try {
+        const file = sessionId
+          ? await sessionApi.importProfileDriveFile(sessionId, reference)
+          : await sessionApi.stageProfileDriveFile(reference);
+        if (activeSessionIdRef.current !== sessionId) {
+          if (!sessionId) void uploadApi.deleteFile(file.file_id).catch(() => undefined);
+          onAttachmentsChange((current) =>
+            current.filter((item) => item.id !== pendingId),
+          );
+          return;
+        }
+        if (sessionId) {
+          setWorkspaceProjection((current) =>
+            current.session_id === sessionId
+              ? addSessionInputFile(current, file)
+              : current,
+          );
+        }
+        const attachment = sessionInputFileToAttachment(file);
+        onAttachmentsChange((current) =>
+          current.map((item) => (item.id === pendingId ? attachment : item)),
         );
         toast.success(
           reference.source_id === "public"
             ? t("profileDrive.publicAddedToConversation", "已将公盘文件添加到会话。")
             : t("profileDrive.addedToConversation", "已将本地文件添加到会话。"),
         );
+        return file;
       } catch (error) {
+        onAttachmentsChange((current) =>
+          current.filter((item) => item.id !== pendingId),
+        );
         console.error("ProfileDrive drop import failed", {
           kind: error instanceof Error ? error.name : "request_failed",
         });

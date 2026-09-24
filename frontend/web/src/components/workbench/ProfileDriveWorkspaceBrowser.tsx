@@ -81,7 +81,9 @@ function previewableEntry(entry: ProfileDriveFileEntry): boolean {
 interface ProfileDriveWorkspaceBrowserProps {
   sessionId: string | null;
   onImported: (file: SessionInputFile) => void;
-  onAddToConversation: (reference: ProfileDriveFileReference) => void | Promise<void>;
+  onAddToConversation: (
+    reference: ProfileDriveFileReference,
+  ) => SessionInputFile | void | Promise<SessionInputFile | void>;
 }
 
 interface ProfileDriveSourceBrowserProps extends ProfileDriveWorkspaceBrowserProps {
@@ -350,14 +352,17 @@ function ProfileDriveSourceBrowser({
 
   const preview = useCallback(
     async (entry: ProfileDriveFileEntry) => {
-      if (!sessionId || importingPath) return;
+      if (importingPath) return;
       setImportingPath(entry.path);
       try {
-        const imported = await sessionApi.importProfileDriveFile(sessionId, {
+        const reference = {
           source_id: sourceId,
           path: entry.path,
-        });
-        if (mountedRef.current) onImported(imported);
+        } satisfies ProfileDriveFileReference;
+        const imported = sessionId
+          ? await sessionApi.importProfileDriveFile(sessionId, reference)
+          : await onAddToConversation(reference);
+        if (imported && mountedRef.current) onImported(imported);
       } catch (importError) {
         if (!mountedRef.current) return;
         console.error("[ProfileDrive] import failed", {
@@ -371,7 +376,23 @@ function ProfileDriveSourceBrowser({
         if (mountedRef.current) setImportingPath(null);
       }
     },
-    [importingPath, onImported, sessionId, sourceId],
+    [importingPath, onAddToConversation, onImported, sessionId, sourceId],
+  );
+
+  const addToConversation = useCallback(
+    async (entry: ProfileDriveFileEntry) => {
+      if (importingPath) return;
+      setImportingPath(entry.path);
+      try {
+        await onAddToConversation({
+          source_id: sourceId,
+          path: entry.path,
+        });
+      } finally {
+        if (mountedRef.current) setImportingPath(null);
+      }
+    },
+    [importingPath, onAddToConversation, sourceId],
   );
 
   const treeRows: ProfileDriveTreeRow[] = [];
@@ -552,7 +573,7 @@ function ProfileDriveSourceBrowser({
               const folderLoading = directory && loadingPaths.has(entry.path);
               const previewable = !directory && previewableEntry(entry);
               const importing = importingPath === entry.path;
-              const disabled = !directory && (Boolean(importingPath) || !sessionId);
+              const disabled = !directory && Boolean(importingPath);
               const name = entryLabel(entry, parentPath, sourceId);
               const actionLabel = directory
                 ? `${expanded ? "收起" : "展开"}文件夹 ${name}`
@@ -566,11 +587,11 @@ function ProfileDriveSourceBrowser({
                   aria-level={depth + 1}
                   aria-expanded={directory ? expanded : undefined}
                   className={`group flex h-8 w-full min-w-0 max-w-full items-center overflow-hidden rounded hover:bg-[var(--theme-workbench-panel)] ${
-                    !directory && sessionId ? "cursor-grab active:cursor-grabbing" : ""
+                    !directory && !importingPath ? "cursor-grab active:cursor-grabbing" : ""
                   }`}
-                  draggable={!directory && Boolean(sessionId) && !importing}
+                  draggable={!directory && !importingPath}
                   onDragStart={(event) => {
-                    if (directory) return;
+                    if (directory || importingPath) return;
                     event.dataTransfer.effectAllowed = "copy";
                     event.dataTransfer.setData(
                       PROFILE_DRIVE_DRAG_TYPE,
@@ -662,12 +683,7 @@ function ProfileDriveSourceBrowser({
                       aria-label={`添加 ${name} 到会话`}
                       title="添加到会话"
                       disabled={disabled}
-                      onClick={() =>
-                        void onAddToConversation({
-                          source_id: sourceId,
-                          path: entry.path,
-                        })
-                      }
+                      onClick={() => void addToConversation(entry)}
                       className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:text-[var(--theme-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
                     >
                       <Paperclip size={13} aria-hidden="true" />

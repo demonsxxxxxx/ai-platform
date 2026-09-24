@@ -28,6 +28,7 @@ from app.files.api import (
     get_authorized_file_upload_session,
     get_file_storage_usage,
     get_owned_session_file,
+    get_owned_unbound_file,
     is_direct_file_upload_session,
     list_owned_session_files,
     open_profile_drive_file,
@@ -321,21 +322,21 @@ async def _build_xlsx_preview_response(
 def _input_file_url(
     *,
     file_id: str,
-    session_id: str,
+    session_id: str | None,
     run_id: str | None,
     action: str,
 ) -> str:
-    url = (
-        f"/api/ai/files/{quote(file_id, safe='')}/{action}"
-        f"?session_id={quote(session_id, safe='')}"
-    )
+    url = f"/api/ai/files/{quote(file_id, safe='')}/{action}"
+    if session_id is None:
+        return url
+    url = f"{url}?session_id={quote(session_id, safe='')}"
     return f"{url}&run_id={quote(run_id, safe='')}" if run_id else url
 
 
 def _input_file_response(
     *,
     file_row: dict[str, object],
-    session_id: str,
+    session_id: str | None,
 ) -> SessionInputFileResponse:
     file_id = str(file_row["id"])
     run_id = str(file_row["run_id"]) if file_row.get("run_id") else None
@@ -370,48 +371,59 @@ def _input_file_response(
 async def _authorized_input_file(
     *,
     file_id: str,
-    session_id: str,
+    session_id: str | None,
     run_id: str | None,
     principal: AuthPrincipal,
 ) -> dict[str, object]:
     try:
         tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
-        session_id = assert_safe_id(session_id, "session_id")
+        session_id = assert_safe_id(session_id, "session_id") if session_id else None
         run_id = assert_safe_id(run_id, "run_id") if run_id else None
         file_id = assert_safe_id(file_id, "file_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if session_id is None and run_id is not None:
+        raise HTTPException(status_code=404, detail="input_file_not_found")
     async with transaction() as conn:
-        session = await get_authorized_session(
-            conn,
-            tenant_id=tenant_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-        )
-        if session is None:
-            raise HTTPException(status_code=404, detail="input_file_not_found")
-        workspace_id = str(session.get("workspace_id") or "")
-        if not workspace_id:
-            raise HTTPException(status_code=404, detail="input_file_not_found")
-        if run_id:
-            file_row = await get_scoped_context_file(
+        if session_id is None:
+            file_row = await get_owned_unbound_file(
                 conn,
                 tenant_id=tenant_id,
-                workspace_id=workspace_id,
+                workspace_id="default",
                 user_id=principal.user_id,
-                session_id=session_id,
-                run_id=run_id,
                 file_id=file_id,
             )
         else:
-            file_row = await get_owned_session_file(
+            session = await get_authorized_session(
                 conn,
                 tenant_id=tenant_id,
-                workspace_id=workspace_id,
                 user_id=principal.user_id,
                 session_id=session_id,
-                file_id=file_id,
             )
+            if session is None:
+                raise HTTPException(status_code=404, detail="input_file_not_found")
+            workspace_id = str(session.get("workspace_id") or "")
+            if not workspace_id:
+                raise HTTPException(status_code=404, detail="input_file_not_found")
+            if run_id:
+                file_row = await get_scoped_context_file(
+                    conn,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=principal.user_id,
+                    session_id=session_id,
+                    run_id=run_id,
+                    file_id=file_id,
+                )
+            else:
+                file_row = await get_owned_session_file(
+                    conn,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=principal.user_id,
+                    session_id=session_id,
+                    file_id=file_id,
+                )
     if file_row is None:
         raise HTTPException(status_code=404, detail="input_file_not_found")
     return dict(file_row)
@@ -761,16 +773,12 @@ def _validate_upload_file(*, filename: str, declared_content_type: str, path: Pa
         _validate_zip_payload(path)
 
 
-@router.post(
-    "/chat/sessions/{session_id}/profile-drive-files",
-    response_model=SessionInputFileResponse,
-)
-async def import_profile_drive_file(
-    session_id: str,
-    request: dict[str, object] = Body(...),
-    principal: AuthPrincipal = Depends(require_principal),
-) -> SessionInputFileResponse:
-    """Import one user-confirmed ProfileDrive file into an owned session workspace."""
+async def _store_profile_drive_file(
+    session_id: str | None,
+    request: object,
+    principal: AuthPrincipal,
+) -> dict[str, object]:
+    """Store one user-confirmed ProfileDrive file under exact user ownership."""
 
     try:
         request = parse_profile_drive_file_import_request(request)
@@ -780,22 +788,33 @@ async def import_profile_drive_file(
     _require_upload_permissions(principal)
     try:
         tenant_id = assert_safe_id(principal.tenant_id, "tenant_id")
-        session_id = assert_safe_id(session_id, "session_id")
+        session_id = assert_safe_id(session_id, "session_id") if session_id else None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    async with transaction() as conn:
-        session = await get_authorized_session(
-            conn,
-            tenant_id=tenant_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-        )
-    if session is None:
-        raise HTTPException(status_code=404, detail="session_not_found")
-    workspace_id = str(session.get("workspace_id") or "")
-    if not workspace_id:
-        raise HTTPException(status_code=404, detail="session_not_found")
+    if session_id is None:
+        workspace_id = "default"
+        async with transaction() as conn:
+            await ensure_workspace(conn, tenant_id=tenant_id, workspace_id=workspace_id)
+            await ensure_user(
+                conn,
+                tenant_id=tenant_id,
+                user_id=principal.user_id,
+                display_name=principal.display_name,
+            )
+    else:
+        async with transaction() as conn:
+            session = await get_authorized_session(
+                conn,
+                tenant_id=tenant_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+            )
+        if session is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        workspace_id = str(session.get("workspace_id") or "")
+        if not workspace_id:
+            raise HTTPException(status_code=404, detail="session_not_found")
 
     display_name = _normalize_upload_filename(request.path.rsplit("/", 1)[-1])
     storage = ObjectStorage()
@@ -939,7 +958,7 @@ async def import_profile_drive_file(
         committed = True
         if file_row is None:
             raise RepositoryNotFoundError("profile_drive_import_missing")
-        return _input_file_response(file_row=dict(file_row), session_id=session_id)
+        return dict(file_row)
     except asyncio.CancelledError:
         if not committed:
             await asyncio.shield(
@@ -993,6 +1012,32 @@ async def import_profile_drive_file(
     finally:
         if temporary_path and (abandoned_put is None or not abandoned_put.is_set()):
             Path(temporary_path).unlink(missing_ok=True)
+
+
+@router.post(
+    "/chat/sessions/{session_id}/profile-drive-files",
+    response_model=SessionInputFileResponse,
+)
+async def import_profile_drive_file(
+    session_id: str,
+    request: dict[str, object] = Body(...),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> SessionInputFileResponse:
+    """Import one user-confirmed ProfileDrive file into an owned session workspace."""
+
+    file_row = await _store_profile_drive_file(session_id, request, principal)
+    return _input_file_response(file_row=file_row, session_id=session_id)
+
+
+@router.post("/files/profile-drive", response_model=SessionInputFileResponse)
+async def stage_profile_drive_file(
+    request: dict[str, object] = Body(...),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> SessionInputFileResponse:
+    """Stage one user-confirmed ProfileDrive file before a chat session exists."""
+
+    file_row = await _store_profile_drive_file(None, request, principal)
+    return _input_file_response(file_row=file_row, session_id=None)
 
 
 @router.post("/files", response_model=UploadFileResponse)
@@ -1762,11 +1807,11 @@ async def list_session_input_files(
 @router.get("/files/{file_id}/preview")
 async def preview_input_file(
     file_id: str,
-    session_id: str,
+    session_id: str | None = None,
     run_id: str | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> Response:
-    """Preview a passive file authorized by exact session ownership and optional Run snapshot."""
+    """Preview a passive file authorized by exact user, session, and optional Run ownership."""
 
     file_row = await _authorized_input_file(
         file_id=file_id,
@@ -1821,11 +1866,11 @@ async def preview_input_file(
 @router.get("/files/{file_id}/download")
 async def download_input_file(
     file_id: str,
-    session_id: str,
+    session_id: str | None = None,
     run_id: str | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> Response:
-    """Download a passive file authorized by exact session ownership and optional Run snapshot."""
+    """Download a passive file authorized by exact user, session, and optional Run ownership."""
 
     file_row = await _authorized_input_file(
         file_id=file_id,

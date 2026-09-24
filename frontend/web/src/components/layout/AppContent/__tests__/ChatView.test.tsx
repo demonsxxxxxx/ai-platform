@@ -84,6 +84,9 @@ test("keeps Agent workspace Chat routes and run-bound file affordances together"
     source,
     /mergeProjectedSessionFiles\(\s*messages,\s*visibleWorkspaceProjection\.inputFiles,\s*\)/,
   );
+  assert.match(source, /sessionApi\.stageProfileDriveFile\(reference\)/);
+  assert.match(source, /isUploading:\s*true/);
+  assert.doesNotMatch(source, /if \(!sessionId\) return;/);
 });
 
 test("connects the visible recovery projection to the existing reconnect action", () => {
