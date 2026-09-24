@@ -626,9 +626,29 @@ test("mounts the public drive with source-correct expansion and import", async (
     assert.ok(profilePanel);
     assert.equal(publicPanel.hidden, false);
     assert.equal(profilePanel.hidden, true);
-    const publicFolder = buttonByText(publicPanel, "01-研发部");
-    assert.doesNotMatch(publicPanel.textContent ?? "", /刷新公盘文件/);
-    assert.doesNotMatch(publicPanel.textContent ?? "", /!|…/);
+    let publicFolder = buttonByText(publicPanel, "01-研发部");
+    const refreshPublicButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="刷新公盘文件"]',
+    );
+    assert.ok(refreshPublicButton);
+    assert.equal(refreshPublicButton.disabled, false);
+    assert.equal(
+      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
+        ?.textContent,
+      "1",
+    );
+    const publicRootRequestCount = () =>
+      bodies.filter((body) => body.source === "public" && body.path === "").length;
+    const rootRequestsBeforeRefresh = publicRootRequestCount();
+    await act(async () => {
+      refreshPublicButton.dispatchEvent(
+        new dom.window.MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+      await flush();
+    });
+    assert.equal(publicRootRequestCount(), rootRequestsBeforeRefresh + 1);
+    publicFolder = buttonByText(publicPanel, "01-研发部");
     await act(async () => {
       publicFolder.dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
