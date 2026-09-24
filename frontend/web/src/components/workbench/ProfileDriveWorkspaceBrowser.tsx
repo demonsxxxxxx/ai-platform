@@ -415,31 +415,8 @@ function ProfileDriveSourceBrowser({
           : row.kind === "error" && matchingPaths.has(row.path),
       )
     : treeRows;
-  const visibleEntryCount = filteredRows.filter(
-    (row) => row.kind === "entry",
-  ).length;
-
   return (
     <div data-profile-drive-source={sourceId}>
-      <div className="mt-2 flex min-h-8 items-center gap-1 border-y border-[var(--theme-border)] py-1">
-        <span className="min-w-0 flex-1 truncate px-1 text-[11px] font-medium text-[var(--theme-text)]">
-          {title}
-        </span>
-        <button
-          type="button"
-          className="flex size-6 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:opacity-50"
-          aria-label={`刷新${title}`}
-          title={`刷新${title}`}
-          disabled={loading || connected === false}
-          onClick={() => void loadRoot()}
-        >
-          <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
-        </button>
-        <span className={workbenchSurface.catalog.chip}>
-          {loading ? "…" : connected ? visibleEntryCount : "!"}
-        </span>
-      </div>
-
       {connected !== false && !error && !loading && entries.length > 0 && (
         <label className="mt-2 flex h-8 items-center gap-2 rounded-md bg-[var(--theme-bg-sidebar)] px-2 ring-1 ring-[var(--theme-border)] focus-within:ring-2 focus-within:ring-[var(--theme-primary)]">
           <Search
@@ -657,8 +634,8 @@ function ProfileDriveSourceBrowser({
 }
 
 const DRIVE_TABS = [
-  { id: "profile", label: "个人盘", Icon: UserRound },
-  { id: "public", label: "公盘", Icon: Building2 },
+  { id: "profile", label: "本地文件", Icon: UserRound },
+  { id: "public", label: "公盘文件", Icon: Building2 },
 ] as const;
 
 export function ProfileDriveWorkspaceBrowser({
