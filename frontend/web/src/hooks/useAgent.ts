@@ -713,6 +713,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const [canStopGeneration, setCanStopGeneration] = useState(false);
   const [newlyCreatedSession, setNewlyCreatedSession] =
     useState<BackendSession | null>(null);
   const [isInitializingSandbox, setIsInitializingSandbox] = useState(false);
@@ -918,7 +919,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       };
       const parent = currentRunControlParent(runControlParentRef.current);
       if (parent) {
-        runControlLifecycle.bindParent(parent);
+        const owner = runControlLifecycle.bindParent(parent);
+        setCanStopGeneration(owner !== null);
+      } else {
+        setCanStopGeneration(false);
       }
     },
     [currentRunControlParent, runControlLifecycle],
@@ -928,6 +932,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     ({ preserveParent = false }: { preserveParent?: boolean } = {}) => {
       chatHistoryGenerationRef.current += 1;
       runControlLifecycle.invalidate();
+      setCanStopGeneration(false);
       if (!preserveParent) {
         runControlParentRef.current = null;
       }
@@ -1041,6 +1046,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       }
       publicStreamPresentationRef.current?.invalidate();
       currentRunIdRef.current = null;
+      setCanStopGeneration(false);
       clearReconcileOwners();
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
@@ -2731,12 +2737,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       owner.runId !== currentRunId ||
       !runControlLifecycle.isCurrentOwner(owner)
     ) {
-      bindRunControlParent(currentSessionId, currentRunId);
+      return "unavailable" as const;
     }
     // A cancel acknowledgement is only a request. The existing SSE/reconcile
     // path remains the sole terminal convergence writer for the transcript.
     return runControlLifecycle.cancel();
-  }, [bindRunControlParent, runControlLifecycle]);
+  }, [runControlLifecycle]);
 
   const clearMessages = useCallback(() => {
     // Invalidate every asynchronous owner before clearing React state so a
@@ -3259,6 +3265,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     failureGuidance,
     sessionId,
     currentRunId,
+    canStopGeneration,
     isReconnecting:
       connectionStatus === "reconnecting" ||
       connectionStatus === "recovering_gap",

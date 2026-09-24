@@ -39,6 +39,22 @@ _EXECUTOR_HTTP_ERROR_MESSAGES = {
     "executor_runtime_identity_unavailable": "Executor runtime identity is unavailable",
     "executor_request_replayed": "Executor request was already claimed",
     "executor_protocol_invalid": "Executor returned an invalid protocol response",
+    "model_proxy_forbidden": "Model proxy authorization was rejected",
+    "model_proxy_attempt_required": "Model proxy attempt binding is missing",
+    "model_proxy_capability_invalid": "Model proxy capability was rejected",
+    "model_proxy_path_not_allowed": "Model proxy path was rejected",
+    "model_proxy_query_not_allowed": "Model proxy query was rejected",
+    "model_proxy_header_duplicate": "Model proxy headers were rejected",
+    "model_proxy_anthropic_version_not_allowed": "Model proxy protocol version was rejected",
+    "model_proxy_anthropic_beta_not_allowed": "Model proxy protocol option was rejected",
+    "model_proxy_run_binding_invalid": "Model proxy run binding was rejected",
+    "model_capacity_missing": "Model capacity configuration is unavailable",
+    "model_proxy_conversation_mode_invalid": "Model conversation mode was rejected",
+    "model_proxy_body_invalid": "Model proxy request was invalid",
+    "model_proxy_max_tokens_invalid": "Model token budget was rejected",
+    "model_proxy_count_tokens_failed": "Model token counting failed",
+    "model_proxy_count_tokens_unavailable": "Model token counting is unavailable",
+    "model_proxy_count_tokens_invalid": "Model token counting returned an invalid response",
 }
 _STRUCTURED_EXECUTOR_ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 

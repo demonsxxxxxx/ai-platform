@@ -100,6 +100,11 @@ export function RunDiagnosticsSection({
         ...diagnostics.details.tool_policy_denials,
       ];
   const protocolEvidence = diagnostics.details.executor_protocol;
+  const attemptLabel = (attemptId: string | null | undefined) => {
+    if (!attemptId) return "执行尝试未知";
+    const attempt = diagnostics.attempts.find((item) => item.attempt_id === attemptId);
+    return attempt ? `第 ${attempt.ordinal} 次尝试` : "执行尝试未能关联";
+  };
   return (
     <section className="p-4" data-run-runtime-diagnostics>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -152,16 +157,21 @@ export function RunDiagnosticsSection({
               </p>
             ) : null}
             {diagnostics.root.attempt_id ? (
-              <p className="mt-2 break-all font-mono text-[11px] text-[var(--theme-text-tertiary)]">
-                Attempt {diagnostics.root.attempt_id}
+              <p className="mt-2 text-[11px] text-[var(--theme-text-secondary)]">
+                {attemptLabel(diagnostics.root.attempt_id)}
               </p>
             ) : null}
-            {diagnostics.root.lease_id || diagnostics.root.callback_id ? (
-              <p className="mt-1 break-all font-mono text-[11px] text-[var(--theme-text-tertiary)]">
-                {[diagnostics.root.lease_id && `Lease ${diagnostics.root.lease_id}`, diagnostics.root.callback_id && `Callback ${diagnostics.root.callback_id}`]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </p>
+            {diagnostics.root.attempt_id || diagnostics.root.lease_id || diagnostics.root.callback_id ? (
+              <details className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
+                <summary className="cursor-pointer">技术关联编号</summary>
+                <p className="mt-1 break-all font-mono">
+                  {[
+                    diagnostics.root.attempt_id && `Attempt ${diagnostics.root.attempt_id}`,
+                    diagnostics.root.lease_id && `Lease ${diagnostics.root.lease_id}`,
+                    diagnostics.root.callback_id && `Callback ${diagnostics.root.callback_id}`,
+                  ].filter(Boolean).join(" · ")}
+                </p>
+              </details>
             ) : null}
             </div>
           ) : (
@@ -248,15 +258,20 @@ export function RunDiagnosticsSection({
               <ul className="mt-2 space-y-2">
                 {toolEvidence.map((item, index) => (
                   <li key={`${diagnosticValue(item.invocation_id)}-${index}`} className="text-[11px]">
-                    <p className="font-mono text-[var(--theme-text)]">
-                      {diagnosticValue(item.tool_name) || "unknown_tool"}
-                      {item.invocation_id ? ` · ${diagnosticValue(item.invocation_id)}` : ""}
+                    <p className="font-medium text-[var(--theme-text)]">
+                      {diagnosticValue(item.tool_name) || "未知工具"}
                     </p>
                     <p className="mt-0.5 break-words text-[var(--theme-text-secondary)]">
                       {diagnosticValue(
                         item.reason ?? item.last_stage ?? item.state,
                       ) || "未提供结果摘要"}
                     </p>
+                    {item.invocation_id ? (
+                      <details className="mt-1 text-[var(--theme-text-tertiary)]">
+                        <summary className="cursor-pointer">调用编号</summary>
+                        <p className="mt-1 break-all font-mono">{diagnosticValue(item.invocation_id)}</p>
+                      </details>
+                    ) : null}
                   </li>
                 ))}
               </ul>
@@ -273,7 +288,7 @@ export function RunDiagnosticsSection({
                         observation.error_code,
                         observation.source,
                         observation.stage,
-                        observation.attempt_id && `Attempt ${observation.attempt_id}`,
+                        observation.attempt_id && attemptLabel(observation.attempt_id),
                       ]
                         .filter(Boolean)
                         .join(" · ") || "未分类观测"}
@@ -331,12 +346,16 @@ export function RunDiagnosticsSection({
                 {diagnostics.attempts.map((attempt) => (
                   <div key={attempt.attempt_id} className="flex items-start justify-between gap-3 text-[11px]">
                     <div className="min-w-0">
-                      <p className="break-all font-mono text-[var(--theme-text)]">
-                        #{attempt.ordinal} · {attempt.attempt_id}
+                      <p className="font-medium text-[var(--theme-text)]">
+                        第 {attempt.ordinal} 次尝试
                       </p>
                       <p className="mt-0.5 text-[var(--theme-text-tertiary)]">
                         {attempt.owner_kind} · {attempt.terminal_reason || "处理中"}
                       </p>
+                      <details className="mt-1 text-[var(--theme-text-tertiary)]">
+                        <summary className="cursor-pointer">尝试编号</summary>
+                        <p className="mt-1 break-all font-mono">{attempt.attempt_id}</p>
+                      </details>
                     </div>
                     <AttemptStatus status={attempt.status} />
                   </div>

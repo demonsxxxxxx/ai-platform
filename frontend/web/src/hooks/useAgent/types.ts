@@ -632,6 +632,7 @@ export interface UseAgentReturn {
   failureGuidance: FailureGuidance | null;
   sessionId: string | null;
   currentRunId: string | null;
+  canStopGeneration: boolean;
   isReconnecting: boolean;
   connectionStatus: ConnectionStatus;
   newlyCreatedSession: BackendSession | null;

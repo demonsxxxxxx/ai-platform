@@ -149,6 +149,7 @@ interface ChatViewProps {
   sessionId: string | null;
   conversationIdentityKey: string;
   currentRunId: string | null;
+  canStopGeneration: boolean;
   isLoading: boolean;
   isLoadingHistory: boolean;
   connectionStatus?: ConnectionStatus;
@@ -225,6 +226,7 @@ export function ChatView({
   sessionId,
   conversationIdentityKey,
   currentRunId,
+  canStopGeneration,
   isLoading,
   isLoadingHistory,
   connectionStatus,
@@ -693,19 +695,6 @@ export function ChatView({
     [t],
   );
 
-  const handleDownloadWorkspaceFile = useCallback(
-    (file: SessionWorkspaceFile) => {
-      if (!file.download_url) return;
-      void downloadPreviewUrl({
-        url: file.download_url,
-        fileName: file.name,
-      }).catch(() =>
-        toast.error(t("documents.failedToDownload", "Download failed")),
-      );
-    },
-    [t],
-  );
-
   const handleProfileDriveFileImported = useCallback(
     (file: SessionInputFile) => {
       const workspaceFile = sessionInputFileToWorkspaceFile(file);
@@ -878,6 +867,7 @@ export function ChatView({
     draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
     onStop: onStopGeneration,
+    canStop: canStopGeneration && currentRunId !== null,
     isLoading: sessionRunning,
     canSend: canSendInCurrentView,
     placeholder: composerPlaceholder,
@@ -925,10 +915,6 @@ export function ChatView({
   const rightPanel = (
     <WorkbenchRightPanel
       sessionId={sessionId}
-      files={visibleWorkspaceProjection.files}
-      filesStatus={visibleWorkspaceProjection.status}
-      onOpenFile={handleOpenWorkspaceFile}
-      onDownloadFile={handleDownloadWorkspaceFile}
       onProfileDriveFileImported={handleProfileDriveFileImported}
       onProfileDriveFileDrop={handleProfileDriveFileDrop}
     />

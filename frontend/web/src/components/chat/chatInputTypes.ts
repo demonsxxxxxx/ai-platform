@@ -48,6 +48,8 @@ export interface ChatInputProps {
   ) => Promise<SubmissionOutcome>;
   onStop: () => Promise<StopGenerationResult>;
   isLoading: boolean;
+  /** Stop is available only after the current run-control owner is bound. */
+  canStop?: boolean;
   disabled?: boolean;
   canSend?: boolean;
   /** Optional product-specific prompt for a locked composer surface. */

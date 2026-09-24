@@ -472,6 +472,14 @@ async def test_executor_client_posts_task_request(monkeypatch):
             "invalid_executor_credential",
         ),
         (
+            {
+                "detail": "model_proxy_capability_invalid",
+            },
+            b"bounded-json",
+            "model_proxy_capability_invalid",
+            "model_proxy_capability_invalid",
+        ),
+        (
             {"error_code": "executor_health_timeout", "detail": "executor_health_timeout"},
             b"bounded-json",
             "executor_health_timeout",

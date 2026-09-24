@@ -33,6 +33,16 @@ test("stopGeneration returns unavailable instead of claiming cancellation withou
   assert.doesNotMatch(source, /toast\.custom/);
 });
 
+test("stopGeneration fails closed when the current run has no legal lifecycle owner", () => {
+  const source = getStopGenerationSource();
+
+  assert.match(
+    source,
+    /if \(\s*!owner,[\s\S]*!runControlLifecycle\.isCurrentOwner\(owner\)[\s\S]*return "unavailable" as const;/,
+  );
+  assert.doesNotMatch(source, /bindRunControlParent\(currentSessionId, currentRunId\)/);
+});
+
 test("the stop confirmation awaits the command result before showing acknowledgement", () => {
   const source = readFileSync(
     resolve(__dirname, "../../../components/chat/ChatInput.tsx"),
@@ -53,4 +63,17 @@ test("the stop confirmation awaits the command result before showing acknowledge
   assert.ok(closeDialog > acknowledged && requestedCopy > closeDialog);
   assert.match(confirm, /loading=\{isStopSubmitting\}/);
   assert.doesNotMatch(confirm, /chat\.status\.cancelled/);
+});
+
+test("composer stop controls require a confirmed run-control owner", () => {
+  const inputSource = readFileSync(
+    resolve(__dirname, "../../../components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+  const toolbarSource = readFileSync(
+    resolve(__dirname, "../../../components/chat/ChatInputToolbar.tsx"),
+    "utf8",
+  );
+  assert.match(inputSource, /if \(isLoading && canStop\)/);
+  assert.match(toolbarSource, /isLoading && canStop/);
 });

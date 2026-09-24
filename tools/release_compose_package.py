@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import tarfile
+import time
 
 if __package__:
     from .release_image_manifest import validate_manifest
@@ -34,13 +35,32 @@ DATA_IMAGES = {
     "redis": "redis:7-alpine",
     "minio": "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z",
 }
+DATA_IMAGE_PULL_ATTEMPTS = 3
+# Keep retries within the former single-pull timeout for each image.
+DATA_IMAGE_PULL_BUDGET_SECONDS = 600
 
 
 def pin_data_images() -> dict[str, str]:
     """CI resolves the approved base tags once, before either archive is made."""
     result = {}
     for service, tag in DATA_IMAGES.items():
-        subprocess.run(["docker", "pull", "--platform", "linux/amd64", tag], check=True, timeout=600)
+        pull = ["docker", "pull", "--platform", "linux/amd64", tag]
+        deadline = time.monotonic() + DATA_IMAGE_PULL_BUDGET_SECONDS
+        for attempt in range(1, DATA_IMAGE_PULL_ATTEMPTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(pull, DATA_IMAGE_PULL_BUDGET_SECONDS)
+            try:
+                subprocess.run(pull, check=True, timeout=remaining)
+                break
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                if attempt == DATA_IMAGE_PULL_ATTEMPTS:
+                    raise
+                delay = 5 * attempt
+                if deadline - time.monotonic() <= delay:
+                    raise
+                print(f"Retrying {service} image pull ({attempt + 1}/{DATA_IMAGE_PULL_ATTEMPTS})", flush=True)
+                time.sleep(delay)
         record = json.loads(subprocess.check_output(["docker", "image", "inspect", tag], text=True, timeout=30))[0]
         result[service] = record["RepoDigests"][0]
     return result

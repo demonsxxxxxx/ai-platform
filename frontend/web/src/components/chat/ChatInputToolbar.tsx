@@ -18,6 +18,7 @@ export interface ChatInputToolbarProps {
   onActivePanelChange: (panel: FeaturePanel) => void;
   canSend: boolean;
   isLoading: boolean;
+  canStop: boolean;
   canSubmit: boolean;
   hasUploadingAttachment: boolean;
   enabledToolsCount: number;
@@ -50,6 +51,7 @@ export function ChatInputToolbar({
   onActivePanelChange,
   canSend,
   isLoading,
+  canStop,
   canSubmit,
   hasUploadingAttachment,
   enabledToolsCount,
@@ -192,23 +194,35 @@ export function ChatInputToolbar({
             <Lock size={18} />
           </button>
         ) : isLoading ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onStopClick();
-            }}
-            className="chat-tool-btn-active flex items-center justify-center rounded-full p-2 transition-all duration-300 hover:scale-105 active:scale-95"
-            style={{
-              borderColor: "color-mix(in srgb, #fbbf24 40%, transparent)",
-              background: "color-mix(in srgb, #fbbf24 10%, transparent)",
-              color: "#fbbf24",
-            }}
-            title={t("chat.stop")}
-          >
-            <Square size={16} fill="currentColor" />
-          </button>
+          canStop ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onStopClick();
+              }}
+              className="chat-tool-btn-active flex items-center justify-center rounded-full p-2 transition-all duration-300 hover:scale-105 active:scale-95"
+              style={{
+                borderColor: "color-mix(in srgb, #fbbf24 40%, transparent)",
+                background: "color-mix(in srgb, #fbbf24 10%, transparent)",
+                color: "#fbbf24",
+              }}
+              title={t("chat.stop")}
+            >
+              <Square size={16} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled
+              aria-busy="true"
+              className="chat-tool-btn flex items-center justify-center rounded-full p-2 opacity-60"
+              title={t("chat.generating", "生成中")}
+            >
+              <Square size={16} />
+            </button>
+          )
         ) : (
           <button
             type="submit"

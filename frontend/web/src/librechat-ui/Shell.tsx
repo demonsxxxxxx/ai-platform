@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { libreChatSurface } from "./surface";
@@ -19,6 +19,15 @@ export function LibreChatShell({
   const [contextOpen, setContextOpen] = useState(false);
   const ContextIcon = contextOpen ? PanelRightClose : PanelRightOpen;
 
+  useEffect(() => {
+    if (!contextOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [contextOpen]);
+
   return (
     <section
       className={libreChatSurface.root}
@@ -34,10 +43,11 @@ export function LibreChatShell({
       >
         <div className={libreChatSurface.thread}>
           {rightPanel && (
-            <div className="absolute right-3 top-2 z-10 hidden sm:flex sm:right-4">
+            <div className="absolute right-3 top-2 z-[60] flex sm:right-4">
               <button
                 type="button"
                 data-librechat-context-toggle
+                aria-controls="librechat-context-panel"
                 aria-expanded={contextOpen}
                 aria-label={t("workbench.contextLabel")}
                 title={t("workbench.contextLabel")}
@@ -65,12 +75,22 @@ export function LibreChatShell({
         </div>
 
         {rightPanel && contextOpen && (
-          <div
-            data-workbench-region="context"
-            className={libreChatSurface.context}
-          >
-            {rightPanel}
-          </div>
+          <>
+            <button
+              type="button"
+              aria-label={t("common.close", "关闭")}
+              title={t("common.close", "关闭")}
+              className="fixed inset-0 z-40 bg-black/20 xl:hidden"
+              onClick={() => setContextOpen(false)}
+            />
+            <div
+              id="librechat-context-panel"
+              data-workbench-region="context"
+              className={libreChatSurface.context}
+            >
+              {rightPanel}
+            </div>
+          </>
         )}
       </div>
     </section>

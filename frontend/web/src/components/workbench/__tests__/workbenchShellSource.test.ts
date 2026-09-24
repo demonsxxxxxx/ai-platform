@@ -33,7 +33,7 @@ test("workbench shell does not duplicate the primary sidebar rail", () => {
   assert.doesNotMatch(shell, /workbenchSurface\.railButton/);
 });
 
-test("workbench context drawer is visible on normal desktop widths", () => {
+test("workbench context uses an inline desktop panel and a responsive drawer", () => {
   const surface = readFileSync(
     join(root, "src/components/workbench/workbenchSurface.ts"),
     "utf8",
@@ -42,14 +42,21 @@ test("workbench context drawer is visible on normal desktop widths", () => {
     join(root, "src/librechat-ui/surface.ts"),
     "utf8",
   );
+  const libreShell = readFileSync(
+    join(root, "src/librechat-ui/Shell.tsx"),
+    "utf8",
+  );
 
   assert.match(surface, /libreChatSurface\.workspace/);
   assert.match(surface, /libreChatSurface\.context/);
-  assert.match(libreSurface, /xl:grid-cols-\[minmax\(0,1fr\)_18rem\]/);
-  assert.match(libreSurface, /w-80/);
-  assert.match(libreSurface, /xl:flex/);
-  assert.doesNotMatch(surface, /2xl:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
-  assert.doesNotMatch(surface, /2xl:flex/);
+  assert.match(libreSurface, /xl:grid-cols-\[minmax\(0,1fr\)_minmax\(18rem,20rem\)\]/);
+  assert.match(libreSurface, /fixed inset-y-0 right-0/);
+  assert.match(libreSurface, /w-\[calc\(100vw-3\.25rem\)\]/);
+  assert.match(libreSurface, /xl:static/);
+  assert.doesNotMatch(libreSurface, /context:[\s\S]*?"hidden/);
+  assert.match(libreShell, /aria-controls="librechat-context-panel"/);
+  assert.match(libreShell, /fixed inset-0 z-40[\s\S]*xl:hidden/);
+  assert.match(libreShell, /event\.key === "Escape"/);
 });
 
 test("chat app uses the workbench shell instead of old mixed layout ownership", () => {

@@ -42,8 +42,9 @@ export const libreChatSurface = {
   threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4",
   composer: "shrink-0 bg-[var(--theme-workbench-canvas)] px-3 py-2",
   context: clsx(
-    "hidden min-h-0 min-w-0 w-full flex-col border-l border-[var(--theme-border)]",
-    "bg-[var(--theme-workbench-canvas)] xl:flex",
+    "fixed inset-y-0 right-0 z-50 flex min-h-0 min-w-0 w-[calc(100vw-3.25rem)] max-w-[22rem] flex-col border-l border-[var(--theme-border)]",
+    "bg-[var(--theme-workbench-canvas)] shadow-[-12px_0_32px_rgba(15,23,42,0.12)]",
+    "xl:static xl:z-auto xl:w-full xl:max-w-none xl:shadow-none",
   ),
   panel: clsx(
     "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]",

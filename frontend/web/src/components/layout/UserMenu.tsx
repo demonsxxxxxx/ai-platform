@@ -10,7 +10,7 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
   const { t } = useTranslation();
   const { logout, user } = useAuth();
   const [showMenu, setShowMenu] = useState(false);
-  const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 });
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const [imgError, setImgError] = useState(false);
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== "undefined" && window.innerWidth < 640,
@@ -33,8 +33,8 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
     if (buttonRef.current && !isMobile) {
       const rect = buttonRef.current.getBoundingClientRect();
       setMenuPosition({
-        top: showLabel ? rect.top - (menuRef.current?.offsetHeight || 120) - 8 : rect.bottom + 8,
-        right: showLabel ? window.innerWidth - rect.left - 240 : window.innerWidth - rect.right,
+        top: rect.top - (menuRef.current?.offsetHeight || 120) - 8,
+        left: showLabel ? rect.left : rect.right + 8,
       });
     }
   }, [isMobile, showLabel]);
@@ -181,7 +181,7 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
                 className="fixed z-[301] w-60 overflow-y-auto rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
                 style={{
                   top: `${menuPosition.top}px`,
-                  right: `${menuPosition.right}px`,
+                  left: `${menuPosition.left}px`,
                   backgroundColor: "var(--theme-bg-card)",
                   borderColor: "var(--theme-border)",
                 }}

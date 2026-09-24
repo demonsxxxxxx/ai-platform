@@ -89,9 +89,27 @@ def test_worker_execution_projects_only_safe_effective_information():
 
     assert projected == {
         "response": "有效返回 [redacted]",
+        "messages": [
+            {
+                "ordinal": 1,
+                "kind": "answer",
+                "text": "旧返回",
+                "sequence": 1,
+                "created_at": None,
+            },
+            {
+                "ordinal": 2,
+                "kind": "answer",
+                "text": "有效返回 [redacted]",
+                "sequence": 10,
+                "created_at": None,
+            },
+        ],
         "actions": [
             {
                 "ordinal": 1,
+                "sequence": 20,
+                "invocation_id": "private-operation-id",
                 "label": "Read",
                 "category": "read",
                 "status": "succeeded",
@@ -103,6 +121,8 @@ def test_worker_execution_projects_only_safe_effective_information():
             },
             {
                 "ordinal": 2,
+                "sequence": 30,
+                "invocation_id": "failed-operation-id",
                 "label": "Bash",
                 "category": "",
                 "status": "failed",
@@ -119,5 +139,115 @@ def test_worker_execution_projects_only_safe_effective_information():
             "stop_category": "completed",
         },
     }
-    assert "private-operation-id" not in repr(projected)
+    assert "hidden-operation-id" not in repr(projected)
     assert "PrivateTool" not in repr(projected)
+
+
+def test_worker_execution_redacts_complete_public_messages_and_omits_private_output():
+    events = [
+        {
+            "sequence": 1,
+            "type": "commentary.delta",
+            "visible_to_user": True,
+            "payload": {
+                "summary_id": "summary-a",
+                "delta": "正在检查 tok",
+                "__stream_v4": {"message_id": "comment-a"},
+            },
+        },
+        {
+            "sequence": 2,
+            "type": "commentary.delta",
+            "visible_to_user": True,
+            "payload": {
+                "summary_id": "summary-a",
+                "delta": "en",
+                "__stream_v4": {"message_id": "comment-a"},
+            },
+        },
+        {
+            "sequence": 3,
+            "type": "commentary.delta",
+            "visible_to_user": True,
+            "payload": {
+                "summary_id": "summary-b",
+                "delta": "下一步检查工具回执",
+                "__stream_v4": {"message_id": "comment-a"},
+            },
+        },
+        {
+            "sequence": 4,
+            "type": "message.delta",
+            "visible_to_user": False,
+            "payload": {"delta": "PRIVATE_OUTPUT", "__stream_v4": {"message_id": "hidden"}},
+        },
+        {
+            "sequence": 5,
+            "type": "message.delta",
+            "visible_to_user": True,
+            "payload": {"delta": "结果 tok", "__stream_v4": {"message_id": "answer-a"}},
+        },
+        {
+            "sequence": 6,
+            "type": "message.delta",
+            "visible_to_user": True,
+            "payload": {"delta": "en", "__stream_v4": {"message_id": "answer-a"}},
+        },
+    ]
+    projected = build_admin_worker_execution(
+        events,
+        sanitize_text=lambda value: value.replace("token", "[redacted]"),
+    )
+
+    assert projected["messages"] == [
+        {
+            "ordinal": 1,
+            "kind": "commentary",
+            "text": "正在检查 [redacted]",
+            "sequence": 1,
+            "created_at": None,
+        },
+        {
+            "ordinal": 2,
+            "kind": "commentary",
+            "text": "下一步检查工具回执",
+            "sequence": 3,
+            "created_at": None,
+        },
+        {
+            "ordinal": 3,
+            "kind": "answer",
+            "text": "结果 [redacted]",
+            "sequence": 6,
+            "created_at": None,
+        },
+    ]
+    assert "token" not in repr(projected)
+    assert "PRIVATE_OUTPUT" not in repr(projected)
+    assert "comment-a" not in repr(projected)
+
+
+def test_hidden_v4_message_does_not_suppress_visible_legacy_answer():
+    projected = build_admin_worker_execution(
+        [
+            {
+                "event_id": "hidden-v4",
+                "sequence": 1,
+                "type": "message.delta",
+                "visible_to_user": False,
+                "payload": {"delta": "private", "__stream_v4": {"message_id": "hidden"}},
+            },
+            {
+                "event_id": "legacy-answer",
+                "sequence": 2,
+                "type": "assistant_delta",
+                "visible_to_user": True,
+                "payload": {"delta": "公开答复"},
+            },
+        ],
+        sanitize_text=lambda value: value,
+    )
+
+    assert projected["response"] == "公开答复"
+    assert projected["messages"][0]["text"] == "公开答复"
+    assert "private" not in repr(projected)

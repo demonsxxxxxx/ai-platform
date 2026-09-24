@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -11,6 +12,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from app.execution.application.model_control_plane import configured_model_control_plane
+
+
+_logger = logging.getLogger(__name__)
 
 
 PrincipalDependency = Callable[..., Any]
@@ -188,6 +192,18 @@ async def proxy_model_request(
             model_proxy_capability=model_proxy_capability,
         )
     except PermissionError as exc:
+        # Keep denial diagnostics structured and bounded. Never include the
+        # request body, credentials, or authorization headers in this record.
+        _logger.warning(
+            "model_proxy_denied",
+            extra={
+                "reason_code": str(exc),
+                "provider": provider,
+                "upstream_path": upstream_path,
+                "run_id": x_ai_platform_run_id,
+                "attempt_id": x_ai_platform_attempt_id,
+            },
+        )
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         if str(exc) == "model_proxy_body_invalid":
