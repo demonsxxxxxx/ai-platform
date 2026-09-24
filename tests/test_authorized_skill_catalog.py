@@ -16,6 +16,8 @@ from tests.support.claude_sdk import native_client_factory
 
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAccessDecision
+from app.execution.api import payload_with_authorized_skill_catalog, reauthorize_worker_capabilities
+from app.execution_boundary import decide_worker_execution_boundary
 from app.executors.base import RunPayload
 from app.executors.claude_agent_sdk_runner import (
     build_skill_prompt,
@@ -38,8 +40,6 @@ from app.skills.pinning import build_skill_manifest_ref, build_skill_version_man
 from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
 from app.worker import (
     _builtin_capability_subjects,
-    _payload_with_authorized_skill_catalog,
-    _reauthorize_worker_capabilities,
     process_run_payload,
 )
 
@@ -566,7 +566,7 @@ async def test_worker_overwrites_injected_catalog_without_authorizing_discovery_
         skill_manifests=[],
     )
 
-    rebuilt = _payload_with_authorized_skill_catalog(payload, resolution=resolution)
+    rebuilt = payload_with_authorized_skill_catalog(payload, resolution=resolution)
     loaded = load_runtime_authorized_skill_catalog(
         rebuilt.input,
         expected_binding=_binding(),
@@ -643,7 +643,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
     monkeypatch.setattr(catalog.repositories, "resolve_selected_skill", resolve_selected)
     monkeypatch.setattr(catalog.repositories, "get_capability_distribution_row", get_distribution)
     monkeypatch.setattr(catalog.repositories, "run_mcp_tool_ids_for_skill", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", resolve_catalog_with_current_authority)
+    monkeypatch.setattr("app.execution.application.worker_authorization.resolve_authorized_skill_catalog", resolve_catalog_with_current_authority)
 
     primary_manifest = _manifest_from_row(rows[0])
     primary_version = str(primary_manifest["version"])
@@ -692,11 +692,14 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
         )
 
     principal = await current_principal(user_id="user-a", tenant_id="tenant-a")
-    authorization = await _reauthorize_worker_capabilities(
+    authorization = await reauthorize_worker_capabilities(
         object(),
         payload=payload,
         run_identity=run_identity,
         current_principal=principal,
+        builtin_capability_subjects=_builtin_capability_subjects,
+        execution_boundary_decider=decide_worker_execution_boundary,
+        sandbox_provider="opensandbox",
     )
 
     assert authorization.denial is None
@@ -925,7 +928,7 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
     monkeypatch.setattr("app.worker.repositories.validate_run_skill_snapshots_for_dispatch", forbidden)
     monkeypatch.setattr("app.worker.repositories.validate_replay_skill_manifests", forbidden)
     monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", forbidden)
-    monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", forbidden)
+    monkeypatch.setattr("app.execution.application.worker_authorization.resolve_authorized_skill_catalog", forbidden)
     monkeypatch.setattr("app.worker.materialize_queued_worker_context_snapshot", forbidden)
     monkeypatch.setattr("app.worker._create_worker_runtime_sandbox_lease", forbidden)
 

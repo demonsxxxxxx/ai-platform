@@ -18,6 +18,7 @@ from tests.support.claude_mcp import install_mcp_sessions
 from tests.support.claude_sdk import native_client_factory
 
 import app.executors.claude_agent_sdk_runner as sdk_runner
+from app.execution.api import mcp_capability_subject
 import app.worker as worker_module
 from app.context.file_content import ContextFileContentError
 from app.execution.application import artifact_storage
@@ -190,7 +191,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         skill={"skill_status": "active"},
         skill_decision=types.SimpleNamespace(usable=True),
     )
-    external_subject = worker_module._mcp_capability_subject(
+    external_subject = mcp_capability_subject(
         {
             "tool_id": "corp-search::query",
             "server_id": "corp-search",

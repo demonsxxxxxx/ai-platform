@@ -18,6 +18,10 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
 from app.control_plane_contracts import standard_trace_id
 from app.execution.api import (
+    mcp_capability_subject,
+    multi_agent_result_summary as _multi_agent_result_summary,
+    payload_with_authorized_mcp_registration,
+    reauthorize_worker_capabilities,
     reconciliation_agent_profile_binding_matches,
     restored_executor_reconciliation_queue_payload,
     restored_sandbox_run_payload,
@@ -36,6 +40,7 @@ from app.executors.base import (
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.queue import InvalidLeasedQueueEnvelope, parse_leased_queue_envelope, parse_queue_payload
 from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
@@ -51,6 +56,8 @@ from app.required_tool_contract import (
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
     declaration_from_input,
+    required_tool_authorization_for_run,
+    with_boundary_sandbox_local_tool_subjects,
 )
 from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
 from app.runtime.sandbox import container_provider
@@ -67,10 +74,8 @@ from app.worker import (
     process_run_payload as _process_run_payload,
     WorkerOutcome,
     _locked_run_principal,
-    _multi_agent_result_summary,
     _payload_from_locked_run,
     _record_run_step_from_event,
-    parse_queue_payload,
 )
 from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutorStub
 
@@ -498,15 +503,15 @@ def test_authoritative_leased_envelope_extracts_attempt_before_extra_forbid():
     raw = base_payload()
     raw["_queue_attempt_id"] = "qat-test-attempt"
 
-    envelope = worker_module.parse_leased_queue_envelope(raw)
+    envelope = parse_leased_queue_envelope(raw)
 
     assert envelope.attempt_id == "qat-test-attempt"
     assert envelope.payload.run_id == "run-a"
     assert "_queue_attempt_id" not in envelope.payload.model_dump()
-    with pytest.raises(worker_module.InvalidLeasedQueueEnvelope):
-        worker_module.parse_leased_queue_envelope({key: value for key, value in raw.items() if key != "_queue_attempt_id"})
-    with pytest.raises(worker_module.InvalidLeasedQueueEnvelope):
-        worker_module.parse_leased_queue_envelope({**raw, "_queue_attempt_id": ""})
+    with pytest.raises(InvalidLeasedQueueEnvelope):
+        parse_leased_queue_envelope({key: value for key, value in raw.items() if key != "_queue_attempt_id"})
+    with pytest.raises(InvalidLeasedQueueEnvelope):
+        parse_leased_queue_envelope({**raw, "_queue_attempt_id": ""})
 
 
 @pytest.mark.asyncio
@@ -845,7 +850,7 @@ def test_worker_keeps_bash_available_without_required_completion():
     assert set(by_identity) == {"Bash", "Write", "Skill"}
     assert by_identity["Bash"]["declared"] is True
     assert by_identity["Bash"]["required_parameter_keys"] == ["command"]
-    sandbox_subjects = worker_module.with_boundary_sandbox_local_tool_subjects(
+    sandbox_subjects = with_boundary_sandbox_local_tool_subjects(
         subjects,
         decision=worker_module._worker_execution_boundary_decision(payload),
         sandbox_provider="opensandbox",
@@ -856,7 +861,7 @@ def test_worker_keeps_bash_available_without_required_completion():
         "Skill",
     }
 
-    authorization = worker_module.required_tool_authorization_for_run(
+    authorization = required_tool_authorization_for_run(
         payload=payload,
         run_identity={
             "tenant_id": "tenant-a",
@@ -1053,7 +1058,7 @@ def default_cancel_not_requested(monkeypatch):
         "app.context.api.matching_ready_provider_epoch",
         no_ready_provider_epoch,
     )
-    monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
+    monkeypatch.setattr("app.queue.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
     monkeypatch.setattr(
         "app.worker._locked_agent_profile_identity_valid",
@@ -1522,7 +1527,7 @@ def default_cancel_not_requested(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "app.worker.resolve_authorized_skill_catalog",
+        "app.execution.application.worker_authorization.resolve_authorized_skill_catalog",
         resolve_authorized_skill_catalog,
         raising=False,
     )
@@ -1579,16 +1584,11 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
     )
     monkeypatch.setattr(
         worker_module,
-        "_reauthorize_mcp_capabilities",
-        fake_reauthorize_mcp,
-    )
-    monkeypatch.setattr(
-        worker_module,
         "get_settings",
         lambda: types.SimpleNamespace(sandbox_container_provider="opensandbox"),
     )
 
-    result = await worker_module._reauthorize_worker_capabilities(
+    result = await reauthorize_worker_capabilities(
         object(),
         payload=payload,
         run_identity=run_identity,
@@ -1597,6 +1597,10 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
             user_id="user-a",
             tenant_id="tenant-a",
         ),
+        builtin_capability_subjects=worker_module._builtin_capability_subjects,
+        execution_boundary_decider=worker_module._worker_execution_boundary_decision,
+        mcp_reauthorizer=fake_reauthorize_mcp,
+        sandbox_provider="opensandbox",
     )
 
     assert result is sentinel
@@ -2544,11 +2548,11 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
         "auth_mode": "none",
         "allowed_tools": ["query"],
     }
-    subject = worker_module._mcp_capability_subject(
+    subject = mcp_capability_subject(
         tool,
         types.SimpleNamespace(usable=True),
     )
-    authorized = worker_module._payload_with_authorized_mcp_registration(
+    authorized = payload_with_authorized_mcp_registration(
         payload,
         allowed_entries=[tool],
         tool_policy_subjects=[subject],
@@ -2565,23 +2569,23 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
     assert subject["parameter_delegation"] == "external_mcp"
     assert subject["public_tool_label"] == "Corporate Search"
     assert subject["public_tool_category"] == "mcp"
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "endpoint": "https://token@example.test/v1"},
         types.SimpleNamespace(usable=True),
     ) is None
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "auth_mode": "api-key"},
         types.SimpleNamespace(usable=True),
     ) is None
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "endpoint": "https://mcp.example.test/v1?api_key=redacted"},
         types.SimpleNamespace(usable=True),
     ) is None
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "endpoint": "https://mcp.example.test/v1?token=redacted"},
         types.SimpleNamespace(usable=True),
     ) is None
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "endpoint": "https://mcp.example.test/v1#fragment"},
         types.SimpleNamespace(usable=True),
     ) is None
@@ -2813,7 +2817,7 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
     elif pin_change == "session_hash":
         locked_run["session_admitted_agent_profile_hash"] = "b" * 64
 
-    authorized_profile = worker_module.parse_leased_queue_envelope(raw).payload.agent_profile
+    authorized_profile = parse_leased_queue_envelope(raw).payload.agent_profile
 
     class CaptureAdapter:
         async def submit_run(
@@ -4252,7 +4256,7 @@ async def test_worker_early_failure_helpers_preserve_attempt_lifecycle(
 ):
     captured = {}
     raw = base_payload()
-    payload = worker_module.parse_leased_queue_envelope(raw).payload
+    payload = parse_leased_queue_envelope(raw).payload
     run_identity = worker_module._payload_identity(payload)
     attempt_lifecycle = object()
 

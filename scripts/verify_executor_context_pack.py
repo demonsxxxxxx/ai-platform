@@ -34,7 +34,7 @@ REQUIRED_SOURCE_FUNCTIONS = [
     "app.context_builder.executor_context_pack_from_snapshot",
     "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
     "app.executors.claude.prompts.build_skill_prompt",
-    "app.worker._context_snapshot_ref_from_row",
+    "app.context.api.context_snapshot_ref_from_row",
 ]
 REQUIRED_PROMPT_CHECKS = [
     "bounded_summary_present",
