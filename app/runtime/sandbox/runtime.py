@@ -87,6 +87,7 @@ class SandboxRuntimeResult:
     provider: str
     executor_response: dict[str, Any]
     timings: dict[str, Any]
+    artifact_workspace_path: str | None = None
 
 
 class SandboxRuntimeCleanupError(RuntimeError):
@@ -704,6 +705,7 @@ class SandboxRuntime:
         staging_succeeded = False
         collection_started = False
         collection_succeeded = False
+        artifact_workspace_path: str | None = None
 
         def build_runtime_result(
             response_payload: dict[str, Any],
@@ -751,6 +753,7 @@ class SandboxRuntime:
                     "sandbox_cleanup_latency_ms": cleanup_latency_ms,
                     "sandbox_total_latency_ms": self._elapsed_ms(total_started_at),
                 },
+                artifact_workspace_path=artifact_workspace_path,
             )
 
         async def stop_owned_runtime(reason: str) -> bool:
@@ -886,11 +889,14 @@ class SandboxRuntime:
                         "Sandbox response file selection is invalid"
                     )
                 collection_started = True
-                await self.provider.collect_workspace(
+                artifact_workspace = await self.provider.collect_workspace(
                     lease,
                     request,
                     workspace,
                     raw_response_files,
+                )
+                artifact_workspace_path = (
+                    str(artifact_workspace) if artifact_workspace is not None else None
                 )
                 collection_succeeded = True
         except BaseException as exc:

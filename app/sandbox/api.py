@@ -38,12 +38,6 @@ from app.sandbox.domain.runtime_diagnostics import (
     runtime_diagnostic_value as runtime_diagnostic_value,
 )
 from app.sandbox.domain.workspace_policy import (
-    opensandbox_collection_entry as opensandbox_collection_entry,
-)
-from app.sandbox.domain.workspace_policy import (
-    opensandbox_listing_matches_file as opensandbox_listing_matches_file,
-)
-from app.sandbox.domain.workspace_policy import (
     PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME as PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME,
 )
 from app.sandbox.domain.workspace_policy import (
@@ -65,7 +59,14 @@ from app.sandbox.domain.workspace_policy import (
     workspace_read_name_private as workspace_read_name_private,
 )
 from app.sandbox.domain.workspace_delivery import (
-    opensandbox_delivery_paths as opensandbox_delivery_paths,
+    opensandbox_delivery_files as opensandbox_delivery_files,
+)
+from app.sandbox.domain.host_bind import (
+    OpenSandboxHostBindError as OpenSandboxHostBindError,
+    normalize_host_bind_relative_path as normalize_host_bind_relative_path,
+    read_host_bind_control_file as read_host_bind_control_file,
+    resolve_opensandbox_host_bind_source as resolve_opensandbox_host_bind_source,
+    snapshot_host_bind_delivery_files as snapshot_host_bind_delivery_files,
 )
 
 

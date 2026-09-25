@@ -25,11 +25,15 @@ OpenSandbox configuration has two owners:
 | Timeouts | Optional application tuning: `OPENSANDBOX_REQUEST_TIMEOUT_SECONDS`, `OPENSANDBOX_TIMEOUT_SECONDS`. |
 | Kernel isolation and host firewall | Host OpenSandbox TOML, Docker `runsc` runtime and network-guard service, prepared once by the host administrator. |
 
-Workspace files are staged and collected through the OpenSandbox file API after
-lease acquisition. Network egress follows the selected profile and host network
-policy. The deployment environment, security profile and expected network mode
-are fixed in Compose; build commit and dirty markers are supplied during image
-construction. These are not operator settings in the deployment environment file.
+Workspace files live in one Docker-root-external host directory shared by API,
+Worker and OpenSandbox. OpenSandbox receives only the current authoritative
+Attempt workspace as a read-write Host volume; it never receives the workspace
+root or a user-supplied host path. The file API remains limited to the exact
+lease sentinel used to prove that both sides see the same mount. Network egress
+follows the selected profile and host network policy. The deployment environment,
+security profile and expected network mode are fixed in Compose; build commit
+and dirty markers are supplied during image construction. These are not operator
+settings in the deployment environment file.
 
 `AI_PLATFORM_API_UPSTREAM` selects the platform API reached by the frontend proxy.
 Model connection ownership depends on the selected package:
@@ -58,9 +62,9 @@ enforcement as unimplemented.
 ## Prepare the host once
 
 Use a Linux host with Python 3, Docker, Docker Compose supporting `--wait` and
-`!reset`, and a configured, active `opensandbox.service`. OpenSandbox host
-provisioning (credentials, network policy and workspace permissions) is a
-separate first-install prerequisite, not repeated during application upgrades.
+`!reset`, and a configured, active `opensandbox.service`. OpenSandbox host provisioning (credentials, network policy, the exact
+`/data/opensandbox/workspaces` Host-volume allowlist and workspace permissions) is
+a separate first-install prerequisite, not repeated during application upgrades.
 The production package requires the production OpenSandbox security profile;
 the internal-test package must not be used to relax a production installation.
 
@@ -92,10 +96,14 @@ python3 deploy.py --env-file /absolute/path/to/.env
 
 This checks configuration, downloads images, verifies locally available digest
 identities, checks activity, stops application admission, checks activity again,
-runs migration and workspace initialization, starts the selected application,
-and verifies API readiness, container identity, OpenSandbox reachability and an
-advancing Worker heartbeat. The existing PostgreSQL, Redis and MinIO containers
-are not recreated. No data volume is deleted.
+copies the retired workspace source into `SANDBOX_WORKSPACE_ROOT` through a
+read-only migration mount, verifies path/type/mode/owner/size and SHA-256 inventory,
+runs schema migration and workspace initialization, starts the selected
+application, and verifies API readiness, container identity, OpenSandbox
+reachability and an advancing Worker heartbeat. Internal-test migrates the
+historical named volume; production migrates the explicit
+`SANDBOX_WORKSPACE_MIGRATION_SOURCE`. The source is retained and no data volume is
+deleted.
 
 To check configuration, activity and already-cached images without downloading
 or changing services, add `--check`. This is preflight only, not deployment
@@ -126,7 +134,10 @@ has the required digest. No temporary script edits or Git bundles are needed.
   untouched. Fix the reported prerequisite and retry.
 - Activity appears after the first check: no migration begins; stopped original
   application containers are restarted.
-- Migration or later startup fails: application admission is stopped and data is
+- Workspace storage migration failure: the target remains marked incomplete and
+  can be resumed only when every existing target entry still matches the source;
+  application admission remains stopped so the source cannot diverge during repair.
+- Schema migration or later startup failure: application admission is stopped and data is
   retained. Inspect the failing service through your privileged operations
   channel. Do not publish raw logs or resolved Compose configuration; these may
   contain secrets.

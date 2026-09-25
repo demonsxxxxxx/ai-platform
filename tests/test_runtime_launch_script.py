@@ -398,11 +398,34 @@ def test_backend_image_and_compose_fix_runtime_identity_without_env_override():
     assert "AI_PLATFORM_RUNTIME_GID" not in env_example
 
 
-def test_compose_workspace_init_is_narrow_and_blocks_api_and_worker_until_success():
+def test_compose_workspace_migration_and_init_are_narrow_and_ordered():
     import yaml
 
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    migration = compose["services"]["workspace-migrate"]
     init = compose["services"]["workspace-init"]
+    workspace_root = "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}"
+
+    assert migration["user"] == "0:0"
+    assert migration["network_mode"] == "none"
+    assert migration["read_only"] is True
+    assert migration["restart"] == "no"
+    assert migration["cap_drop"] == ["ALL"]
+    assert set(migration["cap_add"]) == {
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "DAC_READ_SEARCH",
+        "FOWNER",
+    }
+    assert migration["entrypoint"] == [
+        "python",
+        "-m",
+        "app.sandbox.infrastructure.workspace_storage_migration",
+    ]
+    assert migration["volumes"] == [
+        "ai_platform_sandbox_workspaces:/source-workspaces:ro",
+        f"{workspace_root}:/target-workspaces",
+    ]
 
     assert init["user"] == "0:0"
     assert init["network_mode"] == "none"
@@ -413,9 +436,15 @@ def test_compose_workspace_init_is_narrow_and_blocks_api_and_worker_until_succes
     assert set(init["cap_add"]) == {"CHOWN", "DAC_READ_SEARCH", "SETUID", "SETGID"}
     assert init["entrypoint"] == ["python", "-m", "app.runtime.sandbox.workspace_permissions"]
     assert init["command"] == []
-    assert init["volumes"] == ["ai_platform_sandbox_workspaces:/runtime-workspaces"]
+    assert init["volumes"] == [f"{workspace_root}:/runtime-workspaces"]
+    assert init["depends_on"]["workspace-migrate"]["condition"] == (
+        "service_completed_successfully"
+    )
     for service_name in ("api", "worker"):
         assert compose["services"][service_name]["depends_on"]["workspace-init"]["condition"] == "service_completed_successfully"
+        assert compose["services"][service_name]["volumes"] == [
+            f"{workspace_root}:{workspace_root}"
+        ]
 
 
 def test_sandbox_overlay_grants_socket_and_group_only_to_worker():
@@ -478,7 +507,7 @@ def test_compose_exposes_sandbox_runtime_configuration():
     assert (
         "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:"
         "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}"
-    ) in sandbox_text
+    ) in compose_text
     assert "SANDBOX_HOST_WORKSPACE_ROOT" not in sandbox_text
     assert "ai_platform_sandbox_workspaces" in compose_text
     assert "SANDBOX_CONTAINER_PROVIDER: docker" in sandbox_text
@@ -544,6 +573,7 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         }
     }
     assert set(overlay["services"]) == {
+        "workspace-migrate",
         "api",
         "worker",
         "workspace-init",
@@ -552,14 +582,17 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         "minio",
         "opensandbox-egress-proxy",
     }
-    workspace_root = "${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}"
+    assert overlay["services"]["workspace-migrate"]["volumes"] == [
+        "${SANDBOX_WORKSPACE_MIGRATION_SOURCE:?set SANDBOX_WORKSPACE_MIGRATION_SOURCE}:/source-workspaces:ro"
+    ]
     assert overlay["services"]["workspace-init"]["volumes"] == [
-        f"{workspace_root}:/runtime-workspaces"
+        "${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}:/runtime-workspaces"
     ]
     for service_name in ("api", "worker"):
         assert overlay["services"][service_name]["volumes"] == [
-            f"{workspace_root}:{workspace_root}"
+            "${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}:${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}"
         ]
+        assert "volumes" in overlay["services"][service_name]
     for service_name in ("postgres", "redis", "minio"):
         assert overlay["services"][service_name]["ports"] == []
     assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS=172.17.0.1" in env_example
@@ -917,7 +950,8 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
         "SANDBOX_CONTAINER_PROVIDER=opensandbox",
         "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
         "SANDBOX_EXECUTOR_PUBLISHED_HOST=host.docker.internal",
-        "SANDBOX_WORKSPACE_ROOT=/tmp/ai-platform-sandbox-workspaces",
+        "SANDBOX_WORKSPACE_MIGRATION_SOURCE=/data/ai-platform-prod/runtime-workspaces",
+        "SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-production",
         "SANDBOX_CALLBACK_BASE_URL=http://api.sandbox.internal:8020",
         "SANDBOX_EGRESS_POLICY_ENABLED=false",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY=replace_me_with_a_random_32_byte_minimum_value",

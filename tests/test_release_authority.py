@@ -128,7 +128,12 @@ def test_opensandbox_compose_overlay_uses_direct_sdk_and_egress_proxy():
             release_authority.DIRECT_OPENSANDBOX_PROXY_URL
         )
     workspace_root = "${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}"
-    assert services["workspace-init"]["volumes"] == [f"{workspace_root}:/runtime-workspaces"]
+    assert services["workspace-init"]["volumes"] == [
+        "${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}:/runtime-workspaces"
+    ]
+    assert services["workspace-migrate"]["volumes"] == [
+        "${SANDBOX_WORKSPACE_MIGRATION_SOURCE:?set SANDBOX_WORKSPACE_MIGRATION_SOURCE}:/source-workspaces:ro"
+    ]
     for service_name in ("api", "worker"):
         assert f"{workspace_root}:{workspace_root}" in services[service_name]["volumes"]
     proxy = services["opensandbox-egress-proxy"]
@@ -601,6 +606,7 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
         "OPENSANDBOX_EXECUTOR_IMAGE",
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
+        "SANDBOX_WORKSPACE_MIGRATION_SOURCE",
         "SANDBOX_WORKSPACE_ROOT",
         "WORKER_CLAUDE_AGENT_SDK_ENABLED",
     }

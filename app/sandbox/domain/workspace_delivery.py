@@ -5,14 +5,13 @@ from collections.abc import Callable, Iterable, Sequence
 from app.sandbox.domain.workspace_policy import workspace_delivery_file_allowed
 
 
-def opensandbox_delivery_paths(
+def opensandbox_delivery_files(
     response_files: Sequence[str],
     *,
-    remote_root: str,
     allowed_skill_names: Iterable[str],
     safe_relative_path: Callable[[str], str],
     max_files: int,
-) -> tuple[list[str], list[str]]:
+) -> list[str]:
     if isinstance(response_files, (str, bytes)):
         raise ValueError("OpenSandbox workspace collection selection is invalid")
     declared_paths = list(response_files)
@@ -21,8 +20,6 @@ def opensandbox_delivery_paths(
 
     selected: set[str] = set()
     normalized_paths: list[str] = []
-    remote_paths: list[str] = []
-    root = remote_root.rstrip("/")
     for raw_path in declared_paths:
         if not isinstance(raw_path, str):
             raise ValueError("OpenSandbox workspace collection selection is invalid")
@@ -34,5 +31,4 @@ def opensandbox_delivery_paths(
             raise ValueError("OpenSandbox workspace collection selection is invalid")
         selected.add(relative_path)
         normalized_paths.append(relative_path)
-        remote_paths.append(f"{root}/{relative_path}")
-    return normalized_paths, remote_paths
+    return normalized_paths

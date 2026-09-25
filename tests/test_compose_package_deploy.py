@@ -103,10 +103,53 @@ def harness(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_text("SYNTHETIC=true\n")
     state = {"calls": [], "activity_checks": 0, "race": False, "fail": None}
+    workspace_root = str((tmp_path / "workspaces").resolve())
+    monkeypatch.setattr(entry, "INTERNAL_TEST_WORKSPACE_ROOT", Path(workspace_root))
     config = {"services": {
         service: {"image": entry.FRONTEND if service == "frontend" else entry.BACKEND}
-        for service in (*entry.DATA, *entry.APPS, "migrate", "workspace-init")
+        for service in (
+            *entry.DATA,
+            *entry.APPS,
+            "migrate",
+            "workspace-migrate",
+            "workspace-init",
+        )
     }}
+    for service in ("api", "worker"):
+        config["services"][service]["environment"] = {
+            "SANDBOX_WORKSPACE_ROOT": workspace_root,
+            "SANDBOX_SECURITY_PROFILE": "internal-test",
+        }
+        config["services"][service]["volumes"] = [
+            {
+                "type": "bind",
+                "source": workspace_root,
+                "target": workspace_root,
+                "read_only": False,
+            }
+        ]
+    config["services"]["workspace-init"]["volumes"] = [
+        {
+            "type": "bind",
+            "source": workspace_root,
+            "target": "/runtime-workspaces",
+            "read_only": False,
+        }
+    ]
+    config["services"]["workspace-migrate"]["volumes"] = [
+        {
+            "type": "volume",
+            "source": "ai-platform-internal_ai_platform_sandbox_workspaces",
+            "target": "/source-workspaces",
+            "read_only": True,
+        },
+        {
+            "type": "bind",
+            "source": workspace_root,
+            "target": "/target-workspaces",
+            "read_only": False,
+        },
+    ]
     config["services"]["opensandbox-egress-proxy"] = {"image": entry.FRONTEND}
 
     def run(command, stage, timeout=90):
@@ -115,6 +158,8 @@ def harness(tmp_path, monkeypatch):
             raise entry.DeploymentError(stage + ": injected failure")
         if stage == "configuration identity":
             return json.dumps(config)
+        if stage == "Docker data-root inspection":
+            return str((tmp_path / "docker-data").resolve())
         if stage == "Docker bridge inspection":
             return state.get("bridge_gateway", "")
         if stage == "local image verification":
@@ -137,6 +182,59 @@ def harness(tmp_path, monkeypatch):
     return state
 
 
+def test_workspace_root_must_match_the_reviewed_profile_allowlist(harness):
+    harness["config"]["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"] += "-other"
+
+    with pytest.raises(entry.DeploymentError, match="not approved"):
+        harness["deploy"](check_only=True)
+
+
+@pytest.mark.parametrize("source_contains_target", [False, True])
+def test_workspace_migration_rejects_host_source_target_nesting(
+    harness,
+    monkeypatch,
+    source_contains_target,
+):
+    original_root = Path(
+        harness["config"]["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"]
+    )
+    base = original_root.parent / f"nested-{source_contains_target}"
+    if source_contains_target:
+        source = base
+        target = base / "target"
+    else:
+        target = base
+        source = base / "source"
+    source.mkdir(parents=True)
+    target.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(entry, "PRODUCTION_WORKSPACE_ROOT", target)
+    monkeypatch.setattr(entry, "PRODUCTION_WORKSPACE_MIGRATION_SOURCE", source)
+    for service in ("api", "worker"):
+        harness["config"]["services"][service]["environment"].update(
+            {
+                "SANDBOX_SECURITY_PROFILE": "governed",
+                "SANDBOX_WORKSPACE_ROOT": str(target),
+            }
+        )
+        harness["config"]["services"][service]["volumes"][0].update(
+            {"source": str(target), "target": str(target)}
+        )
+    harness["config"]["services"]["workspace-init"]["volumes"][0]["source"] = str(
+        target
+    )
+    migration_volumes = harness["config"]["services"]["workspace-migrate"]["volumes"]
+    migration_volumes[0] = {
+        "type": "bind",
+        "source": str(source),
+        "target": "/source-workspaces",
+        "read_only": True,
+    }
+    migration_volumes[1]["source"] = str(target)
+
+    with pytest.raises(entry.DeploymentError, match="mount topology"):
+        harness["deploy"](check_only=True)
+
+
 def test_internal_test_proxy_bind_must_match_actual_docker_bridge_gateway(harness):
     proxy_url = "http://172.17.0.1:18043"
     harness["config"]["services"]["opensandbox-egress-proxy"]["ports"] = [{
@@ -148,9 +246,9 @@ def test_internal_test_proxy_bind_must_match_actual_docker_bridge_gateway(harnes
 
     harness["bridge_gateway"] = "172.17.0.1"
     for service in ("api", "worker"):
-        harness["config"]["services"][service]["environment"] = {
+        harness["config"]["services"][service]["environment"].update({
             "OPENSANDBOX_EGRESS_PROXY_URL": proxy_url,
-        }
+        })
     harness["config"]["services"]["worker"]["environment"][
         "OPENSANDBOX_EGRESS_PROXY_URL"
     ] = "http://172.19.0.9:18043"
@@ -171,8 +269,15 @@ def test_package_upgrade_fences_twice_and_only_preserves_data_services(harness):
     stages = [stage for stage, _ in harness["calls"]]
     assert stages.index("image download") < stages.index("admission stop")
     assert stages.count("quiescent") == 2
-    assert max(i for i, stage in enumerate(stages) if stage == "quiescent") < stages.index("schema migration")
-    assert stages.index("schema migration") < stages.index("workspace initialization") < stages.index("application startup")
+    assert max(i for i, stage in enumerate(stages) if stage == "quiescent") < stages.index(
+        "workspace storage migration"
+    )
+    assert (
+        stages.index("workspace storage migration")
+        < stages.index("schema migration")
+        < stages.index("workspace initialization")
+        < stages.index("application startup")
+    )
     assert stages[-1] == "runtime verified"
     for stage, command in harness["calls"]:
         if "--no-recreate" in command:
@@ -185,7 +290,14 @@ def test_check_only_never_pulls_or_mutates_services(harness):
     harness["deploy"](check_only=True)
     stages = [stage for stage, _ in harness["calls"]]
     assert "local image verification" in stages
-    assert not set(stages) & {"image download", "admission stop", "persistent services", "schema migration", "application startup"}
+    assert not set(stages) & {
+        "image download",
+        "admission stop",
+        "persistent services",
+        "workspace storage migration",
+        "schema migration",
+        "application startup",
+    }
 
 
 def test_package_offline_does_not_pull_but_verifies_local_images(harness):
@@ -222,6 +334,16 @@ def test_persistent_service_failure_restores_old_services_without_migration(harn
     assert stages.count("restore pre-migration admission") == 3
     assert "schema migration" not in stages
     assert "failed-deployment admission stop" not in stages
+
+
+def test_workspace_storage_migration_failure_keeps_admission_stopped(harness):
+    harness["fail"] = "workspace storage migration"
+    with pytest.raises(entry.DeploymentError):
+        harness["deploy"]()
+    stages = [name for name, _ in harness["calls"]]
+    assert "restore pre-migration admission" not in stages
+    assert stages.count("failed-deployment admission stop") == 3
+    assert "schema migration" not in stages
 
 
 @pytest.mark.parametrize("stage", ["schema migration", "workspace initialization", "application startup"])

@@ -22,6 +22,9 @@ FRONTEND = "@@FRONTEND_IMAGE@@"
 PROJECT = "ai-platform-internal"
 DATA = ("postgres", "redis", "minio")
 APPS = ("frontend", "api", "worker")
+PRODUCTION_WORKSPACE_ROOT = Path("/data/opensandbox/workspaces/ai-platform-production")
+INTERNAL_TEST_WORKSPACE_ROOT = Path("/data/opensandbox/workspaces/ai-platform-internal-test")
+PRODUCTION_WORKSPACE_MIGRATION_SOURCE = Path("/data/ai-platform-prod/runtime-workspaces")
 
 QUIESCENCE_SQL = """select
 (select count(*) from runs where status not in ('succeeded','failed','cancelled')),
@@ -145,7 +148,7 @@ def verify_runtime(docker: list[str], image_ids: dict[str, str], before: dict) -
             target = FRONTEND if service == "frontend" else BACKEND
             if record["Image"] != image_ids[target] or record["Config"]["Labels"].get("ai-platform.source-commit") != COMMIT:
                 raise DeploymentError("application image or commit mismatch")
-    for service in ("migrate", "workspace-init"):
+    for service in ("migrate", "workspace-migrate", "workspace-init"):
         state = inspect(docker, f"ai-platform-{service}")["State"]
         if state["Status"] != "exited" or state["ExitCode"] != 0:
             raise DeploymentError("migration or workspace initialization failed")
@@ -192,6 +195,122 @@ def validate_model_proxy_bind(config: dict) -> str | None:
     return str(address)
 
 
+def validate_workspace_storage(config: dict, docker: list[str]) -> Path:
+    services = config.get("services")
+    if not isinstance(services, dict):
+        raise DeploymentError("Compose services are invalid")
+    environment = services.get("api", {}).get("environment", {})
+    raw_root = str(environment.get("SANDBOX_WORKSPACE_ROOT") or "")
+    workspace_root = Path(raw_root)
+    security_profile = str(environment.get("SANDBOX_SECURITY_PROFILE") or "")
+    expected_root = (
+        INTERNAL_TEST_WORKSPACE_ROOT
+        if security_profile == "internal-test"
+        else PRODUCTION_WORKSPACE_ROOT
+        if security_profile == "governed"
+        else None
+    )
+    if expected_root is None or workspace_root != expected_root:
+        raise DeploymentError("sandbox workspace root is not approved for this profile")
+    if not workspace_root.is_absolute() or workspace_root != Path(os.path.abspath(workspace_root)):
+        raise DeploymentError("sandbox workspace root must be an absolute normalized path")
+    if any(
+        services.get(service, {}).get("environment", {}).get("SANDBOX_WORKSPACE_ROOT")
+        != raw_root
+        for service in ("api", "worker")
+    ):
+        raise DeploymentError("API and Worker workspace roots do not match")
+
+    docker_root = Path(run([*docker, "info", "--format", "{{.DockerRootDir}}"], "Docker data-root inspection"))
+    try:
+        workspace_root.relative_to(docker_root)
+    except ValueError:
+        pass
+    else:
+        raise DeploymentError("sandbox workspace root must be outside Docker data-root")
+
+    current = workspace_root
+    while True:
+        try:
+            node = current.lstat()
+        except FileNotFoundError:
+            node = None
+        except OSError as exc:
+            raise DeploymentError("sandbox workspace root cannot be inspected") from exc
+        if node is not None and stat.S_ISLNK(node.st_mode):
+            raise DeploymentError("sandbox workspace root must not contain symlinked parents")
+        if current.parent == current:
+            break
+        current = current.parent
+
+    def mount(service: str, target: str) -> dict:
+        matches = [
+            item
+            for item in services.get(service, {}).get("volumes", [])
+            if isinstance(item, dict) and item.get("target") == target
+        ]
+        if len(matches) != 1:
+            raise DeploymentError("workspace mount topology is invalid")
+        return matches[0]
+
+    for service in ("api", "worker"):
+        item = mount(service, raw_root)
+        if item.get("type") != "bind" or item.get("source") != raw_root or item.get("read_only"):
+            raise DeploymentError("workspace mount topology is invalid")
+    init_mount = mount("workspace-init", "/runtime-workspaces")
+    target_mount = mount("workspace-migrate", "/target-workspaces")
+    source_mount = mount("workspace-migrate", "/source-workspaces")
+    source_type = source_mount.get("type")
+    source_path: Path | None = None
+    source_is_valid = (
+        security_profile == "internal-test"
+        and source_type == "volume"
+        and source_mount.get("source") == f"{PROJECT}_ai_platform_sandbox_workspaces"
+    )
+    if source_type == "bind":
+        source_path = Path(str(source_mount.get("source") or ""))
+        try:
+            source_node = source_path.lstat()
+        except OSError as exc:
+            raise DeploymentError("workspace migration source is unavailable") from exc
+        source_is_valid = (
+            security_profile == "governed"
+            and source_path == PRODUCTION_WORKSPACE_MIGRATION_SOURCE
+            and source_path.is_absolute()
+            and source_path == Path(os.path.abspath(source_path))
+            and source_path != workspace_root
+            and stat.S_ISDIR(source_node.st_mode)
+            and not stat.S_ISLNK(source_node.st_mode)
+        )
+        current = source_path
+        while source_is_valid:
+            try:
+                parent_node = current.lstat()
+            except OSError as exc:
+                raise DeploymentError("workspace migration source cannot be inspected") from exc
+            if stat.S_ISLNK(parent_node.st_mode):
+                source_is_valid = False
+                break
+            if current.parent == current:
+                break
+            current = current.parent
+    if source_path is not None and (
+        workspace_root.is_relative_to(source_path)
+        or source_path.is_relative_to(workspace_root)
+    ):
+        source_is_valid = False
+    if (
+        init_mount.get("type") != "bind"
+        or init_mount.get("source") != raw_root
+        or target_mount.get("type") != "bind"
+        or target_mount.get("source") != raw_root
+        or not source_is_valid
+        or not source_mount.get("read_only")
+    ):
+        raise DeploymentError("workspace migration mount topology is invalid")
+    return workspace_root
+
+
 def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_only: bool = False) -> None:
     if "@@" in COMMIT + BACKEND + FRONTEND:
         raise DeploymentError("use the published deployment package, not the source template")
@@ -200,6 +319,7 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
     run([*compose, "config", "--quiet"], "configuration")
     config = json.loads(run([*compose, "config", "--format", "json"], "configuration identity"))
     model_proxy_bind = validate_model_proxy_bind(config)
+    validate_workspace_storage(config, docker)
     if model_proxy_bind is not None:
         bridge_gateway = run(
             [*docker, "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"],
@@ -215,7 +335,7 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
             for service in ("api", "worker")
         ):
             raise DeploymentError("internal-test model proxy URL does not match its bridge bind")
-    for service in ("api", "worker", "migrate", "workspace-init", "frontend"):
+    for service in ("api", "worker", "migrate", "workspace-migrate", "workspace-init", "frontend"):
         expected = FRONTEND if service == "frontend" else BACKEND
         if config["services"][service]["image"] != expected:
             raise DeploymentError("Compose image does not match this release")
@@ -238,7 +358,7 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
     if check_only:
         return
     stopped = []
-    schema_started = False
+    migration_started = False
     try:
         if before:
             for service in APPS:
@@ -247,14 +367,33 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
                 stopped.append(name)
             quiescent(docker)
         run([*compose, "up", "-d", "--no-recreate", "--pull", "never", "--wait", *DATA], "persistent services", 180)
-        schema_started = True
+        migration_started = True
+        run(
+            [
+                *compose,
+                "up",
+                "--no-deps",
+                "--force-recreate",
+                "--pull",
+                "never",
+                "--exit-code-from",
+                "workspace-migrate",
+                "workspace-migrate",
+            ],
+            "workspace storage migration",
+            3600,
+        )
         run([*compose, "up", "--no-deps", "--force-recreate", "--pull", "never", "--exit-code-from", "migrate", "migrate"], "schema migration", 600)
         run([*compose, "up", "--no-deps", "--force-recreate", "--pull", "never", "--exit-code-from", "workspace-init", "workspace-init"], "workspace initialization", 180)
-        services = [name for name in config["services"] if name not in (*DATA, "migrate", "workspace-init")]
+        services = [
+            name
+            for name in config["services"]
+            if name not in (*DATA, "migrate", "workspace-migrate", "workspace-init")
+        ]
         run([*compose, "up", "-d", "--no-deps", "--pull", "never", "--wait", "--wait-timeout", "180", *services], "application startup", 240)
         verify_runtime(docker, image_ids, before)
     except BaseException:
-        if not schema_started:
+        if not migration_started:
             for name in reversed(stopped):
                 run([*docker, "start", name], "restore pre-migration admission")
         else:

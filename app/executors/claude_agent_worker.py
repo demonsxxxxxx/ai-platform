@@ -1408,7 +1408,7 @@ class ClaudeAgentWorkerAdapter:
         if not workspace_value:
             raise ValueError("sandbox_reconciliation_workspace_missing")
         prepared = PreparedSandboxFinalization(
-            workspace=Path(workspace_value),
+            workspace=Path(str(adapter_context.get("_artifact_workspace") or workspace_value)),
             allowed_skill_names=_string_list(adapter_context.get("allowed_skill_names")),
             staged_skill_names=_string_list(adapter_context.get("staged_skill_names")),
             skill_manifests=[
@@ -1659,7 +1659,7 @@ class ClaudeAgentWorkerAdapter:
 
         artifacts = self._collect_workspace_artifacts(
             payload,
-            prepared.workspace,
+            Path(str(getattr(runtime_result, "artifact_workspace_path", "") or prepared.workspace)),
             response_files=executor_response.get("response_files", []),
             response_file_descriptors=executor_response.get("response_file_descriptors"),
             allowed_skill_names=prepared.staged_skill_names,

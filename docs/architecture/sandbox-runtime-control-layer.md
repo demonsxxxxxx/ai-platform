@@ -153,16 +153,20 @@ remain inside the workspace, which preserves traversal and symlink-escape
 protection.
 
 Artifact collection never enumerates the workspace. The Agent explicitly selects
-each final deliverable with the private `attach_file` tool, and OpenSandbox
-validates and downloads only that ordered path allowlist. A selected file may be
-in an ordinary workspace directory such as `output/`, `tasks/`, `artifacts/`, or
-`review/`; inputs, platform/runtime state, debug/audit trees, native-tool scratch
-space, and platform instruction files remain excluded. An authorized Skill may
-select a file below its exact staged `output/` directory, while the rest of the
-installed Skill stays private. Missing, unknown, symlink, and non-file entries
-fail closed. The former output-directory
-write allowlist and `outputs/**/delivery/`-only collection rule are retired
-together so a permitted write cannot disappear solely because of its path.
+each final deliverable with the private `attach_file` tool. The controller derives
+the exact Attempt workspace from the authoritative lease, validates the ordered
+path allowlist through no-follow descriptors, and publishes an immutable snapshot
+outside the sandbox-mounted workspace before artifact storage reads it. OpenSandbox
+does not download response files; its remaining Files API use is limited to the
+bounded lease-sentinel control readback. A selected file may be in an ordinary
+workspace directory such as `output/`, `tasks/`, `artifacts/`, or `review/`; inputs,
+platform/runtime state, debug/audit trees, native-tool scratch space, and platform
+instruction files remain excluded. An authorized Skill may select a file below its
+exact staged `output/` directory, while the rest of the installed Skill stays
+private. Missing, unknown, symlink, and non-file entries fail closed. The former
+output-directory write allowlist and `outputs/**/delivery/`-only collection rule
+are retired together so a permitted write cannot disappear solely because of its
+path.
 
 ## Native local tool admission
 

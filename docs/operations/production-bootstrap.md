@@ -23,10 +23,12 @@ Do not put real values in Git, issue text, package archives, or command output.
 The host policy must use the private lifecycle address, the reviewed digest-bound
 OpenSandbox server, the dedicated non-root identity, the Docker socket group,
 the `ai-platform-opensandbox-egress-internal-v1` network, `runsc`, digest-bound
-execd and egress images, `dns+nft`, disabled IPv6 egress, no host bind mounts,
-and no global sandbox binds or environment injection. The lifecycle API key is
-restricted to the reviewed plain URL-safe length. The network guard must be
-installed, enabled, and active before the server unit starts.
+execd and egress images, `dns+nft`, disabled IPv6 egress, the single
+`/data/opensandbox/workspaces` Host-volume allowlist, and no global sandbox binds
+or environment injection. The application derives one exact Attempt workspace
+below that root; user, Agent and Skill input never supplies a host path. The
+lifecycle API key is restricted to the reviewed plain URL-safe length. The
+network guard must be installed, enabled, and active before the server unit starts.
 
 Maintainer host preparation retains `production_bootstrap.HostBootstrap` for
 secure configuration validation, unit rendering and host-service recovery, and

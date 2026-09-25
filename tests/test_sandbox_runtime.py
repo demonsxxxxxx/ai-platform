@@ -295,6 +295,7 @@ async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and
         ):
             assert list(response_files) == ["outputs/final.txt"]
             steps.append("collect")
+            return tmp_path / "private-artifact-snapshot"
 
         async def stop(self, lease, *, reason):
             steps.append("stop")
@@ -319,7 +320,7 @@ async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and
         release_lease=lambda *_args: steps.append("release"),
     )
 
-    await runtime.submit(
+    result = await runtime.submit(
         request(
             tenant_id="t",
             workspace_id="w",
@@ -330,6 +331,7 @@ async def test_runtime_orders_workspace_transfer_between_record_and_dispatch_and
         )
     )
 
+    assert result.artifact_workspace_path == str(tmp_path / "private-artifact-snapshot")
     assert steps == ["create", "record", "stage", "validate", "dispatch", "collect", "stop", "release"]
 
 
