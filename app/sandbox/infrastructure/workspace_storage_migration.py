@@ -180,32 +180,46 @@ def _copy_or_verify_file(source: Path, target: Path, source_node: os.stat_result
 
     if target_node is None:
         temporary_name = _file_temporary_name(target.name)
+        legacy_temporary_name = f".{target.name}{_FILE_TEMP_SUFFIX}"
         try:
-            source.with_name(temporary_name).lstat()
-        except FileNotFoundError:
-            pass
+            name_max = os.pathconf(source.parent, "PC_NAME_MAX")
         except OSError as exc:
             raise WorkspaceStorageMigrationError(
-                "workspace migration source temporary collision cannot be inspected"
+                "workspace migration source name limit cannot be inspected"
             ) from exc
-        else:
-            raise WorkspaceStorageMigrationError(
-                "workspace migration source uses a reserved temporary file name"
-            )
-        temporary = target.with_name(temporary_name)
-        try:
+        temporary_names = [temporary_name]
+        if len(os.fsencode(legacy_temporary_name)) <= name_max:
+            temporary_names.insert(0, legacy_temporary_name)
+        for candidate in temporary_names:
             try:
-                temporary_node = temporary.lstat()
+                source.with_name(candidate).lstat()
             except FileNotFoundError:
                 pass
+            except OSError as exc:
+                raise WorkspaceStorageMigrationError(
+                    "workspace migration source temporary collision cannot be inspected"
+                ) from exc
             else:
+                raise WorkspaceStorageMigrationError(
+                    "workspace migration source uses a reserved temporary file name"
+                )
+        temporary = target.with_name(temporary_name)
+        try:
+            for candidate in temporary_names:
+                stale = target.with_name(candidate)
+                try:
+                    temporary_node = stale.lstat()
+                except FileNotFoundError:
+                    continue
                 if (
                     stat.S_ISLNK(temporary_node.st_mode)
                     or not stat.S_ISREG(temporary_node.st_mode)
                     or temporary_node.st_nlink != 1
                 ):
-                    raise WorkspaceStorageMigrationError("workspace migration temporary target is invalid")
-                temporary.unlink()
+                    raise WorkspaceStorageMigrationError(
+                        "workspace migration temporary target is invalid"
+                    )
+                stale.unlink()
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
             destination = os.open(temporary, flags, 0o600)
             source_descriptor: int | None = None

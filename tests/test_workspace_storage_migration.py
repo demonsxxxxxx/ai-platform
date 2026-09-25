@@ -153,16 +153,24 @@ def test_workspace_storage_migration_rejects_source_change_after_interruption(
         migration.migrate_workspace_storage(source, target)
 
 
-def test_workspace_storage_migration_discards_stale_atomic_temp_and_resumes(tmp_path):
+@pytest.mark.parametrize(
+    "temporary_name",
+    [
+        ".state.json.ai-platform-migration-tmp",
+        migration._file_temporary_name("state.json"),
+    ],
+)
+def test_workspace_storage_migration_discards_stale_atomic_temp_and_resumes(
+    tmp_path,
+    temporary_name,
+):
     source = tmp_path / "source"
     target = tmp_path / "target"
     source.mkdir()
     _source_tree(source)
     (target / "tenants" / "tenant-a").mkdir(parents=True)
     _write_incomplete_marker(source, target)
-    stale = target / "tenants" / "tenant-a" / migration._file_temporary_name(
-        "state.json"
-    )
+    stale = target / "tenants" / "tenant-a" / temporary_name
     stale.write_text("partial", encoding="utf-8")
 
     inventory = migration.migrate_workspace_storage(source, target)
@@ -185,14 +193,21 @@ def test_workspace_storage_migration_supports_maximum_length_file_name(tmp_path)
     assert len(os.fsencode(migration._file_temporary_name(name))) < 255
 
 
+@pytest.mark.parametrize(
+    "temporary_name",
+    [
+        ".state.json.ai-platform-migration-tmp",
+        migration._file_temporary_name("state.json"),
+    ],
+)
 def test_workspace_storage_migration_preserves_source_backed_temp_name_collision(
     tmp_path,
+    temporary_name,
 ):
     source = tmp_path / "source"
     target = tmp_path / "target"
     source.mkdir()
     name = "state.json"
-    temporary_name = migration._file_temporary_name(name)
     (source / name).write_text("state", encoding="utf-8")
     (source / temporary_name).write_text("user data", encoding="utf-8")
 
