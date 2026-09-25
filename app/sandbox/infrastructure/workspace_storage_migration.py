@@ -15,6 +15,7 @@ _COMPLETE_MARKER = ".ai-platform-workspace-migration-v1.json"
 _MARKERS = frozenset({_INCOMPLETE_MARKER, _COMPLETE_MARKER})
 _MARKER_TEMP_DIRECTORY = ".ai-platform-workspace-migration-v1.tmp"
 _MARKER_TEMP_PREFIXES = tuple(f"{marker}.tmp-" for marker in _MARKERS)
+_FILE_TEMP_SUFFIX = ".ai-platform-migration-tmp"
 _CHUNK_BYTES = 1024 * 1024
 
 
@@ -163,6 +164,11 @@ def _apply_metadata(path: Path, source: os.stat_result) -> None:
         raise WorkspaceStorageMigrationError("workspace migration cannot preserve metadata") from exc
 
 
+def _file_temporary_name(name: str) -> str:
+    digest = hashlib.sha256(os.fsencode(name)).hexdigest()
+    return f".{digest}{_FILE_TEMP_SUFFIX}"
+
+
 def _copy_or_verify_file(source: Path, target: Path, source_node: os.stat_result) -> str:
     source_digest = _hash_file(source, source_node)
     try:
@@ -173,7 +179,20 @@ def _copy_or_verify_file(source: Path, target: Path, source_node: os.stat_result
         raise WorkspaceStorageMigrationError("workspace migration target is unavailable") from exc
 
     if target_node is None:
-        temporary = target.with_name(f".{target.name}.ai-platform-migration-tmp")
+        temporary_name = _file_temporary_name(target.name)
+        try:
+            source.with_name(temporary_name).lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise WorkspaceStorageMigrationError(
+                "workspace migration source temporary collision cannot be inspected"
+            ) from exc
+        else:
+            raise WorkspaceStorageMigrationError(
+                "workspace migration source uses a reserved temporary file name"
+            )
+        temporary = target.with_name(temporary_name)
         try:
             try:
                 temporary_node = temporary.lstat()
