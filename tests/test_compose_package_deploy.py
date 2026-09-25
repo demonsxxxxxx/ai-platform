@@ -115,6 +115,11 @@ def harness(tmp_path, monkeypatch):
             "workspace-init",
         )
     }}
+    config["volumes"] = {
+        "ai_platform_sandbox_workspaces": {
+            "name": "ai-platform-internal_ai_platform_sandbox_workspaces"
+        }
+    }
     for service in ("api", "worker"):
         config["services"][service]["environment"] = {
             "SANDBOX_WORKSPACE_ROOT": workspace_root,
@@ -139,7 +144,7 @@ def harness(tmp_path, monkeypatch):
     config["services"]["workspace-migrate"]["volumes"] = [
         {
             "type": "volume",
-            "source": "ai-platform-internal_ai_platform_sandbox_workspaces",
+            "source": "ai_platform_sandbox_workspaces",
             "target": "/source-workspaces",
             "read_only": True,
         },
@@ -180,6 +185,20 @@ def harness(tmp_path, monkeypatch):
     state["bridge_gateway"] = ""
     state["deploy"] = lambda offline=False, check_only=False: entry.deploy(tmp_path, env, ["docker"], offline, check_only)
     return state
+
+
+def test_internal_test_workspace_volume_identity_is_exact(harness):
+    source = harness["config"]["services"]["workspace-migrate"]["volumes"][0]
+    source["source"] = "other_workspace_volume"
+    with pytest.raises(entry.DeploymentError, match="mount topology is invalid"):
+        harness["deploy"](check_only=True)
+
+    source["source"] = "ai_platform_sandbox_workspaces"
+    harness["config"]["volumes"]["ai_platform_sandbox_workspaces"]["name"] = (
+        "other_physical_volume"
+    )
+    with pytest.raises(entry.DeploymentError, match="mount topology is invalid"):
+        harness["deploy"](check_only=True)
 
 
 def test_workspace_root_must_match_the_reviewed_profile_allowlist(harness):
