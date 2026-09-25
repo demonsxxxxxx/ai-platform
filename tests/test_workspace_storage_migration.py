@@ -153,21 +153,72 @@ def test_workspace_storage_migration_rejects_source_change_after_interruption(
         migration.migrate_workspace_storage(source, target)
 
 
-def test_workspace_storage_migration_discards_stale_atomic_temp_and_resumes(tmp_path):
+@pytest.mark.parametrize(
+    "temporary_name",
+    [
+        ".state.json.ai-platform-migration-tmp",
+        migration._file_temporary_name("state.json"),
+    ],
+)
+def test_workspace_storage_migration_discards_stale_atomic_temp_and_resumes(
+    tmp_path,
+    temporary_name,
+):
     source = tmp_path / "source"
     target = tmp_path / "target"
     source.mkdir()
     _source_tree(source)
     (target / "tenants" / "tenant-a").mkdir(parents=True)
     _write_incomplete_marker(source, target)
-    (target / "tenants" / "tenant-a" / ".state.json.ai-platform-migration-tmp").write_text(
-        "partial", encoding="utf-8"
-    )
+    stale = target / "tenants" / "tenant-a" / temporary_name
+    stale.write_text("partial", encoding="utf-8")
 
     inventory = migration.migrate_workspace_storage(source, target)
 
     assert inventory.files == 2
-    assert not (target / "tenants" / "tenant-a" / ".state.json.ai-platform-migration-tmp").exists()
+    assert not stale.exists()
+
+
+def test_workspace_storage_migration_supports_maximum_length_file_name(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    name = "x" * 255
+    (source / name).write_text("maximum component", encoding="utf-8")
+
+    inventory = migration.migrate_workspace_storage(source, target)
+
+    assert inventory.files == 1
+    assert (target / name).read_text(encoding="utf-8") == "maximum component"
+    assert len(os.fsencode(migration._file_temporary_name(name))) < 255
+
+
+@pytest.mark.parametrize(
+    "temporary_name",
+    [
+        ".state.json.ai-platform-migration-tmp",
+        migration._file_temporary_name("state.json"),
+    ],
+)
+def test_workspace_storage_migration_preserves_source_backed_temp_name_collision(
+    tmp_path,
+    temporary_name,
+):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    name = "state.json"
+    (source / name).write_text("state", encoding="utf-8")
+    (source / temporary_name).write_text("user data", encoding="utf-8")
+
+    with pytest.raises(
+        migration.WorkspaceStorageMigrationError,
+        match="reserved temporary file name",
+    ):
+        migration.migrate_workspace_storage(source, target)
+
+    assert (target / temporary_name).read_text(encoding="utf-8") == "user data"
+    assert not (target / name).exists()
 
 
 def test_workspace_storage_migration_allows_target_growth_after_cutover(tmp_path):
