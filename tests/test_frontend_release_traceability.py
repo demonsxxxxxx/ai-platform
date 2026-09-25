@@ -604,7 +604,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
 
     assert f"FROM {node_base} AS build" in dockerfile
     assert "apk add" not in dockerfile
-    security_upgrade = "RUN apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid"
+    security_upgrade = "RUN apk upgrade --no-cache libcrypto3 'libexpat>=2.8.5-r0' libssl3 libuuid"
     assert [
         line
         for line in runtime_dockerfile.splitlines()
