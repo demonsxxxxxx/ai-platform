@@ -107,6 +107,26 @@ def test_pin_data_images_does_not_retry_after_total_pull_budget(monkeypatch):
     assert pulls == [["docker", "pull", "--platform", "linux/amd64", DATA_IMAGES["postgres"]]]
 
 
+def test_minio_release_input_preserves_runtime_compatibility():
+    import yaml
+
+    compose_text = (ROOT / "deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
+    minio = yaml.safe_load(compose_text)["services"]["minio"]
+
+    assert DATA_IMAGES["minio"] == "bitnamilegacy/minio:2025.4.22-debian-12-r1"
+    assert minio["image"] == DATA_IMAGES["minio"]
+    assert minio["user"] == "0:0"
+    assert minio["command"] == ["server", "/data", "--console-address", ":9001"]
+    assert minio["volumes"] == ["ai_platform_minio:/data"]
+    assert minio["healthcheck"] == {
+        "test": ["CMD", "mc", "ready", "local"],
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 10,
+    }
+    assert "quay.io/minio/minio" not in compose_text
+
+
 @pytest.mark.parametrize("profile", ["internal-test", "production"])
 def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path, profile):
     import tarfile
@@ -133,6 +153,11 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
         assert base["services"]["frontend"]["image"] == images["frontend"]["immutable_ref"]
         for service, reference in data_images.items():
             assert base["services"][service]["image"] == reference
+        minio = base["services"]["minio"]
+        assert minio["user"] == "0:0"
+        assert minio["command"] == ["server", "/data", "--console-address", ":9001"]
+        assert minio["volumes"] == ["ai_platform_minio:/data"]
+        assert minio["healthcheck"]["test"] == ["CMD", "mc", "ready", "local"]
         for service in ("api", "worker"):
             env = overlay["services"][service]["environment"]
             assert env["OPENSANDBOX_EXECUTOR_IMAGE"] == images["backend"]["immutable_ref"]
