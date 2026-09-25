@@ -33,7 +33,7 @@ PACKAGE_OMITTED_ENV_KEYS = {
 DATA_IMAGES = {
     "postgres": "postgres:16-alpine",
     "redis": "redis:7-alpine",
-    "minio": "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z",
+    "minio": "bitnamilegacy/minio:2025.4.22-debian-12-r1",
 }
 DATA_IMAGE_PULL_ATTEMPTS = 3
 # Keep retries within the former single-pull timeout for each image.
