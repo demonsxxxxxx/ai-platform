@@ -262,10 +262,19 @@ def validate_workspace_storage(config: dict, docker: list[str]) -> Path:
     source_mount = mount("workspace-migrate", "/source-workspaces")
     source_type = source_mount.get("type")
     source_path: Path | None = None
+    volumes = config.get("volumes")
+    workspace_volume = (
+        volumes.get("ai_platform_sandbox_workspaces")
+        if isinstance(volumes, dict)
+        else None
+    )
     source_is_valid = (
         security_profile == "internal-test"
         and source_type == "volume"
-        and source_mount.get("source") == f"{PROJECT}_ai_platform_sandbox_workspaces"
+        and source_mount.get("source") == "ai_platform_sandbox_workspaces"
+        and isinstance(workspace_volume, dict)
+        and workspace_volume.get("name")
+        == f"{PROJECT}_ai_platform_sandbox_workspaces"
     )
     if source_type == "bind":
         source_path = Path(str(source_mount.get("source") or ""))
