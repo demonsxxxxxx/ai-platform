@@ -30,8 +30,21 @@ requires_secure_opensandbox_transfer = pytest.mark.skipif(
 )
 
 
+_PLATFORM_PATH = type(Path.cwd())
+_NATIVE_POSIX = os.name == "posix"
+_TEST_RUNTIME_ROOT = _PLATFORM_PATH("/runtime")
+
+
 @pytest.fixture(autouse=True)
-def fixed_runtime_identity_test_seams(monkeypatch, request):
+def fixed_runtime_identity_test_seams(monkeypatch, request, tmp_path):
+    global _TEST_RUNTIME_ROOT
+
+    if _NATIVE_POSIX:
+        _TEST_RUNTIME_ROOT = _PLATFORM_PATH(tmp_path) / "runtime"
+        _TEST_RUNTIME_ROOT.mkdir()
+    else:
+        _TEST_RUNTIME_ROOT = _PLATFORM_PATH("/runtime")
+    monkeypatch.setattr(OpenSandboxSettings, "sandbox_workspace_root", str(_TEST_RUNTIME_ROOT))
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     stat_result = type(
         "RuntimeWorkspaceStat",
@@ -100,25 +113,53 @@ def request(**overrides) -> SandboxRuntimeRequest:
 
 def workspace(**overrides) -> WorkspaceLease:
     prepare_staged_skills = bool(overrides.pop("prepare_staged_skills", True))
+    attempt = (
+        _TEST_RUNTIME_ROOT
+        / "tenants"
+        / "tenant-a"
+        / "workspaces"
+        / "workspace-a"
+        / "users"
+        / "user-a"
+        / "sessions"
+        / "session-a"
+        / "runs"
+        / "run-a"
+        / "attempts"
+        / "qat-test-attempt"
+    )
     values = {
         "tenant_id": "tenant-a",
         "workspace_id": "workspace-a",
         "user_id": "user-a",
         "session_id": "session-a",
         "run_id": "run-a",
-        "host_root": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/qat-test-attempt",
-        "workspace_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/qat-test-attempt/workspace",
+        "host_root": str(attempt),
+        "workspace_host_path": str(attempt / "workspace"),
         "workspace_container_path": "/workspace",
-        "inputs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/qat-test-attempt/workspace/inputs",
-        "logs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/qat-test-attempt/logs",
+        "inputs_host_path": str(attempt / "workspace" / "inputs"),
+        "logs_host_path": str(attempt / "logs"),
     }
     values.update(overrides)
+    for key in ("host_root", "workspace_host_path", "inputs_host_path", "logs_host_path"):
+        value = str(values[key])
+        if _NATIVE_POSIX and (value == "/runtime" or value.startswith("/runtime/")):
+            values[key] = str(_TEST_RUNTIME_ROOT) + value[len("/runtime") :]
     if "workspace_host_path" in overrides and "host_root" not in overrides:
-        workspace_path = Path(values["workspace_host_path"])
+        workspace_path = _PLATFORM_PATH(values["workspace_host_path"])
         values["host_root"] = str(workspace_path.parent)
         values["inputs_host_path"] = str(workspace_path / "inputs")
         values["logs_host_path"] = str(workspace_path.parent / "logs")
-    workspace_path = Path(values["workspace_host_path"])
+    workspace_path = _PLATFORM_PATH(values["workspace_host_path"])
+    if _NATIVE_POSIX:
+        try:
+            workspace_path.relative_to(_TEST_RUNTIME_ROOT)
+        except ValueError:
+            pass
+        else:
+            workspace_path.mkdir(parents=True, exist_ok=True)
+            _PLATFORM_PATH(values["inputs_host_path"]).mkdir(parents=True, exist_ok=True)
+            _PLATFORM_PATH(values["logs_host_path"]).mkdir(parents=True, exist_ok=True)
     if prepare_staged_skills and workspace_path.is_dir():
         (workspace_path / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
     return WorkspaceLease(**values)
@@ -1384,7 +1425,12 @@ async def test_opensandbox_collect_snapshots_shared_response_without_remote_tran
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     monkeypatch.setattr(container_provider, "RUNTIME_UID", os.getuid())
     monkeypatch.setattr(container_provider, "RUNTIME_GID", os.getgid())
-    provider = opensandbox_provider()
+    provider = opensandbox_provider(
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: {
+            "uid": os.getuid(),
+            "gid": os.getgid(),
+        }
+    )
     lease = await provider.create_or_reuse(runtime_request, leased_workspace)
     remote_files = FakeOpenSandbox.instances[lease.container_id].files
     remote_files.get_file_info = lambda *_args, **_kwargs: (_ for _ in ()).throw(
