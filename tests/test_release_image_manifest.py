@@ -153,6 +153,11 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
         assert base["services"]["frontend"]["image"] == images["frontend"]["immutable_ref"]
         for service, reference in data_images.items():
             assert base["services"][service]["image"] == reference
+        minio = base["services"]["minio"]
+        assert minio["user"] == "0:0"
+        assert minio["command"] == ["server", "/data", "--console-address", ":9001"]
+        assert minio["volumes"] == ["ai_platform_minio:/data"]
+        assert minio["healthcheck"]["test"] == ["CMD", "mc", "ready", "local"]
         for service in ("api", "worker"):
             env = overlay["services"][service]["environment"]
             assert env["OPENSANDBOX_EXECUTOR_IMAGE"] == images["backend"]["immutable_ref"]
