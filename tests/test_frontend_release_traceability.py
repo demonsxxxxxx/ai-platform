@@ -604,12 +604,22 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
 
     assert f"FROM {node_base} AS build" in dockerfile
     assert "apk add" not in dockerfile
-    security_upgrade = "RUN apk upgrade --no-cache libcrypto3 'libexpat>=2.8.5-r0' libssl3 libuuid"
+    security_upgrade = (
+        "RUN apk update \\\n"
+        "    && apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid \\\n"
+        '    && installed="$(apk list --installed libexpat)" \\\n'
+        '    && installed="${installed%% *}" \\\n'
+        '    && installed="${installed#libexpat-}" \\\n'
+        '    && test -n "$installed" \\\n'
+        '    && test "$(apk version -t "$installed" 2.8.5-r0)" != "<" \\\n'
+        "    && rm -rf /var/cache/apk/*"
+    )
+    assert security_upgrade in runtime_dockerfile
     assert [
         line
         for line in runtime_dockerfile.splitlines()
-        if line.startswith("RUN apk upgrade ")
-    ] == [security_upgrade]
+        if line.startswith("RUN apk ")
+    ] == ["RUN apk update \\"]
     assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in dockerfile
     assert "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}" in dockerfile
     assert "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
