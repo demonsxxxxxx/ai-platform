@@ -3870,6 +3870,58 @@ def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runne
     assert str(tmp_path) not in str(body)
 
 
+@pytest.mark.parametrize(
+    ("terminal_hook_seen", "expected_error"),
+    [
+        (False, "mcp_execution_outcome_unknown"),
+        (True, "mcp_execution_succeeded_receipt_incomplete"),
+    ],
+)
+def test_executor_deadline_preserves_mcp_execution_uncertainty(
+    tmp_path, terminal_hook_seen, expected_error
+):
+    payload = task_payload()
+    payload["config"]["resource_limits"] = {"max_seconds": 0.1}
+
+    async def executor_runner(request, workspace_root, emit_event):
+        lifecycles = [("started", "invoking")]
+        if terminal_hook_seen:
+            lifecycles.append(("completed", "completed"))
+        for lifecycle, public_status in lifecycles:
+            accepted = await emit_event(executor_app._PrivateExecutionFact(
+                fact={
+                    "invocation_id": "synthetic-mcp-call",
+                    "tool_name": "MCP",
+                    "lifecycle": lifecycle,
+                    "safe_label": "Selected tool",
+                },
+                public_event=AgentEvent(
+                    type=f"capability_{public_status}",
+                    message="Capability lifecycle update",
+                    payload={"capability": {
+                        "kind": "mcp", "name": "Selected tool", "status": public_status,
+                    }},
+                ),
+            ))
+            assert accepted is True
+        await asyncio.Event().wait()
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=lambda url, value, token: callback_ack(value),
+        executor_runner=executor_runner,
+    )
+
+    response = client.post("/v2/tasks", json=payload, headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == expected_error
+    assert response.json()["error_message"] == (
+        "MCP execution outcome requires reconciliation before retry"
+    )
+
+
 @pytest.mark.asyncio
 async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_response(tmp_path):
     callbacks = []

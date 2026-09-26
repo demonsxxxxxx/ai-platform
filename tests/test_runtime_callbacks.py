@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import repositories
@@ -213,13 +214,15 @@ async def test_current_runtime_lease_query_locks_only_the_exact_attempt():
 
     assert rows == [{"id": "lease-attempt-b"}]
     query, parameters = observed[0]
-    assert "lease_payload_json ->> 'attempt_id' = %s" in query
-    assert "status = 'active'" in query and "for update" in query
+    assert "sandbox_leases.lease_payload_json ->> 'attempt_id' = %s" in query
+    assert "sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text" in query
+    assert "run_attempts.status in ('running', 'cancel_requested')" in query
+    assert "sandbox_leases.status = 'active'" in query and "for update of sandbox_leases, run_attempts" in query
     assert parameters == ("tenant-a", "run-a", "attempt-b")
 
 
 @pytest.mark.asyncio
-async def test_runtime_callback_locks_exact_attempt_before_run(monkeypatch):
+async def test_runtime_callback_locks_run_before_exact_attempt(monkeypatch):
     from app.routes import runtime_callbacks
 
     calls = []
@@ -252,12 +255,13 @@ async def test_runtime_callback_locks_exact_attempt_before_run(monkeypatch):
         object(),
         run_id="run-a",
         attempt_id="attempt-a",
+        callback_token_id="cbt:run-a:attempt-a",
         session_id="session-a",
     )
 
     assert locked_run["tenant_id"] == "tenant-a"
     assert lease["attempt_id"] == "attempt-a"
-    assert calls == ["run_read", "lease_lock", "run_lock"]
+    assert calls == ["run_read", "run_lock", "lease_lock"]
 
 
 def test_executor_callback_rejects_duplicate_exact_attempt_leases(monkeypatch):
@@ -411,6 +415,62 @@ def test_callback_token_id_rotates_for_each_exact_attempt():
     assert second == "cbt:run-a:attempt-b"
     assert first != second
     assert derived_callback_token("secret", first) != derived_callback_token("secret", second)
+
+
+def test_callback_token_id_rotates_on_attempt_owner_generation(monkeypatch):
+    from app.routes import runtime_callbacks
+
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    first = callback_token_id_for_binding(
+        CallbackTokenBinding(run_id="run-a", attempt_id="attempt-a", owner_generation=1)
+    )
+    second = callback_token_id_for_binding(
+        CallbackTokenBinding(run_id="run-a", attempt_id="attempt-a", owner_generation=2)
+    )
+
+    assert first != second
+    runtime_callbacks._require_valid_callback_token(
+        derived_callback_token("secret", first), first,
+        run_id="run-a", attempt_id="attempt-a",
+    )
+    with pytest.raises(HTTPException) as caught:
+        runtime_callbacks._require_valid_callback_token(
+            derived_callback_token("secret", second), second,
+            run_id="run-a", attempt_id="attempt-b",
+        )
+    assert caught.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_callback_rejects_previous_generation_token_for_current_lease(monkeypatch):
+    from app.routes import runtime_callbacks
+
+    current_token_id = callback_token_id_for_binding(
+        CallbackTokenBinding(run_id="run-a", attempt_id="attempt-a", owner_generation=2)
+    )
+
+    async def current_lease(_conn, *, tenant_id, run_id, attempt_id):
+        return [{
+            "attempt_id": attempt_id,
+            "lease_payload_json": {
+                "attempt_id": attempt_id,
+                "owner_generation": 2,
+                "callback_token_id": current_token_id,
+            },
+        }]
+
+    monkeypatch.setattr(
+        runtime_callbacks.repositories,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        current_lease,
+    )
+    with pytest.raises(HTTPException) as caught:
+        await runtime_callbacks._require_current_runtime_attempt(
+            object(), tenant_id="tenant-a", run_id="run-a",
+            attempt_id="attempt-a", callback_token_id="cbt:run-a:attempt-a:g1",
+        )
+    assert caught.value.status_code == 409
+    assert caught.value.detail == "sandbox_runtime_owner_generation_stale"
 
 
 def test_executor_callback_rejects_stale_attempt_before_event_action(monkeypatch):

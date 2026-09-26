@@ -2994,9 +2994,9 @@ async def run_claude_agent_sdk(
                 )
             elif identity.startswith("mcp__") and identity in authorized_subjects:
                 execution_key = (identity, call_id)
-                if mcp_execution_states and execution_key not in mcp_execution_states:
+                if execution_key not in mcp_execution_states:
                     mcp_execution_conflicted = True
-                elif execution_key in mcp_execution_states:
+                else:
                     mcp_execution_states[execution_key] = lifecycle_phase
                 evidence_acknowledged = await record_capability_evidence(
                     capability_kind="mcp",
@@ -3278,10 +3278,10 @@ async def run_claude_agent_sdk(
         )
 
     def mcp_execution_receipt_error() -> str | None:
-        if not mcp_execution_states:
-            return None
         if mcp_execution_conflict_observed():
             return MCP_EXECUTION_OUTCOME_UNKNOWN
+        if not mcp_execution_states:
+            return None
         if all(state == "completed" for state in mcp_execution_states.values()):
             return MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE
         return MCP_EXECUTION_OUTCOME_UNKNOWN
@@ -3399,7 +3399,7 @@ async def run_claude_agent_sdk(
             if isinstance(message, MirrorErrorMessage):
                 answer_stream_gate.finish(final_text="", release=False)
                 seal_agent_candidates("provider_session_mirror_error")
-                error_code = _SDK_PROVIDER_SESSION_FAILED
+                error_code = mcp_execution_receipt_error() or _SDK_PROVIDER_SESSION_FAILED
                 return ClaudeAgentSdkRunResult(
                     used_sdk=True,
                     message="",
@@ -3519,7 +3519,7 @@ async def run_claude_agent_sdk(
                         or getattr(message, "subtype", "")
                         or "claude_agent_sdk_error"
                     )
-                    error_code = _canonical_sdk_error(
+                    error_code = mcp_execution_receipt_error() or _canonical_sdk_error(
                         raw_error,
                         result_subtype=getattr(message, "subtype", ""),
                         stop_reason=getattr(message, "stop_reason", ""),
@@ -3569,6 +3569,9 @@ async def run_claude_agent_sdk(
                 if abnormal_terminal_error is not None:
                     answer_stream_gate.finish(final_text="", release=False)
                     seal_agent_candidates("abnormal_terminal")
+                    abnormal_terminal_error = (
+                        mcp_execution_receipt_error() or abnormal_terminal_error
+                    )
                     return ClaudeAgentSdkRunResult(
                         used_sdk=True,
                         message="",
@@ -3597,7 +3600,7 @@ async def run_claude_agent_sdk(
 
                     answer_stream_gate.finish(final_text="", release=False)
                     seal_agent_candidates("provider_session_append_not_acknowledged")
-                    error_code = _SDK_PROVIDER_SESSION_FAILED
+                    error_code = mcp_execution_receipt_error() or _SDK_PROVIDER_SESSION_FAILED
                     return ClaudeAgentSdkRunResult(
                         used_sdk=True,
                         message="",
@@ -3632,23 +3635,25 @@ async def run_claude_agent_sdk(
                 except (KeyError, ValueError):
                     answer_stream_gate.finish(final_text="", release=False)
                     seal_agent_candidates("attached_file_invalid")
+                    error_code = (
+                        mcp_execution_receipt_error()
+                        or _SDK_DELIVERY_MANIFEST_INVALID
+                    )
                     return ClaudeAgentSdkRunResult(
                         used_sdk=True,
                         message="",
                         session_id=result_session_id,
                         usage=usage,
-                        error=_SDK_DELIVERY_MANIFEST_INVALID,
+                        error=error_code,
                         terminal_reason=resolved_terminal_reason,
                         received_structured_terminal=False,
                         used_skills=list(used_skill_names),
                         used_skills_source=(
                             "executor_hook" if used_skill_names else ""
                         ),
-                        turn_diagnostics=turn_diagnostics(
-                            _SDK_DELIVERY_MANIFEST_INVALID
-                        ),
+                        turn_diagnostics=turn_diagnostics(error_code),
                         runtime_diagnostics=runtime_diagnostics(
-                            _SDK_DELIVERY_MANIFEST_INVALID,
+                            error_code,
                             failure_source="sdk_attached_file",
                             result_subtype=getattr(message, "subtype", None),
                             stop_reason=getattr(message, "stop_reason", None),
@@ -3741,6 +3746,7 @@ async def run_claude_agent_sdk(
                     or "agent_event_callback_not_acknowledged"
                 )
         if terminal_error is not None:
+            terminal_error = mcp_execution_receipt_error() or terminal_error
             seal_agent_candidates(terminal_error)
         answer_receipt = (
             agent_event_adapter.answer_receipt
@@ -3832,7 +3838,7 @@ async def run_claude_agent_sdk(
             pass
         except Exception:  # noqa: BLE001
             pass
-        error_code = _SDK_TIMEOUT
+        error_code = mcp_execution_receipt_error() or _SDK_TIMEOUT
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             message="",
@@ -3851,7 +3857,7 @@ async def run_claude_agent_sdk(
         )
     except Exception as exc:  # noqa: BLE001
         seal_agent_candidates("exception")
-        error_code = _canonical_sdk_error(
+        error_code = mcp_execution_receipt_error() or _canonical_sdk_error(
             exc,
             selected_skill_error=skill_hook_error(),
             tool_admission_denials=diagnostic_counters["tool_admission_denials"],

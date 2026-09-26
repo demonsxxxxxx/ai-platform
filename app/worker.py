@@ -61,6 +61,9 @@ from app.execution.api import (
     time,
     with_locked_run_model_snapshot as _with_locked_run_model_snapshot,
     worker_child_terminal_progress as _reconcile_multi_agent_child_terminal_state,
+    WorkerRuntimeSandboxLease as _WorkerRuntimeSandboxLease,
+    create_worker_runtime_sandbox_lease as _create_worker_runtime_sandbox_lease,
+    release_worker_runtime_sandbox_lease as _release_worker_runtime_sandbox_lease,
 )
 from app.execution_boundary import (
     decide_worker_execution_boundary as _worker_execution_boundary_decision,
@@ -164,14 +167,6 @@ class _WorkerTerminalAfterTransaction:
     outcome: WorkerOutcome
     payload: QueueRunPayload
     reconciled_parent: Any | None
-
-
-@dataclass(frozen=True)
-class _WorkerRuntimeSandboxLease:
-    lease_id: str
-    tenant_id: str
-    user_id: str
-    run_id: str
 
 
 @dataclass(frozen=True)
@@ -1795,66 +1790,6 @@ def _result_prefers_cancelled_after_failure(result: ExecutorResult) -> bool:
     return sandbox_provider in {"docker", "opensandbox"} and runtime_terminal_status in {"cancelled", "canceled"}
 
 
-async def _create_worker_runtime_sandbox_lease(
-    conn,
-    *,
-    payload: QueueRunPayload,
-    run_identity: dict[str, str],
-    trace_id: str,
-    attempt_id: str,
-    worker_id: str | None,
-) -> _WorkerRuntimeSandboxLease:
-    lease_payload = {
-        "source": "sdk_only_lifecycle_placeholder",
-        "evidence_class": "sdk_only_lifecycle_placeholder",
-        "executor_type": payload.executor_type,
-        "attempt_id": attempt_id,
-    }
-    if worker_id:
-        lease_payload["worker_id"] = worker_id
-    row = await sandbox_lease_repository.create_sandbox_lease(
-        conn,
-        tenant_id=run_identity["tenant_id"],
-        workspace_id=run_identity["workspace_id"],
-        user_id=run_identity["user_id"],
-        session_id=run_identity["session_id"],
-        run_id=run_identity["run_id"],
-        attempt_id=attempt_id,
-        trace_id=trace_id,
-        sandbox_mode="ephemeral",
-        provider="fake",
-        browser_enabled=False,
-        ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
-        resource_limits_json={},
-        user_visible_payload_json={"workspace": "/workspace", "inputs": "/workspace/inputs"},
-        lease_payload_json=lease_payload,
-    )
-    return _WorkerRuntimeSandboxLease(
-        lease_id=str(row["id"]),
-        tenant_id=run_identity["tenant_id"],
-        user_id=run_identity["user_id"],
-        run_id=run_identity["run_id"],
-    )
-
-
-async def _release_worker_runtime_sandbox_lease(
-    conn,
-    lease: _WorkerRuntimeSandboxLease | None,
-    *,
-    reason: str,
-) -> None:
-    if lease is None:
-        return
-    await sandbox_lease_repository.release_sandbox_lease(
-        conn,
-        tenant_id=lease.tenant_id,
-        user_id=lease.user_id,
-        run_id=lease.run_id,
-        lease_id=lease.lease_id,
-        reason=reason,
-    )
-
-
 def _has_context_snapshot(payload: QueueRunPayload) -> bool:
     return bool(payload.context_snapshot_id)
 
@@ -2379,7 +2314,14 @@ async def process_run_payload(
                     is_multi_agent_child=_locked_run_is_multi_agent_child(locked),
                 )
                 return terminal_after_transaction.outcome
-            await attempt_lifecycle.bind_execution_spec(conn, execution_spec)
+            bound_attempt = await attempt_lifecycle.bind_execution_spec(conn, execution_spec)
+            if reconciliation is None:
+                if bound_attempt is None:
+                    raise repositories.RepositoryConflictError("run_attempt_binding_missing")
+                run_payload = replace(
+                    run_payload,
+                    owner_generation=int(bound_attempt["owner_generation"]),
+                )
             await append_user_event(
                 conn,
                 tenant_id=run_identity["tenant_id"],
@@ -2398,11 +2340,14 @@ async def process_run_payload(
             ):
                 runtime_sandbox_lease = await _create_worker_runtime_sandbox_lease(
                     conn,
-                    payload=payload,
+                    executor_type=payload.executor_type,
                     run_identity=run_identity,
                     trace_id=trace_id,
                     attempt_id=attempt_id,
+                    owner_generation=run_payload.owner_generation,
                     worker_id=worker_id,
+                    ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
+                    create_lease=sandbox_lease_repository.create_sandbox_lease,
                 )
     finally:
         if terminal_after_transaction is not None:
@@ -2450,7 +2395,12 @@ async def process_run_payload(
             return
         if runtime_sandbox_lease is None or runtime_sandbox_lease_released:
             return
-        await _release_worker_runtime_sandbox_lease(conn, runtime_sandbox_lease, reason=reason)
+        await _release_worker_runtime_sandbox_lease(
+            conn,
+            runtime_sandbox_lease,
+            reason=reason,
+            release_lease=sandbox_lease_repository.release_sandbox_lease,
+        )
         runtime_sandbox_lease_released = True
 
     async def cleanup_runtime_sandbox_lease_after_interruption() -> None:

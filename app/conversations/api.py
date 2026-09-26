@@ -1,5 +1,8 @@
 """Conversations public in-process contracts."""
 
+from app.conversations.application.queue_admission import (
+    attempt_chat_queue_admission as attempt_chat_queue_admission,
+)
 from app.conversations.application.submission_resolution import (
     normalize_submission_run_status as normalize_submission_run_status,
 )

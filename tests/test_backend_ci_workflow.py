@@ -56,6 +56,7 @@ BACKEND_TEST_SHARDS = {
     "sandbox-runtime": (
         "tests/test_claude_agent_sdk_installed_contract.py",
         "tests/test_claude_agent_sdk_runner.py",
+        "tests/test_claude_mcp_registration.py",
         "tests/test_claude_agent_worker_adapter.py",
         "tests/test_claude_agent_worker_file_continuity.py",
         "tests/test_context_file_content.py",
@@ -68,6 +69,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sandbox_executor_app.py",
         "tests/test_settings.py",
         "tests/test_sandbox_container_provider.py",
+        "tests/test_sandbox_creation_claim.py",
         "tests/test_opensandbox_live_credential_isolation.py",
         "tests/test_opensandbox_client_ca.py",
         "tests/test_sandbox_runtime.py",
@@ -277,7 +279,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 90
+    assert len(all_selectors) == len(set(all_selectors)) == 92
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

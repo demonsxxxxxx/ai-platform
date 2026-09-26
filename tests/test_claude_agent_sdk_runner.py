@@ -2731,6 +2731,77 @@ async def test_sdk_completed_mcp_keeps_receipt_error_on_late_publication_failure
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_hook", "expected_error"),
+    [
+        ("PostToolUse", "mcp_execution_succeeded_receipt_incomplete"),
+        (None, "mcp_execution_outcome_unknown"),
+    ],
+)
+async def test_sdk_error_after_mcp_admission_requires_reconciliation(
+    monkeypatch, tmp_path, terminal_hook, expected_error
+):
+    captured = {}
+    subject = _subject()
+    subject["write_capable"] = True
+    steps = _mcp_hook_steps(subject)
+    if terminal_hook is None:
+        steps = steps[:1]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, steps, result_error="synthetic upstream error"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert result.error == expected_error
+    assert result.turn_diagnostics["action"] == "reconcile_before_retry"
+    assert result.turn_diagnostics["retryable"] is False
+    assert result.runtime_diagnostics["error_code"] == expected_error
+
+
+@pytest.mark.asyncio
+async def test_sdk_first_mcp_terminal_without_admission_is_outcome_unknown(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    subject = _subject()
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(captured, _mcp_hook_steps(subject)[1:]),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="search",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    assert result.error == "mcp_execution_outcome_unknown"
+    assert result.turn_diagnostics["retryable"] is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["completed_then_unmatched", "owner_conflict"])
 async def test_sdk_unmatched_mcp_terminal_is_outcome_unknown(
     monkeypatch, tmp_path, case
@@ -2951,6 +3022,8 @@ async def test_sdk_actual_mcp_streams_public_text_without_waiting_for_receipt(
             "exception": "mcp_execution_succeeded_receipt_incomplete",
             "failed": "mcp_execution_outcome_unknown",
             "incomplete": "mcp_execution_outcome_unknown",
+            "missing": "mcp_execution_outcome_unknown",
+            "stale": "mcp_execution_outcome_unknown",
             "duplicate": "mcp_execution_succeeded_receipt_incomplete",
             "multiple_failed": "mcp_execution_outcome_unknown",
         }.get(outcome, "required_tool_completion_evidence_mismatch")

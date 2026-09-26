@@ -214,6 +214,7 @@ class RunPayload:
     skill_id: str | None
     file_ids: list[str]
     input: dict[str, Any]
+    owner_generation: int = 1
     execution_kind: str = RUN_EXECUTION_KIND_SKILL
     trace_id: str = ""
     skill_version: str = ""
@@ -232,6 +233,8 @@ class RunPayload:
 
     def __post_init__(self) -> None:
         assert_safe_id(self.attempt_id, "attempt_id")
+        if type(self.owner_generation) is not int or self.owner_generation < 1:
+            raise ValueError("run_payload_owner_generation_invalid")
         if self.schema_version not in SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS:
             raise ValueError("run_payload_schema_version_invalid")
         if self.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:

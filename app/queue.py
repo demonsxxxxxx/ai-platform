@@ -1188,6 +1188,12 @@ class QueueAdmissionRejected(ValueError):
     """A deterministic local rejection that occurs before Redis admission begins."""
 
 
+def is_definitive_chat_queue_rejection(error: Exception) -> bool:
+    """Only an invalid immutable payload proves no queue admission occurred."""
+
+    return isinstance(error, QueueAdmissionRejected) and str(error) == "queue_payload_invalid"
+
+
 async def get_redis() -> RedisClientHandle:
     return get_redis_client()
 
@@ -2197,24 +2203,25 @@ async def _lease_run_with_quota(
         return None
 
     window_size = max(int(lease_scan_limit), 1)
-    fairness_horizon = min(queued_depth, max(window_size * 4, window_size))
     scanned = 0
-    while scanned < fairness_horizon:
-        end_index = queued_depth - scanned - 1
-        if end_index < 0:
-            break
-        min_index = max(queued_depth - fairness_horizon, 0)
-        scan_start = max(end_index - window_size + 1, min_index)
+    # The list and queued_order share oldest-first order. Check every older
+    # candidate before a newer one, including when quota-blocked entries span
+    # more than one batch. A fixed tail horizon can starve an eligible Run
+    # indefinitely while new submissions keep arriving.
+    while scanned < queued_depth:
+        scan_start = scanned
+        end_index = min(scanned + window_size - 1, queued_depth - 1)
         queued_items = await redis.lrange(keys.queued, scan_start, end_index)
         if not queued_items:
             break
-        for raw_index, raw in reversed(list(enumerate(queued_items))):
+        restart_after_removal = False
+        for raw_index, raw in enumerate(queued_items):
             absolute_index = scan_start + raw_index
             message_id = message_id_for_raw(raw)
             try:
                 payload_model = QueueRunPayload.model_validate_json(raw)
             except Exception as exc:
-                await _dead_letter_invalid_queued_payload_atomic(
+                removal = await _dead_letter_invalid_queued_payload_atomic(
                     redis,
                     keys,
                     raw=raw,
@@ -2224,6 +2231,12 @@ async def _lease_run_with_quota(
                     absolute_index=absolute_index,
                     error_message=str(exc),
                 )
+                if str(removal.get("status") or "") == "dead_lettered":
+                    # Later indexes in this LRANGE snapshot shifted. Re-read
+                    # the same position rather than skipping the next Run.
+                    queued_depth = int(await redis.llen(keys.queued))
+                    restart_after_removal = True
+                    break
                 continue
 
             attempt_id = _new_lease_secret("qat")
@@ -2291,7 +2304,9 @@ async def _lease_run_with_quota(
                 leased_at=float(leased_at),
                 delivery_attempt=attempts,
             )
-        scanned += end_index - scan_start + 1
+        if restart_after_removal:
+            continue
+        scanned += len(queued_items)
     return None
 
 

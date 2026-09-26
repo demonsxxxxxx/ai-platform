@@ -100,6 +100,7 @@ async def get_run_connection(
           and run_attempts.execution_spec_json->>'model_max_input_tokens' = runs.max_input_tokens::text
           and run_attempts.execution_spec_json->>'model_max_output_tokens' = runs.max_output_tokens::text
           and sandbox_leases.attempt_id = %s
+          and sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text
           and runs.model_value = %s
           and runs.status in ('queued', 'running')
           and sandbox_leases.status = 'active'

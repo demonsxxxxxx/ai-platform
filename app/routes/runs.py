@@ -30,6 +30,7 @@ from app.runs.api import (
     inherit_run_model,
     public_run_outcome,
     run_retry_block_reason,
+    run_unconfirmed_execution_block_reason,
 )
 from app.product_events import initial_run_event_specs
 from app.queue_payload_validation import queue_payload_invalid_detail
@@ -386,13 +387,17 @@ def run_resume_manifest_snapshot(
         "failed": sum(1 for item in manifest_steps if item["status"] == "failed"),
         "cancelled": sum(1 for item in manifest_steps if item["status"] == "cancelled"),
     }
-    resume_enabled = counts["reuse_pending"] > 0
+    resume_block_reason = run_unconfirmed_execution_block_reason(run.get("error_code"))
+    resume_enabled = counts["reuse_pending"] > 0 and resume_block_reason is None
     return {
         "contract_version": RUN_RESUME_MANIFEST_CONTRACT_VERSION,
         "run": run_playback_summary(run, principal),
         "source_run_id": source_run_id,
         "resume_enabled": resume_enabled,
-        "reason": "reuse_pending" if resume_enabled else "no_reuse_pending",
+        "reason": (
+            resume_block_reason
+            or ("reuse_pending" if resume_enabled else "no_reuse_pending")
+        ),
         "counts": counts,
         "steps": manifest_steps,
     }
@@ -1151,18 +1156,31 @@ async def create_run(
     try:
         await enqueue_run(queue_payload)
     except Exception as exc:
-        await _compensate_enqueue_failure(
-            principal=principal,
+        if isinstance(exc, QueueAdmissionRejected) and str(exc) in {
+            "queue_payload_invalid",
+            "run_reconciliation_in_progress",
+        }:
+            await _compensate_enqueue_failure(
+                principal=principal,
+                run_id=run_id,
+                v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
+                diagnostic_error=exc,
+                run_diagnostics=getattr(
+                    http_request.app.state,
+                    "run_diagnostics_service",
+                    None,
+                ),
+            )
+            raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+        try:
+            admission = await read_queue_admission(queue_payload)
+        except Exception:
+            admission = None
+        return CreateRunResponse(
             run_id=run_id,
-            v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
-            diagnostic_error=exc,
-            run_diagnostics=getattr(
-                http_request.app.state,
-                "run_diagnostics_service",
-                None,
-            ),
+            session_id=session_id,
+            status="queued" if admission is not None else "accepted_pending_enqueue",
         )
-        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return CreateRunResponse(run_id=run_id, session_id=session_id, status="queued")
 
 
@@ -1224,34 +1242,64 @@ async def copy_run(
                 principal=principal,
                 run_id=str(copied["run_id"]),
             )
-            queue_position = await enqueue_run(queue_payload)
-    except repositories.RepositoryAuthorizationError as exc:
-        await _audit_capability_denial(principal, exc, source="copy_run")
-        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
-    except SkillVersionMaterializationError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except RepositoryNotFoundError as exc:
-        _raise_if_capability_revoked(exc)
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RepositoryConflictError as exc:
-        _raise_if_capability_revoked(exc)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except HTTPException as exc:
-        await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
-        raise
     except Exception as exc:
+        # The child is committed, but Redis has not been touched. A rejected or
+        # unavailable replay authorization must not strand it as queued.
         await _compensate_enqueue_failure(
             principal=principal,
             run_id=str(copied["run_id"]),
             v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
             diagnostic_error=exc,
-            run_diagnostics=getattr(
-                request.app.state,
-                "run_diagnostics_service",
-                None,
-            ),
+            run_diagnostics=getattr(request.app.state, "run_diagnostics_service", None),
         )
-        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+        if isinstance(exc, repositories.RepositoryAuthorizationError):
+            await _audit_capability_denial(principal, exc, source="copy_run")
+            raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+        if isinstance(exc, SkillVersionMaterializationError):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if isinstance(exc, RepositoryNotFoundError):
+            _raise_if_capability_revoked(exc)
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if isinstance(exc, RepositoryConflictError):
+            _raise_if_capability_revoked(exc)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if isinstance(exc, HTTPException):
+            await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
+            raise
+        raise HTTPException(status_code=503, detail="run_replay_authorization_unavailable") from exc
+    try:
+        queue_position = await enqueue_run(queue_payload)
+    except Exception as exc:
+        if isinstance(exc, QueueAdmissionRejected) and str(exc) in {
+            "queue_payload_invalid",
+            "run_reconciliation_in_progress",
+        }:
+            await _compensate_enqueue_failure(
+                principal=principal,
+                run_id=str(copied["run_id"]),
+                v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+                diagnostic_error=exc,
+                run_diagnostics=getattr(
+                    request.app.state,
+                    "run_diagnostics_service",
+                    None,
+                ),
+            )
+            raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+        # The enqueue may have committed before its reply was lost. Keep the
+        # committed child and return its identity even if Redis is unavailable
+        # for readback, so the caller can observe the eventual Run outcome.
+        try:
+            admission = await read_queue_admission(queue_payload)
+        except Exception:
+            admission = None
+        if admission is None:
+            return RunControlResponse(
+                run_id=copied["run_id"],
+                session_id=copied["session_id"],
+                status="accepted_pending_enqueue",
+            )
+        queue_position = int(admission.queue_position)
     return RunControlResponse(
         run_id=copied["run_id"],
         session_id=copied["session_id"],
@@ -1399,19 +1447,20 @@ async def _mutate_run_control_child(
                     principal=principal,
                     run_id=run_id,
                 )
-                if action == "retry":
-                    source = await repositories.get_authorized_run(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        user_id=principal.user_id,
-                        run_id=run_id,
-                        for_update=True,
+                source = await repositories.get_authorized_run(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    run_id=run_id,
+                    for_update=True,
+                )
+                if source is not None:
+                    reason = (
+                        run_retry_block_reason(source.get("status"), source.get("error_code"))
+                        if action == "retry"
+                        else run_unconfirmed_execution_block_reason(source.get("error_code"))
                     )
-                    if source is not None and (
-                        reason := run_retry_block_reason(
-                            source.get("status"), source.get("error_code")
-                        )
-                    ):
+                    if reason:
                         raise RepositoryConflictError(reason)
                 mutation = (
                     repositories.retry_run_as_new_task

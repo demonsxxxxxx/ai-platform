@@ -191,12 +191,19 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
             on_capability_evidence=receipt, on_agent_event=event,
             run_id="run_mcp_check", attempt_id="attempt_mcp_check",
         )
-        expected_error = "required_tool_completion_evidence_mismatch" if remote_error else None
+        expected_error = "mcp_execution_outcome_unknown" if remote_error else None
         assert result.error == expected_error, result.runtime_diagnostics
         assert peer.models
         assert sum(method == "initialize" for method, _ in peer.requests) == 1
-        assert all([tool["name"] for tool in request.get("tools", [])] == [peer.sdk_tool] for request in peer.models)
-        assert peer.models[0]["tools"][0]["input_schema"] == SCHEMA
+        assert all(
+            {tool["name"] for tool in request.get("tools", [])}
+            == {peer.sdk_tool, "mcp__ai-platform-response__attach_file"}
+            for request in peer.models
+        )
+        selected_tool = next(
+            tool for tool in peer.models[0]["tools"] if tool["name"] == peer.sdk_tool
+        )
+        assert selected_tool["input_schema"] == SCHEMA
         tool_result_texts = [
             block.get("content", "")
             for request in peer.models

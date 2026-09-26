@@ -12,9 +12,13 @@ _MCP_EXECUTION_UNCERTAIN_ERROR_CODES = frozenset(
 )
 
 
-def run_retry_block_reason(status: object, error_code: object) -> str | None:
-    if str(status or "") not in RUN_CONTROL_RETRY_PREVIEW_STATUSES:
-        return "status_not_retryable"
+def run_unconfirmed_execution_block_reason(error_code: object) -> str | None:
     if str(error_code or "") in _MCP_EXECUTION_UNCERTAIN_ERROR_CODES:
         return "execution_outcome_unconfirmed"
     return None
+
+
+def run_retry_block_reason(status: object, error_code: object) -> str | None:
+    if str(status or "") not in RUN_CONTROL_RETRY_PREVIEW_STATUSES:
+        return "status_not_retryable"
+    return run_unconfirmed_execution_block_reason(error_code)

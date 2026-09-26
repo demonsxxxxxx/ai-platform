@@ -539,8 +539,8 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
         return {"run_id": "run-copy"}
 
     async def enqueue(payload):
-        assert active_transactions == {2}
-        calls.append(("enqueue", payload["run_id"], 2))
+        assert active_transactions == set()
+        calls.append(("enqueue", payload["run_id"], "after_commit"))
         return 1
 
     async def queue_insight(*_args, **_kwargs):
@@ -571,8 +571,8 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
         ("transaction_exit", 1),
         ("transaction_enter", 2),
         ("profile_authority", "run-copy", 2),
-        ("enqueue", "run-copy", 2),
         ("transaction_exit", 2),
+        ("enqueue", "run-copy", "after_commit"),
     ]
 
 
@@ -828,6 +828,9 @@ def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(m
         calls.append("enqueue")
         raise AssertionError("newly revoked profile must fail before queue admission")
 
+    async def compensate(*_args, **kwargs):
+        calls.append(("compensate", kwargs["run_id"]))
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", admit)
@@ -839,6 +842,7 @@ def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(m
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", copy)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
     monkeypatch.setattr("app.routes.runs.enqueue_run", forbidden_enqueue)
+    monkeypatch.setattr("app.routes.runs._compensate_enqueue_failure", compensate)
 
     response = TestClient(create_app(), raise_server_exceptions=False).post(
         "/api/ai/runs/run-source/copy",
@@ -855,11 +859,24 @@ def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(m
         "copy",
         "prepare",
         ("profile_authority", "run-copy"),
+        ("compensate", "run-copy"),
     ]
 
 
-def test_copy_run_creates_new_queued_run(monkeypatch):
+@pytest.mark.parametrize("enqueue_mode", ["normal", "reply_lost_readback", "unknown"])
+def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
     calls = []
+    transaction_active = False
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal transaction_active
+        async with fake_transaction() as conn:
+            transaction_active = True
+            try:
+                yield conn
+            finally:
+                transaction_active = False
 
     async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
         calls.append((tenant_id, user_id, run_id))
@@ -899,8 +916,23 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
         }
 
     async def fake_enqueue_run(payload):
+        assert transaction_active is False
         calls.append(("queue", payload))
+        if enqueue_mode != "normal":
+            raise TimeoutError("synthetic Redis reply lost after enqueue")
         return 1
+
+    async def fake_read_queue_admission(payload):
+        assert enqueue_mode != "normal"
+        assert payload["run_id"] == "run_new"
+        return (
+            QueueAdmissionMetadata(1, 1, "committed-message")
+            if enqueue_mode == "reply_lost_readback"
+            else None
+        )
+
+    async def fail_compensate(*args, **kwargs):
+        raise AssertionError("an unknown Redis outcome must preserve the child Run")
 
     async def fake_get_queue_insight(tenant_id, **_kwargs):
         assert tenant_id == "default"
@@ -953,7 +985,7 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
         }
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", EmptyBuiltinRegistry, raising=False)
     monkeypatch.setattr(
         "app.routes.runs.repositories.enforce_user_active_run_admission",
@@ -973,6 +1005,8 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", fake_read_queue_admission)
+    monkeypatch.setattr("app.routes.runs._compensate_enqueue_failure", fail_compensate)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
     client = TestClient(create_app())
 
@@ -981,6 +1015,10 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     assert response.status_code == 200
     assert calls[0] == ("admit", "default", "user-a", 3)
     assert response.json()["run_id"] == "run_new"
+    if enqueue_mode == "unknown":
+        assert response.json()["status"] == "accepted_pending_enqueue"
+        assert response.json()["queue_position"] is None
+        return
     assert response.json()["queue_position"] == 1
     assert response.json()["queue_insight"] == {
         "tenant_id": "default",
@@ -1865,6 +1903,50 @@ def test_retry_run_rejects_unconfirmed_mcp_execution_without_copy(monkeypatch):
     ]
 
 
+def test_resume_run_rejects_unconfirmed_mcp_execution_without_copy(monkeypatch):
+    calls = []
+
+    async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
+        calls.append(("admit", tenant_id, user_id, limit))
+        return 0
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
+        calls.append(("source", tenant_id, user_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "status": "failed",
+            "error_code": "mcp_execution_succeeded_receipt_incomplete",
+        }
+
+    async def fail_resume_run_as_new_task(*args, **kwargs):
+        raise AssertionError("unconfirmed MCP execution must not be resumed")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        fake_enforce_user_active_run_admission,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.resume_run_as_new_task",
+        fail_resume_run_as_new_task,
+    )
+    client = TestClient(create_app())
+
+    response = client.post(run_control_url("run-unconfirmed", "resume"), headers=headers())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "execution_outcome_unconfirmed"
+    assert calls == [
+        ("admit", "default", "user-a", 3),
+        ("source", "default", "user-a", "run-unconfirmed", True),
+    ]
+
+
 def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
     calls = []
 
@@ -2321,7 +2403,17 @@ def test_run_control_readiness_blocks_retry_for_unconfirmed_mcp_execution(
         return run
 
     async def fake_list_run_steps(conn, *, tenant_id, run_id):
-        return []
+        return [{
+            "id": "step-complete",
+            "run_id": run_id,
+            "step_key": "complete",
+            "step_kind": "agent",
+            "status": "succeeded",
+            "title": "Completed",
+            "role": "worker",
+            "sequence": 1,
+            "payload_json": {"output": "reusable output"},
+        }]
 
     async def fake_queue_insight(status, tenant_id, **_kwargs):
         raise AssertionError("queue insight should only be loaded for queued runs")
@@ -2350,6 +2442,12 @@ def test_run_control_readiness_blocks_retry_for_unconfirmed_mcp_execution(
         "reason": "execution_outcome_unconfirmed",
         "method": "POST",
         "href": "/api/ai/runs/run-ready/retry",
+    }
+    assert response.json()["actions"]["resume"] == {
+        "enabled": False,
+        "reason": "execution_outcome_unconfirmed",
+        "method": "POST",
+        "href": "/api/ai/runs/run-ready/resume",
     }
 
 
