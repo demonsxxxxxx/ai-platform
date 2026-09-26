@@ -317,6 +317,16 @@
             "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
           }
         },
+        "imports": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/retiredImportBinding" }
+        },
+        "bridge_symbols": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/retiredBridgeSymbol" }
+        },
         "owner": {
           "$ref": "#/$defs/nonEmptyString"
         },
@@ -326,6 +336,26 @@
         "removal_condition": {
           "$ref": "#/$defs/nonEmptyString"
         }
+      }
+    },
+    "retiredImportBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "module", "name", "asname"],
+      "properties": {
+        "kind": { "enum": ["import", "from_import"] },
+        "module": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
+        "name": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "asname": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+      }
+    },
+    "retiredBridgeSymbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_module", "symbol"],
+      "properties": {
+        "target_module": { "type": "string", "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$" },
+        "symbol": { "type": "string", "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$" }
       }
     },
     "legacyApiCutover": {

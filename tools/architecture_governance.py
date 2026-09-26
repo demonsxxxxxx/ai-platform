@@ -50,6 +50,8 @@ SUPPORTED_SCHEMA_PATTERNS = frozenset(
         r"^[a-z][a-z0-9_]*$",
         r"^_?[a-z][a-z0-9_]*$",
         r"^app(?:\.[a-z][a-z0-9_]*)+$",
+        r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$",
+        r"^[A-Za-z_][A-Za-z0-9_]*$",
     }
 )
 ALLOWED_PLATFORM_MIGRATION_TARGETS = frozenset(
@@ -880,6 +882,10 @@ def _validate_json_schema_instance(instance: Any, schema: dict[str, Any]) -> Non
         if "enum" in node and value not in node["enum"]:
             raise ArchitectureError("invalid_policy", f"{location} is not an allowed schema value")
         expected_type = node.get("type")
+        if expected_type == ["string", "null"]:
+            if value is None:
+                return
+            expected_type = "string"
         if expected_type == "object":
             if not isinstance(value, dict):
                 raise ArchitectureError("invalid_policy", f"{location} must be an object")
@@ -1273,6 +1279,18 @@ def _validate_migration_bridges(
         )
 
 
+def _retirable_definition_name(node: ast.stmt) -> str | None:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return node.name
+    if (
+        isinstance(node, ast.Assign) and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name) and node.targets[0].id.isupper()
+        and isinstance(node.value, ast.Name)
+    ):
+        return node.targets[0].id
+    return None
+
+
 def _validate_definition_retirements(
     policy: dict[str, Any], *, git: _GitObjects, authority: str
 ) -> None:
@@ -1282,9 +1300,10 @@ def _validate_definition_retirements(
     sources: list[str] = []
     for index, entry in enumerate(entries):
         label = f"definition_retirements[{index}]"
-        _require_exact_keys(
+        _require_keys_with_optional(
             entry,
             {"source_path", "symbols", "owner", "reason", "removal_condition"},
+            {"imports", "bridge_symbols"},
             label,
             "invalid_policy",
         )
@@ -1307,16 +1326,72 @@ def _validate_definition_retirements(
             raise ArchitectureError("invalid_policy", f"{label}.symbols must be sorted and unique")
         bridged = {name for item in bridges for name in item["symbols"]}
         tree = _parse_python(git.text(authority, path), path, candidate=False)
-        functions = Counter(
-            node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        )
-        if any(name in bridged or functions[name] != 1 for name in symbols):
+        definitions = Counter(_retirable_definition_name(node) for node in tree.body)
+        if any(name in bridged or definitions[name] != 1 for name in symbols):
             raise ArchitectureError(
-                "invalid_policy", f"{label} must name locally owned, unbridged authority functions"
+                "invalid_policy", f"{label} must name unbridged authority functions or constant name aliases"
             )
+        imports = entry.get("imports", [])
+        if not isinstance(imports, list):
+            raise ArchitectureError("invalid_policy", f"{label}.imports must be a list")
+        import_keys: list[tuple[str, str, str, str]] = []
+        for import_index, item in enumerate(imports):
+            import_label = f"{label}.imports[{import_index}]"
+            _require_exact_keys(item, {"kind", "module", "name", "asname"}, import_label, "invalid_policy")
+            kind, module, name, asname = item["kind"], item["module"], item["name"], item["asname"]
+            if (kind not in {"import", "from_import"}
+                    or not isinstance(module, str) or re.fullmatch(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*", module) is None
+                    or (kind == "from_import" and (not isinstance(name, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None))
+                    or (kind == "import" and name is not None)
+                    or (asname is not None and (not isinstance(asname, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", asname) is None))):
+                raise ArchitectureError("invalid_policy", f"{import_label} must identify an exact import binding")
+            import_keys.append((kind, module, name or "", asname or ""))
+        if import_keys != sorted(set(import_keys)):
+            raise ArchitectureError("invalid_policy", f"{label}.imports must be sorted and unique")
+        if imports:
+            import_counts = Counter(_import_binding_key(node, alias) for node in tree.body
+                                    if isinstance(node, (ast.Import, ast.ImportFrom))
+                                    for alias in node.names)
+            if any(import_counts[key] != 1 for key in import_keys):
+                raise ArchitectureError("invalid_policy", f"{label}.imports must name exact authority imports")
+        bridge_symbols = entry.get("bridge_symbols", [])
+        if not isinstance(bridge_symbols, list):
+            raise ArchitectureError("invalid_policy", f"{label}.bridge_symbols must be a list")
+        bridge_keys: list[tuple[str, str]] = []
+        for bridge_index, item in enumerate(bridge_symbols):
+            bridge_label = f"{label}.bridge_symbols[{bridge_index}]"
+            _require_exact_keys(item, {"target_module", "symbol"}, bridge_label, "invalid_policy")
+            target_module, symbol = item["target_module"], item["symbol"]
+            if (not isinstance(target_module, str)
+                    or re.fullmatch(r"app(?:\.[a-z][a-z0-9_]*)+", target_module) is None
+                    or not isinstance(symbol, str)
+                    or re.fullmatch(r"_?[A-Za-z][A-Za-z0-9_]*", symbol) is None):
+                raise ArchitectureError("invalid_policy", f"{bridge_label} must name a target module and Python symbol")
+            matching = [bridge for bridge in bridges if bridge["target_module"] == target_module and symbol in bridge["symbols"]]
+            target_path = f"{target_module.replace('.', '/')}.py"
+            target_source = git.text(authority, target_path, required=False)
+            target_tree = _parse_python(target_source, target_path, candidate=False) if target_source is not None else None
+            target_defs = [] if target_tree is None else [node for node in target_tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == symbol]
+            aliases = [node for node in tree.body if _bridge_alias_assignment_name(node, matching[0]) == symbol] if len(matching) == 1 else []
+            if len(matching) != 1 or len(target_defs) != 1 or len(aliases) != 1:
+                raise ArchitectureError("invalid_policy", f"{bridge_label} must name one exact active bridge symbol and target definition")
+            bridge_keys.append((target_module, symbol))
+        if bridge_keys != sorted(set(bridge_keys)):
+            raise ArchitectureError("invalid_policy", f"{label}.bridge_symbols must be sorted and unique")
         sources.append(path)
     if sources != sorted(set(sources)):
         raise ArchitectureError("invalid_policy", "definition_retirements must be sorted and unique by source_path")
+
+
+def _require_keys_with_optional(value: Any, required: set[str], optional: set[str], label: str, code: str) -> None:
+    if not isinstance(value, dict) or not required <= set(value) or not set(value) <= required | optional:
+        raise ArchitectureError(code, f"{label} must contain the required keys and only supported optional keys")
+
+
+def _import_binding_key(node: ast.Import | ast.ImportFrom, alias: ast.alias) -> tuple[str, str, str, str]:
+    if isinstance(node, ast.Import):
+        return ("import", alias.name, "", alias.asname or "")
+    return ("from_import", "." * node.level + (node.module or ""), alias.name, alias.asname or "")
 
 
 def _validate_legacy_api_cutovers(
@@ -3270,6 +3345,57 @@ def _bridge_alias_assignment_name(
     return None
 
 
+def _retirement_contract_tree(
+    tree: ast.Module,
+    retirement: dict[str, Any],
+    policy: dict[str, Any],
+    path: str,
+    removable_node_ids: set[int] | None = None,
+    retained_bindings: set[str] | None = None,
+) -> ast.Module:
+    """Normalize only authority-declared retired definitions and import bindings away."""
+    retained_bindings = retained_bindings or set()
+    retired_imports = {
+        (item["kind"], item["module"], item["name"] or "", item["asname"] or "")
+        for item in retirement.get("imports", [])
+        if (item["asname"] or item["name"] or item["module"].split(".")[0]) not in retained_bindings
+    }
+    bridge_retirements = {
+        (item["target_module"], item["symbol"])
+        for item in retirement.get("bridge_symbols", [])
+        if item["symbol"] not in retained_bindings
+    }
+    bridge_by_identity = {
+        (bridge["target_module"], symbol): bridge
+        for bridge in policy["migration_bridges"]
+        if bridge["source_path"] == path
+        for symbol in bridge["symbols"]
+    }
+    body: list[ast.stmt] = []
+    for original in tree.body:
+        if removable_node_ids is not None and id(original) in removable_node_ids:
+            continue
+        removed_bridge = next(
+            (key for key in bridge_retirements
+             if (bridge := bridge_by_identity.get(key)) is not None
+             and _bridge_alias_assignment_name(original, bridge) == key[1]),
+            None,
+        )
+        if removed_bridge is not None:
+            continue
+        if isinstance(original, (ast.Import, ast.ImportFrom)):
+            remaining = [alias for alias in original.names if _import_binding_key(original, alias) not in retired_imports]
+            if len(remaining) != len(original.names):
+                if not remaining:
+                    continue
+                normalized = copy.deepcopy(original)
+                normalized.names = remaining
+                body.append(normalized)
+                continue
+        body.append(original)
+    return ast.Module(body=body, type_ignores=tree.type_ignores)
+
+
 def _active_migration_bridge_nodes(
     policy: dict[str, Any],
     path: str,
@@ -3359,12 +3485,15 @@ def _migration_bridge_findings(
         if entry["source_path"] == path
         for name in entry["symbols"]
     }
+    retirement = next(
+        (entry for entry in policy["definition_retirements"] if entry["source_path"] == path),
+        {},
+    )
     head_bindings = set().union(*(_top_level_node_binding_names(node) for node in head_tree.body))
     removable_base_node_ids.update(
         id(node)
         for node in (base_tree.body if base_tree is not None else [])
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in retired_symbols - head_bindings
+        if _retirable_definition_name(node) in retired_symbols - head_bindings
     )
     if cutover_attempted:
         active_bridge_nodes.update(
@@ -3375,9 +3504,16 @@ def _migration_bridge_findings(
     for bridge in policy["migration_bridges"]:
         if bridge["source_path"] != path:
             continue
+        retired_bridge_symbols = {
+            item["symbol"]
+            for item in retirement.get("bridge_symbols", [])
+            if item["target_module"] == bridge["target_module"]
+            and item["symbol"] not in head_bindings
+        }
+        checked_symbols = [symbol for symbol in bridge["symbols"] if symbol not in retired_bridge_symbols]
         base_active = base_tree is not None and _bridge_import_count(base_tree, bridge) == 1
-        base_definitions = _bridge_definition_fingerprints(base_tree, bridge["symbols"])
-        head_definitions = _bridge_definition_fingerprints(head_tree, bridge["symbols"])
+        base_definitions = _bridge_definition_fingerprints(base_tree, checked_symbols)
+        head_definitions = _bridge_definition_fingerprints(head_tree, checked_symbols)
         declared_definition_drift = base_definitions != head_definitions
         dynamic_import_added = not _dynamic_import_fingerprints(head_tree) <= (
             _dynamic_import_fingerprints(base_tree)
@@ -3450,17 +3586,20 @@ def _migration_bridge_findings(
                 target_tree
             )
             direct_counts = _top_level_local_binding_counts(target_tree)
+            retired_target_bindings = sorted(
+                symbol for symbol in retired_bridge_symbols if module_counts[symbol] != 0
+            )
             invalid_symbols = sorted(
                 symbol
-                for symbol in bridge["symbols"]
+                for symbol in checked_symbols
                 if module_counts[symbol] != 1 or direct_counts[symbol] != 1
             )
-            imported_symbols = sorted(set(bridge["symbols"]) & import_backed_names)
+            imported_symbols = sorted(set(checked_symbols) & import_backed_names)
             dynamic_import = (
                 bridge["target_module"].startswith("app.kernel.")
                 and bool(_dynamic_import_fingerprints(target_tree))
             )
-            if invalid_symbols or imported_symbols or dynamic_import:
+            if invalid_symbols or imported_symbols or dynamic_import or retired_target_bindings:
                 findings.append(
                     Finding(
                         "migration_bridge_target_contract",
@@ -3472,6 +3611,7 @@ def _migration_bridge_findings(
                             "dynamic_import": dynamic_import,
                             "import_backed_symbols": imported_symbols,
                             "invalid_symbols": invalid_symbols,
+                            "retired_target_bindings": retired_target_bindings,
                         },
                     )
                 )
@@ -3497,10 +3637,10 @@ def _migration_bridge_findings(
             and node.name in set(bridge["symbols"])
         }
         missing_aliases = sorted(
-            symbol for symbol in bridge["symbols"] if exact_aliases[symbol] == 0
+            symbol for symbol in checked_symbols if exact_aliases[symbol] == 0
         )
         duplicate_aliases = sorted(
-            symbol for symbol in bridge["symbols"] if exact_aliases[symbol] > 1
+            symbol for symbol in checked_symbols if exact_aliases[symbol] > 1
         )
         if missing_aliases or duplicate_aliases or local_definitions or rebound_names:
             findings.append(
@@ -3516,6 +3656,19 @@ def _migration_bridge_findings(
                         "missing_aliases": missing_aliases,
                         "rebound_names": sorted(rebound_names),
                     },
+                )
+            )
+        retained_retired_aliases = sorted(
+            symbol for symbol in retired_bridge_symbols if exact_aliases[symbol] != 0
+        )
+        if retained_retired_aliases:
+            findings.append(
+                Finding(
+                    "migration_bridge_symbol_contract",
+                    "retired bridge symbols must disappear from the source along with their target definitions",
+                    path,
+                    exemptible=False,
+                    details={**details, "retained_retired_aliases": retained_retired_aliases},
                 )
             )
 
@@ -3534,14 +3687,7 @@ def _migration_bridge_findings(
             )
 
         base_contract_tree = (
-            ast.Module(
-                body=[
-                    node
-                    for node in base_tree.body
-                    if id(node) not in removable_base_node_ids
-                ],
-                type_ignores=base_tree.type_ignores,
-            )
+            _retirement_contract_tree(base_tree, retirement, policy, path, removable_base_node_ids, head_bindings)
             if base_tree is not None
             else None
         )

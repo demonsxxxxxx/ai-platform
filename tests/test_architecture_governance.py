@@ -635,6 +635,78 @@ def test_definition_retirement_only_allows_authorized_whole_function_deletion(
         assert _evaluate(repo, head, head, head).status == "pass"
 
 
+@pytest.mark.parametrize(
+    ("change", "passes"),
+    [
+        ("pending", True),
+        ("delete", True),
+        ("rebind", False),
+        ("change_value", False),
+        ("undeclared_delete", False),
+    ],
+)
+def test_definition_retirement_allows_only_exact_constant_alias_deletion(
+    tmp_path: Path, change: str, passes: bool
+) -> None:
+    alias = "TOOL_PERMISSION_TERMINALIZATION_BATCH_LIMIT"
+    target = "TOOL_PERMISSION_EXPIRY_BATCH_LIMIT"
+    policy = _fixture_policy()
+    if change != "undeclared_delete":
+        entry = _definition_retirement()
+        entry["symbols"] = [alias]
+        entry["removal_condition"] = "Remove this entry with the declared constant alias."
+        policy["definition_retirements"] = [entry]
+    repo, _ = _create_repo(tmp_path, policy_text=json.dumps(policy))
+    _activate_context_memory_bridge(repo)
+    source = (repo / "app/repositories.py").read_text(encoding="utf-8")
+    _write(repo, "app/repositories.py", source + f"\n{alias} = {target}\n")
+    authority = _commit(repo, "authorize exact constant alias retirement")
+
+    candidate_source = source + f"\n{alias} = {target}\n"
+    if change == "delete":
+        candidate_source = source
+    elif change == "rebind":
+        candidate_source = source + f"\n{alias} = None\n"
+    elif change == "change_value":
+        candidate_source = source + f"\n{alias} = DIFFERENT_EXPIRY_LIMIT\n"
+    elif change == "undeclared_delete":
+        candidate_source = source
+    _write(repo, "app/repositories.py", candidate_source)
+    if change in {"delete", "rebind", "change_value", "undeclared_delete"}:
+        policy["definition_retirements"] = []
+        _write(repo, "architecture-policy.json", json.dumps(policy))
+    head = _commit(repo, "consume or retain constant alias retirement")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert (evaluation.status == "pass") is passes
+    if not passes:
+        assert "migration_bridge_source_logic" in _codes(evaluation)
+    elif change == "delete":
+        assert _evaluate(repo, head, head, head).status == "pass"
+
+
+@pytest.mark.parametrize("expression", ["make_expiry_limit()", "{1, 2}"])
+def test_definition_retirement_rejects_non_name_constant_alias_values(
+    tmp_path: Path, expression: str
+) -> None:
+    alias = "TOOL_PERMISSION_TERMINALIZATION_BATCH_LIMIT"
+    policy = _fixture_policy()
+    entry = _definition_retirement()
+    entry["symbols"] = [alias]
+    policy["definition_retirements"] = [entry]
+    repo, _ = _create_repo(tmp_path, policy_text=json.dumps(policy))
+    _activate_context_memory_bridge(repo)
+    source = (repo / "app/repositories.py").read_text(encoding="utf-8")
+    _write(repo, "app/repositories.py", source + f"\n{alias} = {expression}\n")
+    authority = _commit(repo, "attempt to authorize a computed constant")
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
+
+
 @pytest.mark.parametrize("invalid", ["missing", "bridged", "constant", "duplicate", "source"])
 def test_definition_retirement_requires_exact_unbridged_authority_functions(
     tmp_path: Path, invalid: str
@@ -658,6 +730,102 @@ def test_definition_retirement_requires_exact_unbridged_authority_functions(
         _evaluate(repo, authority, authority, authority)
 
     assert caught.value.code == "invalid_policy"
+
+
+@pytest.mark.parametrize("rebind", [False, True])
+def test_definition_retirement_imports_require_exact_origin_and_no_rebinding(
+    tmp_path: Path, rebind: bool
+) -> None:
+    policy = _fixture_policy()
+    entry = _definition_retirement()
+    entry["imports"] = [{"kind": "from_import", "module": "app.auth", "name": "normalize_roles", "asname": None}]
+    policy["definition_retirements"] = [entry]
+    repo, _ = _create_repo(tmp_path, policy_text=json.dumps(policy))
+    _activate_context_memory_bridge(repo)
+    source = (repo / "app/repositories.py").read_text(encoding="utf-8")
+    _write(repo, "app/repositories.py", source + "\nfrom app.auth import normalize_roles\ndef unused_approval():\n    return 1\n")
+    authority = _commit(repo, "authorize exact function and import retirement")
+    rebound = "normalize_roles = None\n" if rebind else ""
+    _write(repo, "app/repositories.py", source + "\n" + rebound)
+    policy["definition_retirements"] = []
+    _write(repo, "architecture-policy.json", json.dumps(policy))
+    head = _commit(repo, "retire authorized bindings")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert evaluation.status == ("violation" if rebind else "pass")
+    if rebind:
+        assert "migration_bridge_source_logic" in _codes(evaluation)
+
+
+def test_definition_retirement_rejects_import_binding_absent_from_authority(tmp_path: Path) -> None:
+    policy = _fixture_policy()
+    entry = _definition_retirement()
+    entry["imports"] = [{"kind": "from_import", "module": "app.auth", "name": "unknown", "asname": None}]
+    policy["definition_retirements"] = [entry]
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
+
+
+@pytest.mark.parametrize(
+    ("change", "passes"),
+    [("pending", True), ("delete", True), ("retain_target", False),
+     ("rebind", False), ("missing_target", False), ("undeclared_alias", False)],
+)
+def test_bridge_retirement_requires_declared_alias_and_target_to_disappear_together(
+    tmp_path: Path, change: str, passes: bool,
+) -> None:
+    policy = _fixture_policy()
+    bridge = _migration_bridge(
+        source_path="app/repositories.py", target_module="app.context.infrastructure.postgres",
+    )
+    symbol = bridge["symbols"][1]
+    entry = _definition_retirement()
+    entry["bridge_symbols"] = [{"target_module": bridge["target_module"], "symbol": symbol}]
+    policy["definition_retirements"] = [entry]
+    repo, _ = _create_repo(tmp_path, policy_text=json.dumps(policy))
+    _activate_context_memory_bridge(repo)
+    source_path = repo / bridge["source_path"]
+    source = source_path.read_text(encoding="utf-8")
+    source_path.write_text(source + "def unused_approval():\n    return 1\n", encoding="utf-8")
+    authority = _commit(repo, "authorize exact active bridge retirement")
+    assert _evaluate(repo, authority, authority, authority).status == "pass"
+
+    target_path = repo / f"{bridge['target_module'].replace('.', '/')}.py"
+    if change != "pending":
+        alias = f"{symbol} = {bridge['module_alias']}.{symbol}\n"
+        replacement = f"{symbol} = None\n" if change == "rebind" else ""
+        source = source.replace(alias, replacement)
+        if change == "undeclared_alias":
+            other = bridge["symbols"][0]
+            source = source.replace(f"{other} = {bridge['module_alias']}.{other}\n", "")
+        if change == "missing_target":
+            target_path.unlink()
+        elif change != "retain_target":
+            tree = ast.parse(target_path.read_text(encoding="utf-8"))
+            tree.body = [node for node in tree.body if getattr(node, "name", None) != symbol]
+            target_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
+        for candidate in policy["migration_bridges"]:
+            if candidate["target_module"] == bridge["target_module"]:
+                candidate["symbols"].remove(symbol)
+    source_path.write_text(source, encoding="utf-8")
+    policy["definition_retirements"] = []
+    _write(repo, "architecture-policy.json", json.dumps(policy))
+    head = _commit(repo, "consume retirement")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+    assert (evaluation.status == "pass") is passes
+    if passes:
+        assert _evaluate(repo, head, head, head).status == "pass"
+    else:
+        assert _codes(evaluation) & {
+            "migration_bridge_target_contract", "migration_bridge_symbol_contract",
+            "migration_bridge_source_logic",
+        }
 
 
 def test_live_authority_has_retired_legacy_api_cutovers() -> None:
