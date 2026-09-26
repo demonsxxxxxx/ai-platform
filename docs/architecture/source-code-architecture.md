@@ -409,9 +409,8 @@ unbridged, unused root module must not invalidate the next change's authority.
 An allowance does not authorize adding or restoring a module absent from the
 change's base tree; new code belongs in its owning package.
 
-This rule does not retire a declared migration bridge, compatibility facade,
-registry, public entrypoint, or persisted contract. Their existing removal proof
-still applies. Candidate policy cannot repair an invalid trusted authority or
+This rule does not retire a registry, public entrypoint, or persisted
+contract. Their existing removal proof still applies. Candidate policy cannot repair an invalid trusted authority or
 self-authorize new production paths. Broken authority requires explicit trusted
 recovery rather than a candidate-policy exception.
 
@@ -515,30 +514,6 @@ then independently editing two implementations is forbidden. Dual write is
 forbidden unless a persistence ADR specifies reconciliation, idempotency,
 cutover, and rollback.
 
-On activation of a declared migration bridge, an unchanged definition may carry
-its existing static import bindings into the owning adapter. References to
-formerly local definitions may follow their declared, active bridges. The
-checker compares definition ASTs and binding origins against the trusted base;
-new dependencies, renamed bindings, dynamic loading, and reverse imports of the
-source facade receive no relocation allowance. These inherited dependencies
-remain migration debt, including any cross-domain adapter calls. They are not
-evidence that the target already satisfies the final API/port architecture.
-Later dependency additions use the ordinary per-file rules.
-
-An authority-side `definition_retirements` entry may authorize removal of exact,
-locally owned top-level functions or single-target constant name aliases from a
-migration bridge source after their consumers have been retired. A constant name
-alias has one uppercase `Name` target and a direct `Name` value; computed values,
-multiple targets, and other assignment forms are not eligible. The declaration
-must match the trusted authority exactly and permits deleting the whole binding
-only, not changing its value, adding replacement logic, or rebinding it.
-Unchanged pending bindings and every undeclared source node retain their existing
-contract. Its optional import inventory names the exact import kind, module,
-name, and alias; its optional bridge-symbol inventory names an existing identity
-alias and its locally owned target definition. Remove consumed entries and
-retired bridge symbols in the implementation change so the next authority has
-no stale grant.
-
 For an internal import-only facade, callers may contract a statically proven
 identity path directly to the existing definition before removing the facade.
 The dependency checker resolves the symbols actually used by that caller in the
@@ -549,11 +524,9 @@ and its return may be resolved within the same function scope. New symbols, dyna
 module access, module forwarding, shadowing and rebinding do not qualify, and
 candidate re-exports cannot grant authority. This preserves existing dependency
 debt rather than treating it as a new domain API: future cross-domain operations
-still use the normal API/port boundary. Retirement of the source's bridge and
-facade inventory precedes its deletion in a dependent implementation change.
+still use the normal API/port boundary.
 The frozen-file line budget may ignore import expansion only when canonicalized
 executable ASTs are identical; its absolute size ceiling still applies.
-An empty compatibility-facade inventory is valid after its last entry retires.
 
 The replay corpus MUST be committed as deterministic focused contract or
 integration tests with fixed clocks/identities where those affect output. The
@@ -591,66 +564,11 @@ ledger. It names the target owner for future bounded migrations.
 | `app/schema.sql` and `app/schema_migrations.py` | versioned `platform.postgres.migrations`; every business table/change still names its bounded-context owner |
 | `app/routes/lambchat_compat.py` and retired wire aliases | `compat/lambchat` delegating to domain transports/APIs |
 | Other `app/persistence/**` modules | split into each owning domain's `infrastructure/postgres`; temporary facades may delegate |
-| `app/repositories.py` | dissolved into domain repository adapters; old module is a temporary facade, never a new owner |
+| former `app/repositories.py` responsibilities | domain repository adapters; consumers use the owning API or adapter |
 | `app/models.py` and `app/validation.py` | domain values, application contracts, transport DTOs, and persistence records in their owner |
 | `app/routes/**` | each context's `transport/http`; shared root router assembly only in `bootstrap.api` |
 | readiness, audit, acceptance, baseline and evidence generators in `app/` | supported runtime health belongs to its domain; source/release/evidence tools move to `tools/` or `scripts/`; obsolete POCs are deleted |
 | fake providers, deterministic adapters, and executor stubs | `tests/support` unless the capability is explicitly supported and registered in production |
-
-The existing `app.persistence` and Agent Profile facades demonstrate the desired
-intermediate shape only when they are logic-free and identity-bound to one
-canonical owner. Parallel SQL or policy in both old and new modules is a defect.
-
-An approved legacy migration bridge is narrower than a compatibility facade.
-It MAY let one frozen legacy source module import one exact bounded-context
-`infrastructure`, platform-technical, or declared public `kernel` module solely
-to preserve existing Python symbols as top-level identity aliases while their
-implementation moves. Every source path,
-target module, module alias, and symbol MUST be listed by immutable architecture
-authority before the move. The legacy source MUST shrink in the activating
-change. The target MUST own every declared symbol locally exactly once; imported,
-re-exported, annotation-only, or import-backed aliases do not establish ownership,
-and declared public Kernel targets MUST reject computed dynamic-import capability.
-The bridge MUST reject prefixes, wildcards, dynamic imports, rebinding, new
-executable source logic, renames, and exceptions. On activation, it may remove
-only a direct top-level function, class, or assignment declaration whose
-complete module-runtime binding set is non-empty and wholly declared by one
-bridge being activated; declarations containing `global` statements, bare or
-exact `builtins`-qualified `globals()` calls, or bare or exact
-`builtins`-qualified `setattr(sys.modules[__name__], ...)` current-module writes
-are ineligible because moving them would change module-state ownership;
-unrelated object methods such as `registry.globals()` remain ordinary
-declaration logic; every other baseline top-level AST node must remain
-equivalent. If a bridge and a legacy API cutover activate in the same change,
-both canonical transitions MUST compose without widening either authority. A
-bridge grants import compatibility only; it does not make the legacy module a
-persistence owner or a public cross-domain API.
-Each authority entry MUST also state its observable removal condition. Bridge
-retirement is two bounded changes: first declare the exact binding retirement
-after its condition is proven while keeping source stable; then delete the
-binding and consume the declaration under that authority. Candidate policy
-edits never authorize either step.
-
-A legacy public-API cutover is a different, one-shot authority. It MAY let one
-frozen legacy source delete an exact set of locally defined symbols and replace
-every use with one declared bounded-context `api.py` or `events.py` symbol. The
-authority records a one-to-one old/new symbol map, one exact static module
-alias, and the exact owning domain/application module. The source MUST already
-be frozen by an approved migration bridge before the cutover is declared, and
-the activating change MUST strictly shrink that source. The public boundary may
-only expose those symbols as explicit same-name static re-exports from that
-owner; it cannot implement or replace policy locally. The authority may also
-inventory exact now-unused standard-library imports removed with those
-definitions. On activation, the owning module MUST exist and define each
-declared symbol locally exactly once; it cannot pass ownership through another
-import. The checker canonicalizes only those declared attribute
-replacements and requires the rest of the source AST to equal the baseline
-after the declared definitions and imports are removed. It rejects source deletion or rename, partial or extra
-rewrites, retained or rebound legacy symbols, wildcards, dynamic imports,
-private or infrastructure targets, new SQL/control flow/state/functions, and
-exceptions. A cutover creates no compatibility alias and grants no general
-permission to edit the frozen source. After activation the source remains
-frozen until an authority-only change removes the consumed cutover entry.
 
 ## 11. Test architecture
 
@@ -671,7 +589,7 @@ tests/
   compatibility delegation.
 - Integration tests exercise PostgreSQL, Redis, object storage, SDK/provider
   adapters, and concurrency where those semantics cannot be mocked truthfully.
-- Architecture tests enforce imports, placement, registries, facade shape, and
+- Architecture tests enforce imports, placement, registries, and
   legacy-surface no-growth.
 - Test doubles and fixture builders live under `tests/support`; production code
   MUST NOT expose a fake capability solely to make tests convenient.
@@ -697,12 +615,10 @@ The first gate version MUST check:
 2. cross-domain imports limited to `api.py`, `events.py`, and `kernel` types;
 3. no new unapproved `app/` root modules or generic dumping modules;
 4. no new domain responsibility or unexplained growth in frozen hot files;
-5. compatibility facades contain no SQL, provider call, queue dispatch, or
-   independent business branch and remain bounded in size;
-6. production registries exclude test doubles and arbitrary dynamic imports;
-7. governed protocol constants and registry keys have one declared owner;
-8. moved/deleted public, dynamic, or persisted surfaces name their proof tier;
-9. architecture exceptions bind exact paths and candidate scope, state a
+5. production registries exclude test doubles and arbitrary dynamic imports;
+6. governed protocol constants and registry keys have one declared owner;
+7. moved/deleted public, dynamic, or persisted surfaces name their proof tier;
+8. architecture exceptions bind exact paths and candidate scope, state a
    reason/owner/removal condition, expire, and cannot exempt security or
    authority violations.
 
