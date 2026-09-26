@@ -123,6 +123,13 @@ Every admission and replay:
 6. produces the executor-private profile input; and
 7. preserves the exact profile pin on Session and Run records.
 
+Single-Skill release selection, manifest materialization, version locking, and
+snapshot governance use `app.skills.api.admit_skill_run`, shared by Chat and Run
+creation. Bootstrap assembles its policy and catalog dependencies once. Agent
+Apps supplies each expected version and owns multi-Skill conflict detection and
+primary-Skill selection. The expected version is checked before snapshot
+governance and MCP pinning; the caller's transaction remains the shared scope.
+
 Historical tool calls do not restore current capabilities. Worker dispatch and
 Run replay reauthorize the exact profile pin against current principal, Agent,
 Skill, and MCP authority before execution.

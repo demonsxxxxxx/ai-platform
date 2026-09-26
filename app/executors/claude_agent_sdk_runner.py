@@ -3286,6 +3286,42 @@ async def run_claude_agent_sdk(
             return MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE
         return MCP_EXECUTION_OUTCOME_UNKNOWN
 
+    def assemble_run_result(
+        *,
+        error: str | None,
+        message: str = "",
+        answer_receipt: dict[str, Any] | None = None,
+        terminal_reason: str | None = None,
+        received_structured_terminal: bool = False,
+        runtime_diagnostics_snapshot: Callable[[], dict[str, Any]] | None = None,
+        include_terminal_files: bool = False,
+    ) -> ClaudeAgentSdkRunResult:
+        """Snapshot the shared observations after the caller has closed its terminal."""
+        successful_terminal = error is None and include_terminal_files
+        return ClaudeAgentSdkRunResult(
+            used_sdk=True,
+            message=message,
+            answer_receipt=answer_receipt,
+            session_id=result_session_id,
+            usage=usage,
+            error=error,
+            terminal_reason=terminal_reason,
+            received_structured_terminal=received_structured_terminal,
+            used_skills=list(used_skill_names),
+            used_skills_source="executor_hook" if used_skill_names else "",
+            turn_diagnostics=turn_diagnostics(error),
+            runtime_diagnostics=(runtime_diagnostics_snapshot() if runtime_diagnostics_snapshot else {}),
+            capability_evidence=list(capability_evidence),
+            response_files=list(response_files) if successful_terminal else [],
+            response_file_descriptors=list(response_file_descriptors) if successful_terminal else [],
+            provider_final_sequence=(provider_session_store.final_sequence
+                                     if successful_terminal and provider_session_store is not None else None),
+        )
+
+    def close_failed_terminal(reason: str) -> None:
+        answer_stream_gate.finish(final_text="", release=False)
+        seal_agent_candidates(reason)
+
     def capability_completion_error() -> str | None:
         """Validate every observed call and every explicit requirement together."""
 
@@ -3397,21 +3433,13 @@ async def run_claude_agent_sdk(
         async for message in messages:
             mcp_registration.check_message(message)
             if isinstance(message, MirrorErrorMessage):
-                answer_stream_gate.finish(final_text="", release=False)
-                seal_agent_candidates("provider_session_mirror_error")
+                close_failed_terminal("provider_session_mirror_error")
                 error_code = mcp_execution_receipt_error() or _SDK_PROVIDER_SESSION_FAILED
-                return ClaudeAgentSdkRunResult(
-                    used_sdk=True,
+                return assemble_run_result(
                     message="",
-                    session_id=result_session_id,
-                    usage=usage,
                     error=error_code,
                     terminal_reason=terminal_reason,
                     received_structured_terminal=False,
-                    used_skills=list(used_skill_names),
-                    used_skills_source="executor_hook" if used_skill_names else "",
-                    turn_diagnostics=turn_diagnostics(error_code),
-                    capability_evidence=list(capability_evidence),
                 )
             if agent_event_adapter is not None and isinstance(
                 message,
@@ -3511,8 +3539,7 @@ async def run_claude_agent_sdk(
                     else None
                 )
                 if message.is_error:
-                    answer_stream_gate.finish(final_text="", release=False)
-                    seal_agent_candidates("result_error")
+                    close_failed_terminal("result_error")
                     raw_error = (
                         "; ".join(message.errors or [])
                         or message.stop_reason
@@ -3529,26 +3556,21 @@ async def run_claude_agent_sdk(
                             "tool_admission_denials"
                         ],
                     )
-                    return ClaudeAgentSdkRunResult(
-                        used_sdk=True,
+                    return assemble_run_result(
                         message="",
-                        session_id=result_session_id,
-                        usage=usage,
                         error=error_code,
                         terminal_reason=resolved_terminal_reason,
-                        used_skills=list(used_skill_names),
-                        used_skills_source="executor_hook" if used_skill_names else "",
-                        turn_diagnostics=turn_diagnostics(error_code),
-                        runtime_diagnostics=runtime_diagnostics(
-                            error_code,
-                            failure_source="sdk_result_error",
-                            sdk_errors=message.errors,
-                            result_subtype=getattr(message, "subtype", None),
-                            stop_reason=getattr(message, "stop_reason", None),
-                            terminal_reason=resolved_terminal_reason,
-                            permission_denials=permission_denials,
+                        runtime_diagnostics_snapshot=lambda: (
+                            runtime_diagnostics(
+                                error_code,
+                                failure_source="sdk_result_error",
+                                sdk_errors=message.errors,
+                                result_subtype=getattr(message, "subtype", None),
+                                stop_reason=getattr(message, "stop_reason", None),
+                                terminal_reason=resolved_terminal_reason,
+                                permission_denials=permission_denials,
+                            )
                         ),
-                        capability_evidence=list(capability_evidence),
                     )
                 abnormal_terminal_error = (
                     _canonical_sdk_error(
@@ -3567,52 +3589,38 @@ async def run_claude_agent_sdk(
                     else None
                 )
                 if abnormal_terminal_error is not None:
-                    answer_stream_gate.finish(final_text="", release=False)
-                    seal_agent_candidates("abnormal_terminal")
+                    close_failed_terminal("abnormal_terminal")
                     abnormal_terminal_error = (
                         mcp_execution_receipt_error() or abnormal_terminal_error
                     )
-                    return ClaudeAgentSdkRunResult(
-                        used_sdk=True,
+                    return assemble_run_result(
                         message="",
-                        session_id=result_session_id,
-                        usage=usage,
                         error=abnormal_terminal_error,
                         terminal_reason=resolved_terminal_reason,
                         received_structured_terminal=False,
-                        used_skills=list(used_skill_names),
-                        used_skills_source="executor_hook" if used_skill_names else "",
-                        turn_diagnostics=turn_diagnostics(abnormal_terminal_error),
-                        runtime_diagnostics=runtime_diagnostics(
-                            abnormal_terminal_error,
-                            failure_source="sdk_abnormal_terminal",
-                            result_subtype=getattr(message, "subtype", None),
-                            stop_reason=getattr(message, "stop_reason", None),
-                            terminal_reason=resolved_terminal_reason,
-                            permission_denials=permission_denials,
+                        runtime_diagnostics_snapshot=lambda: (
+                            runtime_diagnostics(
+                                abnormal_terminal_error,
+                                failure_source="sdk_abnormal_terminal",
+                                result_subtype=getattr(message, "subtype", None),
+                                stop_reason=getattr(message, "stop_reason", None),
+                                terminal_reason=resolved_terminal_reason,
+                                permission_denials=permission_denials,
+                            )
                         ),
-                        capability_evidence=list(capability_evidence),
                     )
                 if (provider_session_store is not None
                     and (not provider_session_store.main_append_acknowledged
                          or provider_session_store.final_sequence is None
                          or result_session_id != session_id)):
 
-                    answer_stream_gate.finish(final_text="", release=False)
-                    seal_agent_candidates("provider_session_append_not_acknowledged")
+                    close_failed_terminal("provider_session_append_not_acknowledged")
                     error_code = mcp_execution_receipt_error() or _SDK_PROVIDER_SESSION_FAILED
-                    return ClaudeAgentSdkRunResult(
-                        used_sdk=True,
+                    return assemble_run_result(
                         message="",
-                        session_id=result_session_id,
-                        usage=usage,
                         error=error_code,
                         terminal_reason=resolved_terminal_reason,
                         received_structured_terminal=False,
-                        used_skills=list(used_skill_names),
-                        used_skills_source="executor_hook" if used_skill_names else "",
-                        turn_diagnostics=turn_diagnostics(error_code),
-                        capability_evidence=list(capability_evidence),
                     )
                 final_answer = str(message.result or "")
                 terminal_answer_empty = not final_answer.strip()
@@ -3633,33 +3641,25 @@ async def run_claude_agent_sdk(
                         for descriptor in response_file_descriptors
                     ]
                 except (KeyError, ValueError):
-                    answer_stream_gate.finish(final_text="", release=False)
-                    seal_agent_candidates("attached_file_invalid")
+                    close_failed_terminal("attached_file_invalid")
                     error_code = (
                         mcp_execution_receipt_error()
                         or _SDK_DELIVERY_MANIFEST_INVALID
                     )
-                    return ClaudeAgentSdkRunResult(
-                        used_sdk=True,
+                    return assemble_run_result(
                         message="",
-                        session_id=result_session_id,
-                        usage=usage,
                         error=error_code,
                         terminal_reason=resolved_terminal_reason,
                         received_structured_terminal=False,
-                        used_skills=list(used_skill_names),
-                        used_skills_source=(
-                            "executor_hook" if used_skill_names else ""
+                        runtime_diagnostics_snapshot=lambda: (
+                            runtime_diagnostics(
+                                error_code,
+                                failure_source="sdk_attached_file",
+                                result_subtype=getattr(message, "subtype", None),
+                                stop_reason=getattr(message, "stop_reason", None),
+                                terminal_reason=resolved_terminal_reason,
+                            )
                         ),
-                        turn_diagnostics=turn_diagnostics(error_code),
-                        runtime_diagnostics=runtime_diagnostics(
-                            error_code,
-                            failure_source="sdk_attached_file",
-                            result_subtype=getattr(message, "subtype", None),
-                            stop_reason=getattr(message, "stop_reason", None),
-                            terminal_reason=resolved_terminal_reason,
-                        ),
-                        capability_evidence=list(capability_evidence),
                     )
                 response_files[:] = [
                     item["source_path"] for item in response_file_descriptors
@@ -3758,35 +3758,18 @@ async def run_claude_agent_sdk(
             if terminal_error == "agent_event_callback_not_acknowledged"
             else delivered_final_text if not answer_stream_gate.failed else ""
         )
-        return ClaudeAgentSdkRunResult(
-            used_sdk=True,
+        return assemble_run_result(
             message="" if answer_receipt is not None else public_final_result_text,
             answer_receipt=answer_receipt,
-            session_id=result_session_id,
-            usage=usage,
             error=terminal_error,
             terminal_reason=terminal_reason,
             received_structured_terminal=received_structured_terminal,
-            used_skills=list(used_skill_names),
-            used_skills_source="executor_hook" if used_skill_names else "",
-            turn_diagnostics=turn_diagnostics(terminal_error),
-            capability_evidence=list(capability_evidence),
-            response_files=list(response_files) if terminal_error is None else [],
-            response_file_descriptors=(
-                list(response_file_descriptors) if terminal_error is None else []
-            ),
-            provider_final_sequence=(provider_session_store.final_sequence
-                                     if terminal_error is None and provider_session_store is not None else None),
-            runtime_diagnostics=(
+            runtime_diagnostics_snapshot=lambda: (
                 runtime_diagnostics(
                     terminal_error,
                     failure_source="terminal_validation",
-                    result_subtype=getattr(
-                        terminal_result_message, "subtype", None
-                    ),
-                    stop_reason=getattr(
-                        terminal_result_message, "stop_reason", None
-                    ),
+                    result_subtype=getattr(terminal_result_message, "subtype", None),
+                    stop_reason=getattr(terminal_result_message, "stop_reason", None),
                     terminal_reason=terminal_reason,
                     permission_denials=getattr(
                         terminal_result_message, "permission_denials", None
@@ -3795,6 +3778,7 @@ async def run_claude_agent_sdk(
                 if terminal_error is not None
                 else {}
             ),
+            include_terminal_files=True,
         )
 
     consume_cancellation: asyncio.CancelledError | None = None
@@ -3839,21 +3823,16 @@ async def run_claude_agent_sdk(
         except Exception:  # noqa: BLE001
             pass
         error_code = mcp_execution_receipt_error() or _SDK_TIMEOUT
-        return ClaudeAgentSdkRunResult(
-            used_sdk=True,
+        return assemble_run_result(
             message="",
-            session_id=result_session_id,
-            usage=usage,
             error=error_code,
-            used_skills=list(used_skill_names),
-            used_skills_source="executor_hook" if used_skill_names else "",
-            turn_diagnostics=turn_diagnostics(error_code),
-            runtime_diagnostics=runtime_diagnostics(
-                error_code,
-                failure_source="sdk_timeout",
-                terminal_reason=terminal_reason,
+            runtime_diagnostics_snapshot=lambda: (
+                runtime_diagnostics(
+                    error_code,
+                    failure_source="sdk_timeout",
+                    terminal_reason=terminal_reason,
+                )
             ),
-            capability_evidence=list(capability_evidence),
         )
     except Exception as exc:  # noqa: BLE001
         seal_agent_candidates("exception")
@@ -3862,20 +3841,15 @@ async def run_claude_agent_sdk(
             selected_skill_error=skill_hook_error(),
             tool_admission_denials=diagnostic_counters["tool_admission_denials"],
         )
-        return ClaudeAgentSdkRunResult(
-            used_sdk=True,
+        return assemble_run_result(
             message="",
-            session_id=result_session_id,
-            usage=usage,
             error=error_code,
-            used_skills=list(used_skill_names),
-            used_skills_source="executor_hook" if used_skill_names else "",
-            turn_diagnostics=turn_diagnostics(error_code),
-            runtime_diagnostics=runtime_diagnostics(
-                error_code,
-                failure_source="sdk_exception",
-                terminal_reason=terminal_reason,
-                exception=exc,
+            runtime_diagnostics_snapshot=lambda exc=exc: (
+                runtime_diagnostics(
+                    error_code,
+                    failure_source="sdk_exception",
+                    terminal_reason=terminal_reason,
+                    exception=exc,
+                )
             ),
-            capability_evidence=list(capability_evidence),
         )

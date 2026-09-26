@@ -68,6 +68,15 @@ model or network call. That smoke imports the installed distribution, checks
 metadata and signatures, constructs every option and hook shape used here, and
 instantiates the stream and terminal message types.
 
+## Terminal result assembly
+
+The runner has one terminal snapshot assembler for session, usage, Skill and
+capability observations, diagnostics, and deliverable fields. Each terminal
+branch chooses its error and diagnostic source before assembly; failures close
+the answer gate and seal candidates before diagnostics are captured. Successful
+results expose files and provider sequence only after terminal validation.
+Cancellation still propagates after the consumer task is stopped and awaited.
+
 ## SDK-native automatic compaction
 
 Execution passes the immutable Run `max_input_tokens` through
