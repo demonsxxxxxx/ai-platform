@@ -54,10 +54,12 @@ A route test must patch the route's actual collaborator. The former compatibilit
 aliases no longer forward patches to canonical adapter globals.
 
 Run event construction and size validation live in
-`app.streaming.infrastructure.run_events_postgres`; durable ledger receipts and cursor
-reads live in `app.streaming.infrastructure.event_ledger_postgres`. Cursor and public
-projection rules live in `app.streaming.domain.run_events`. Active runtime lease queries live in
-`app.sandbox.infrastructure.leases_postgres`.
+`app.streaming.infrastructure.run_events_postgres`; durable ledger receipts and
+cursor reads live in `app.streaming.infrastructure.event_ledger_postgres`.
+Cursor, public projection, event version, and error-code rules live in
+`app.streaming.domain.run_events`. Cross-domain event-version readers use
+`app.streaming.events`; tracing uses `app.platform.tracing`. Active runtime lease
+queries live in `app.sandbox.infrastructure.leases_postgres`.
 
 Persistence tests are grouped by the same domain responsibilities under `tests/`.
 Shared connection and cursor doubles live in `tests/support/repository_fixtures.py`;
