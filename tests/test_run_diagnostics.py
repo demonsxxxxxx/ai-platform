@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.persistence_limits import json_size_bytes
+from app.platform.postgres.limits import json_size_bytes
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_MAX_BYTES,

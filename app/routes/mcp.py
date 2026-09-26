@@ -8,7 +8,6 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from app import repositories
 from app.auth import FORCE_RELOGIN_HEADER, AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessContext,
@@ -18,7 +17,15 @@ from app.capability_distribution import (
     resolve_capability_access,
 )
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
+from app.conversations.infrastructure import (
+    session_queries_postgres as conversations_session_queries,
+)
 from app.db import transaction
+from app.identity.infrastructure import audit_postgres as identity_audit
+from app.identity.infrastructure import (
+    capability_distributions_postgres as identity_capability_distributions,
+)
+from app.identity.infrastructure import postgres as identity_postgres
 from app.mcp import api as mcp_repository
 from app.mcp.api import (
     LiveMcpServerResult,
@@ -28,6 +35,10 @@ from app.mcp.api import (
     normalize_static_mcp_headers,
     open_mcp_server_credentials,
     seal_mcp_server_credentials,
+)
+from app.platform.postgres import errors as platform_errors
+from app.runs.infrastructure import (
+    capability_admission_postgres as runs_capability_admission,
 )
 from app.validation import assert_safe_id
 
@@ -140,7 +151,7 @@ def _safe_name(name: str, field_name: str = "mcp_server_name") -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _distribution_status_mutation_http_exception(exc: repositories.RepositoryConflictError) -> HTTPException:
+def _distribution_status_mutation_http_exception(exc: platform_errors.RepositoryConflictError) -> HTTPException:
     """Map distribution status conflicts without exposing repository-internal details."""
 
     detail = "capability_distribution_archived" if str(exc) == "capability_distribution_archived" else "mcp_server_conflict"
@@ -334,7 +345,7 @@ async def _audit_mcp_admin_bypass(
 ) -> None:
     if not decision.admin_bypass:
         return
-    await repositories.append_audit_log(
+    await identity_audit.append_audit_log(
         conn,
         tenant_id=principal.tenant_id,
         user_id=principal.user_id,
@@ -364,7 +375,7 @@ async def _public_server_access(
             include_disabled=True,
         )
         row = _find_registry_server(registry_rows, name=name)
-        distribution = await repositories.get_capability_distribution_row(
+        distribution = await identity_capability_distributions.get_capability_distribution_row(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind="mcp_server",
@@ -410,7 +421,7 @@ async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, 
             tenant_id=principal.tenant_id,
             include_disabled=True,
         )
-        distributions = await repositories.list_capability_distribution_rows(
+        distributions = await identity_capability_distributions.list_capability_distribution_rows(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind="mcp_server",
@@ -453,7 +464,7 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
             tenant_id=principal.tenant_id,
             include_disabled=False,
         )
-        distributions = await repositories.list_capability_distribution_rows(
+        distributions = await identity_capability_distributions.list_capability_distribution_rows(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind="mcp_server",
@@ -529,13 +540,13 @@ async def _write_server(
             raise _mcp_runtime_http_error(exc) from exc
     try:
         async with transaction() as conn:
-            await repositories.ensure_user(
+            await identity_postgres.ensure_user(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 display_name=principal.display_name or principal.user_id,
             )
-            existing_distribution = await repositories.get_capability_distribution_row(
+            existing_distribution = await identity_capability_distributions.get_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="mcp_server",
@@ -590,7 +601,7 @@ async def _write_server(
                 credential_envelope=credential_envelope,
                 updated_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -611,9 +622,9 @@ async def _write_server(
                     }
                 ),
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except repositories.RepositoryNotFoundError as exc:
+    except platform_errors.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _server_response(row, distribution=distribution, can_edit=True)
 
@@ -656,7 +667,7 @@ async def list_chat_mcp_tools(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid_session_id") from exc
         async with transaction() as conn:
-            session = await repositories.get_authorized_session(
+            session = await conversations_session_queries.get_authorized_session(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -671,7 +682,7 @@ async def list_chat_mcp_tools(
             else None
         )
         selected = (
-            repositories.extract_run_mcp_tool_ids(latest_input)
+            runs_capability_admission.extract_run_mcp_tool_ids(latest_input)
             if isinstance(latest_input, dict) and "mcp_tool_ids" in latest_input
             else []
         )
@@ -783,14 +794,14 @@ async def delete_mcp_server(
                 name=safe_name,
                 updated_by=principal.user_id,
             )
-            distribution = await repositories.archive_capability_distribution_row(
+            distribution = await identity_capability_distributions.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="mcp_server",
                 capability_id=safe_name,
                 archived_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -800,9 +811,9 @@ async def delete_mcp_server(
                 trace_id=standard_trace_id(safe_name),
                 payload_json={"name": safe_name, "status": "deleted"},
             )
-    except repositories.RepositoryNotFoundError as exc:
+    except platform_errors.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise _distribution_status_mutation_http_exception(exc) from exc
     return _server_response(row, distribution=distribution, can_edit=True)
 
@@ -827,7 +838,7 @@ async def toggle_mcp_server(
                 enabled=request.requested_enabled(),  # type: ignore[attr-defined]
                 updated_by=principal.user_id,
             )
-            distribution = await repositories.set_capability_distribution_status(
+            distribution = await identity_capability_distributions.set_capability_distribution_status(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="mcp_server",
@@ -835,7 +846,7 @@ async def toggle_mcp_server(
                 status="active" if row.get("status") == "active" else "disabled",
                 updated_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -845,9 +856,9 @@ async def toggle_mcp_server(
                 trace_id=standard_trace_id(safe_name),
                 payload_json={"name": safe_name, "enabled": row.get("status") == "active"},
             )
-    except repositories.RepositoryNotFoundError as exc:
+    except platform_errors.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise _distribution_status_mutation_http_exception(exc) from exc
     return {
         "server": _server_response(row, distribution=distribution, can_edit=True),
@@ -952,14 +963,14 @@ async def delete_admin_mcp_server(
                 name=safe_name,
                 updated_by=principal.user_id,
             )
-            distribution = await repositories.archive_capability_distribution_row(
+            distribution = await identity_capability_distributions.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="mcp_server",
                 capability_id=safe_name,
                 archived_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -969,8 +980,8 @@ async def delete_admin_mcp_server(
                 trace_id=standard_trace_id(safe_name),
                 payload_json={"name": safe_name, "status": "deleted"},
             )
-    except repositories.RepositoryNotFoundError as exc:
+    except platform_errors.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise _distribution_status_mutation_http_exception(exc) from exc
     return _server_response(row, distribution=distribution, can_edit=True)

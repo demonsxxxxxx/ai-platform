@@ -6,14 +6,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
-from app import repositories
 from app.context import api as context_api
-from app.context_manifest import available_context_retrieval_tools
+from app.context.infrastructure import snapshot_postgres as context_snapshot
 from app.context.retrieval import (
     ContextRetrievalAuthority,
     ContextRetrievalDenied,
     ContextRetrievalInputError,
 )
+from app.context_manifest import available_context_retrieval_tools
 from app.db import transaction
 from app.files.api import (
     ProfileDriveTransferError,
@@ -21,10 +21,12 @@ from app.files.api import (
     profile_drive_streaming_response,
 )
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
-from app.platform.public_payload import sanitize_public_reasoning_text
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.platform.public_payload import sanitize_public_reasoning_text
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+from app.runs.api import RunDiagnosticsService
+from app.runs.infrastructure import postgres as runs_postgres
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
 from app.runtime.sandbox.callback_tokens import (
@@ -49,19 +51,20 @@ from app.runtime.sandbox.executor_signals import (
     publish_executor_terminal_signal,
 )
 from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
-from app.runs.api import RunDiagnosticsService
+from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.settings import get_settings
+from app.storage import ObjectStorage, run_storage_io
 from app.streaming.api import (
     V4ProjectionError,
     V4PublicationTransportUnavailable,
     WorkerV4Capabilities,
-    publish_callback_rows,
     append_callback_v4_rows,
     callback_item_to_v4,
     callback_thinking_summary_to_v4,
+    publish_callback_rows,
 )
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.streaming.redis import get_stream_authority
-from app.storage import ObjectStorage, run_storage_io
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -249,7 +252,7 @@ async def record_executor_callback(
                     status_code=409, detail="sse_stream_attempt_inactive"
                 )
         if callback.batch_id:
-            receipt = await repositories.append_event_batch(
+            receipt = await streaming_run_events.append_event_batch(
                 conn,
                 tenant_id=tenant_id,
                 run_id=callback.run_id,
@@ -279,7 +282,7 @@ async def record_executor_callback(
                     ) from exc
         else:
             for event in event_batch:
-                await repositories.append_event(
+                await streaming_run_events.append_event(
                     conn,
                     tenant_id=tenant_id,
                     run_id=callback.run_id,
@@ -523,7 +526,7 @@ async def _require_current_runtime_attempt(
     attempt_id: str,
     callback_token_id: str,
 ) -> dict[str, Any]:
-    leases = await repositories.list_current_sandbox_runtime_leases_for_attempt(
+    leases = await sandbox_leases.list_current_sandbox_runtime_leases_for_attempt(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
@@ -553,7 +556,7 @@ async def _lock_current_runtime_attempt_then_run(
     callback_token_id: str,
     session_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    run_hint = await repositories.get_run_identity(conn, run_id=run_id, for_update=False)
+    run_hint = await runs_postgres.get_run_identity(conn, run_id=run_id, for_update=False)
     if run_hint is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     if session_id is not None and str(run_hint.get("session_id") or "") != session_id:
@@ -561,7 +564,7 @@ async def _lock_current_runtime_attempt_then_run(
     if str(run_hint.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="run_already_terminal")
     tenant_id = str(run_hint.get("tenant_id") or "")
-    locked_run = await repositories.get_run_identity(conn, run_id=run_id, for_update=True)
+    locked_run = await runs_postgres.get_run_identity(conn, run_id=run_id, for_update=True)
     if locked_run is None or str(locked_run.get("tenant_id") or "") != tenant_id:
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
     if session_id is not None and str(locked_run.get("session_id") or "") != session_id:
@@ -691,7 +694,7 @@ async def _profile_drive_file_response(
                 attempt_id=request.attempt_id,
                 callback_token_id=request.callback_token_id,
             )
-            await repositories.append_event(
+            await streaming_run_events.append_event(
                 conn,
                 tenant_id=tenant_id,
                 run_id=request.run_id,
@@ -756,7 +759,7 @@ async def executor_context_retrieval_callback(
         workspace_id = str(run_identity.get("workspace_id") or "")
         user_id = str(run_identity.get("user_id") or "")
         agent_id = str(run_identity.get("agent_id") or "")
-        snapshot = await repositories.get_bound_executor_context_snapshot(
+        snapshot = await context_snapshot.get_bound_executor_context_snapshot(
             conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -801,7 +804,7 @@ async def executor_context_retrieval_callback(
             raise
         except Exception as exc:
             raise HTTPException(status_code=503, detail="context_retrieval_failed") from exc
-        await repositories.append_event(
+        await streaming_run_events.append_event(
             conn,
             tenant_id=tenant_id,
             run_id=request.run_id,

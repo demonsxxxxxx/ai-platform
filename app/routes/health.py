@@ -6,9 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.db import transaction
 from app.data_retention import retention_policy_projection
-from app import repositories
+from app.db import transaction
+from app.persistence import object_deletions as persistence_object_deletions
+from app.persistence import retention as persistence_retention
 from app.queue import get_queue_status, get_redis
 from app.schema_migrations import TARGET_SCHEMA_VERSION, schema_status
 from app.settings import get_settings
@@ -101,7 +102,7 @@ async def admin_retention_status(
     settings = get_settings()
     policy = retention_policy_projection(settings)
     async with transaction() as conn:
-        backlog = await repositories.get_data_retention_backlog(
+        backlog = await persistence_retention.get_data_retention_backlog(
             conn,
             retention_days=dict(policy["configurable_retention_days"]),
         )
@@ -127,7 +128,7 @@ async def admin_requeue_object_deletion(
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
     async with transaction() as conn:
-        requeued = await repositories.requeue_dead_letter_object_deletion(
+        requeued = await persistence_object_deletions.requeue_dead_letter_object_deletion(
             conn,
             outbox_id=outbox_id,
             tenant_id=principal.tenant_id,

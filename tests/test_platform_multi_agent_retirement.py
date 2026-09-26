@@ -1,3 +1,4 @@
+import app.persistence.chat_submissions as _owner_persistence_chat_submissions
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -5,10 +6,9 @@ import pytest
 from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
 
-from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.main import create_app
-from app.repositories import RepositoryConflictError
+from app.platform.postgres.errors import RepositoryConflictError
 from app.run_admission_policy import (
     contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
@@ -179,7 +179,7 @@ async def test_chat_submission_resolver_stably_returns_retired_admission_code(mo
         }
 
     monkeypatch.setattr("app.routes.chat.transaction", transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission)
 
     response = Response()
     with pytest.raises(HTTPException) as exc_info:

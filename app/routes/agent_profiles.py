@@ -1,12 +1,13 @@
 import unicodedata
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request as HttpRequest
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Request as HttpRequest
 from pydantic import BaseModel, ConfigDict, Field
 
-from app import repositories
 from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
 from app.department_directory import validate_profile_department_authorities
 from app.models import (
@@ -24,6 +25,7 @@ from app.models import (
     CreateAgentConversationRequest,
     SelectedAgentProfileRequest,
 )
+from app.platform.postgres import errors as platform_errors
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -87,7 +89,7 @@ async def _submit_dedicated_agent_run(
     """Restore session scope, then delegate to the sole Chat admission/streaming chain."""
 
     async with transaction() as conn:
-        session = await repositories.get_authorized_session_projection(
+        session = await conversations_postgres.get_authorized_session_projection(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -208,12 +210,12 @@ async def create_agent_conversation(
                 title=request.title,
                 operation_id=request.operation_id,
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_not_available") from exc
-    except repositories.RepositoryNotFoundError as exc:
+    except platform_errors.RepositoryNotFoundError as exc:
         detail = "workspace_not_found" if str(exc) == "workspace_not_found" else "agent_profile_not_available"
         raise HTTPException(status_code=404, detail=detail) from exc
-    except repositories.RepositoryAuthorizationError as exc:
+    except platform_errors.RepositoryAuthorizationError as exc:
         raise HTTPException(status_code=403, detail="agent_profile_not_authorized") from exc
 
 
@@ -294,7 +296,7 @@ async def create_agent_profile(
                 definition=request,
                 agent_id=None,
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
@@ -321,7 +323,7 @@ async def save_agent_profile_draft(
                 definition=request,
                 agent_id=safe_agent_id,
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
@@ -343,7 +345,7 @@ async def validate_agent_profile_draft(
                 definition=request.definition,
                 agent_id=request.agent_id,
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return AgentProfileValidationResponse(audit_id=audit_id)
 
@@ -384,7 +386,7 @@ async def run_agent_profile_test(
                 session_id=test_session_id,
                 purpose="builder_test",
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_test_submission_conflict") from exc
     outcome = await _submit_dedicated_agent_run(
         agent_id=safe_agent_id,
@@ -425,7 +427,7 @@ async def publish_agent_profile(
                 agent_id=safe_agent_id,
                 expected_revision=request.expected_revision,
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
@@ -452,7 +454,7 @@ async def unpublish_agent_profile(
                 agent_id=safe_agent_id,
                 expected_revision=request.expected_revision,
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return {"agent_profile": profile.model_dump(mode="json"), "audit_id": audit_id}
 
@@ -479,6 +481,6 @@ async def retire_agent_profile(
                 agent_id=safe_agent_id,
                 expected_revision=request.expected_revision,
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
     return {"agent_id": safe_agent_id, "audit_id": audit_id}

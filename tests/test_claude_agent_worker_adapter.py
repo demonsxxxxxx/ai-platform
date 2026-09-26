@@ -1466,7 +1466,7 @@ async def test_materialize_files_rejects_symlinked_inputs_directory(monkeypatch,
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfRead)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
@@ -1501,7 +1501,7 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr("app.context.infrastructure.sources_postgres.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
     with pytest.raises(ContextFileContentError, match="context_file_staging_write_failed"):
@@ -1542,7 +1542,7 @@ async def test_materialize_files_disambiguates_duplicate_basename_in_stage(
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_scoped_context_file",
+        "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
@@ -1588,7 +1588,7 @@ async def test_harness_chat_stages_authorized_attachment_under_inputs(
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr("app.context.infrastructure.sources_postgres.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
 
     prepared_files = await adapter._materialize_files(

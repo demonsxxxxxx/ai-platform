@@ -11,7 +11,43 @@ from psycopg import sql as psycopg_sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import agent_conversation_repository, repositories
+from app.conversations.infrastructure import postgres as conversation_history
+import app.agent_apps.infrastructure.catalog_postgres as _repo_owner_app_agent_apps_infrastructure_catalog_postgres
+import app.agent_apps.infrastructure.principal_catalog_postgres as _repo_owner_app_agent_apps_infrastructure_principal_catalog_postgres
+import app.context.file_continuity as _repo_owner_app_context_file_continuity
+import app.context.infrastructure.postgres as _repo_owner_app_context_infrastructure_postgres
+import app.context.infrastructure.snapshot_postgres as _repo_owner_app_context_infrastructure_snapshot_postgres
+import app.context.infrastructure.sources_postgres as _repo_owner_app_context_infrastructure_sources_postgres
+import app.conversations.infrastructure.postgres as _repo_owner_app_conversations_infrastructure_postgres
+import app.conversations.infrastructure.session_queries_postgres as _repo_owner_app_conversations_infrastructure_session_queries_postgres
+import app.files.infrastructure.run_bindings_postgres as _repo_owner_app_files_infrastructure_run_bindings_postgres
+import app.identity.infrastructure.audit_postgres as _repo_owner_app_identity_infrastructure_audit_postgres
+import app.identity.infrastructure.capability_distributions_postgres as _repo_owner_app_identity_infrastructure_capability_distributions_postgres
+import app.identity.infrastructure.postgres as _repo_owner_app_identity_infrastructure_postgres
+import app.mcp.infrastructure.chat_access_postgres as _repo_owner_app_mcp_infrastructure_chat_access_postgres
+import app.mcp.infrastructure.registry_postgres as _repo_owner_app_mcp_infrastructure_registry_postgres
+import app.mcp.infrastructure.tool_policies_postgres as _repo_owner_app_mcp_infrastructure_tool_policies_postgres
+import app.mcp.repository as _repo_owner_app_mcp_repository
+import app.persistence.artifacts as _repo_owner_app_persistence_artifacts
+import app.persistence.chat_submissions as _repo_owner_app_persistence_chat_submissions
+import app.persistence.retention as _repo_owner_app_persistence_retention
+import app.platform.postgres.errors as _repo_owner_app_platform_postgres_errors
+import app.platform.postgres.limits as _repo_owner_app_platform_postgres_limits
+import app.runs.infrastructure.admin_queries_postgres as _repo_owner_app_runs_infrastructure_admin_queries_postgres
+import app.runs.infrastructure.capability_admission_postgres as _repo_owner_app_runs_infrastructure_capability_admission_postgres
+import app.runs.infrastructure.control_operations_postgres as _repo_owner_app_runs_infrastructure_control_operations_postgres
+import app.runs.infrastructure.creation_postgres as _repo_owner_app_runs_infrastructure_creation_postgres
+import app.runs.infrastructure.replay_postgres as _repo_owner_app_runs_infrastructure_replay_postgres
+import app.sandbox.infrastructure.leases_postgres as _repo_owner_app_sandbox_infrastructure_leases_postgres
+import app.skills.dependencies as _repo_owner_app_skills_dependencies
+import app.skills.infrastructure.catalog_postgres as _repo_owner_app_skills_infrastructure_catalog_postgres
+import app.skills.infrastructure.file_overlays_postgres as _repo_owner_app_skills_infrastructure_file_overlays_postgres
+import app.skills.infrastructure.postgres as _repo_owner_app_skills_infrastructure_postgres
+import app.skills.infrastructure.resolution_postgres as _repo_owner_app_skills_infrastructure_resolution_postgres
+import app.skills.infrastructure.run_snapshots_postgres as _repo_owner_app_skills_infrastructure_run_snapshots_postgres
+import app.skills.infrastructure.versions_postgres as _repo_owner_app_skills_infrastructure_versions_postgres
+import app.skills.pinning as _repo_owner_app_skills_pinning
+import app.streaming.infrastructure.run_events_postgres as _repo_owner_app_streaming_infrastructure_run_events_postgres
 import app.agent_apps.infrastructure.principal_catalog_postgres as principal_catalog_persistence
 import app.identity.infrastructure.capability_distributions_postgres as distribution_persistence
 import app.runs.infrastructure.admin_queries_postgres as run_queries_persistence
@@ -28,11 +64,7 @@ from app import run_event_repository
 from app.agent_apps.infrastructure import postgres as agent_profile_persistence
 from app.conversations.infrastructure import postgres as conversation_persistence
 from app.persistence import artifacts as artifact_persistence
-from app.persistence_limits import RUN_INPUT_MAX_BYTES
-from app.platform.postgres.errors import (
-    RepositoryAuthorizationError as PlatformRepositoryAuthorizationError,
-)
-from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
+from app.platform.postgres.limits import RUN_INPUT_MAX_BYTES
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.platform.tracing import standard_trace_id
 from app.skills.infrastructure import postgres as skill_persistence
@@ -57,34 +89,57 @@ from app.platform.postgres.sandbox_leases import (
     record_sandbox_executor_terminal,
 )
 from app.streaming.infrastructure import v4 as streaming_v4
-from app.repositories import (
-    RepositoryConflictError,
-    RepositoryNotFoundError,
-    append_audit_log,
-    append_event,
-    count_active_runs_for_user,
+from app.artifacts.infrastructure.records_postgres import (
     create_artifact,
-    create_context_snapshot,
-    create_run,
+    list_run_artifacts,
+)
+from app.context.infrastructure.postgres import (
     admin_delete_memory_record,
     delete_memory_record,
-    enforce_user_active_run_admission,
-    get_admin_run_detail,
+    list_scoped_context_memory_records,
+)
+from app.context.infrastructure.snapshot_postgres import (
+    create_context_snapshot,
     get_context_snapshot_for_worker,
-    get_authorized_context_target_session,
     get_latest_authorized_executor_context_snapshot,
     list_context_share_snapshots_for_target_session,
-    get_run_identity,
-    list_run_events,
-    list_run_artifacts,
-    list_scoped_context_messages,
-    get_scoped_context_file,
+)
+from app.context.infrastructure.sources_postgres import (
     get_scoped_context_artifact,
-    list_scoped_context_memory_records,
-    renew_sandbox_lease,
+    get_scoped_context_file,
+    list_scoped_context_messages,
+)
+from app.conversations.infrastructure.session_queries_postgres import (
+    get_authorized_context_target_session,
+)
+from app.identity.infrastructure.audit_postgres import (
+    append_audit_log,
+)
+from app.platform.postgres.errors import (
+    RepositoryConflictError,
+    RepositoryNotFoundError,
+)
+from app.runs.infrastructure.admin_queries_postgres import (
+    get_admin_run_detail,
+)
+from app.runs.infrastructure.creation_postgres import (
+    create_run,
+)
+from app.runs.infrastructure.postgres import (
+    count_active_runs_for_user,
+    enforce_user_active_run_admission,
+    get_run_identity,
+)
+from app.runs.infrastructure.steps_postgres import (
     upsert_run_step,
 )
-
+from app.sandbox.infrastructure.leases_postgres import (
+    renew_sandbox_lease,
+)
+from app.streaming.infrastructure.run_events_postgres import (
+    append_event,
+    list_run_events,
+)
 
 async def _record_noop_event(*_args, **_kwargs):
     return "evt-test"
@@ -128,15 +183,15 @@ async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
             attempt_lifecycle=RunAttemptLifecycleService(
                 persistence=run_attempt_persistence
             ),
-            append_event=repositories.append_event,
-            append_audit_log=repositories.append_audit_log,
-            list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
+            append_event=_repo_owner_app_streaming_infrastructure_run_events_postgres.append_event,
+            append_audit_log=_repo_owner_app_identity_infrastructure_audit_postgres.append_audit_log,
+            list_active_sandbox_leases=_repo_owner_app_sandbox_infrastructure_leases_postgres.list_active_sandbox_leases_for_run,
         ),
         event_writer=_CancellationEventWriter(),
         progress_terminalization=RunLifecycleService(
             persistence=PostgresRunLifecyclePersistence(),
-            append_event=repositories.append_event,
-            append_audit_log=repositories.append_audit_log,
+            append_event=_repo_owner_app_streaming_infrastructure_run_events_postgres.append_event,
+            append_audit_log=_repo_owner_app_identity_infrastructure_audit_postgres.append_audit_log,
             validate_result_size=require_run_result_size,
             sanitize_payload=sanitize_public_payload,
             sanitize_text=sanitize_public_text,
@@ -162,15 +217,15 @@ async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
             attempt_lifecycle=RunAttemptLifecycleService(
                 persistence=run_attempt_persistence
             ),
-            append_event=repositories.append_event,
-            append_audit_log=repositories.append_audit_log,
-            list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
+            append_event=_repo_owner_app_streaming_infrastructure_run_events_postgres.append_event,
+            append_audit_log=_repo_owner_app_identity_infrastructure_audit_postgres.append_audit_log,
+            list_active_sandbox_leases=_repo_owner_app_sandbox_infrastructure_leases_postgres.list_active_sandbox_leases_for_run,
         ),
         event_writer=_CancellationEventWriter(),
         progress_terminalization=RunLifecycleService(
             persistence=PostgresRunLifecyclePersistence(),
-            append_event=repositories.append_event,
-            append_audit_log=repositories.append_audit_log,
+            append_event=_repo_owner_app_streaming_infrastructure_run_events_postgres.append_event,
+            append_audit_log=_repo_owner_app_identity_infrastructure_audit_postgres.append_audit_log,
             validate_result_size=require_run_result_size,
             sanitize_payload=sanitize_public_payload,
             sanitize_text=sanitize_public_text,
@@ -185,44 +240,8 @@ async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
     return result.as_route_result() if result is not None else None
 
 
-def test_global_repository_has_no_agent_profile_persistence_facade():
-    canonical_names = (
-        "acquire_agent_profile_lifecycle_lock",
-        "create_agent_profile_revision",
-        "ensure_agent_profile_identity",
-        "get_agent_profile_aggregate",
-        "get_agent_profile_revision",
-        "get_bound_published_agent_profile",
-        "get_current_published_agent_profile",
-        "list_agent_profile_revision_history",
-        "list_current_published_agent_profiles",
-        "list_latest_agent_profile_revisions",
-        "record_agent_profile_draft",
-        "record_agent_profile_publication",
-        "record_agent_profile_withdrawal",
-    )
-
-    assert all(not hasattr(repositories, name) for name in canonical_names)
-    assert all(callable(getattr(agent_profile_persistence, name)) for name in canonical_names)
-    assert RepositoryConflictError is PlatformRepositoryConflictError
-
-
-def test_repository_facade_binds_skill_persistence_to_one_canonical_module():
-    canonical_names = (
-        "canonical_builtin_tool_identities",
-        "get_skill_version",
-        "run_skill_snapshot_source_json",
-        "validate_replay_skill_manifests",
-    )
-
-    for name in canonical_names:
-        assert getattr(repositories, name) is getattr(skill_persistence, name)
-
-    assert repositories.RepositoryAuthorizationError is PlatformRepositoryAuthorizationError
-
-
 def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
-    first = repositories.chat_submission_fingerprint(
+    first = _repo_owner_app_persistence_chat_submissions.chat_submission_fingerprint(
         {
             "message": "same message",
             "workspace_id": "default",
@@ -232,7 +251,7 @@ def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
         tenant_id="tenant-a",
         user_id="user-a",
     )
-    reordered = repositories.chat_submission_fingerprint(
+    reordered = _repo_owner_app_persistence_chat_submissions.chat_submission_fingerprint(
         {
             "input": {"a": 1, "b": 2},
             "file_ids": ["file-a", "file-b"],
@@ -242,7 +261,7 @@ def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
         tenant_id="tenant-a",
         user_id="user-a",
     )
-    changed_scope = repositories.chat_submission_fingerprint(
+    changed_scope = _repo_owner_app_persistence_chat_submissions.chat_submission_fingerprint(
         {
             "input": {"a": 1, "b": 2},
             "file_ids": ["file-a", "file-b"],
@@ -719,7 +738,7 @@ class _RevealedArtifactTableConnection:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "lookup",
-    [repositories.get_authorized_session, repositories.get_authorized_lambchat_session],
+    [_repo_owner_app_conversations_infrastructure_session_queries_postgres.get_authorized_session, _repo_owner_app_conversations_infrastructure_postgres.get_authorized_lambchat_session],
 )
 async def test_owner_session_lookups_are_active_only_and_keep_principal_scope(lookup):
     active = {
@@ -784,7 +803,7 @@ async def test_selectorless_continuation_lock_precedes_same_session_generation_a
             raise AssertionError(f"unexpected SQL: {normalized}")
 
     conn = LinearizedConnection()
-    session = await repositories.get_authorized_session(
+    session = await _repo_owner_app_conversations_infrastructure_session_queries_postgres.get_authorized_session(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -793,7 +812,7 @@ async def test_selectorless_continuation_lock_precedes_same_session_generation_a
         for_update=True,
     )
     assert session is not None
-    generation = await repositories.allocate_session_run_generation(
+    generation = await _repo_owner_app_runs_infrastructure_creation_postgres.allocate_session_run_generation(
         conn,
         tenant_id="tenant-a",
         workspace_id=str(session["workspace_id"]),
@@ -832,7 +851,7 @@ async def test_owner_run_lookup_closes_on_session_delete_and_locks_only_the_run_
     }
     conn = _RunSessionTableConnection(run=run, session=session)
 
-    assert await repositories.get_authorized_run(
+    assert await _repo_owner_app_runs_infrastructure_creation_postgres.get_authorized_run(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -850,7 +869,7 @@ async def test_owner_run_lookup_closes_on_session_delete_and_locks_only_the_run_
     assert active_params == ("tenant-a", "run-a", "user-a")
 
     session["status"] = "deleted"
-    assert await repositories.get_authorized_run(
+    assert await _repo_owner_app_runs_infrastructure_creation_postgres.get_authorized_run(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -859,13 +878,13 @@ async def test_owner_run_lookup_closes_on_session_delete_and_locks_only_the_run_
 
     session["status"] = "active"
     session["agent_id"] = "other-agent"
-    assert await repositories.get_authorized_run(
+    assert await _repo_owner_app_runs_infrastructure_creation_postgres.get_authorized_run(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
         run_id="run-a",
     ) is None
-    assert await repositories.get_authorized_run(
+    assert await _repo_owner_app_runs_infrastructure_creation_postgres.get_authorized_run(
         conn,
         tenant_id="tenant-a",
         user_id="user-b",
@@ -877,7 +896,7 @@ async def test_owner_run_lookup_closes_on_session_delete_and_locks_only_the_run_
 async def test_session_action_repositories_bind_tenant_and_active_terminal_state():
     conn = RecordingConnection()
 
-    await repositories.get_session_for_action(
+    await _repo_owner_app_conversations_infrastructure_postgres.get_session_for_action(
         conn,
         tenant_id="tenant-a",
         session_id="session-a",
@@ -889,7 +908,7 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "status = 'active'" not in get_sql
     assert get_params == ("tenant-a", "session-a")
 
-    await repositories.update_session_title(
+    await _repo_owner_app_conversations_infrastructure_postgres.update_session_title(
         conn,
         tenant_id="tenant-a",
         session_id="session-a",
@@ -901,7 +920,7 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "status = 'active'" in rename_sql
     assert rename_params == ("Renamed", "user", "tenant-a", "session-a")
 
-    await repositories.update_session_title(
+    await _repo_owner_app_conversations_infrastructure_postgres.update_session_title(
         conn,
         tenant_id="tenant-a",
         session_id="session-a",
@@ -913,7 +932,7 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "title_source = %s" in initialize_sql
     assert initialize_params == ("First task", "generated", "tenant-a", "session-a", "initial")
 
-    await repositories.mark_session_deleted(
+    await _repo_owner_app_conversations_infrastructure_postgres.mark_session_deleted(
         conn,
         tenant_id="tenant-a",
         session_id="session-a",
@@ -923,7 +942,7 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "status = 'active'" in delete_sql
     assert delete_params == ("tenant-a", "session-a")
 
-    await repositories.list_session_messages_for_fork(
+    await _repo_owner_app_conversations_infrastructure_postgres.list_session_messages_for_fork(
         conn,
         tenant_id="tenant-a",
         session_id="session-a",
@@ -946,7 +965,7 @@ async def test_initialize_session_title_returns_none_when_user_rename_wins():
         async def execute(self, _sql, *_params):
             return NoUpdateCursor()
 
-    assert await repositories.update_session_title(
+    assert await _repo_owner_app_conversations_infrastructure_postgres.update_session_title(
         NoUpdateConnection(),
         tenant_id="tenant-a",
         session_id="session-a",
@@ -965,7 +984,7 @@ async def test_authorized_artifact_requires_an_active_exact_scope_owning_session
     }
     conn = SingleRowConnection(artifact)
 
-    row = await repositories.get_authorized_artifact(
+    row = await _repo_owner_app_persistence_artifacts.get_authorized_artifact(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -1059,12 +1078,12 @@ async def test_revealed_artifact_rows_disappear_after_exact_owning_session_is_de
     }
     conn = _RevealedArtifactTableConnection(artifact=artifact, run=run, session=session)
 
-    assert [row["id"] for row in await repositories.list_revealed_artifacts(
+    assert [row["id"] for row in await _repo_owner_app_persistence_artifacts.list_revealed_artifacts(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
     )] == ["artifact-a"]
-    assert [row["session_id"] for row in await repositories.list_revealed_artifact_sessions(
+    assert [row["session_id"] for row in await _repo_owner_app_persistence_artifacts.list_revealed_artifact_sessions(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -1080,12 +1099,12 @@ async def test_revealed_artifact_rows_disappear_after_exact_owning_session_is_de
         assert params == ("tenant-a", "user-a")
 
     session["status"] = "deleted"
-    assert await repositories.list_revealed_artifacts(
+    assert await _repo_owner_app_persistence_artifacts.list_revealed_artifacts(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
     ) == []
-    assert await repositories.list_revealed_artifact_sessions(
+    assert await _repo_owner_app_persistence_artifacts.list_revealed_artifact_sessions(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -1093,7 +1112,7 @@ async def test_revealed_artifact_rows_disappear_after_exact_owning_session_is_de
 
     session["status"] = "active"
     session["workspace_id"] = "other-workspace"
-    assert await repositories.list_revealed_artifacts(
+    assert await _repo_owner_app_persistence_artifacts.list_revealed_artifacts(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -1104,7 +1123,7 @@ async def test_revealed_artifact_rows_disappear_after_exact_owning_session_is_de
 async def test_authorized_session_runs_use_canonical_legacy_tie_break_order():
     conn = RecordingConnection()
 
-    await repositories.list_authorized_session_runs(
+    await _repo_owner_app_conversations_infrastructure_session_queries_postgres.list_authorized_session_runs(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -1132,7 +1151,7 @@ async def test_authorized_session_runs_use_canonical_legacy_tie_break_order():
 async def test_authorized_session_runs_can_bind_one_workspace_for_continuation_inheritance():
     conn = RecordingConnection()
 
-    await repositories.list_authorized_session_runs(
+    await _repo_owner_app_conversations_infrastructure_session_queries_postgres.list_authorized_session_runs(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -1170,7 +1189,7 @@ def test_queue_admission_ordinal_bigint_guard_boundaries(raw, expected_valid):
 async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
     conn = RecordingConnection()
 
-    await repositories.list_authorized_messages(
+    await _repo_owner_app_conversations_infrastructure_postgres.list_authorized_messages(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -1187,7 +1206,7 @@ async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
     assert params == ("tenant-a", "session-a", "user-a", 101)
 
     boundary = datetime(2026, 8, 9, tzinfo=timezone.utc)
-    await repositories.list_authorized_messages(
+    await _repo_owner_app_conversations_infrastructure_postgres.list_authorized_messages(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -1211,7 +1230,7 @@ async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
             return FakeCursor()
 
     conn = RetentionConnection()
-    await repositories.queue_expired_artifacts_for_deletion(conn, limit=20)
+    await _repo_owner_app_persistence_artifacts.queue_expired_artifacts_for_deletion(conn, limit=20)
     lock_sql, lock_params = conn.calls[0]
     write_sql, write_params = conn.calls[1]
     assert "for update of artifacts skip locked" in lock_sql
@@ -1225,7 +1244,7 @@ async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
     assert "run_id = null" in write_sql
     assert json.loads(write_params[0]) == ["artifact-a"]
 
-    await repositories.purge_deleted_memory_records(conn, grace_days=7, limit=25)
+    await _repo_owner_app_persistence_retention.purge_deleted_memory_records(conn, grace_days=7, limit=25)
     sql, params = conn.calls[-1]
     assert "for update of memory_records skip locked" in sql
     assert "snapshots.included_memory_record_ids ? memory_records.id" in sql
@@ -1236,7 +1255,7 @@ async def test_retention_queries_are_bounded_reference_safe_and_skip_locked():
 
 @pytest.mark.asyncio
 async def test_authorized_user_messages_for_runs_minimize_and_scope_in_sql():
-    query = getattr(repositories, "list_authorized_user_messages_for_runs", None)
+    query = _repo_owner_app_conversations_infrastructure_postgres.list_authorized_user_messages_for_runs
     assert callable(query), "dedicated authorized run-message projection is missing"
     conn = RecordingConnection()
 
@@ -1268,7 +1287,7 @@ async def test_authorized_user_messages_for_runs_minimize_and_scope_in_sql():
 
 @pytest.mark.asyncio
 async def test_authorized_user_messages_for_runs_empty_target_is_query_free():
-    query = getattr(repositories, "list_authorized_user_messages_for_runs", None)
+    query = _repo_owner_app_conversations_infrastructure_postgres.list_authorized_user_messages_for_runs
     assert callable(query), "dedicated authorized run-message projection is missing"
     conn = RecordingConnection()
 
@@ -1286,7 +1305,7 @@ async def test_authorized_user_messages_for_runs_empty_target_is_query_free():
 
 @pytest.mark.asyncio
 async def test_capability_distribution_backfill_marks_completion_and_never_recreates_after_rerun():
-    backfill = getattr(repositories, "ensure_tenant_capability_distribution_backfill", None)
+    backfill = _repo_owner_app_identity_infrastructure_capability_distributions_postgres.ensure_tenant_capability_distribution_backfill
     assert callable(backfill), "ensure_tenant_capability_distribution_backfill missing"
 
     class Cursor:
@@ -1354,7 +1373,7 @@ async def test_capability_distribution_backfill_marks_completion_and_never_recre
         "tenant-a",
         "tenant-a",
         "tenant-a",
-        sorted(repositories.PUBLIC_WORKBENCH_SKILL_IDS),
+        sorted(_repo_owner_app_skills_dependencies.PUBLIC_WORKBENCH_SKILL_IDS),
     )
     assert sum("from tenant_workbench_skills" in sql for sql, _ in conn.calls) == 1
     assert sum("from mcp_servers" in sql for sql, _ in conn.calls) == 1
@@ -1383,7 +1402,7 @@ async def test_capability_distribution_backfill_lock_recheck_observes_concurrent
             return Cursor()
 
     conn = Connection()
-    await repositories.ensure_tenant_capability_distribution_backfill(conn, tenant_id="tenant-a")
+    await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.ensure_tenant_capability_distribution_backfill(conn, tenant_id="tenant-a")
 
     assert len(conn.calls) == 3
     initial_check, marker_insert, locked_recheck = conn.calls
@@ -1412,7 +1431,7 @@ async def test_resolve_agent_skill_uses_global_skill_lifecycle_and_canonical_bac
         }
     )
 
-    row = await repositories.resolve_agent_skill(
+    row = await _repo_owner_app_skills_infrastructure_resolution_postgres.resolve_agent_skill(
         conn,
         tenant_id="tenant-a",
         agent_id="sop-assistant",
@@ -1445,7 +1464,7 @@ async def test_resolve_selected_skill_allows_active_non_default_skill():
         }
     )
 
-    row = await repositories.resolve_selected_skill(
+    row = await _repo_owner_app_skills_infrastructure_resolution_postgres.resolve_selected_skill(
         conn,
         tenant_id="tenant-a",
         agent_id="general-agent",
@@ -1478,7 +1497,7 @@ async def test_resolve_selected_skill_rejects_non_materializable_version_identit
     )
 
     with pytest.raises(RepositoryConflictError, match="skill_version_not_materializable"):
-        await repositories.resolve_selected_skill(
+        await _repo_owner_app_skills_infrastructure_resolution_postgres.resolve_selected_skill(
             conn,
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -1523,7 +1542,7 @@ async def test_authorize_selected_run_capabilities_returns_stable_stale_conflict
     monkeypatch.setattr(capability_admission_persistence, "get_effective_skill_version_for_policy", exact_version)
 
     with pytest.raises(RepositoryConflictError) as exc_info:
-        await repositories.authorize_selected_run_capabilities(
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_selected_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -1573,8 +1592,8 @@ async def test_authorize_selected_run_capabilities_rejects_version_content_hash_
     monkeypatch.setattr(capability_admission_persistence, "resolve_selected_skill", resolve_selected, raising=False)
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", distribution)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.authorize_selected_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_selected_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -1622,7 +1641,7 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", distribution)
     monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
-    skill = await repositories.authorize_replay_run_capabilities(
+    skill = await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_replay_run_capabilities(
         object(),
         tenant_id="tenant-a",
         agent_id="general-agent",
@@ -1682,8 +1701,8 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", distribution)
     monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.authorize_replay_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_replay_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -1732,7 +1751,7 @@ async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp
     monkeypatch.setattr(capability_admission_persistence, "_authorize_run_capabilities", shared_authorizer)
     monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
-    await repositories.authorize_replay_run_capabilities(
+    await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_replay_run_capabilities(
         object(),
         tenant_id="tenant-a",
         agent_id="general-agent",
@@ -1761,8 +1780,8 @@ async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp
 
 
 def test_historical_direct_ragflow_replay_fails_closed():
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        repositories.pinned_replay_mcp_tool_ids(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        _repo_owner_app_runs_infrastructure_capability_admission_postgres.pinned_replay_mcp_tool_ids(
             skill_id="knowledge-v1",
             pinned_version="hash-v1",
             pinned_executor_type="ragflow",
@@ -1788,18 +1807,18 @@ def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
         "snapshot_governance": {"selected_files": [{"sha256": "caller-controlled"}]},
     }
 
-    locked = repositories.run_skill_snapshot_source_json(
+    locked = _repo_owner_app_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         manifest,
         release_decision={"selected_version": "hash-v1", "selected_track": "current"},
     )
-    changed_file = repositories.run_skill_snapshot_source_json(
+    changed_file = _repo_owner_app_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         {
             **manifest,
             "files": [{"relative_path": "SKILL.md", "content_base64": "ZHJpZnQ=", "size_bytes": 5}],
         },
         release_decision={"selected_version": "hash-v1", "selected_track": "current"},
     )
-    changed_release = repositories.run_skill_snapshot_source_json(
+    changed_release = _repo_owner_app_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         manifest,
         release_decision={"selected_version": "hash-v1", "selected_track": "previous"},
     )
@@ -1834,7 +1853,7 @@ async def test_copy_run_as_new_task_rejects_malformed_skill_manifest_transport_b
         "dependency_ids": [],
         "mcp_tool_ids": [],
     }
-    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
+    source_ref = _repo_owner_app_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs([source_manifest])[0]
     transported_refs = {
         "mixed-string": [source_ref, "unexpected"],
         "mixed-null": [source_ref, None],
@@ -1863,7 +1882,7 @@ async def test_copy_run_as_new_task_rejects_malformed_skill_manifest_transport_b
     monkeypatch.setattr(replay_persistence, "get_authorized_run", source_run)
 
     with pytest.raises(RepositoryConflictError, match="run_skill_materialization_identity_mismatch"):
-        await repositories.copy_run_as_new_task(
+        await _repo_owner_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
             object(),
             tenant_id="tenant-a",
             user_id="user-a",
@@ -1882,7 +1901,7 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
         "dependency_ids": [],
         "mcp_tool_ids": [],
     }
-    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
+    source_ref = _repo_owner_app_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs([source_manifest])[0]
 
     async def source_run(conn, **kwargs):
         return {
@@ -1917,7 +1936,7 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
     monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", forbidden_replay)
 
     with pytest.raises(RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
-        await repositories.copy_run_as_new_task(
+        await _repo_owner_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
             object(),
             tenant_id="tenant-a",
             user_id="user-a",
@@ -1945,7 +1964,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
         "selected_version": "hash-v1",
         "selected_track": "current",
     }
-    source_ref = repositories.skill_manifest_refs([source_manifest])[0]
+    source_ref = _repo_owner_app_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs([source_manifest])[0]
     source = {
         "id": "run-source",
         "tenant_id": "tenant-a",
@@ -2017,7 +2036,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
             return await super().execute(sql, params)
 
     conn = MaterializationConnection()
-    copied = await repositories.copy_run_as_new_task(
+    copied = await _repo_owner_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -2032,7 +2051,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     assert calls["snapshots"]["skill_manifests"] == [source_manifest]
     assert copied["skill_version"] == "hash-v1"
     assert copied["release_decision"] == source_release
-    assert copied["skill_manifests"] == repositories.skill_manifest_refs([source_manifest])
+    assert copied["skill_manifests"] == _repo_owner_app_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs([source_manifest])
     assert "files" not in copied["skill_manifests"][0]
     assert "content_base64" not in json.dumps(copied["skill_manifests"])
     assert copied["file_ids"] == ["file-prior"]
@@ -2103,9 +2122,9 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
 
     conn = RecordingConnection()
     operation_function = {
-        "copy": repositories.copy_run_as_new_task,
-        "retry": repositories.retry_run_as_new_task,
-        "resume": repositories.resume_run_as_new_task,
+        "copy": _repo_owner_app_runs_infrastructure_replay_postgres.copy_run_as_new_task,
+        "retry": _repo_owner_app_runs_infrastructure_replay_postgres.retry_run_as_new_task,
+        "resume": _repo_owner_app_runs_infrastructure_replay_postgres.resume_run_as_new_task,
     }[operation]
     copied = await operation_function(
         conn,
@@ -2166,7 +2185,7 @@ async def test_copy_run_rejects_expanded_resume_input_before_generation_write(mo
     monkeypatch.setattr(replay_persistence, "allocate_session_run_generation", forbidden_generation)
 
     with pytest.raises(RepositoryConflictError, match="run_input_too_large"):
-        await repositories.copy_run_as_new_task(
+        await _repo_owner_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
             object(),
             tenant_id="tenant-a",
             user_id="user-a",
@@ -2176,8 +2195,8 @@ async def test_copy_run_rejects_expanded_resume_input_before_generation_write(mo
 
 @pytest.mark.asyncio
 async def test_capability_distribution_list_and_get_normalize_array_and_json_projections():
-    list_rows = getattr(repositories, "list_capability_distribution_rows", None)
-    get_row = getattr(repositories, "get_capability_distribution_row", None)
+    list_rows = _repo_owner_app_identity_infrastructure_capability_distributions_postgres.list_capability_distribution_rows
+    get_row = _repo_owner_app_identity_infrastructure_capability_distributions_postgres.get_capability_distribution_row
     assert callable(list_rows), "list_capability_distribution_rows missing"
     assert callable(get_row), "get_capability_distribution_row missing"
 
@@ -2248,8 +2267,8 @@ async def test_capability_distribution_projection_rejects_malformed_allowed_role
         async def execute(self, sql, params=()):
             return Cursor()
 
-    with pytest.raises(repositories.RepositoryConflictError, match="capability_distribution_scope_invalid"):
-        await repositories.get_capability_distribution_row(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryConflictError, match="capability_distribution_scope_invalid"):
+        await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.get_capability_distribution_row(
             Connection(),
             tenant_id="tenant-a",
             capability_kind="mcp_server",
@@ -2284,8 +2303,8 @@ async def test_capability_distribution_projection_rejects_malformed_department_i
         async def execute(self, sql, params=()):
             return Cursor()
 
-    with pytest.raises(repositories.RepositoryConflictError, match="capability_distribution_scope_invalid"):
-        await repositories.get_capability_distribution_row(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryConflictError, match="capability_distribution_scope_invalid"):
+        await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.get_capability_distribution_row(
             Connection(),
             tenant_id="tenant-a",
             capability_kind="mcp_server",
@@ -2321,7 +2340,7 @@ async def test_principal_agent_projection_keeps_skillless_chat_without_skill_dis
     monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
     monkeypatch.setattr(principal_catalog_persistence, "append_audit_log", fail_audit)
 
-    rows = await repositories.list_principal_lambchat_agents(
+    rows = await _repo_owner_app_agent_apps_infrastructure_principal_catalog_postgres.list_principal_lambchat_agents(
         object(),
         tenant_id="tenant-a",
         actor_user_id="user-a",
@@ -2408,7 +2427,7 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
     monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
     monkeypatch.setattr(principal_catalog_persistence, "append_audit_log", fake_append_audit)
 
-    authorized = await repositories.list_principal_lambchat_agents(
+    authorized = await _repo_owner_app_agent_apps_infrastructure_principal_catalog_postgres.list_principal_lambchat_agents(
         object(),
         tenant_id="tenant-a",
         actor_user_id="qa-user",
@@ -2417,7 +2436,7 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
         is_admin=False,
         permissions=["chat:read"],
     )
-    admin_rows = await repositories.list_principal_lambchat_agents(
+    admin_rows = await _repo_owner_app_agent_apps_infrastructure_principal_catalog_postgres.list_principal_lambchat_agents(
         object(),
         tenant_id="tenant-a",
         actor_user_id="admin-a",
@@ -2489,7 +2508,7 @@ async def test_principal_agent_projection_hides_archived_default_skill_for_every
     monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
     monkeypatch.setattr(principal_catalog_persistence, "append_audit_log", fake_append_audit)
 
-    rows = await repositories.list_principal_lambchat_agents(
+    rows = await _repo_owner_app_agent_apps_infrastructure_principal_catalog_postgres.list_principal_lambchat_agents(
         object(),
         tenant_id="tenant-a",
         actor_user_id="admin-a" if is_admin else "user-a",
@@ -2540,7 +2559,7 @@ async def test_principal_agent_projection_hides_non_runnable_rollout_selected_pr
     monkeypatch.setattr(principal_catalog_persistence, "list_lambchat_agents", fake_list_agents)
     monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
 
-    rows = await repositories.list_principal_lambchat_agents(
+    rows = await _repo_owner_app_agent_apps_infrastructure_principal_catalog_postgres.list_principal_lambchat_agents(
         object(),
         tenant_id="tenant-a",
         actor_user_id="previous-track-user",
@@ -2586,7 +2605,7 @@ async def test_principal_agent_projection_projects_runnable_rollout_selected_pre
     monkeypatch.setattr(principal_catalog_persistence, "list_lambchat_agents", fake_list_agents)
     monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
 
-    rows = await repositories.list_principal_lambchat_agents(
+    rows = await _repo_owner_app_agent_apps_infrastructure_principal_catalog_postgres.list_principal_lambchat_agents(
         object(),
         tenant_id="tenant-a",
         actor_user_id="previous-track-user",
@@ -2603,8 +2622,8 @@ async def test_principal_agent_projection_projects_runnable_rollout_selected_pre
 
 @pytest.mark.asyncio
 async def test_capability_distribution_upsert_and_toggle_raise_controlled_not_found_errors():
-    upsert = getattr(repositories, "upsert_capability_distribution_row", None)
-    toggle = getattr(repositories, "toggle_capability_distribution_row", None)
+    upsert = _repo_owner_app_identity_infrastructure_capability_distributions_postgres.upsert_capability_distribution_row
+    toggle = _repo_owner_app_identity_infrastructure_capability_distributions_postgres.toggle_capability_distribution_row
     assert callable(upsert), "upsert_capability_distribution_row missing"
     assert callable(toggle), "toggle_capability_distribution_row missing"
 
@@ -2708,14 +2727,14 @@ async def test_archive_capability_distribution_is_tenant_scoped_and_idempotent(m
     monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     conn = Connection()
 
-    first = await repositories.archive_capability_distribution_row(
+    first = await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.archive_capability_distribution_row(
         conn,
         tenant_id="tenant-a",
         capability_kind="skill",
         capability_id="qa-file-reviewer",
         archived_by="admin-a",
     )
-    second = await repositories.archive_capability_distribution_row(
+    second = await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.archive_capability_distribution_row(
         conn,
         tenant_id="tenant-a",
         capability_kind="skill",
@@ -2743,7 +2762,7 @@ async def test_archive_capability_distribution_is_tenant_scoped_and_idempotent(m
     [None, "", "invalid", "2026-02-30T00:00:00.000Z", [], {}, False],
 )
 def test_repository_archive_predicate_matches_strict_shared_timestamp_semantics(archive_marker):
-    assert repositories.is_capability_distribution_archived(
+    assert _repo_owner_app_identity_infrastructure_capability_distributions_postgres.is_capability_distribution_archived(
         {"metadata_json": {"archived_at": archive_marker}}
     ) is False
 
@@ -2813,7 +2832,7 @@ async def test_archive_distribution_preserves_only_valid_first_evidence(
             )
 
     monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
-    archived = await repositories.archive_capability_distribution_row(
+    archived = await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.archive_capability_distribution_row(
         Connection(),
         tenant_id="tenant-a",
         capability_kind="skill",
@@ -2876,7 +2895,7 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
 
     monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     conn = Connection()
-    row = await repositories.toggle_capability_distribution_row(
+    row = await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.toggle_capability_distribution_row(
         conn,
         tenant_id="tenant-a",
         capability_kind="skill",
@@ -2892,14 +2911,13 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("enabled", "distribution_status", "expected_catalog_status"),
-    [(True, "active", "refresh_required"), (False, "disabled", "disabled")],
+    ("enabled", "distribution_status"),
+    [(True, "active"), (False, "disabled")],
 )
-async def test_mcp_distribution_toggle_invalidates_server_catalog(
+async def test_mcp_distribution_toggle_locks_existing_server(
     monkeypatch,
     enabled,
     distribution_status,
-    expected_catalog_status,
 ):
     async def no_backfill(conn, *, tenant_id):
         assert tenant_id == "tenant-a"
@@ -2946,17 +2964,15 @@ async def test_mcp_distribution_toggle_invalidates_server_catalog(
                         "metadata_json": {},
                     }
                 )
-            if compact.startswith("update mcp_servers"):
-                assert "catalog_generation = catalog_generation + 1" in compact
-                assert "catalog_discovered_count = 0" in compact
-                assert "catalog_selectable_count = 0" in compact
-                assert params == (enabled, enabled, "tenant-a", "qa-mcp")
-                assert expected_catalog_status in compact
+            if compact.startswith("select 1 as present from mcp_servers"):
+                assert "status <> 'deleted'" in compact
+                assert "for update" in compact
+                assert params == ("tenant-a", "qa-mcp")
                 return Cursor({"name": "qa-mcp"})
             raise AssertionError(compact)
 
     monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
-    row = await repositories.toggle_capability_distribution_row(
+    row = await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.toggle_capability_distribution_row(
         Connection(),
         tenant_id="tenant-a",
         capability_kind="mcp_server",
@@ -2977,7 +2993,7 @@ async def test_archive_distribution_rejects_invalid_actor_before_database_write(
     monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", fail_backfill)
 
     with pytest.raises(RepositoryConflictError, match="capability_distribution_archive_actor_invalid"):
-        await repositories.archive_capability_distribution_row(
+        await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.archive_capability_distribution_row(
             object(),
             tenant_id="tenant-a",
             capability_kind="skill",
@@ -3008,7 +3024,7 @@ async def test_batch_lifecycle_locks_use_canonical_order_without_duplicates(monk
         events.append(("ensure", tenant_id))
 
     monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", completed_backfill)
-    await repositories.acquire_capability_distribution_lifecycle_locks(
+    await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.acquire_capability_distribution_lifecycle_locks(
         conn,
         tenant_id="tenant-a",
         capability_kind="skill",
@@ -3074,9 +3090,9 @@ async def test_capability_distribution_lifecycle_lock_precedes_row_lock_and_writ
     }
 
     if operation == "archive":
-        await repositories.archive_capability_distribution_row(conn, **kwargs, archived_by="admin-a")
+        await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.archive_capability_distribution_row(conn, **kwargs, archived_by="admin-a")
     elif operation == "upsert":
-        await repositories.upsert_capability_distribution_row(
+        await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.upsert_capability_distribution_row(
             conn,
             **kwargs,
             status="active",
@@ -3088,9 +3104,9 @@ async def test_capability_distribution_lifecycle_lock_precedes_row_lock_and_writ
             updated_by="admin-a",
         )
     elif operation == "toggle":
-        await repositories.toggle_capability_distribution_row(conn, **kwargs, enabled=True, updated_by="admin-a")
+        await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.toggle_capability_distribution_row(conn, **kwargs, enabled=True, updated_by="admin-a")
     else:
-        await repositories.set_capability_distribution_status(conn, **kwargs, status="active", updated_by="admin-a")
+        await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.set_capability_distribution_status(conn, **kwargs, status="active", updated_by="admin-a")
 
     assert "pg_advisory_xact_lock" in conn.calls[0][0]
     assert conn.calls[0][1] == ('{"capability_id":"qa-file-reviewer","capability_kind":"skill","tenant_id":"tenant-a"}',)
@@ -3133,11 +3149,11 @@ async def test_archived_capability_distribution_rejects_reactivation(monkeypatch
 
     with pytest.raises(RepositoryConflictError, match="capability_distribution_archived"):
         if operation == "toggle":
-            await repositories.toggle_capability_distribution_row(conn, **kwargs, enabled=True, updated_by="admin-a")
+            await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.toggle_capability_distribution_row(conn, **kwargs, enabled=True, updated_by="admin-a")
         elif operation == "set_status":
-            await repositories.set_capability_distribution_status(conn, **kwargs, status="active", updated_by="admin-a")
+            await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.set_capability_distribution_status(conn, **kwargs, status="active", updated_by="admin-a")
         else:
-            await repositories.upsert_capability_distribution_row(
+            await _repo_owner_app_identity_infrastructure_capability_distributions_postgres.upsert_capability_distribution_row(
                 conn,
                 **kwargs,
                 status="active",
@@ -3192,7 +3208,7 @@ async def test_list_public_skill_catalog_hides_archived_but_keeps_disabled_distr
             return Cursor()
 
     monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
-    rows = await repositories.list_public_skill_catalog(
+    rows = await _repo_owner_app_skills_infrastructure_catalog_postgres.list_public_skill_catalog(
         Connection(),
         tenant_id="tenant-a",
         include_disabled=True,
@@ -3231,8 +3247,8 @@ async def test_authorize_selected_run_capabilities_fails_closed_for_archived_dis
     monkeypatch.setattr(capability_admission_persistence, "resolve_selected_skill", resolve_selected)
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", archived_distribution)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.authorize_selected_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_selected_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -3279,7 +3295,7 @@ async def test_capability_distribution_authorization_allows_same_department_skil
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
     monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
-    skill = await repositories.authorize_run_capabilities(
+    skill = await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
         object(),
         tenant_id="tenant-a",
         agent_id="general-agent",
@@ -3336,7 +3352,7 @@ async def test_harness_skill_authorization_derives_canonical_backing_tool_withou
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
     monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
-    await repositories.authorize_run_capabilities(
+    await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
         object(),
         tenant_id="tenant-a",
         agent_id="sop-assistant",
@@ -3406,8 +3422,8 @@ async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_curre
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
     monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.authorize_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="sop-assistant",
@@ -3449,8 +3465,8 @@ async def test_capability_distribution_authorization_denies_skill_before_enqueue
     monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.authorize_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -3485,8 +3501,8 @@ async def test_capability_distribution_denial_carries_sanitized_immutable_audit_
     monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError) as exc_info:
-        await repositories.authorize_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError) as exc_info:
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -3532,12 +3548,12 @@ async def test_capability_distribution_authorization_hides_pre_authorization_sel
     selector_state,
 ):
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        raise repositories.RepositoryConflictError(selector_state)
+        raise _repo_owner_app_platform_postgres_errors.RepositoryConflictError(selector_state)
 
     monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.authorize_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -3588,8 +3604,8 @@ async def test_capability_distribution_authorization_denies_explicit_mcp_tool_be
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
     monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.authorize_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -3603,7 +3619,7 @@ async def test_capability_distribution_authorization_denies_explicit_mcp_tool_be
 
 
 def test_extract_run_mcp_tool_ids_covers_only_top_level_aliases():
-    extracted = repositories.extract_run_mcp_tool_ids(
+    extracted = _repo_owner_app_runs_infrastructure_capability_admission_postgres.extract_run_mcp_tool_ids(
         {
             "mcp_tool_ids": ["tool-a", "tool-shared"],
             "mcpToolIds": ["tool-b", "tool-shared"],
@@ -3621,7 +3637,7 @@ def test_extract_run_mcp_tool_ids_covers_only_top_level_aliases():
 
 @pytest.mark.parametrize("redact_public", [False, True])
 def test_normalize_run_input_preserves_top_level_mcp_tool_selector(redact_public):
-    normalized = repositories.normalize_run_input_for_enqueue(
+    normalized = _repo_owner_app_runs_infrastructure_capability_admission_postgres.normalize_run_input_for_enqueue(
         {
             "message": "run scoped tools",
             "mcpToolIds": ["tool-global"],
@@ -3638,9 +3654,9 @@ def test_normalize_run_input_preserves_top_level_mcp_tool_selector(redact_public
         assert "mcpToolIds" not in normalized
     else:
         assert normalized["mcpToolIds"] == ["tool-global"]
-    assert repositories.extract_run_mcp_tool_ids(normalized) == ["tool-global"]
+    assert _repo_owner_app_runs_infrastructure_capability_admission_postgres.extract_run_mcp_tool_ids(normalized) == ["tool-global"]
 
-    nested_only = repositories.normalize_run_input_for_enqueue(
+    nested_only = _repo_owner_app_runs_infrastructure_capability_admission_postgres.normalize_run_input_for_enqueue(
         {
             "multi_agent_steps": [
                 {"step_key": "plan", "mcpToolIds": ["tool-plan"]},
@@ -3650,7 +3666,7 @@ def test_normalize_run_input_preserves_top_level_mcp_tool_selector(redact_public
         redact_public=redact_public,
     )
     assert "mcp_tool_ids" not in nested_only
-    assert repositories.extract_run_mcp_tool_ids(nested_only) == []
+    assert _repo_owner_app_runs_infrastructure_capability_admission_postgres.extract_run_mcp_tool_ids(nested_only) == []
 
 
 @pytest.mark.parametrize(
@@ -3661,8 +3677,8 @@ def test_normalize_run_input_preserves_top_level_mcp_tool_selector(redact_public
     ],
 )
 def test_extract_run_mcp_tool_ids_rejects_invalid_typed_forms_fail_closed(payload):
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        repositories.extract_run_mcp_tool_ids(payload)
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        _repo_owner_app_runs_infrastructure_capability_admission_postgres.extract_run_mcp_tool_ids(payload)
 
 
 @pytest.mark.asyncio
@@ -3687,8 +3703,8 @@ async def test_capability_distribution_skill_revocation_after_original_run_denie
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", revoked_skill_distribution)
     monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fail_tool_lookup)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.authorize_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -3732,8 +3748,8 @@ async def test_capability_distribution_mcp_revocation_after_original_run_denies_
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
     monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.authorize_run_capabilities(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
             object(),
             tenant_id="tenant-a",
             agent_id="general-agent",
@@ -3920,7 +3936,7 @@ async def test_input_file_list_and_read_use_persisted_s1_after_later_s2(
         run_id="run-a",
         file_id="file-a",
     )
-    projected_rows = await repositories.list_authorized_session_input_files(
+    projected_rows = await _repo_owner_app_context_file_continuity.list_authorized_session_input_files(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -4029,7 +4045,7 @@ async def test_owned_unbound_file_query_binds_full_owner_scope():
 async def test_session_context_candidates_bind_owner_scope_and_latest_successful_artifact_run():
     conn = RecordingConnection()
 
-    await repositories.list_session_context_messages(
+    await _repo_owner_app_context_infrastructure_sources_postgres.list_session_context_messages(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -4050,7 +4066,7 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
         "tenant-a", "session-a", "workspace-a", "user-a", 8,
     )
 
-    await repositories.count_session_context_messages(
+    await _repo_owner_app_context_infrastructure_sources_postgres.count_session_context_messages(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -4068,7 +4084,7 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
         "tenant-a", "session-a", "workspace-a", "user-a",
     )
 
-    await repositories.list_session_context_files(
+    await _repo_owner_app_context_infrastructure_sources_postgres.list_session_context_files(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -4091,7 +4107,7 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
         "tenant-a", "workspace-a", "user-a", "session-a", 8,
     )
 
-    await repositories.list_authorized_session_input_files(
+    await _repo_owner_app_context_file_continuity.list_authorized_session_input_files(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -4110,7 +4126,7 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
     assert "runs.session_id = files.session_id" in projection_sql
     assert projection_params == ("tenant-a", "workspace-a", "user-a", "session-a")
 
-    await repositories.list_session_context_artifacts(
+    await _repo_owner_app_context_infrastructure_sources_postgres.list_session_context_artifacts(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -4205,10 +4221,10 @@ async def test_tenant_exists_checks_tenant_identity():
     existing_conn = TenantConnection(ExistingTenantCursor())
     missing_conn = TenantConnection(MissingTenantCursor())
 
-    assert await repositories.tenant_exists(existing_conn, tenant_id="tenant-a") is True
+    assert await _repo_owner_app_identity_infrastructure_postgres.tenant_exists(existing_conn, tenant_id="tenant-a") is True
     assert "from tenants where id = %s" in existing_conn.sql
     assert existing_conn.params == ("tenant-a",)
-    assert await repositories.tenant_exists(missing_conn, tenant_id="tenant-b") is False
+    assert await _repo_owner_app_identity_infrastructure_postgres.tenant_exists(missing_conn, tenant_id="tenant-b") is False
     assert missing_conn.params == ("tenant-b",)
 
 
@@ -4270,7 +4286,7 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
 
     conn = CatalogConnection()
 
-    rows = await repositories.list_public_skill_catalog(
+    rows = await _repo_owner_app_skills_infrastructure_catalog_postgres.list_public_skill_catalog(
         conn,
         tenant_id="default",
         include_disabled=True,
@@ -4338,7 +4354,7 @@ async def test_list_public_skill_catalog_hides_non_materializable_current_versio
 
     monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
-    rows = await repositories.list_public_skill_catalog(
+    rows = await _repo_owner_app_skills_infrastructure_catalog_postgres.list_public_skill_catalog(
         CatalogConnection(),
         tenant_id="default",
         include_disabled=True,
@@ -4395,7 +4411,7 @@ async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_d
 
     conn = CatalogConnection()
 
-    rows = await repositories.list_public_skill_catalog(
+    rows = await _repo_owner_app_skills_infrastructure_catalog_postgres.list_public_skill_catalog(
         conn,
         tenant_id="default",
         include_disabled=False,
@@ -4457,7 +4473,7 @@ async def test_public_skill_catalog_hides_non_runnable_rollout_selected_previous
 
     monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
-    rows = await repositories.list_public_skill_catalog(
+    rows = await _repo_owner_app_skills_infrastructure_catalog_postgres.list_public_skill_catalog(
         CatalogConnection(),
         tenant_id="default",
         include_disabled=False,
@@ -4514,7 +4530,7 @@ async def test_public_skill_catalog_projects_only_materializable_rollout_selecte
 
     monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
-    rows = await repositories.list_public_skill_catalog(
+    rows = await _repo_owner_app_skills_infrastructure_catalog_postgres.list_public_skill_catalog(
         CatalogConnection(),
         tenant_id="default",
         include_disabled=False,
@@ -4612,7 +4628,7 @@ async def test_enforce_user_active_run_admission_skips_disabled_limit():
 async def test_run_control_operation_lock_scope_precedes_any_mapping_query():
     conn = RecordingConnection()
 
-    await repositories.acquire_run_control_operation_lock(
+    await _repo_owner_app_runs_infrastructure_control_operations_postgres.acquire_run_control_operation_lock(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -4620,7 +4636,7 @@ async def test_run_control_operation_lock_scope_precedes_any_mapping_query():
         action="retry",
         operation_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
     )
-    await repositories.get_run_control_operation(
+    await _repo_owner_app_runs_infrastructure_control_operations_postgres.get_run_control_operation(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -4661,7 +4677,7 @@ async def test_record_run_control_operation_persists_only_safe_exact_lineage(mon
 
     monkeypatch.setattr(control_operations_persistence, "append_event", append_event)
 
-    event_id = await repositories.record_run_control_operation(
+    event_id = await _repo_owner_app_runs_infrastructure_control_operations_postgres.record_run_control_operation(
         object(),
         tenant_id="tenant-a",
         source_run_id="run-source",
@@ -4732,7 +4748,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
         raise AssertionError("operation resolver never blocked on the in-flight mutation")
 
     async def create_or_resolve(conn: psycopg.AsyncConnection, child_run_id: str):
-        await repositories.acquire_run_control_operation_lock(
+        await _repo_owner_app_runs_infrastructure_control_operations_postgres.acquire_run_control_operation_lock(
             conn,
             tenant_id="tenant-a",
             user_id="user-a",
@@ -4740,7 +4756,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
             action="retry",
             operation_id=operation_id,
         )
-        existing = await repositories.get_run_control_operation(
+        existing = await _repo_owner_app_runs_infrastructure_control_operations_postgres.get_run_control_operation(
             conn,
             tenant_id="tenant-a",
             user_id="user-a",
@@ -4773,7 +4789,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
                 2,
             ),
         )
-        await repositories.record_run_control_operation(
+        await _repo_owner_app_runs_infrastructure_control_operations_postgres.record_run_control_operation(
             conn,
             tenant_id="tenant-a",
             source_run_id="run-source",
@@ -4838,7 +4854,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
             "select count(*) as count from runs where copied_from_run_id = 'run-source'"
         )
         assert int((await count_cursor.fetchone())["count"]) == 1
-        assert await repositories.get_run_control_operation(
+        assert await _repo_owner_app_runs_infrastructure_control_operations_postgres.get_run_control_operation(
             observer,
             tenant_id="tenant-a",
             user_id="user-b",
@@ -4846,7 +4862,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
             action="retry",
             operation_id=operation_id,
         ) is None
-        assert await repositories.get_run_control_operation(
+        assert await _repo_owner_app_runs_infrastructure_control_operations_postgres.get_run_control_operation(
             observer,
             tenant_id="tenant-a",
             user_id="user-a",
@@ -4856,7 +4872,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
         ) is None
 
         absent_operation_id = "d9428888-122b-4f2e-86f3-df16c79c7358"
-        await repositories.acquire_run_control_operation_lock(
+        await _repo_owner_app_runs_infrastructure_control_operations_postgres.acquire_run_control_operation_lock(
             first,
             tenant_id="tenant-a",
             user_id="user-a",
@@ -4866,7 +4882,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
         )
 
         async def resolve_absence_after_lock():
-            await repositories.acquire_run_control_operation_lock(
+            await _repo_owner_app_runs_infrastructure_control_operations_postgres.acquire_run_control_operation_lock(
                 second,
                 tenant_id="tenant-a",
                 user_id="user-a",
@@ -4874,7 +4890,7 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
                 action="resume",
                 operation_id=absent_operation_id,
             )
-            return await repositories.get_run_control_operation(
+            return await _repo_owner_app_runs_infrastructure_control_operations_postgres.get_run_control_operation(
                 second,
                 tenant_id="tenant-a",
                 user_id="user-a",
@@ -4928,7 +4944,7 @@ async def test_record_sandbox_runtime_cleanup_outcome_writes_event_and_audit(mon
     monkeypatch.setattr(sandbox_leases_persistence, "append_event", fake_append_event)
     monkeypatch.setattr(sandbox_leases_persistence, "append_audit_log", fake_append_audit_log)
 
-    await repositories.record_sandbox_runtime_cleanup_outcome(
+    await _repo_owner_app_sandbox_infrastructure_leases_postgres.record_sandbox_runtime_cleanup_outcome(
         object(),
         tenant_id="tenant-a",
         run_id="run-a",
@@ -5047,7 +5063,7 @@ async def test_create_run_rejects_execution_skill_identity_mismatch(
     skill_id,
 ):
     with pytest.raises(
-        repositories.RepositoryConflictError,
+        _repo_owner_app_platform_postgres_errors.RepositoryConflictError,
         match="run_execution_skill_identity_mismatch",
     ):
         await create_run(
@@ -5102,7 +5118,7 @@ async def test_session_generation_allocator_serializes_allocation_at_the_session
             return SingleRowCursor({"next_run_generation": self.next_generation})
 
     conn = GenerationConnection()
-    first = await repositories.allocate_session_run_generation(
+    first = await _repo_owner_app_runs_infrastructure_creation_postgres.allocate_session_run_generation(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -5110,7 +5126,7 @@ async def test_session_generation_allocator_serializes_allocation_at_the_session
         session_id="session-a",
         agent_id="general-agent",
     )
-    second = await repositories.allocate_session_run_generation(
+    second = await _repo_owner_app_runs_infrastructure_creation_postgres.allocate_session_run_generation(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -5134,7 +5150,7 @@ async def test_context_snapshot_binding_rejects_a_mismatched_public_reference_be
             raise AssertionError("mismatched snapshot reference must not execute SQL")
 
     with pytest.raises(RepositoryConflictError, match="context_snapshot_binding_invalid"):
-        await repositories.update_run_context_snapshot_ref(
+        await _repo_owner_app_context_infrastructure_snapshot_postgres.update_run_context_snapshot_ref(
             NoQueryConnection(),
             tenant_id="tenant-a",
             run_id="run-a",
@@ -5147,7 +5163,7 @@ async def test_context_snapshot_binding_rejects_a_mismatched_public_reference_be
 async def test_context_snapshot_binding_requires_same_scope_executor_and_allows_only_exact_repeat():
     conn = SingleRowConnection({"context_snapshot_id": "ctx-a"})
 
-    await repositories.update_run_context_snapshot_ref(
+    await _repo_owner_app_context_infrastructure_snapshot_postgres.update_run_context_snapshot_ref(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -5167,7 +5183,7 @@ async def test_context_snapshot_binding_fails_closed_when_the_database_rejects_s
     conn = SingleRowConnection(None)
 
     with pytest.raises(RepositoryConflictError, match="context_snapshot_binding_invalid"):
-        await repositories.update_run_context_snapshot_ref(
+        await _repo_owner_app_context_infrastructure_snapshot_postgres.update_run_context_snapshot_ref(
             conn,
             tenant_id="tenant-a",
             run_id="run-a",
@@ -5190,7 +5206,7 @@ async def test_create_session_validates_workspace_tenant_before_insert(monkeypat
     )
     conn = RecordingConnection()
 
-    await repositories.create_session(
+    await _repo_owner_app_conversations_infrastructure_postgres.create_session(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -5216,7 +5232,7 @@ async def test_create_session_conflict_is_atomic_and_requires_exact_binding(monk
     conn = SingleRowConnection(None)
 
     with pytest.raises(RepositoryConflictError, match="session_scope_mismatch"):
-        await repositories.create_session(
+        await _repo_owner_app_conversations_infrastructure_postgres.create_session(
             conn,
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -5251,7 +5267,7 @@ async def test_create_session_allows_exact_idempotent_binding(monkeypatch):
     )
     conn = SingleRowConnection({"id": "session-shared"})
 
-    session_id = await repositories.create_session(
+    session_id = await _repo_owner_app_conversations_infrastructure_postgres.create_session(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -5291,7 +5307,7 @@ async def test_create_session_reports_whether_an_exact_operation_created_the_row
     )
     conn = SingleRowConnection({"id": "ses_agent_operation", "created": False})
 
-    result = await repositories.create_session(
+    result = await _repo_owner_app_conversations_infrastructure_postgres.create_session(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -5320,7 +5336,7 @@ async def test_create_run_validates_workspace_tenant_before_insert(monkeypatch):
     monkeypatch.setattr(run_creation_persistence, "ensure_workspace_belongs_to_tenant", ensure_workspace_belongs_to_tenant, raising=False)
     conn = RecordingConnection()
 
-    await repositories.create_run(
+    await _repo_owner_app_runs_infrastructure_creation_postgres.create_run(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -5337,7 +5353,7 @@ async def test_create_run_validates_workspace_tenant_before_insert(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ensure_workspace_belongs_to_tenant_raises_for_missing_workspace():
-    ensure_workspace = getattr(repositories, "ensure_workspace_belongs_to_tenant", None)
+    ensure_workspace = _repo_owner_app_conversations_infrastructure_postgres.ensure_workspace_belongs_to_tenant
     assert callable(ensure_workspace), "ensure_workspace_belongs_to_tenant missing"
 
     class EmptyCursor:
@@ -5368,7 +5384,7 @@ async def test_ensure_workspace_belongs_to_tenant_raises_for_missing_workspace()
 async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
     conn = RecordingConnection()
 
-    await repositories.update_run_auth_snapshot(
+    await _repo_owner_app_runs_infrastructure_creation_postgres.update_run_auth_snapshot(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -5961,7 +5977,7 @@ async def test_get_effective_memory_policy_defaults_to_session_only_memory_when_
 
     conn = PolicyConnection()
 
-    policy = await repositories.get_effective_memory_policy(
+    policy = await _repo_owner_app_context_infrastructure_postgres.get_effective_memory_policy(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -6012,7 +6028,7 @@ async def test_get_effective_memory_policy_clamps_legacy_long_term_memory_enable
         async def execute(self, sql, params):
             return LegacyPolicyCursor()
 
-    policy = await repositories.get_effective_memory_policy(
+    policy = await _repo_owner_app_context_infrastructure_postgres.get_effective_memory_policy(
         PolicyConnection(),
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -6049,7 +6065,7 @@ async def test_get_effective_memory_policy_treats_invalid_stored_redaction_mode_
         async def execute(self, sql, params):
             return DirtyPolicyCursor()
 
-    policy = await repositories.get_effective_memory_policy(
+    policy = await _repo_owner_app_context_infrastructure_postgres.get_effective_memory_policy(
         PolicyConnection(),
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -6083,7 +6099,7 @@ async def test_get_effective_memory_policy_treats_blank_stored_redaction_mode_as
         async def execute(self, sql, params):
             return DirtyPolicyCursor()
 
-    policy = await repositories.get_effective_memory_policy(
+    policy = await _repo_owner_app_context_infrastructure_postgres.get_effective_memory_policy(
         PolicyConnection(),
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -6123,7 +6139,7 @@ async def test_set_memory_policy_upserts_deterministic_scope_without_secret_reas
 
     conn = PolicyConnection()
 
-    policy = await repositories.set_memory_policy(
+    policy = await _repo_owner_app_context_infrastructure_postgres.set_memory_policy(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -6166,7 +6182,7 @@ async def test_set_memory_policy_rejects_long_term_enable_at_repository_boundary
             raise AssertionError("repository must reject long-term memory before SQL")
 
     with pytest.raises(RepositoryConflictError, match="long_term_memory_not_available"):
-        await repositories.set_memory_policy(
+        await _repo_owner_app_context_infrastructure_postgres.set_memory_policy(
             FailConnection(),
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -6188,7 +6204,7 @@ async def test_set_memory_policy_rejects_invalid_redaction_mode_before_sql():
             raise AssertionError("repository must reject invalid redaction mode before SQL")
 
     with pytest.raises(RepositoryConflictError, match="memory_redaction_mode_invalid"):
-        await repositories.set_memory_policy(
+        await _repo_owner_app_context_infrastructure_postgres.set_memory_policy(
             FailConnection(),
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -6210,7 +6226,7 @@ async def test_set_memory_policy_rejects_blank_redaction_mode_before_sql():
             raise AssertionError("repository must reject blank redaction mode before SQL")
 
     with pytest.raises(RepositoryConflictError, match="memory_redaction_mode_invalid"):
-        await repositories.set_memory_policy(
+        await _repo_owner_app_context_infrastructure_postgres.set_memory_policy(
             FailConnection(),
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -6256,7 +6272,7 @@ async def test_list_admin_memory_policies_scopes_filters_clamps_and_closes_long_
 
     conn = PolicyConnection()
 
-    rows = await repositories.list_admin_memory_policies(
+    rows = await _repo_owner_app_context_infrastructure_postgres.list_admin_memory_policies(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -6318,7 +6334,7 @@ async def test_ensure_mcp_tool_active_applies_tenant_tool_policy_fail_closed():
     conn = ToolConnection()
 
     with pytest.raises(RepositoryConflictError, match="mcp_tool_disabled"):
-        await repositories.ensure_mcp_tool_active(
+        await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.ensure_mcp_tool_active(
             conn,
             tenant_id="tenant-a",
             tool_id="ragflow-knowledge-search",
@@ -6352,7 +6368,7 @@ async def test_ensure_mcp_tool_active_requires_tenant_tool_policy_row():
             return ToolCursor()
 
     with pytest.raises(RepositoryConflictError, match="mcp_tool_disabled"):
-        await repositories.ensure_mcp_tool_active(
+        await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.ensure_mcp_tool_active(
             ToolConnection(),
             tenant_id="tenant-a",
             tool_id="ragflow-knowledge-search",
@@ -6380,7 +6396,7 @@ async def test_ensure_mcp_tool_active_cannot_lower_registry_write_or_risk():
         async def execute(self, sql, params):
             return ToolCursor()
 
-    row = await repositories.ensure_mcp_tool_active(
+    row = await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.ensure_mcp_tool_active(
         ToolConnection(),
         tenant_id="tenant-a",
         tool_id="dangerous-writer",
@@ -6430,7 +6446,7 @@ async def test_list_admin_tool_policies_returns_missing_tenant_policy_as_disable
 
     conn = ToolPolicyConnection()
 
-    rows = await repositories.list_admin_tool_policies(
+    rows = await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.list_admin_tool_policies(
         conn,
         tenant_id="tenant-a",
         include_disabled=True,
@@ -6489,7 +6505,7 @@ async def test_list_admin_tool_policies_filters_hidden_when_disabled_excluded():
 
     conn = ToolPolicyConnection()
 
-    rows = await repositories.list_admin_tool_policies(
+    rows = await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.list_admin_tool_policies(
         conn,
         tenant_id="tenant-a",
         include_disabled=False,
@@ -6537,7 +6553,7 @@ async def test_upsert_admin_tool_policy_writes_tenant_policy_and_returns_effecti
 
     conn = ToolPolicyConnection()
 
-    row = await repositories.upsert_admin_tool_policy(
+    row = await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.upsert_admin_tool_policy(
         conn,
         tenant_id="tenant-a",
         tool_id="ragflow-knowledge-search",
@@ -6580,7 +6596,7 @@ async def test_upsert_admin_tool_policy_raises_for_missing_tool():
             return MissingCursor()
 
     with pytest.raises(RepositoryNotFoundError, match="mcp_tool_not_found"):
-        await repositories.upsert_admin_tool_policy(
+        await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.upsert_admin_tool_policy(
             MissingConnection(),
             tenant_id="tenant-a",
             tool_id="missing-tool",
@@ -6626,7 +6642,7 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
 
     conn = RegistryConnection()
 
-    rows = await repositories.list_mcp_server_registry(
+    rows = await _repo_owner_app_mcp_infrastructure_registry_postgres.list_mcp_server_registry(
         conn,
         tenant_id="tenant-a",
         department_id="qa",
@@ -6652,13 +6668,6 @@ async def test_list_mcp_server_registry_filters_by_tenant_department_and_redacts
             "department_ids": ["qa"],
             "credential_state": "configured",
             "credential_metadata": {"header_names": ["Authorization"]},
-            "catalog_generation": 0,
-            "catalog_revision": 0,
-            "catalog_status": "legacy",
-            "catalog_unavailable_reason": "",
-            "catalog_discovered_count": 0,
-            "catalog_selectable_count": 0,
-            "catalog_last_synced_at": None,
             "created_at": "2026-06-23T00:00:00Z",
             "updated_at": "2026-06-23T00:00:00Z",
         }
@@ -6696,7 +6705,7 @@ async def test_upsert_mcp_server_registry_persists_only_redacted_endpoint_and_cr
 
     conn = RegistryConnection()
 
-    row = await repositories.upsert_mcp_server_registry(
+    row = await _repo_owner_app_mcp_infrastructure_registry_postgres.upsert_mcp_server_registry(
         conn,
         tenant_id="tenant-a",
         name="qa-mcp",
@@ -6742,7 +6751,7 @@ async def test_list_mcp_server_registry_names_excludes_deleted_registry_override
 
     conn = RegistryNamesConnection()
 
-    names = await repositories.list_mcp_server_registry_names(conn, tenant_id="tenant-a")
+    names = await _repo_owner_app_mcp_infrastructure_registry_postgres.list_mcp_server_registry_names(conn, tenant_id="tenant-a")
 
     assert names == ["ragflow", "custom"]
     sql, params = conn.calls[0]
@@ -6770,7 +6779,7 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
 
     conn = RegistryConnection()
 
-    row = await repositories.get_mcp_tool_registry_entry(
+    row = await _repo_owner_app_mcp_repository.get_mcp_tool_registry_entry(
         conn,
         tenant_id="tenant-a",
         tool_id="qa-mcp::qa.search",
@@ -6808,7 +6817,7 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
         "visible_to_user": True,
         "effective_status": "active",
     }
-    assert repositories.mcp_runtime_metadata_usable(row)
+    assert _repo_owner_app_mcp_repository.mcp_runtime_metadata_usable(row)
 
 
 @pytest.mark.asyncio
@@ -6828,7 +6837,7 @@ async def test_chat_catalog_query_accepts_only_the_known_builtin_as_local_compat
             return Cursor()
 
     conn = Connection()
-    assert await repositories.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
+    assert await _repo_owner_app_mcp_infrastructure_chat_access_postgres.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
 
     assert "mcp_tools.id = 'ragflow-knowledge-search'" in conn.sql
     assert "mcp_tools.server_id = 'ragflow'" in conn.sql
@@ -6848,7 +6857,7 @@ async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
 
     conn = CredentialConnection()
 
-    await repositories.record_mcp_server_credential(
+    await _repo_owner_app_mcp_infrastructure_registry_postgres.record_mcp_server_credential(
         conn,
         tenant_id="tenant-a",
         server_name="qa-mcp",
@@ -6901,7 +6910,7 @@ async def test_create_memory_record_sets_expires_at_from_retention_days():
 
     conn = MemoryConnection()
 
-    row = await repositories.create_memory_record(
+    row = await _repo_owner_app_context_infrastructure_postgres.create_memory_record(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -6954,7 +6963,7 @@ async def test_create_memory_record_redacts_secret_like_content_and_metadata_bef
 
     conn = MemoryConnection()
 
-    await repositories.create_memory_record(
+    await _repo_owner_app_context_infrastructure_postgres.create_memory_record(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -7055,7 +7064,7 @@ async def test_create_memory_record_strict_mode_redacts_raw_provider_and_jwt_tok
 
     conn = MemoryConnection()
 
-    await repositories.create_memory_record(
+    await _repo_owner_app_context_infrastructure_postgres.create_memory_record(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -7096,7 +7105,7 @@ async def test_create_memory_record_rejects_missing_session_id_before_insert():
     conn = MemoryConnection()
 
     with pytest.raises(RepositoryConflictError, match="memory_session_id_required"):
-        await repositories.create_memory_record(
+        await _repo_owner_app_context_infrastructure_postgres.create_memory_record(
             conn,
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -7124,7 +7133,7 @@ async def test_list_memory_records_rejects_missing_session_id_before_query():
     conn = MemoryConnection()
 
     with pytest.raises(RepositoryConflictError, match="memory_session_id_required"):
-        await repositories.list_memory_records(
+        await _repo_owner_app_context_infrastructure_postgres.list_memory_records(
             conn,
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -7170,7 +7179,7 @@ async def test_list_memory_records_exports_only_active_unexpired_session_memory(
 
     conn = MemoryConnection()
 
-    rows = await repositories.list_memory_records(
+    rows = await _repo_owner_app_context_infrastructure_postgres.list_memory_records(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -7234,7 +7243,7 @@ async def test_list_admin_memory_records_operator_export_does_not_select_content
 
     conn = MemoryConnection()
 
-    rows = await repositories.list_admin_memory_records(
+    rows = await _repo_owner_app_context_infrastructure_postgres.list_admin_memory_records(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -7269,7 +7278,7 @@ async def test_create_memory_record_rejects_missing_agent_id_before_insert():
     conn = MemoryConnection()
 
     with pytest.raises(RepositoryConflictError, match="memory_agent_id_required"):
-        await repositories.create_memory_record(
+        await _repo_owner_app_context_infrastructure_postgres.create_memory_record(
             conn,
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -7301,7 +7310,7 @@ async def test_create_memory_record_rejects_session_scope_mismatch_before_insert
     conn = MemoryConnection()
 
     with pytest.raises(RepositoryNotFoundError, match="session_not_found"):
-        await repositories.create_memory_record(
+        await _repo_owner_app_context_infrastructure_postgres.create_memory_record(
             conn,
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -7339,7 +7348,7 @@ async def test_get_user_scopes_by_tenant_and_user_id():
 
     conn = UserConnection()
 
-    user = await repositories.get_user(conn, tenant_id="tenant-a", user_id="user-a")
+    user = await _repo_owner_app_identity_infrastructure_postgres.get_user(conn, tenant_id="tenant-a", user_id="user-a")
 
     sql, params = conn.calls[0]
     assert "from users" in sql
@@ -7365,7 +7374,7 @@ async def test_get_agent_scopes_by_tenant_and_agent_id():
 
     conn = AgentConnection()
 
-    agent = await repositories.get_agent(conn, tenant_id="tenant-a", agent_id="general-agent")
+    agent = await _repo_owner_app_agent_apps_infrastructure_catalog_postgres.get_agent(conn, tenant_id="tenant-a", agent_id="general-agent")
 
     sql, params = conn.calls[0]
     assert "from agents" in sql
@@ -7515,7 +7524,7 @@ async def test_cleanup_expired_memory_records_soft_deletes_only_expired_active_r
 
     conn = MemoryConnection()
 
-    rows = await repositories.cleanup_expired_memory_records(
+    rows = await _repo_owner_app_context_infrastructure_postgres.cleanup_expired_memory_records(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -7544,8 +7553,8 @@ async def test_cleanup_expired_memory_records_across_scopes_rejects_non_positive
         async def execute(self, *_args, **_kwargs):
             raise AssertionError("invalid limit must fail before SQL execution")
 
-    with pytest.raises(repositories.RepositoryConflictError, match="memory_cleanup_limit_invalid"):
-        await repositories.cleanup_expired_memory_records_across_scopes(MemoryConnection(), limit=0)
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryConflictError, match="memory_cleanup_limit_invalid"):
+        await _repo_owner_app_context_infrastructure_postgres.cleanup_expired_memory_records_across_scopes(MemoryConnection(), limit=0)
 
 
 @pytest.mark.asyncio
@@ -7582,7 +7591,7 @@ async def test_cleanup_expired_memory_records_across_scopes_prioritizes_one_row_
 
     conn = MemoryConnection()
 
-    await repositories.cleanup_expired_memory_records_across_scopes(conn, limit=5)
+    await _repo_owner_app_context_infrastructure_postgres.cleanup_expired_memory_records_across_scopes(conn, limit=5)
 
     cleanup_sql, cleanup_params = conn.calls[3]
     assert "row_number() over" in cleanup_sql
@@ -7657,7 +7666,7 @@ async def test_cleanup_expired_memory_records_across_scopes_uses_bounded_scope_c
 
     conn = MemoryConnection()
 
-    rows = await repositories.cleanup_expired_memory_records_across_scopes(conn, limit=2)
+    rows = await _repo_owner_app_context_infrastructure_postgres.cleanup_expired_memory_records_across_scopes(conn, limit=2)
 
     assert [row["tenant_id"] for row in rows] == ["tenant-b", "tenant-c"]
     cursor_sql, cursor_params = conn.calls[0]
@@ -7727,7 +7736,7 @@ async def test_cleanup_expired_memory_records_across_scopes_soft_deletes_bounded
 
     conn = MemoryConnection()
 
-    rows = await repositories.cleanup_expired_memory_records_across_scopes(conn, limit=25)
+    rows = await _repo_owner_app_context_infrastructure_postgres.cleanup_expired_memory_records_across_scopes(conn, limit=25)
 
     sql, params = conn.calls[3]
     assert rows[0]["tenant_id"] == "tenant-a"
@@ -7779,7 +7788,7 @@ async def test_list_admin_memory_records_projects_operator_fields_without_conten
 
     conn = MemoryConnection()
 
-    rows = await repositories.list_admin_memory_records(
+    rows = await _repo_owner_app_context_infrastructure_postgres.list_admin_memory_records(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -7876,10 +7885,10 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
     monkeypatch.setattr(run_attempt_persistence, "stage_run_terminalization", stage)
     monkeypatch.setattr(PostgresRunLifecyclePersistence, "load_staged_terminalization", staticmethod(load))
     monkeypatch.setattr(PostgresRunLifecyclePersistence, "finalize_staged_terminalization", staticmethod(finalize))
-    monkeypatch.setattr(repositories, "append_event", record_event)
-    monkeypatch.setattr(repositories, "append_audit_log", no_audit)
+    monkeypatch.setattr(_repo_owner_app_streaming_infrastructure_run_events_postgres, "append_event", record_event)
+    monkeypatch.setattr(_repo_owner_app_identity_infrastructure_audit_postgres, "append_audit_log", no_audit)
     monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", record_cancel_v4)
-    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_leases)
+    monkeypatch.setattr(_repo_owner_app_sandbox_infrastructure_leases_postgres, "list_active_sandbox_leases_for_run", no_leases)
     conn = Connection()
 
     first = await _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
@@ -8425,7 +8434,7 @@ async def test_cleanup_expired_sandbox_leases_releases_expired_non_runtime_lease
         calls.append(("event", kwargs))
         return "evt-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr(_repo_owner_app_streaming_infrastructure_run_events_postgres, "append_event", fake_append_event)
 
     cleaned = await sandbox_runtime_cleanup.cleanup_expired_sandbox_leases(
         FakeConnection(),
@@ -8493,7 +8502,7 @@ async def test_cleanup_expired_sandbox_leases_global_scope_emits_events_for_each
         calls.append(("event", kwargs))
         return f"evt-{kwargs['tenant_id']}"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr(_repo_owner_app_streaming_infrastructure_run_events_postgres, "append_event", fake_append_event)
 
     cleaned = await sandbox_runtime_cleanup.cleanup_expired_sandbox_leases(FakeConnection())
 
@@ -8627,7 +8636,7 @@ async def test_release_stopped_sandbox_leases_releases_by_stopped_ids_and_emits_
         calls.append(("event", kwargs))
         return "evt-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr(_repo_owner_app_streaming_infrastructure_run_events_postgres, "append_event", fake_append_event)
 
     released = await sandbox_runtime_cleanup.release_stopped_sandbox_leases(
         FakeConnection(),
@@ -8676,7 +8685,7 @@ async def test_get_run_identity_can_lock_row_for_callback_race_window():
 async def test_get_authorized_run_can_lock_row_for_retry_race_window():
     conn = RecordingConnection()
 
-    await repositories.get_authorized_run(
+    await _repo_owner_app_runs_infrastructure_creation_postgres.get_authorized_run(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",
@@ -8737,7 +8746,7 @@ async def test_admin_run_detail_rejects_missing_run_contract(monkeypatch):
     monkeypatch.setattr(run_queries_persistence, "get_run", fake_get_run)
 
     with pytest.raises(RepositoryConflictError, match="invalid_run_contract"):
-        await repositories.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a")
+        await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a")
 
 
 @pytest.mark.asyncio
@@ -8783,7 +8792,7 @@ async def test_admin_run_detail_rejects_missing_artifact_manifest_schema(monkeyp
     monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_empty_list)
 
     with pytest.raises(RepositoryConflictError, match="invalid_artifact_manifest_schema_version"):
-        await repositories.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a")
+        await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a")
 
 
 @pytest.mark.asyncio
@@ -8840,7 +8849,7 @@ async def test_admin_run_detail_rejects_missing_audit_schema(monkeypatch):
     monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_empty_list)
 
     with pytest.raises(RepositoryConflictError, match="invalid_audit_event_schema_version"):
-        await repositories.get_admin_run_detail(AuditConnection(), tenant_id="tenant-a", run_id="run-a")
+        await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(AuditConnection(), tenant_id="tenant-a", run_id="run-a")
 
 
 @pytest.mark.asyncio
@@ -8881,7 +8890,7 @@ async def test_list_admin_tool_policy_history_uses_bounded_tenant_scoped_audit_q
 
     conn = HistoryConnection()
 
-    rows = await repositories.list_admin_tool_policy_history(
+    rows = await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.list_admin_tool_policy_history(
         conn,
         tenant_id="tenant-a",
         tool_id="ragflow-knowledge-search",
@@ -8921,19 +8930,19 @@ async def test_list_admin_tool_policy_history_clamps_limit_for_direct_callers():
 
     conn = HistoryConnection()
 
-    await repositories.list_admin_tool_policy_history(
+    await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.list_admin_tool_policy_history(
         conn,
         tenant_id="tenant-a",
         tool_id=None,
         limit=9999,
     )
-    await repositories.list_admin_tool_policy_history(
+    await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.list_admin_tool_policy_history(
         conn,
         tenant_id="tenant-a",
         tool_id=None,
         limit=-5,
     )
-    await repositories.list_admin_tool_policy_history(
+    await _repo_owner_app_mcp_infrastructure_tool_policies_postgres.list_admin_tool_policy_history(
         conn,
         tenant_id="tenant-a",
         tool_id=None,
@@ -8961,7 +8970,7 @@ async def test_list_role_governance_audit_history_uses_bounded_tenant_scoped_que
 
     conn = RoleGovernanceHistoryConnection()
 
-    rows = await repositories.list_role_governance_audit_history(
+    rows = await _repo_owner_app_identity_infrastructure_audit_postgres.list_role_governance_audit_history(
         conn,
         tenant_id="tenant-a",
         user_id="ordinary",
@@ -9006,9 +9015,9 @@ async def test_list_role_governance_audit_history_clamps_limit_for_direct_caller
 
     conn = RoleGovernanceHistoryConnection()
 
-    await repositories.list_role_governance_audit_history(conn, tenant_id="tenant-a", limit=9999)
-    await repositories.list_role_governance_audit_history(conn, tenant_id="tenant-a", limit=-5)
-    await repositories.list_role_governance_audit_history(conn, tenant_id="tenant-a", limit=0)
+    await _repo_owner_app_identity_infrastructure_audit_postgres.list_role_governance_audit_history(conn, tenant_id="tenant-a", limit=9999)
+    await _repo_owner_app_identity_infrastructure_audit_postgres.list_role_governance_audit_history(conn, tenant_id="tenant-a", limit=-5)
+    await _repo_owner_app_identity_infrastructure_audit_postgres.list_role_governance_audit_history(conn, tenant_id="tenant-a", limit=0)
 
     assert conn.calls[0][1][-1] == 100
     assert conn.calls[1][1][-1] == 1
@@ -9046,7 +9055,7 @@ async def test_resolve_agent_skill_uses_tenant_stable_release_policy():
 
     conn = ResolveConnection()
 
-    row = await repositories.resolve_agent_skill(
+    row = await _repo_owner_app_skills_infrastructure_resolution_postgres.resolve_agent_skill(
         conn,
         tenant_id="default",
         agent_id="qa-word-review",
@@ -9100,7 +9109,7 @@ async def test_resolve_agent_skill_rejects_unreleased_policy_version(version_sta
     conn = ResolveConnection()
 
     with pytest.raises(RepositoryConflictError, match="skill_version_not_released"):
-        await repositories.resolve_agent_skill(
+        await _repo_owner_app_skills_infrastructure_resolution_postgres.resolve_agent_skill(
             conn,
             tenant_id="default",
             agent_id="qa-word-review",
@@ -9131,8 +9140,8 @@ async def test_resolve_agent_skill_rejects_embedded_poco_executor_fact_source():
         async def execute(self, sql, params):
             return ResolveCursor()
 
-    with pytest.raises(repositories.RepositoryConflictError, match="executor_type_not_allowed"):
-        await repositories.resolve_agent_skill(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryConflictError, match="executor_type_not_allowed"):
+        await _repo_owner_app_skills_infrastructure_resolution_postgres.resolve_agent_skill(
             ResolveConnection(),
             tenant_id="default",
             agent_id="general-agent",
@@ -9144,7 +9153,7 @@ async def test_resolve_agent_skill_rejects_embedded_poco_executor_fact_source():
 async def test_upsert_run_skill_snapshot_is_tenant_and_run_scoped():
     conn = RecordingConnection()
 
-    await repositories.upsert_run_skill_snapshot(
+    await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.upsert_run_skill_snapshot(
         conn,
         tenant_id="default",
         run_id="run-a",
@@ -9177,7 +9186,7 @@ async def test_upsert_run_skill_snapshot_is_tenant_and_run_scoped():
 async def test_upsert_run_skill_snapshot_preserves_immutable_provenance_identity():
     conn = RecordingConnection()
 
-    await repositories.upsert_run_skill_snapshot(
+    await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.upsert_run_skill_snapshot(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -9216,7 +9225,7 @@ async def test_upsert_run_skill_snapshot_fails_closed_on_immutable_identity_mism
             return ConflictCursor()
 
     with pytest.raises(RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
-        await repositories.upsert_run_skill_snapshot(
+        await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.upsert_run_skill_snapshot(
             ConflictConnection(),
             tenant_id="tenant-a",
             run_id="run-a",
@@ -9253,7 +9262,7 @@ async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact()
         }
     ]
 
-    await repositories.insert_run_skill_snapshots_at_creation(
+    await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.insert_run_skill_snapshots_at_creation(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -9299,7 +9308,7 @@ async def test_insert_run_skill_snapshots_allows_dependency_manifest_without_exe
         "dependency_ids": [],
     }
 
-    await repositories.insert_run_skill_snapshots_at_creation(
+    await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.insert_run_skill_snapshots_at_creation(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -9336,7 +9345,7 @@ async def test_insert_run_skill_snapshots_preserves_each_root_release_decision()
         )
     ]
 
-    await repositories.insert_run_skill_snapshots_at_creation(
+    await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.insert_run_skill_snapshots_at_creation(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -9374,7 +9383,7 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
         },
     ]
 
-    assert await repositories.validate_replay_skill_manifests(
+    assert await _repo_owner_app_skills_infrastructure_postgres.validate_replay_skill_manifests(
         object(),
         skill_id="skill-a",
         pinned_version="hash-a",
@@ -9386,8 +9395,8 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
         ],
     ) == ["mcp:a", "mcp:b"]
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.validate_replay_skill_manifests(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_skills_infrastructure_postgres.validate_replay_skill_manifests(
             object(),
             skill_id="skill-a",
             pinned_version="hash-a",
@@ -9396,8 +9405,8 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
             skill_set=[],
         )
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.validate_replay_skill_manifests(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_skills_infrastructure_postgres.validate_replay_skill_manifests(
             object(),
             skill_id="skill-a",
             pinned_version="hash-a",
@@ -9406,8 +9415,8 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
             skill_set=[{"skill_id": "skill-a", "expected_version": "hash-a"}],
         )
 
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.validate_replay_skill_manifests(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_skills_infrastructure_postgres.validate_replay_skill_manifests(
             object(),
             skill_id="skill-a",
             pinned_version="hash-a",
@@ -9420,7 +9429,7 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
         {**manifests[0], "dependency_ids": ["skill-b"]},
         manifests[1],
     ]
-    assert await repositories.validate_replay_skill_manifests(
+    assert await _repo_owner_app_skills_infrastructure_postgres.validate_replay_skill_manifests(
         object(),
         skill_id="skill-a",
         pinned_version="hash-a",
@@ -9433,8 +9442,8 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
         {**manifests[0], "dependency_ids": ["skill-b"]},
         {**manifests[1], "dependency_ids": ["skill-a"]},
     ]
-    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
-        await repositories.validate_replay_skill_manifests(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await _repo_owner_app_skills_infrastructure_postgres.validate_replay_skill_manifests(
             object(),
             skill_id="skill-a",
             pinned_version="hash-a",
@@ -9447,7 +9456,7 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
 @pytest.mark.asyncio
 async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable_identity():
     with pytest.raises(RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
-        await repositories.insert_run_skill_snapshots_at_creation(
+        await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.insert_run_skill_snapshots_at_creation(
             RecordingConnection(),
             tenant_id="tenant-a",
             run_id="run-a",
@@ -9484,11 +9493,11 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
             ("dependency", "hash-dependency", "aGVscGU="),
         )
     ]
-    refs = repositories.skill_manifest_refs(manifests)
+    refs = _repo_owner_app_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs(manifests)
     stored_rows = [
         {
             "skill_id": item["skill_id"],
-            "materialization_sha256": repositories.skill_manifest_materialization_sha256(item),
+            "materialization_sha256": _repo_owner_app_skills_pinning.skill_manifest_materialization_sha256(item),
             "manifest_json": item,
         }
         for item in reversed(manifests)
@@ -9515,7 +9524,7 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
         return hash_manifest(manifest)
 
     monkeypatch.setattr(pinning, "skill_manifest_materialization_sha256", counted)
-    loaded = await repositories.materialize_run_skill_manifests(
+    loaded = await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.materialize_run_skill_manifests(
         Connection(),
         tenant_id="tenant-a",
         run_id="run-a",
@@ -9528,7 +9537,7 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
         RepositoryConflictError,
         match="run_skill_materialization_identity_mismatch",
     ):
-        await repositories.materialize_run_skill_manifests(
+        await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.materialize_run_skill_manifests(
             Connection(),
             tenant_id="tenant-a",
             run_id="run-a",
@@ -9546,7 +9555,7 @@ async def test_materialize_run_skill_manifests_orders_by_reference_and_rejects_d
             RepositoryConflictError,
             match="run_skill_materialization_identity_mismatch",
         ):
-            await repositories.materialize_run_skill_manifests(
+            await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.materialize_run_skill_manifests(
                 Connection(),
                 tenant_id="tenant-a",
                 run_id="run-a",
@@ -9570,9 +9579,9 @@ def test_skill_manifest_transport_is_always_reference_only():
         "dependency_ids": [],
     }
 
-    references = repositories.skill_manifest_refs([manifest])
+    references = _repo_owner_app_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs([manifest])
 
-    assert references == repositories.skill_manifest_refs([manifest])
+    assert references == _repo_owner_app_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs([manifest])
     assert "files" not in references[0]
     assert "content_base64" not in json.dumps(references)
 
@@ -9600,7 +9609,7 @@ async def test_authorize_files_for_run_locks_and_validates_without_writing():
             return FileCursor()
 
     conn = FileConnection()
-    await repositories.authorize_files_for_run(
+    await _repo_owner_app_files_infrastructure_run_bindings_postgres.authorize_files_for_run(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -9641,8 +9650,8 @@ async def test_authorize_files_for_run_rejects_skill_file_with_mismatched_mime()
             self.calls.append((" ".join(sql.split()), params))
             return FileCursor()
 
-    with pytest.raises(repositories.RepositoryConflictError, match="file_required_for_skill"):
-        await repositories.authorize_files_for_run(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryConflictError, match="file_required_for_skill"):
+        await _repo_owner_app_files_infrastructure_run_bindings_postgres.authorize_files_for_run(
             FileConnection(),
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -9676,7 +9685,7 @@ async def test_authorize_files_for_run_does_not_apply_profile_format_whitelists(
             self.calls.append((" ".join(sql.split()), params))
             return FileCursor()
 
-    rows = await repositories.authorize_files_for_run(
+    rows = await _repo_owner_app_files_infrastructure_run_bindings_postgres.authorize_files_for_run(
         FileConnection(),
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -9730,7 +9739,7 @@ async def test_authorize_files_for_run_accepts_mixed_authorized_file_formats():
             return FileCursor(rows.get(params[0]))
 
     conn = FileConnection()
-    authorized = await repositories.authorize_files_for_run(
+    authorized = await _repo_owner_app_files_infrastructure_run_bindings_postgres.authorize_files_for_run(
         conn,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -9753,8 +9762,8 @@ async def test_authorize_files_for_run_rejects_reusable_id_outside_requested_set
         async def execute(self, *_args, **_kwargs):
             raise AssertionError("invalid reusable file scope must fail before SQL")
 
-    with pytest.raises(repositories.RepositoryConflictError, match="file_scope_mismatch"):
-        await repositories.authorize_files_for_run(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryConflictError, match="file_scope_mismatch"):
+        await _repo_owner_app_files_infrastructure_run_bindings_postgres.authorize_files_for_run(
             ForbiddenConnection(),
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -9787,8 +9796,8 @@ async def test_authorize_files_for_run_rejects_reusable_file_from_other_session(
         async def execute(self, *_args, **_kwargs):
             return FileCursor()
 
-    with pytest.raises(repositories.RepositoryConflictError, match="file_session_mismatch"):
-        await repositories.authorize_files_for_run(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryConflictError, match="file_session_mismatch"):
+        await _repo_owner_app_files_infrastructure_run_bindings_postgres.authorize_files_for_run(
             FileConnection(),
             tenant_id="tenant-a",
             workspace_id="workspace-a",
@@ -9862,7 +9871,7 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
             assert params == ("default", "run-a")
             return SnapshotCursor()
 
-    snapshots = await repositories.list_run_skill_snapshots(
+    snapshots = await _repo_owner_app_skills_infrastructure_run_snapshots_postgres.list_run_skill_snapshots(
         SnapshotConnection(),
         tenant_id="default",
         run_id="run-a",
@@ -9924,7 +9933,7 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
 @pytest.mark.asyncio
 async def test_update_run_input_execution_snapshot_atomically_replaces_canonical_fields():
     conn = RecordingConnection()
-    execution_snapshot = repositories.copied_run_execution_snapshot(
+    execution_snapshot = _repo_owner_app_runs_infrastructure_replay_postgres.copied_run_execution_snapshot(
         {
             "tenant_id": "must-not-project",
             "file_ids": ["file-a"],
@@ -9952,7 +9961,7 @@ async def test_update_run_input_execution_snapshot_atomically_replaces_canonical
         }
     )
 
-    await repositories.update_run_input_execution_snapshot(
+    await _repo_owner_app_runs_infrastructure_replay_postgres.update_run_input_execution_snapshot(
         conn,
         tenant_id="default",
         run_id="run-a",
@@ -9966,15 +9975,15 @@ async def test_update_run_input_execution_snapshot_atomically_replaces_canonical
     assert params == (
         "default",
         "run-a",
-        repositories.compact_json_dumps(execution_snapshot),
-        repositories.compact_json_dumps(execution_snapshot),
-        repositories.compact_json_dumps(execution_snapshot),
-        repositories.compact_json_dumps(execution_snapshot),
+        _repo_owner_app_platform_postgres_limits.compact_json_dumps(execution_snapshot),
+        _repo_owner_app_platform_postgres_limits.compact_json_dumps(execution_snapshot),
+        _repo_owner_app_platform_postgres_limits.compact_json_dumps(execution_snapshot),
+        _repo_owner_app_platform_postgres_limits.compact_json_dumps(execution_snapshot),
     )
     update_sql, update_params = conn.calls[1]
     assert update_sql.startswith("update runs set input_json = %s::jsonb")
     assert update_params == (
-        repositories.compact_json_dumps(execution_snapshot),
+        _repo_owner_app_platform_postgres_limits.compact_json_dumps(execution_snapshot),
         "default",
         "run-a",
     )
@@ -9983,7 +9992,7 @@ async def test_update_run_input_execution_snapshot_atomically_replaces_canonical
 @pytest.mark.asyncio
 async def test_update_run_input_execution_snapshot_explicitly_replaces_null_and_empty_values():
     conn = RecordingConnection()
-    execution_snapshot = repositories.copied_run_execution_snapshot(
+    execution_snapshot = _repo_owner_app_runs_infrastructure_replay_postgres.copied_run_execution_snapshot(
         {
             "input": {},
             "executor_type": "claude-agent-worker",
@@ -9997,7 +10006,7 @@ async def test_update_run_input_execution_snapshot_explicitly_replaces_null_and_
         }
     )
 
-    await repositories.update_run_input_execution_snapshot(
+    await _repo_owner_app_runs_infrastructure_replay_postgres.update_run_input_execution_snapshot(
         conn,
         tenant_id="tenant-a",
         run_id="run-empty",
@@ -10009,15 +10018,15 @@ async def test_update_run_input_execution_snapshot_explicitly_replaces_null_and_
     assert params == (
         "tenant-a",
         "run-empty",
-        repositories.compact_json_dumps(execution_snapshot),
-        repositories.compact_json_dumps(execution_snapshot),
-        repositories.compact_json_dumps(execution_snapshot),
-        repositories.compact_json_dumps(execution_snapshot),
+        _repo_owner_app_platform_postgres_limits.compact_json_dumps(execution_snapshot),
+        _repo_owner_app_platform_postgres_limits.compact_json_dumps(execution_snapshot),
+        _repo_owner_app_platform_postgres_limits.compact_json_dumps(execution_snapshot),
+        _repo_owner_app_platform_postgres_limits.compact_json_dumps(execution_snapshot),
     )
 
 
 def test_copied_run_execution_snapshot_audits_all_queue_non_identity_fields():
-    snapshot = repositories.copied_run_execution_snapshot(
+    snapshot = _repo_owner_app_runs_infrastructure_replay_postgres.copied_run_execution_snapshot(
         {
             "tenant_id": "must-not-project",
             "run_id": "must-not-project",
@@ -10059,7 +10068,7 @@ def test_copied_run_execution_snapshot_audits_all_queue_non_identity_fields():
 def test_copied_run_execution_snapshot_preserves_invalid_manifest_transport_for_strict_validation(
     invalid_manifests,
 ):
-    snapshot = repositories.copied_run_execution_snapshot(
+    snapshot = _repo_owner_app_runs_infrastructure_replay_postgres.copied_run_execution_snapshot(
         {"skill_manifests": invalid_manifests}
     )
 
@@ -10070,7 +10079,7 @@ def test_copied_run_execution_snapshot_preserves_invalid_manifest_transport_for_
 async def test_upsert_skill_version_records_immutable_catalog_version():
     conn = RecordingConnection()
 
-    await repositories.upsert_skill_version(
+    await _repo_owner_app_skills_infrastructure_versions_postgres.upsert_skill_version(
         conn,
         skill_id="qa-file-reviewer",
         version="hash-a",
@@ -10108,7 +10117,7 @@ async def test_upsert_skill_version_reports_conflict_when_insert_skipped():
 
     conn = ConflictConnection()
 
-    inserted = await repositories.upsert_skill_version(
+    inserted = await _repo_owner_app_skills_infrastructure_versions_postgres.upsert_skill_version(
         conn,
         skill_id="qa-file-reviewer",
         version="hash-a",
@@ -10137,7 +10146,7 @@ async def test_create_skill_catalog_is_insert_only_and_reports_conflict():
     conn = ConflictConnection()
 
     with pytest.raises(RepositoryConflictError) as exc_info:
-        await repositories.create_skill_catalog(
+        await _repo_owner_app_skills_infrastructure_versions_postgres.create_skill_catalog(
             conn,
             skill_id="new-research-skill",
             name="New Research Skill",
@@ -10169,7 +10178,7 @@ async def test_create_skill_catalog_is_insert_only_and_reports_conflict():
 async def test_update_skill_catalog_version_updates_current_skill_pointer():
     conn = RecordingConnection()
 
-    await repositories.update_skill_catalog_version(
+    await _repo_owner_app_skills_infrastructure_versions_postgres.update_skill_catalog_version(
         conn,
         skill_id="qa-file-reviewer",
         version="hash-current",
@@ -10213,14 +10222,14 @@ async def test_user_skill_file_overlay_repository_contracts():
 
     conn = OverlayConnection()
 
-    overlays = await repositories.list_user_skill_file_overlays(
+    overlays = await _repo_owner_app_skills_infrastructure_file_overlays_postgres.list_user_skill_file_overlays(
         conn,
         tenant_id="default",
         user_id="ordinary",
         skill_ids=["qa-file-reviewer"],
         include_content=True,
     )
-    upserted = await repositories.upsert_user_skill_file(
+    upserted = await _repo_owner_app_skills_infrastructure_file_overlays_postgres.upsert_user_skill_file(
         conn,
         tenant_id="default",
         user_id="ordinary",
@@ -10229,7 +10238,7 @@ async def test_user_skill_file_overlay_repository_contracts():
         content_base64="dXBkYXRlZA==",
         size_bytes=7,
     )
-    deleted = await repositories.delete_user_skill_file(
+    deleted = await _repo_owner_app_skills_infrastructure_file_overlays_postgres.delete_user_skill_file(
         conn,
         tenant_id="default",
         user_id="ordinary",
@@ -10295,7 +10304,7 @@ async def test_user_skill_file_overlay_list_can_omit_content_for_catalog_project
 
     conn = OverlayConnection()
 
-    overlays = await repositories.list_user_skill_file_overlays(
+    overlays = await _repo_owner_app_skills_infrastructure_file_overlays_postgres.list_user_skill_file_overlays(
         conn,
         tenant_id="default",
         user_id="ordinary",
@@ -10312,7 +10321,7 @@ async def test_user_skill_file_overlay_list_can_omit_content_for_catalog_project
 async def test_backfill_builtin_skill_version_snapshot_only_updates_incomplete_builtin_rows():
     conn = RecordingConnection()
 
-    await repositories.backfill_builtin_skill_version_snapshot(
+    await _repo_owner_app_skills_infrastructure_versions_postgres.backfill_builtin_skill_version_snapshot(
         conn,
         skill_id="qa-file-reviewer",
         version="hash-current",
@@ -10384,7 +10393,7 @@ async def test_list_skill_versions_projects_source_and_dependencies():
 
     conn = VersionConnection()
 
-    versions = await repositories.list_skill_versions(conn, skill_id="qa-file-reviewer")
+    versions = await _repo_owner_app_skills_infrastructure_versions_postgres.list_skill_versions(conn, skill_id="qa-file-reviewer")
 
     assert "from skill_versions" in conn.sql
     assert conn.params == ("qa-file-reviewer",)
@@ -10431,7 +10440,7 @@ async def test_get_effective_skill_version_for_policy_returns_uploaded_source():
 
     conn = VersionConnection()
 
-    version = await repositories.get_effective_skill_version_for_policy(
+    version = await _repo_owner_app_skills_infrastructure_versions_postgres.get_effective_skill_version_for_policy(
         conn,
         skill_id="qa-file-reviewer",
         version="hash-uploaded",
@@ -10461,7 +10470,7 @@ async def test_get_skill_projects_status_for_upload_preflight():
 
     conn = SkillConnection()
 
-    row = await repositories.get_skill(conn, skill_id="qa-file-reviewer")
+    row = await _repo_owner_app_skills_infrastructure_catalog_postgres.get_skill(conn, skill_id="qa-file-reviewer")
 
     assert "from skills" in conn.sql
     assert "version" in conn.sql
@@ -10487,7 +10496,7 @@ async def test_list_skill_ids_returns_all_catalog_ids_for_dependency_policy():
 
     conn = SkillConnection()
 
-    skill_ids = await repositories.list_skill_ids(conn)
+    skill_ids = await _repo_owner_app_skills_infrastructure_catalog_postgres.list_skill_ids(conn)
 
     assert "from skills" in conn.sql
     assert conn.params == ()
@@ -10521,7 +10530,7 @@ async def test_get_skill_release_policy_projects_current_version():
 
     conn = ReleaseConnection()
 
-    policy = await repositories.get_skill_release_policy(
+    policy = await _repo_owner_app_skills_infrastructure_versions_postgres.get_skill_release_policy(
         conn,
         tenant_id="default",
         skill_id="qa-file-reviewer",
@@ -10544,7 +10553,7 @@ async def test_get_skill_release_policy_projects_current_version():
 async def test_set_skill_release_policy_is_tenant_scoped_and_preserves_previous_version():
     conn = RecordingConnection()
 
-    await repositories.set_skill_release_policy(
+    await _repo_owner_app_skills_infrastructure_versions_postgres.set_skill_release_policy(
         conn,
         tenant_id="default",
         skill_id="qa-file-reviewer",
@@ -10603,7 +10612,7 @@ async def test_diff_skill_versions_reports_manifest_and_dependency_changes():
             }
             return DiffCursor(rows.get(version))
 
-    diff = await repositories.diff_skill_versions(
+    diff = await _repo_owner_app_skills_infrastructure_versions_postgres.diff_skill_versions(
         DiffConnection(),
         skill_id="qa-file-reviewer",
         from_version="hash-a",
@@ -10632,8 +10641,8 @@ async def test_diff_skill_versions_raises_when_version_missing():
         async def execute(self, sql, params):
             return MissingCursor()
 
-    with pytest.raises(repositories.RepositoryNotFoundError, match="skill_version_not_found"):
-        await repositories.diff_skill_versions(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryNotFoundError, match="skill_version_not_found"):
+        await _repo_owner_app_skills_infrastructure_versions_postgres.diff_skill_versions(
             MissingConnection(),
             skill_id="qa-file-reviewer",
             from_version="hash-a",
@@ -10767,7 +10776,7 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
                 )
             raise AssertionError(compact)
 
-    detail = await repositories.get_admin_skill_detail(
+    detail = await _repo_owner_app_skills_infrastructure_versions_postgres.get_admin_skill_detail(
         SkillDetailConnection(),
         tenant_id="tenant-a",
         skill_id="qa-file-reviewer",
@@ -10855,7 +10864,7 @@ async def test_admin_skill_detail_hides_archived_distribution(monkeypatch):
             assert params == ("tenant-a", "archived-demo")
             return Cursor()
 
-    detail = await repositories.get_admin_skill_detail(
+    detail = await _repo_owner_app_skills_infrastructure_versions_postgres.get_admin_skill_detail(
         Connection(),
         tenant_id="tenant-a",
         skill_id="archived-demo",
@@ -10915,7 +10924,7 @@ async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
             assert "left join lateral" in compact
             return SummaryCursor()
 
-    rows = await repositories.list_admin_skill_summaries(
+    rows = await _repo_owner_app_skills_infrastructure_versions_postgres.list_admin_skill_summaries(
         SummaryConnection(),
         tenant_id="tenant-a",
     )
@@ -10940,8 +10949,8 @@ async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
 async def test_set_workbench_skill_status_rejects_internal_dependency_skill():
     conn = RecordingConnection()
 
-    with pytest.raises(repositories.RepositoryNotFoundError, match="workbench_skill_not_found"):
-        await repositories.set_workbench_skill_status(
+    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryNotFoundError, match="workbench_skill_not_found"):
+        await _repo_owner_app_skills_infrastructure_catalog_postgres.set_workbench_skill_status(
             conn,
             tenant_id="default",
             skill_id="minimax-docx",
@@ -10998,7 +11007,7 @@ async def test_set_uploaded_workbench_skill_status_creates_authoritative_distrib
 
     conn = UploadedSkillConnection()
 
-    row = await repositories.set_uploaded_workbench_skill_status(
+    row = await _repo_owner_app_skills_infrastructure_catalog_postgres.set_uploaded_workbench_skill_status(
         conn,
         tenant_id="default",
         skill_id="new-research-skill",
@@ -11075,7 +11084,7 @@ async def test_set_public_skill_enabled_updates_existing_authoritative_distribut
 
     conn = UploadedSkillConnection()
 
-    row = await repositories.set_public_skill_enabled(
+    row = await _repo_owner_app_skills_infrastructure_catalog_postgres.set_public_skill_enabled(
         conn,
         tenant_id="default",
         skill_id="new-research-skill",
@@ -11108,7 +11117,7 @@ async def test_set_public_skill_enabled_rejects_non_public_skill_without_distrib
     conn = MissingUploadedSkillConnection()
 
     with pytest.raises(RepositoryNotFoundError, match="workbench_skill_not_found"):
-        await repositories.set_public_skill_enabled(
+        await _repo_owner_app_skills_infrastructure_catalog_postgres.set_public_skill_enabled(
             conn,
             tenant_id="default",
             skill_id="minimax-docx",
@@ -11547,7 +11556,7 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
 
 
 def test_skill_snapshot_reader_normalizes_legacy_governance_boundary_marker():
-    source = repositories._sanitize_skill_snapshot_source(
+    source = _repo_owner_app_skills_infrastructure_run_snapshots_postgres._sanitize_skill_snapshot_source(
         {
             "kind": "builtin",
             "snapshot_governance": {
@@ -11673,8 +11682,8 @@ async def test_complete_run_persists_g2_observability_columns_from_result_json()
 
     await RunLifecycleService(
         persistence=PostgresRunLifecyclePersistence(),
-        append_event=repositories.append_event,
-        append_audit_log=repositories.append_audit_log,
+        append_event=_repo_owner_app_streaming_infrastructure_run_events_postgres.append_event,
+        append_audit_log=_repo_owner_app_identity_infrastructure_audit_postgres.append_audit_log,
         validate_result_size=require_run_result_size,
         sanitize_payload=sanitize_public_payload,
         sanitize_text=sanitize_public_text,
@@ -11764,7 +11773,7 @@ async def test_get_admin_runtime_run_summary_counts_statuses_and_redacts_failure
                 )
             raise AssertionError(compact)
 
-    summary = await repositories.get_admin_runtime_run_summary(
+    summary = await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_runtime_run_summary(
         SummaryConnection(),
         tenant_id="tenant-a",
         limit=5,
@@ -11819,7 +11828,7 @@ async def test_get_admin_runtime_admission_summary_counts_same_tenant_active_use
 
     conn = SummaryConnection()
 
-    summary = await repositories.get_admin_runtime_admission_summary(
+    summary = await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_runtime_admission_summary(
         conn,
         tenant_id="tenant-a",
         limit=3,
@@ -11861,7 +11870,7 @@ async def test_get_admin_runtime_admission_summary_disables_saturation_when_limi
                 return SummaryCursor(row={"active_runs": 7, "active_users": 1, "saturated_users": 0})
             return SummaryCursor(rows=[{"user_id": "user-a", "active": 7}])
 
-    summary = await repositories.get_admin_runtime_admission_summary(
+    summary = await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_runtime_admission_summary(
         SummaryConnection(),
         tenant_id="tenant-a",
         limit=0,
@@ -11911,7 +11920,7 @@ async def test_get_admin_runtime_observability_summary_coerces_nulls_to_defaults
                 }
             )
 
-    summary = await repositories.get_admin_runtime_observability_summary(
+    summary = await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_runtime_observability_summary(
         SummaryConnection(),
         tenant_id="tenant-a",
     )
@@ -11968,7 +11977,7 @@ async def test_get_admin_runtime_observability_summary_uses_run_totals_for_termi
                 }
             )
 
-    summary = await repositories.get_admin_runtime_observability_summary(
+    summary = await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_runtime_observability_summary(
         SummaryConnection(),
         tenant_id="tenant-a",
     )
@@ -12000,7 +12009,7 @@ async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_p
     created_at = datetime(2026, 8, 3, tzinfo=timezone.utc)
     conn = RecordingConnection()
 
-    rows = await agent_conversation_repository.list_authorized_agent_conversations(
+    rows = await conversation_history.list_authorized_agent_conversations(
         conn,
         tenant_id="tenant-a",
         user_id="user-a",

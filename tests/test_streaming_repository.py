@@ -1,9 +1,11 @@
+import app.platform.postgres.errors as _owner_platform_postgres_errors
+import app.run_event_repository as _owner_run_event_repository
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 from pathlib import Path
 from types import MappingProxyType
 
 import pytest
 
-from app import repositories
 from app import run_event_repository
 from app import schema_migrations
 from app.platform.postgres.errors import RepositoryConflictError
@@ -64,7 +66,7 @@ async def test_append_event_uses_ledger_and_preserves_generic_conflict_identity(
 
     monkeypatch.setattr(run_event_repository._ledger, "append_event", append_one)
 
-    event_id = await repositories.append_event(
+    event_id = await _owner_streaming_infrastructure_run_events_postgres.append_event(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -89,7 +91,7 @@ async def test_append_event_uses_ledger_and_preserves_generic_conflict_identity(
             ),
         )
     ]
-    assert repositories.RepositoryConflictError is RepositoryConflictError
+    assert _owner_platform_postgres_errors.RepositoryConflictError is RepositoryConflictError
     assert RepositoryConflictError is not ledger.RunEventLedgerConflictError
 
 
@@ -107,7 +109,7 @@ async def test_append_event_record_returns_exact_post_commit_projection_facts(
 
     monkeypatch.setattr(run_event_repository._ledger, "append_event", append_one)
 
-    record = await repositories.append_event(
+    record = await _owner_streaming_infrastructure_run_events_postgres.append_event(
         _Connection(),
         tenant_id="tenant-a",
         run_id="run-a",
@@ -150,7 +152,7 @@ async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(
         run_event_repository._ledger, "acquire_terminal_drain_fence", fence
     )
 
-    receipt = await repositories.append_event_batch(
+    receipt = await _owner_streaming_infrastructure_run_events_postgres.append_event_batch(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -165,7 +167,7 @@ async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(
             }
         ],
     )
-    terminal = await repositories.acquire_run_event_terminal_drain_fence(
+    terminal = await _owner_streaming_infrastructure_run_events_postgres.acquire_run_event_terminal_drain_fence(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -271,7 +273,7 @@ async def test_batch_event_validation_is_strict_and_ledger_conflicts_only_are_tr
     monkeypatch.setattr(run_event_repository._ledger, "append_batch", append_batch)
 
     with pytest.raises(ValueError, match="run_event_payload_invalid"):
-        await repositories.append_event_batch(
+        await _owner_streaming_infrastructure_run_events_postgres.append_event_batch(
             conn,
             tenant_id="tenant-a",
             run_id="run-a",
@@ -289,9 +291,9 @@ async def test_batch_event_validation_is_strict_and_ledger_conflicts_only_are_tr
     assert called is False
 
     with pytest.raises(
-        repositories.RepositoryConflictError, match="terminal_drain_already_consumed"
+        _owner_platform_postgres_errors.RepositoryConflictError, match="terminal_drain_already_consumed"
     ):
-        await repositories.append_event_batch(
+        await _owner_streaming_infrastructure_run_events_postgres.append_event_batch(
             conn,
             tenant_id="tenant-a",
             run_id="run-a",
@@ -312,7 +314,7 @@ async def test_batch_event_validation_is_strict_and_ledger_conflicts_only_are_tr
 async def test_terminal_lease_lookup_is_exactly_scoped_and_locked():
     conn = _Connection()
 
-    await repositories.list_terminal_sandbox_runtime_leases_for_attempt(
+    await _owner_run_event_repository.list_terminal_sandbox_runtime_leases_for_attempt(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -355,10 +357,10 @@ async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sq
 
     monkeypatch.setattr(run_event_repository._ledger, "read_event_rows", read_rows)
 
-    unbounded = await repositories.list_run_events(
+    unbounded = await _owner_streaming_infrastructure_run_events_postgres.list_run_events(
         conn, tenant_id="tenant-a", run_id="run-a"
     )
-    incremental = await repositories.list_run_events(
+    incremental = await _owner_streaming_infrastructure_run_events_postgres.list_run_events(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",

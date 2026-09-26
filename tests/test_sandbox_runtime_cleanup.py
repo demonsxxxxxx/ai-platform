@@ -42,7 +42,7 @@ def isolate_cleanup_compensation_persistence(monkeypatch):
 
     monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.record_sandbox_runtime_cleanup_outcome",
+        "app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome",
         fake_record_cleanup_outcome,
     )
 
@@ -329,7 +329,7 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
         f"{owner}.sandbox_lease_repository.finalize_failed_sandbox_executor_reconciliation_cleanup",
         finalize,
     )
-    monkeypatch.setattr(f"{owner}.repositories.append_event", append_event)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", append_event)
 
     released = await cleanup_failed_sandbox_executor_reconciliation_leases(
         tenant_id="tenant-a",
@@ -1074,7 +1074,7 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
             finalize_failed,
         )
         monkeypatch.setattr(
-            "app.routes.sandbox_runtime_cleanup.repositories.append_event",
+            "app.streaming.infrastructure.run_events_postgres.append_event",
             append_event,
         )
 
@@ -1176,7 +1176,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leas
         fake_release_stopped_sandbox_leases,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_runtime_cleanup.repositories.record_sandbox_runtime_cleanup_outcome",
+        "app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome",
         fake_record_cleanup_outcome,
     )
     monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.transaction", fake_transaction)

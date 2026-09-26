@@ -1,3 +1,6 @@
+import app.identity.infrastructure.capability_distributions_postgres as _owner_identity_infrastructure_capability_distributions_postgres
+import app.skills.infrastructure.catalog_postgres as _owner_skills_infrastructure_catalog_postgres
+import app.skills.infrastructure.file_overlays_postgres as _owner_skills_infrastructure_file_overlays_postgres
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 import time
@@ -696,15 +699,15 @@ def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_depart
     monkeypatch.setattr("app.routes.auth.ensure_user", noop)
     monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
     monkeypatch.setattr(skills_marketplace, "transaction", fake_transaction)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_public_skill_catalog", fake_list_catalog)
+    monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'list_public_skill_catalog', fake_list_catalog)
     monkeypatch.setattr(
-        skills_marketplace.repositories,
-        "list_capability_distribution_rows",
+        _owner_identity_infrastructure_capability_distributions_postgres,
+        'list_capability_distribution_rows',
         fake_list_distributions,
     )
     monkeypatch.setattr(
-        skills_marketplace.repositories,
-        "list_user_skill_file_overlays",
+        _owner_skills_infrastructure_file_overlays_postgres,
+        'list_user_skill_file_overlays',
         fake_list_overlays,
     )
     return settings

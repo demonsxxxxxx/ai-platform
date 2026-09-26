@@ -6,7 +6,6 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
-from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessContext,
@@ -17,6 +16,11 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
+from app.identity.infrastructure import audit_postgres as identity_audit
+from app.identity.infrastructure import (
+    capability_distributions_postgres as identity_capability_distributions,
+)
+from app.identity.infrastructure import postgres as identity_postgres
 from app.models import (
     MarketplaceInstallResponse,
     MarketplaceListResponse,
@@ -24,8 +28,8 @@ from app.models import (
     MarketplaceSkillResponse,
     MarketplaceTagsResponse,
     PublicSkillDetailResponse,
-    PublicSkillFileResponse,
     PublicSkillFileMutationResponse,
+    PublicSkillFileResponse,
     PublicSkillFileUpdateRequest,
     PublicSkillImportPreviewResponse,
     PublicSkillImportUploadResponse,
@@ -33,20 +37,8 @@ from app.models import (
     PublicSkillToggleRequest,
     PublicSkillToggleResponse,
 )
+from app.platform.postgres import errors as platform_errors
 from app.settings import get_settings
-from app.skills.marketplace_projection import (
-    attach_user_file_overlays as _attach_user_file_overlays,
-    available_marketplace_tags as _available_tags,
-    filter_marketplace_rows as _filter_rows,
-    normalize_skill_file_path as _safe_file_path,
-    project_public_skill as _public_skill_item,
-    project_public_skill_detail as _skill_detail,
-    project_skill_file_paths as _file_paths,
-    project_skill_files as _project_files,
-    project_marketplace_skill,
-)
-from app.skills.lifecycle import is_user_runnable_status
-from app.skills.packages import MAX_SKILL_PACKAGE_TOTAL_BYTES, ParsedSkillPackage, parse_skill_package_zip
 from app.skills.github_import import (
     GitHubImportError,
     GitHubImportPackage,
@@ -54,6 +46,41 @@ from app.skills.github_import import (
     download_github_archive,
     download_github_archive_from_api,
     github_repo_archive_url,
+)
+from app.skills.infrastructure import catalog_postgres as skills_catalog
+from app.skills.infrastructure import file_overlays_postgres as skills_file_overlays
+from app.skills.lifecycle import is_user_runnable_status
+from app.skills.marketplace_projection import (
+    attach_user_file_overlays as _attach_user_file_overlays,
+)
+from app.skills.marketplace_projection import (
+    available_marketplace_tags as _available_tags,
+)
+from app.skills.marketplace_projection import (
+    filter_marketplace_rows as _filter_rows,
+)
+from app.skills.marketplace_projection import (
+    normalize_skill_file_path as _safe_file_path,
+)
+from app.skills.marketplace_projection import (
+    project_marketplace_skill,
+)
+from app.skills.marketplace_projection import (
+    project_public_skill as _public_skill_item,
+)
+from app.skills.marketplace_projection import (
+    project_public_skill_detail as _skill_detail,
+)
+from app.skills.marketplace_projection import (
+    project_skill_file_paths as _file_paths,
+)
+from app.skills.marketplace_projection import (
+    project_skill_files as _project_files,
+)
+from app.skills.packages import (
+    MAX_SKILL_PACKAGE_TOTAL_BYTES,
+    ParsedSkillPackage,
+    parse_skill_package_zip,
 )
 from app.validation import assert_safe_id
 
@@ -145,7 +172,7 @@ async def _audit_skill_admin_bypass(
 ) -> None:
     if not decision.admin_bypass:
         return
-    await repositories.append_audit_log(
+    await identity_audit.append_audit_log(
         conn,
         tenant_id=principal.tenant_id,
         user_id=principal.user_id,
@@ -171,13 +198,13 @@ async def _public_catalog_rows(
     include_user_file_overlays: bool = True,
 ) -> list[dict[str, Any]]:
     async with transaction() as conn:
-        rows = await repositories.list_public_skill_catalog(
+        rows = await skills_catalog.list_public_skill_catalog(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=include_disabled,
             rollout_key=principal.user_id,
         )
-        distributions = await repositories.list_capability_distribution_rows(
+        distributions = await identity_capability_distributions.list_capability_distribution_rows(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind="skill",
@@ -217,7 +244,7 @@ async def _public_catalog_rows(
             authorized_rows.append(row)
         rows = authorized_rows
         overlays = (
-            await repositories.list_user_skill_file_overlays(
+            await skills_file_overlays.list_user_skill_file_overlays(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -238,14 +265,14 @@ async def _public_skill_access(
     include_user_file_overlays: bool = True,
 ) -> tuple[dict[str, Any], CapabilityAccessDecision]:
     async with transaction() as conn:
-        rows = await repositories.list_public_skill_catalog(
+        rows = await skills_catalog.list_public_skill_catalog(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=False,
             rollout_key=principal.user_id,
         )
         row = _find_row(rows, skill_name=skill_name)
-        distribution = await repositories.get_capability_distribution_row(
+        distribution = await identity_capability_distributions.get_capability_distribution_row(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind="skill",
@@ -276,7 +303,7 @@ async def _public_skill_access(
             decision=decision,
         )
         overlays = (
-            await repositories.list_user_skill_file_overlays(
+            await skills_file_overlays.list_user_skill_file_overlays(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -354,9 +381,9 @@ def _file_response(row: dict[str, Any], *, file_path: str) -> PublicSkillFileRes
 
 
 def _repository_http_exception(exc: Exception) -> HTTPException:
-    if isinstance(exc, repositories.RepositoryNotFoundError):
+    if isinstance(exc, platform_errors.RepositoryNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, repositories.RepositoryConflictError):
+    if isinstance(exc, platform_errors.RepositoryConflictError):
         return HTTPException(status_code=409, detail=str(exc))
     return HTTPException(status_code=500, detail="repository_error")
 
@@ -469,7 +496,7 @@ async def _persist_public_import_package(
 ) -> None:
     _, decision = await _public_skill_access(principal=principal, skill_name=parsed.skill_id)
     async with transaction() as conn:
-        await repositories.ensure_user(
+        await identity_postgres.ensure_user(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -477,7 +504,7 @@ async def _persist_public_import_package(
         )
         for item in parsed.files:
             file_path = _safe_file_path(str(item.get("relative_path") or ""))
-            await repositories.upsert_user_skill_file(
+            await skills_file_overlays.upsert_user_skill_file(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -500,7 +527,7 @@ async def _persist_public_import_package(
             decision=decision,
             payload=payload_json,
         )
-        await repositories.append_audit_log(
+        await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -600,7 +627,7 @@ async def batch_delete_skills(
     deleted: list[str] = []
     errors: list[dict[str, str]] = []
     async with transaction() as conn:
-        await repositories.acquire_capability_distribution_lifecycle_locks(
+        await identity_capability_distributions.acquire_capability_distribution_lifecycle_locks(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind="skill",
@@ -608,14 +635,14 @@ async def batch_delete_skills(
         )
         for skill_name in names:
             try:
-                await repositories.archive_capability_distribution_row(
+                await identity_capability_distributions.archive_capability_distribution_row(
                     conn,
                     tenant_id=principal.tenant_id,
                     capability_kind="skill",
                     capability_id=skill_name,
                     archived_by=principal.user_id,
                 )
-                await repositories.append_audit_log(
+                await identity_audit.append_audit_log(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
@@ -625,7 +652,7 @@ async def batch_delete_skills(
                     payload_json={"department_id": principal.department_id},
                 )
                 deleted.append(skill_name)
-            except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+            except (platform_errors.RepositoryNotFoundError, platform_errors.RepositoryConflictError) as exc:
                 errors.append({"name": skill_name, "reason": str(exc)})
     return {"deleted": deleted, "errors": errors}
 
@@ -646,7 +673,7 @@ async def batch_toggle_skills(
     updated: list[str] = []
     errors: list[dict[str, str]] = []
     async with transaction() as conn:
-        await repositories.acquire_capability_distribution_lifecycle_locks(
+        await identity_capability_distributions.acquire_capability_distribution_lifecycle_locks(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind="skill",
@@ -654,7 +681,7 @@ async def batch_toggle_skills(
         )
         for skill_name in names:
             try:
-                await repositories.toggle_capability_distribution_row(
+                await identity_capability_distributions.toggle_capability_distribution_row(
                     conn,
                     tenant_id=principal.tenant_id,
                     capability_kind="skill",
@@ -662,7 +689,7 @@ async def batch_toggle_skills(
                     enabled=enabled,
                     updated_by=principal.user_id,
                 )
-                await repositories.append_audit_log(
+                await identity_audit.append_audit_log(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
@@ -672,7 +699,7 @@ async def batch_toggle_skills(
                     payload_json={"enabled": enabled, "department_id": principal.department_id},
                 )
                 updated.append(skill_name)
-            except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+            except (platform_errors.RepositoryNotFoundError, platform_errors.RepositoryConflictError) as exc:
                 errors.append({"name": skill_name, "reason": str(exc)})
     return {"updated": updated, "errors": errors}
 
@@ -735,13 +762,13 @@ async def update_skill_file(
     encoded = base64.b64encode(content).decode("ascii")
     _, decision = await _public_skill_access(principal=principal, skill_name=safe_skill_name)
     async with transaction() as conn:
-        await repositories.ensure_user(
+        await identity_postgres.ensure_user(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             display_name=principal.display_name,
         )
-        saved = await repositories.upsert_user_skill_file(
+        saved = await skills_file_overlays.upsert_user_skill_file(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -750,7 +777,7 @@ async def update_skill_file(
             content_base64=encoded,
             size_bytes=len(content),
         )
-        await repositories.append_audit_log(
+        await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -789,20 +816,20 @@ async def delete_skill_file(
     safe_file_path = _safe_file_path(file_path)
     _, decision = await _public_skill_access(principal=principal, skill_name=safe_skill_name)
     async with transaction() as conn:
-        await repositories.ensure_user(
+        await identity_postgres.ensure_user(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             display_name=principal.display_name,
         )
-        await repositories.delete_user_skill_file(
+        await skills_file_overlays.delete_user_skill_file(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             skill_id=safe_skill_name,
             file_path=safe_file_path,
         )
-        await repositories.append_audit_log(
+        await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -839,7 +866,7 @@ async def toggle_skill(
     enabled = True if request.enabled is None else request.enabled
     try:
         async with transaction() as conn:
-            await repositories.toggle_capability_distribution_row(
+            await identity_capability_distributions.toggle_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="skill",
@@ -847,7 +874,7 @@ async def toggle_skill(
                 enabled=enabled,
                 updated_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -856,7 +883,7 @@ async def toggle_skill(
                 target_id=safe_skill_name,
                 payload_json={"enabled": enabled, "department_id": principal.department_id},
             )
-    except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+    except (platform_errors.RepositoryNotFoundError, platform_errors.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc
     return PublicSkillToggleResponse(
         skill_name=safe_skill_name,
@@ -877,14 +904,14 @@ async def delete_skill(
     safe_skill_name = _safe_skill_name(skill_name)
     try:
         async with transaction() as conn:
-            await repositories.archive_capability_distribution_row(
+            await identity_capability_distributions.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="skill",
                 capability_id=safe_skill_name,
                 archived_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -893,7 +920,7 @@ async def delete_skill(
                 target_id=safe_skill_name,
                 payload_json={"department_id": principal.department_id},
             )
-    except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+    except (platform_errors.RepositoryNotFoundError, platform_errors.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc
     return {"message": "Skill removed"}
 
@@ -1038,7 +1065,7 @@ async def activate_marketplace_skill_direct(
     request = _request_model(MarketplaceActivationRequest, payload or {})
     try:
         async with transaction() as conn:
-            distribution = await repositories.toggle_capability_distribution_row(
+            distribution = await identity_capability_distributions.toggle_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="skill",
@@ -1046,7 +1073,7 @@ async def activate_marketplace_skill_direct(
                 enabled=request.active,
                 updated_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1058,7 +1085,7 @@ async def activate_marketplace_skill_direct(
                     "department_id": principal.department_id,
                 },
             )
-            rows = await repositories.list_public_skill_catalog(
+            rows = await skills_catalog.list_public_skill_catalog(
                 conn,
                 tenant_id=principal.tenant_id,
                 include_disabled=True,
@@ -1067,7 +1094,7 @@ async def activate_marketplace_skill_direct(
             row = _find_row(rows, skill_name=safe_skill_name)
             row["status"] = distribution["status"]
             response = _marketplace_item(row, principal)
-    except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+    except (platform_errors.RepositoryNotFoundError, platform_errors.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc
     return response
 
@@ -1084,14 +1111,14 @@ async def delete_marketplace_skill_direct(
     safe_skill_name = _safe_skill_name(skill_name)
     try:
         async with transaction() as conn:
-            await repositories.archive_capability_distribution_row(
+            await identity_capability_distributions.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="skill",
                 capability_id=safe_skill_name,
                 archived_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1100,7 +1127,7 @@ async def delete_marketplace_skill_direct(
                 target_id=safe_skill_name,
                 payload_json={"department_id": principal.department_id},
             )
-    except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+    except (platform_errors.RepositoryNotFoundError, platform_errors.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc
     return {"message": "Marketplace skill disabled", "skill_name": safe_skill_name}
 
@@ -1168,7 +1195,7 @@ async def _install_or_update_marketplace_skill(
     )
     try:
         async with transaction() as conn:
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1177,7 +1204,7 @@ async def _install_or_update_marketplace_skill(
                 target_id=safe_skill_name,
                 payload_json=audit_payload,
             )
-    except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
+    except (platform_errors.RepositoryNotFoundError, platform_errors.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc
     return MarketplaceInstallResponse(
         message=message,

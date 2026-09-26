@@ -21,7 +21,7 @@ def _valid_executor_context_pack_evidence() -> dict:
         "runtime_run_payload_verified": False,
         "observed_worker_dispatch": True,
         "source_functions": [
-            "app.repositories.get_context_snapshot_for_worker",
+            "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker",
             "app.context_builder.executor_context_pack_from_snapshot",
             "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
             "app.executors.claude.prompts.build_skill_prompt",
@@ -468,7 +468,7 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
             "non_expansion_invariants",
         ],
         "source_functions": [
-            "app.repositories.get_context_snapshot_for_worker",
+            "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker",
             "app.context_builder.executor_context_pack_from_snapshot",
             "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
             "app.executors.claude.prompts.build_skill_prompt",
@@ -1046,7 +1046,7 @@ def test_office_context_readiness_markdown_is_gap_first_and_operator_readable(tm
     assert "ordinary_user_high_risk_sandbox_allowed" in markdown
     assert "executor_context_pack_runtime_acceptance_contract" in markdown
     assert "ai-platform.executor-context-pack-runtime-acceptance.v1" in markdown
-    assert "app.repositories.get_context_snapshot_for_worker" in markdown
+    assert "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker" in markdown
     assert "app.context_builder.executor_context_pack_from_snapshot" in markdown
     assert "prompt_includes_bounded_summary" in markdown
     assert "source_run_material_scope_tenant_workspace_user_session" in markdown
@@ -1124,7 +1124,7 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert "runtime_evidence" in payload[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_live_evidence_sections"]
-    assert "app.repositories.get_context_snapshot_for_worker" in payload[
+    assert "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker" in payload[
         "executor_context_pack_runtime_acceptance_contract"
     ]["source_functions"]
     assert payload["executor_context_pack_runtime_acceptance_contract"]["generator_script"] == (

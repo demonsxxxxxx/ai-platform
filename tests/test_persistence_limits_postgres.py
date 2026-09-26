@@ -8,8 +8,10 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
-from app.persistence_limits import RUN_INPUT_MAX_BYTES, RUN_STEP_PAYLOAD_MAX_BYTES
+from app.platform.postgres.errors import RepositoryConflictError
+from app.platform.postgres.limits import RUN_INPUT_MAX_BYTES, RUN_STEP_PAYLOAD_MAX_BYTES
+from app.runs.infrastructure.replay_postgres import update_run_input_execution_snapshot
+from app.runs.infrastructure.steps_postgres import upsert_run_step
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -82,17 +84,17 @@ async def test_postgres_final_json_bounds_are_atomic_unicode_safe_and_concurrent
         )
 
         first = await _connection(dsn, schema_name)
-        with pytest.raises(repositories.RepositoryConflictError, match="run_input_too_large"):
+        with pytest.raises(RepositoryConflictError, match="run_input_too_large"):
             async with first.transaction():
-                await repositories.update_run_input_execution_snapshot(
+                await update_run_input_execution_snapshot(
                     first,
                     tenant_id="tenant-a",
                     run_id="run-a",
                     execution_snapshot={"input": {"追加": "🚀" * 10}},
                 )
-        with pytest.raises(repositories.RepositoryConflictError, match="run_step_payload_too_large"):
+        with pytest.raises(RepositoryConflictError, match="run_step_payload_too_large"):
             async with first.transaction():
-                await repositories.upsert_run_step(
+                await upsert_run_step(
                     first,
                     tenant_id="tenant-a",
                     run_id="run-a",
@@ -116,7 +118,7 @@ async def test_postgres_final_json_bounds_are_atomic_unicode_safe_and_concurrent
         await first.commit()
 
         async with first.transaction():
-            await repositories.upsert_run_step(
+            await upsert_run_step(
                 first,
                 tenant_id="tenant-a",
                 run_id="run-a",
@@ -132,7 +134,7 @@ async def test_postgres_final_json_bounds_are_atomic_unicode_safe_and_concurrent
 
         async def merge(conn, payload):
             async with conn.transaction():
-                return await repositories.upsert_run_step(
+                return await upsert_run_step(
                     conn,
                     tenant_id="tenant-a",
                     run_id="run-a",

@@ -1,4 +1,6 @@
 from __future__ import annotations
+import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
+import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
 
 import json
 from types import SimpleNamespace
@@ -364,10 +366,10 @@ async def test_provider_session_callback_load_uses_locked_scope(monkeypatch):
         return runtime_callbacks.context_api.ProviderSessionOperationResult(action="load")
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: Transaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         current_lease,
     )
     monkeypatch.setattr(
@@ -452,10 +454,10 @@ async def test_provider_session_callback_entry_conflict_is_409(monkeypatch):
         )
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: Transaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         current_lease,
     )
     monkeypatch.setattr(
@@ -518,10 +520,10 @@ async def test_provider_session_callback_writer_conflict_is_409(monkeypatch):
         )
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: Transaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         current_lease,
     )
     monkeypatch.setattr(
@@ -594,10 +596,10 @@ async def test_provider_session_callback_uses_locked_run_scope(monkeypatch):
         )
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: Transaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         current_lease,
     )
     monkeypatch.setattr(
@@ -674,10 +676,10 @@ async def test_provider_session_callback_rejects_provider_identity_mismatch(monk
         )
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: Transaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         current_lease,
     )
     monkeypatch.setattr(

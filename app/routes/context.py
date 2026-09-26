@@ -3,7 +3,7 @@ from urllib.parse import unquote, unquote_plus
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app import repositories
+from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.auth import (
     BREAK_GLASS_ADMIN_ROLE,
     PLATFORM_ADMIN_ROLE,
@@ -12,18 +12,25 @@ from app.auth import (
     normalized_roles,
     require_principal,
 )
+from app.context.infrastructure import postgres as context_postgres
+from app.context.infrastructure import snapshot_postgres as context_snapshot
+from app.context_builder import ensure_public_context_provenance
+from app.context_manifest import (
+    CONTEXT_MANIFEST_SCHEMA_VERSION,
+    public_context_manifest_projection,
+)
 from app.control_plane_contracts import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     sanitize_public_payload,
     standard_trace_id,
 )
-from app.context_manifest import (
-    CONTEXT_MANIFEST_SCHEMA_VERSION,
-    public_context_manifest_projection,
+from app.conversations.infrastructure import (
+    session_queries_postgres as conversations_session_queries,
 )
 from app.db import transaction
-from app.memory_redaction import redact_memory_metadata, redact_memory_text
-from app.context_builder import ensure_public_context_provenance
+from app.identity.infrastructure import audit_postgres as identity_audit
+from app.identity.infrastructure import postgres as identity_postgres
+from app.kernel.memory_redaction import redact_memory_metadata, redact_memory_text
 from app.models import (
     ContextSnapshotRequest,
     MemoryPolicyRequest,
@@ -31,8 +38,16 @@ from app.models import (
     MemoryRedactionPreviewRequest,
     ShareContextSnapshotRequest,
 )
-from app.projection_redaction import internal_agent_id_for_request, public_agent_id_for_projection
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.platform.postgres.errors import (
+    RepositoryConflictError,
+    RepositoryNotFoundError,
+)
+from app.projection_redaction import (
+    internal_agent_id_for_request,
+    public_agent_id_for_projection,
+)
+from app.runs.infrastructure import creation_postgres as runs_creation
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -329,7 +344,7 @@ async def _effective_session_agent_id(
     internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
     if not session_id:
         return internal_agent_id
-    session = await repositories.get_authorized_session(
+    session = await conversations_session_queries.get_authorized_session(
         conn,
         tenant_id=principal.tenant_id,
         user_id=principal.user_id,
@@ -352,7 +367,7 @@ async def create_run_context_snapshot(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -379,7 +394,7 @@ async def create_run_context_snapshot(
             long_term_memory_read=False,
         )
         try:
-            snapshot = await repositories.create_context_snapshot(
+            snapshot = await context_snapshot.create_context_snapshot(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=str(run["workspace_id"]),
@@ -399,7 +414,7 @@ async def create_run_context_snapshot(
             if str(exc) != "context_snapshot_material_invalid":
                 raise
             raise HTTPException(status_code=409, detail="context_snapshot_material_invalid") from exc
-        await repositories.append_event(
+        await streaming_run_events.append_event(
             conn,
             tenant_id=principal.tenant_id,
             run_id=run_id,
@@ -428,7 +443,7 @@ async def create_share_context_snapshot(
 ) -> dict[str, object]:
     """Create a redacted share/fork context snapshot after source and target scope checks."""
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -438,7 +453,7 @@ async def create_share_context_snapshot(
             raise HTTPException(status_code=404, detail="run_not_found")
         workspace_id = str(run["workspace_id"])
         source_session_id = str(run["session_id"])
-        target_session = await repositories.get_authorized_context_target_session(
+        target_session = await conversations_session_queries.get_authorized_context_target_session(
             conn,
             tenant_id=principal.tenant_id,
             workspace_id=workspace_id,
@@ -448,7 +463,7 @@ async def create_share_context_snapshot(
         if target_session is None:
             raise HTTPException(status_code=404, detail="target_session_not_found")
         trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
-        source_snapshot = await repositories.get_bound_executor_context_snapshot(
+        source_snapshot = await context_snapshot.get_bound_executor_context_snapshot(
             conn,
             tenant_id=principal.tenant_id,
             workspace_id=workspace_id,
@@ -503,7 +518,7 @@ async def create_share_context_snapshot(
             "long_term_memory_read": False,
         }
         try:
-            snapshot = await repositories.create_context_snapshot(
+            snapshot = await context_snapshot.create_context_snapshot(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
@@ -523,7 +538,7 @@ async def create_share_context_snapshot(
             if str(exc) != "context_snapshot_material_invalid":
                 raise
             raise HTTPException(status_code=409, detail="context_snapshot_material_invalid") from exc
-        await repositories.append_event(
+        await streaming_run_events.append_event(
             conn,
             tenant_id=principal.tenant_id,
             run_id=run_id,
@@ -554,7 +569,7 @@ async def list_run_context_snapshots(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -562,7 +577,7 @@ async def list_run_context_snapshots(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        rows = await repositories.list_context_snapshots(
+        rows = await context_snapshot.list_context_snapshots(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -577,7 +592,7 @@ async def list_target_session_share_context_snapshots(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        session = await repositories.get_authorized_session(
+        session = await conversations_session_queries.get_authorized_session(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -585,7 +600,7 @@ async def list_target_session_share_context_snapshots(
         )
         if session is None:
             raise HTTPException(status_code=404, detail="target_session_not_found")
-        rows = await repositories.list_context_share_snapshots_for_target_session(
+        rows = await context_snapshot.list_context_share_snapshots_for_target_session(
             conn,
             tenant_id=principal.tenant_id,
             workspace_id=str(session["workspace_id"]),
@@ -609,8 +624,8 @@ async def create_memory_record(
     denied_by_policy = False
     try:
         async with transaction() as conn:
-            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
-            await repositories.ensure_user(
+            await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
+            await identity_postgres.ensure_user(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -623,7 +638,7 @@ async def create_memory_record(
                 session_id=request.session_id,
                 agent_id=internal_agent_id,
             )
-            policy = await repositories.get_effective_memory_policy(
+            policy = await context_postgres.get_effective_memory_policy(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=request.workspace_id,
@@ -631,7 +646,7 @@ async def create_memory_record(
                 agent_id=effective_agent_id,
             )
             if not bool(policy.get("memory_enabled", True)):
-                await repositories.append_audit_log(
+                await identity_audit.append_audit_log(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
@@ -653,7 +668,7 @@ async def create_memory_record(
             if denied_by_policy:
                 record = None
             else:
-                record = await repositories.create_memory_record(
+                record = await context_postgres.create_memory_record(
                     conn,
                     tenant_id=principal.tenant_id,
                     workspace_id=request.workspace_id,
@@ -696,7 +711,7 @@ async def list_memory_records(
                 session_id=session_id,
                 agent_id=internal_agent_id,
             )
-            policy = await repositories.get_effective_memory_policy(
+            policy = await context_postgres.get_effective_memory_policy(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
@@ -705,7 +720,7 @@ async def list_memory_records(
             )
             if not bool(policy.get("memory_enabled", True)):
                 return {"memory_records": []}
-            rows = await repositories.list_memory_records(
+            rows = await context_postgres.list_memory_records(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
@@ -744,7 +759,7 @@ async def delete_memory_record(
                 session_id=session_id,
                 agent_id=internal_agent_id,
             )
-            row = await repositories.delete_memory_record(
+            row = await context_postgres.delete_memory_record(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
@@ -755,7 +770,7 @@ async def delete_memory_record(
             )
             if row is None:
                 raise HTTPException(status_code=404, detail="memory_record_not_found")
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -789,16 +804,16 @@ async def get_memory_policy(
     internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
     try:
         async with transaction() as conn:
-            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
+            await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
             if internal_agent_id:
-                target_agent = await repositories.get_agent(
+                target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
                     agent_id=internal_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
-            policy = await repositories.get_effective_memory_policy(
+            policy = await context_postgres.get_effective_memory_policy(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
@@ -823,22 +838,22 @@ async def update_memory_policy(
     public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
     try:
         async with transaction() as conn:
-            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
+            await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
             if internal_agent_id:
-                target_agent = await repositories.get_agent(
+                target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
                     agent_id=internal_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
-            await repositories.ensure_user(
+            await identity_postgres.ensure_user(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 display_name=principal.display_name,
             )
-            policy = await repositories.set_memory_policy(
+            policy = await context_postgres.set_memory_policy(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=request.workspace_id,
@@ -851,7 +866,7 @@ async def update_memory_policy(
                 reason=reason,
                 updated_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -896,16 +911,16 @@ async def admin_list_memory_policies(
     internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
     try:
         async with transaction() as conn:
-            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
+            await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
             if internal_agent_id:
-                target_agent = await repositories.get_agent(
+                target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
                     agent_id=internal_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
-            rows = await repositories.list_admin_memory_policies(
+            rows = await context_postgres.list_admin_memory_policies(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
@@ -947,16 +962,16 @@ async def admin_preview_memory_redaction(
     }
     try:
         async with transaction() as conn:
-            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
+            await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
             if internal_agent_id:
-                target_agent = await repositories.get_agent(
+                target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
                     agent_id=internal_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
-            audit_id = await repositories.append_audit_log(
+            audit_id = await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1011,19 +1026,19 @@ async def admin_set_memory_policy(
     public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
     try:
         async with transaction() as conn:
-            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
-            target_user = await repositories.get_user(conn, tenant_id=principal.tenant_id, user_id=target_user_id)
+            await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
+            target_user = await identity_postgres.get_user(conn, tenant_id=principal.tenant_id, user_id=target_user_id)
             if target_user is None:
                 raise RepositoryNotFoundError("user_not_found")
             if internal_agent_id:
-                target_agent = await repositories.get_agent(
+                target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
                     agent_id=internal_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
-            policy = await repositories.set_memory_policy(
+            policy = await context_postgres.set_memory_policy(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=request.workspace_id,
@@ -1036,7 +1051,7 @@ async def admin_set_memory_policy(
                 reason=reason,
                 updated_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1075,14 +1090,14 @@ async def admin_cleanup_expired_memory_records(
     workspace_id = assert_safe_id(workspace_id, "workspace_id")
     try:
         async with transaction() as conn:
-            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
-            rows = await repositories.cleanup_expired_memory_records(
+            await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
+            rows = await context_postgres.cleanup_expired_memory_records(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
                 limit=limit,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1124,8 +1139,8 @@ async def admin_list_memory_records(
     user_id = _safe_query_id(user_id, "user_id") if user_id else None
     try:
         async with transaction() as conn:
-            await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
-            rows = await repositories.list_admin_memory_records(
+            await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
+            rows = await context_postgres.list_admin_memory_records(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
@@ -1158,7 +1173,7 @@ async def admin_delete_memory_record(
     record_id = assert_safe_id(record_id, "record_id")
     workspace_id = assert_safe_id(workspace_id, "workspace_id")
     async with transaction() as conn:
-        row = await repositories.admin_delete_memory_record(
+        row = await context_postgres.admin_delete_memory_record(
             conn,
             tenant_id=principal.tenant_id,
             workspace_id=workspace_id,
@@ -1166,7 +1181,7 @@ async def admin_delete_memory_record(
         )
         if row is None:
             raise HTTPException(status_code=404, detail="memory_record_not_found")
-        await repositories.append_audit_log(
+        await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

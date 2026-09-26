@@ -1,4 +1,5 @@
 """Real-PostgreSQL interleavings for #512's pre-ledger recovery claim."""
+import app.persistence.chat_submissions as _owner_persistence_chat_submissions
 
 import asyncio
 import os
@@ -10,7 +11,6 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -60,7 +60,7 @@ async def _claim(
     submission_id: str,
     fingerprint: str,
 ) -> tuple[dict[str, object], bool]:
-    return await repositories.claim_chat_submission(
+    return await _owner_persistence_chat_submissions.claim_chat_submission(
         conn,
         tenant_id=_TENANT_ID,
         user_id=_USER_ID,
@@ -122,7 +122,7 @@ async def test_preledger_recovery_claim_interleavings_are_atomic_in_postgres():
             fingerprint=original_fingerprint,
         )
         assert created is True
-        await repositories.finalize_chat_submission(
+        await _owner_persistence_chat_submissions.finalize_chat_submission(
             first,
             tenant_id=_TENANT_ID,
             user_id=_USER_ID,
@@ -164,7 +164,7 @@ async def test_preledger_recovery_claim_interleavings_are_atomic_in_postgres():
             fingerprint=recovery_fingerprint,
         )
         assert created is True
-        await repositories.finalize_chat_submission(
+        await _owner_persistence_chat_submissions.finalize_chat_submission(
             first,
             tenant_id=_TENANT_ID,
             user_id=_USER_ID,
@@ -218,7 +218,7 @@ async def test_preledger_recovery_claim_interleavings_are_atomic_in_postgres():
         await first.rollback()
         _, created = await asyncio.wait_for(recovery_after_rollback, timeout=2)
         assert created is True
-        await repositories.finalize_chat_submission(
+        await _owner_persistence_chat_submissions.finalize_chat_submission(
             second,
             tenant_id=_TENANT_ID,
             user_id=_USER_ID,
@@ -228,7 +228,7 @@ async def test_preledger_recovery_claim_interleavings_are_atomic_in_postgres():
             rejection_code="chat_submission_retired_before_ledger",
         )
         await second.commit()
-        final_recovery = await repositories.get_chat_submission(
+        final_recovery = await _owner_persistence_chat_submissions.get_chat_submission(
             observer,
             tenant_id=_TENANT_ID,
             user_id=_USER_ID,

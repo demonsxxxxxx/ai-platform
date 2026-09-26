@@ -1,3 +1,5 @@
+import app.runs.infrastructure.creation_postgres as _owner_runs_infrastructure_creation_postgres
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 from contextlib import asynccontextmanager
 import asyncio
 import logging
@@ -311,7 +313,7 @@ def patch_authority(monkeypatch, *, run=None, close_result=True, lease_value=Non
         return close_result
 
     monkeypatch.setattr(route, "transaction", transaction)
-    monkeypatch.setattr(route.repositories, "get_authorized_run", get_run)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run)
     monkeypatch.setattr(route, "get_stream_authority", get_authority)
     monkeypatch.setattr(route, "acquire_sse_authority_lease", acquire)
     monkeypatch.setattr(route, "close_sse_authority_lease", close)
@@ -637,7 +639,7 @@ async def test_v4_missing_run_fails_closed_before_admission_wait(monkeypatch):
     async def missing_run(conn, *, tenant_id, user_id, run_id):
         return None
 
-    monkeypatch.setattr(route.repositories, "get_authorized_run", missing_run)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', missing_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await route.chat_session_stream(
@@ -660,7 +662,7 @@ async def test_v4_replay_uses_native_cursor_and_schema_event(monkeypatch):
     async def forbidden(*args, **kwargs):
         raise AssertionError("PG run_events must not drive live SSE")
 
-    monkeypatch.setattr(route.repositories, "list_run_events", forbidden)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'list_run_events', forbidden)
     bridge = FakeBridge(terminal_rows())
     response, body = await connect(bridge)
 

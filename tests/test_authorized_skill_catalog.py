@@ -1,4 +1,10 @@
 from __future__ import annotations
+import app.identity.infrastructure.capability_distributions_postgres as _owner_identity_infrastructure_capability_distributions_postgres
+import app.runs.infrastructure.capability_admission_postgres as _owner_runs_infrastructure_capability_admission_postgres
+import app.skills.infrastructure.catalog_postgres as _owner_skills_infrastructure_catalog_postgres
+import app.skills.infrastructure.postgres as _owner_skills_infrastructure_postgres
+import app.skills.infrastructure.resolution_postgres as _owner_skills_infrastructure_resolution_postgres
+import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
 
 import base64
 from contextlib import asynccontextmanager
@@ -213,8 +219,8 @@ async def _resolve(
         observed["distributions"] = kwargs
         return distributions
 
-    monkeypatch.setattr(catalog.repositories, "list_public_skill_catalog", list_catalog)
-    monkeypatch.setattr(catalog.repositories, "list_capability_distribution_rows", list_distributions)
+    monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'list_public_skill_catalog', list_catalog)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', list_distributions)
     resolution = await resolve_authorized_skill_catalog(
         object(),
         binding=binding or _binding(),
@@ -660,13 +666,13 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
         }
         return await resolve_authorized_skill_catalog(conn, **kwargs)
 
-    monkeypatch.setattr(catalog.repositories, "list_public_skill_catalog", list_catalog)
-    monkeypatch.setattr(catalog.repositories, "list_capability_distribution_rows", list_distributions)
-    monkeypatch.setattr(catalog.repositories, "validate_run_skill_snapshots_for_dispatch", validate_snapshots)
-    monkeypatch.setattr(catalog.repositories, "validate_replay_skill_manifests", validate_replay)
-    monkeypatch.setattr(catalog.repositories, "resolve_selected_skill", resolve_selected)
-    monkeypatch.setattr(catalog.repositories, "get_capability_distribution_row", get_distribution)
-    monkeypatch.setattr(catalog.repositories, "run_mcp_tool_ids_for_skill", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'list_public_skill_catalog', list_catalog)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', list_distributions)
+    monkeypatch.setattr(_owner_skills_infrastructure_run_snapshots_postgres, 'validate_run_skill_snapshots_for_dispatch', validate_snapshots)
+    monkeypatch.setattr(_owner_skills_infrastructure_postgres, 'validate_replay_skill_manifests', validate_replay)
+    monkeypatch.setattr(_owner_skills_infrastructure_resolution_postgres, 'resolve_selected_skill', resolve_selected)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'get_capability_distribution_row', get_distribution)
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'run_mcp_tool_ids_for_skill', lambda *_args, **_kwargs: [])
     monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", resolve_catalog_with_current_authority)
 
     primary_manifest = _manifest_from_row(rows[0])
@@ -873,7 +879,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
 
     monkeypatch.setattr("app.worker.transaction", transaction)
     _TEST_ATTEMPT_LIFECYCLE.lock_queued_run = lock_queued_run_for_attempt
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     async def load_frozen_model(_conn, **_kwargs):
         return {key: locked_run[key] for key in (
             "model_id", "model_value", "model_gateway_revision",
@@ -882,10 +888,10 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
 
     monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", append_event)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
     monkeypatch.setattr(
-        "app.worker.repositories.materialize_run_skill_manifests",
+        "app.skills.infrastructure.run_snapshots_postgres.materialize_run_skill_manifests",
         materialize_run_skill_manifests,
     )
     monkeypatch.setattr(
@@ -933,9 +939,9 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
             raise AssertionError("executor registry must not be resolved")
 
     monkeypatch.setattr("app.worker.resolve_current_principal", unavailable_current_principal)
-    monkeypatch.setattr("app.worker.repositories.validate_run_skill_snapshots_for_dispatch", forbidden)
-    monkeypatch.setattr("app.worker.repositories.validate_replay_skill_manifests", forbidden)
-    monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", forbidden)
+    monkeypatch.setattr("app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch", forbidden)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.validate_replay_skill_manifests", forbidden)
+    monkeypatch.setattr("app.skills.infrastructure.resolution_postgres.resolve_selected_skill", forbidden)
     monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", forbidden)
     monkeypatch.setattr("app.worker.materialize_queued_worker_context_snapshot", forbidden)
     monkeypatch.setattr("app.worker._create_worker_runtime_sandbox_lease", forbidden)
@@ -1017,10 +1023,10 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
             raise AssertionError("revoked current access must precede executor resolution")
 
     monkeypatch.setattr("app.worker.resolve_current_principal", current_principal)
-    monkeypatch.setattr("app.worker.repositories.validate_run_skill_snapshots_for_dispatch", validate_snapshots)
-    monkeypatch.setattr("app.worker.repositories.validate_replay_skill_manifests", validate_replay)
-    monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_selected)
-    monkeypatch.setattr("app.worker.repositories.get_capability_distribution_row", get_distribution)
+    monkeypatch.setattr("app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch", validate_snapshots)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.validate_replay_skill_manifests", validate_replay)
+    monkeypatch.setattr("app.skills.infrastructure.resolution_postgres.resolve_selected_skill", resolve_selected)
+    monkeypatch.setattr("app.identity.infrastructure.capability_distributions_postgres.get_capability_distribution_row", get_distribution)
 
     outcome = await process_run_payload(
         raw,

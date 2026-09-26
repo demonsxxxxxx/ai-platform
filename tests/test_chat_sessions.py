@@ -1,3 +1,4 @@
+import app.conversations.infrastructure.postgres as _owner_conversations_infrastructure_postgres
 import base64
 import json
 from contextlib import asynccontextmanager
@@ -8,8 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.auth import AuthPrincipal
 from app.main import create_app
-from app import repositories
-from app import agent_conversation_repository
+from app.conversations.infrastructure import postgres as conversation_history
 from app.chat_session_projection import session_response
 from app.routes.chat_sessions import list_sessions
 from app.settings import Settings
@@ -71,7 +71,7 @@ async def test_list_sessions_returns_authorized_rows(monkeypatch):
 
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat_sessions.repositories.list_authorized_sessions",
+        'app.conversations.infrastructure.postgres.list_authorized_sessions',
         fake_list_authorized_sessions,
     )
 
@@ -95,7 +95,7 @@ async def test_ordinary_session_repository_filters_even_unpinned_profile_convers
             captured["params"] = params
             return Cursor()
 
-    assert await repositories.list_authorized_sessions(
+    assert await _owner_conversations_infrastructure_postgres.list_authorized_sessions(
         Connection(), tenant_id="tenant-a", user_id="user-a"
     ) == []
     normalized = " ".join(captured["query"].split()).lower()
@@ -143,7 +143,7 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
             captured.append((query, params))
             return Cursor()
 
-    assert await agent_conversation_repository.list_authorized_agent_conversations(
+    assert await conversation_history.list_authorized_agent_conversations(
         Connection(),
         tenant_id="tenant-a",
         user_id="user-a",
@@ -152,7 +152,7 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
         cursor=None,
         limit=21,
     ) == []
-    assert await repositories.get_authorized_session_projection(
+    assert await _owner_conversations_infrastructure_postgres.get_authorized_session_projection(
         Connection(),
         tenant_id="tenant-a",
         user_id="user-a",
@@ -213,7 +213,7 @@ async def test_agent_conversation_repository_excludes_builder_test_sessions():
             captured["params"] = params
             return Cursor()
 
-    rows = await agent_conversation_repository.list_authorized_agent_conversations(
+    rows = await conversation_history.list_authorized_agent_conversations(
         Connection(),
         tenant_id="tenant-a",
         user_id="user-a",
@@ -248,7 +248,7 @@ async def test_list_sessions_projects_retired_pinned_profile_as_tombstone(monkey
 
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat_sessions.repositories.list_authorized_sessions",
+        'app.conversations.infrastructure.postgres.list_authorized_sessions',
         fake_list_authorized_sessions,
     )
 
@@ -294,7 +294,7 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
 
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat_sessions.agent_conversation_repository.list_authorized_agent_conversations",
+        "app.conversations.infrastructure.postgres.list_authorized_agent_conversations",
         fake_list_agent_conversations,
     )
 
@@ -428,7 +428,7 @@ async def test_list_sessions_delegates_current_publication_filtering_to_reposito
 
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat_sessions.agent_conversation_repository.list_authorized_agent_conversations",
+        "app.conversations.infrastructure.postgres.list_authorized_agent_conversations",
         list_owned_history,
     )
 
@@ -482,7 +482,7 @@ def test_agent_conversation_history_contract_is_mounted_on_chat_aliases(
 
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat_sessions.agent_conversation_repository.list_authorized_agent_conversations",
+        "app.conversations.infrastructure.postgres.list_authorized_agent_conversations",
         list_page,
     )
 

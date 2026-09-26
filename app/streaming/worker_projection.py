@@ -6,7 +6,8 @@ from collections.abc import Mapping
 import logging
 from typing import Any
 
-from app import repositories
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events_postgres
+
 from app.execution.api import (
     context_file_failure_event_fields,
     context_file_failure_event_payload,
@@ -42,7 +43,7 @@ async def persist_worker_failure_event(
                 trace_id=trace_id,
             ),
         )
-    await repositories.append_event(
+    await streaming_run_events_postgres.append_event(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,

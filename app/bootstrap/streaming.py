@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app import repositories
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events_postgres
+
 from app.runs.infrastructure.postgres import load_current_terminal_event_fact
 from app.settings import get_settings
 from app.runs.application.lifecycle import RunLifecycleService
@@ -40,7 +41,7 @@ def build_worker_v4_capabilities(
         pending_admissions=pending_admissions,
         event_persistence=PostgresWorkerEventPersistence(
             transaction_factory,
-            append_event=repositories.append_event,
+            append_event=streaming_run_events_postgres.append_event,
             is_cancel_requested=lifecycle.is_cancel_requested,
             load_terminal_event_fact=load_current_terminal_event_fact,
         ),

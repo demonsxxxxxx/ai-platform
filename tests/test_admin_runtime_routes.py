@@ -205,7 +205,7 @@ def patch_empty_leases(monkeypatch):
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
 
 
 def patch_real_leases(monkeypatch, *run_ids):
@@ -235,7 +235,7 @@ def patch_real_leases(monkeypatch, *run_ids):
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
 
 
 def test_admin_runtime_containers_requires_admin(monkeypatch):
@@ -537,7 +537,7 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
@@ -581,7 +581,7 @@ def test_admin_runtime_placeholder_cleanup_failure_does_not_break_real_projectio
         placeholder_cleanup_failure,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
@@ -637,7 +637,7 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
@@ -721,7 +721,7 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
         raising=False,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/containers?include_lease_history=true", headers=admin_headers())
@@ -793,7 +793,7 @@ def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_histor
         raising=False,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/containers?include_lease_history=true", headers=admin_headers())
@@ -865,7 +865,7 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
@@ -899,7 +899,7 @@ def test_admin_runtime_containers_cleans_expired_leases_before_listing(monkeypat
         raising=False,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
@@ -941,7 +941,7 @@ def test_admin_runtime_containers_cleans_provider_orphans_before_listing(monkeyp
         raising=False,
     )
     patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
@@ -1054,7 +1054,7 @@ def test_admin_runtime_containers_fails_closed_when_sandbox_cleanup_fails(monkey
         fake_cleanup_expired_sandbox_runtime_leases,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
@@ -1277,21 +1277,21 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         fake_cleanup_expired_sandbox_leases,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_get_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_get_queue_insight)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_run_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_run_summary",
         fake_run_summary,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_observability_summary",
         fake_observability_summary,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_admission_summary",
         fake_admission_summary,
         raising=False,
     )
@@ -1491,21 +1491,21 @@ def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots
         fail_db_cleanup,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_get_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_get_queue_insight)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_run_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_run_summary",
         fake_run_summary,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_observability_summary",
         fake_observability_summary,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_admission_summary",
         fake_admission_summary,
         raising=False,
     )
@@ -1629,14 +1629,14 @@ def test_admin_runtime_overview_sanitizes_summary_payloads(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.get_admin_runtime_run_summary", fake_run_summary, raising=False)
+    monkeypatch.setattr("app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_run_summary", fake_run_summary, raising=False)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_observability_summary",
         fake_observability_summary,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_admission_summary",
         fake_admission_summary,
         raising=False,
     )
@@ -1845,14 +1845,14 @@ def test_admin_runtime_overview_does_not_mask_queue_failure(monkeypatch, failing
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.get_admin_runtime_run_summary", fake_run_summary, raising=False)
+    monkeypatch.setattr("app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_run_summary", fake_run_summary, raising=False)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_observability_summary",
         fake_observability_summary,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_admission_summary",
         fake_admission_summary,
         raising=False,
     )
@@ -1893,7 +1893,7 @@ def test_admin_runtime_overview_fails_closed_when_sandbox_cleanup_fails(monkeypa
         fake_cleanup_expired_sandbox_runtime_leases,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     response = client.get("/api/ai/admin/runtime/overview", headers=admin_headers())
@@ -1952,15 +1952,15 @@ def test_admin_runtime_overview_reports_container_list_unavailable_without_docke
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.get_admin_runtime_run_summary", fake_run_summary, raising=False)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_run_summary", fake_run_summary, raising=False)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_observability_summary",
         fake_observability_summary,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_admission_summary",
         fake_admission_summary,
         raising=False,
     )
@@ -2038,15 +2038,15 @@ def test_admin_runtime_overview_fails_closed_when_container_list_has_unexpected_
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
-    monkeypatch.setattr("app.routes.admin_runtime.repositories.get_admin_runtime_run_summary", fake_run_summary, raising=False)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_run_summary", fake_run_summary, raising=False)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_observability_summary",
         fake_observability_summary,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_runtime_admission_summary",
         fake_admission_summary,
         raising=False,
     )

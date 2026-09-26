@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app import repositories  # noqa: E402
+from app.context.infrastructure import snapshot_postgres  # noqa: E402
 from app.context_builder import executor_context_pack_from_snapshot  # noqa: E402
 from app.db import transaction  # noqa: E402
 from app.executors.claude_agent_sdk_runner import build_skill_prompt  # noqa: E402
@@ -71,7 +71,7 @@ def _sample_context_snapshot(run_id: str) -> dict[str, Any]:
         "included_artifact_ids": ["artifact-secret"],
         "raw_storage_key": "s3://private/object",
         "sandbox_workdir": "/tmp/private",
-        "executor_private_payload": {"token": "secret"},
+        "executor_private_payload": {"token": "executor-private-probe-token-47d6"},
     }
 
 
@@ -87,7 +87,7 @@ def _prompt_checks(prompt: str, *, context_pack: dict[str, Any]) -> dict[str, bo
         and f"Context pack generated at: {generated_at}" in prompt,
         "raw_storage_identifiers_absent": "s3://" not in prompt_lower and "raw_storage_key" not in prompt,
         "sandbox_runtime_paths_absent": "/tmp/" not in prompt_lower and "sandbox_workdir" not in prompt,
-        "executor_private_content_absent": "executor_private_payload" not in prompt and "secret" not in prompt_lower,
+        "executor_private_content_absent": "executor_private_payload" not in prompt and "executor-private-probe-token-47d6" not in prompt_lower,
         "long_term_memory_read_false": "0 long-term memory record(s)" in prompt,
     }
 
@@ -148,7 +148,7 @@ def _base_evidence(
         "reconstruction_source": reconstruction_source,
         "generated_at": _utc_now(),
         "source_functions": [
-            "app.repositories.get_context_snapshot_for_worker",
+            "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker",
             "app.context_builder.executor_context_pack_from_snapshot",
             "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
             "app.executors.claude.prompts.build_skill_prompt",
@@ -211,7 +211,7 @@ async def _load_live_context_snapshot(conn: Any, *, run_id: str) -> tuple[dict[s
     context_snapshot_id = _context_snapshot_id_from_run_input(input_json)
     if not context_snapshot_id:
         raise RuntimeError("live run context_snapshot_id missing")
-    snapshot_row = await repositories.get_context_snapshot_for_worker(
+    snapshot_row = await snapshot_postgres.get_context_snapshot_for_worker(
         conn,
         tenant_id=_required_string(run, "tenant_id"),
         workspace_id=_required_string(run, "workspace_id"),

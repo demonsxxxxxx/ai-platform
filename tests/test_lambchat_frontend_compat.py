@@ -1,3 +1,5 @@
+import app.conversations.infrastructure.postgres as _owner_conversations_infrastructure_postgres
+import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
 from contextlib import asynccontextmanager
 import json
 from pathlib import Path
@@ -9,10 +11,8 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.models import AgentAppRunRequest, ChatStreamRequest
-from app.repositories import append_message as real_append_message
-from app.repositories import (
-    list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs,
-)
+from app.conversations.infrastructure.postgres import append_message as real_append_message
+from app.conversations.infrastructure.postgres import list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs
 from app.run_projection import (
     PUBLIC_TERMINAL_DETAIL_MESSAGES,
     PUBLIC_TERMINAL_ERROR_CODE_ALIASES,
@@ -65,11 +65,11 @@ def empty_authorized_history_messages(monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_messages",
+        "app.conversations.infrastructure.postgres.list_authorized_messages",
         empty_messages,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        "app.conversations.infrastructure.postgres.list_authorized_user_messages_for_runs",
         empty_user_messages_for_runs,
         raising=False,
     )
@@ -132,13 +132,13 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
         return record
 
     monkeypatch.setattr(
-        session_actions.repositories, "get_session_for_action", get_session_for_action
+        _owner_conversations_infrastructure_postgres, 'get_session_for_action', get_session_for_action
     )
     monkeypatch.setattr(
-        session_actions.repositories, "update_session_title", update_session_title
+        _owner_conversations_infrastructure_postgres, 'update_session_title', update_session_title
     )
     monkeypatch.setattr(
-        session_actions.repositories, "mark_session_deleted", mark_session_deleted
+        _owner_conversations_infrastructure_postgres, 'mark_session_deleted', mark_session_deleted
     )
 
     owner = AuthPrincipal(
@@ -247,10 +247,10 @@ async def test_session_action_initializes_first_task_title_once_without_overwrit
         return record
 
     monkeypatch.setattr(
-        session_actions.repositories, "get_session_for_action", get_session_for_action
+        _owner_conversations_infrastructure_postgres, 'get_session_for_action', get_session_for_action
     )
     monkeypatch.setattr(
-        session_actions.repositories, "update_session_title", update_session_title
+        _owner_conversations_infrastructure_postgres, 'update_session_title', update_session_title
     )
     owner = AuthPrincipal(
         user_id="user-a", display_name="A", tenant_id="default", roles=["user"]
@@ -314,8 +314,8 @@ async def test_generate_title_route_persists_only_authorized_initial_title(monke
 
     monkeypatch.setattr(lambchat_compat, "transaction", fake_transaction)
     monkeypatch.setattr(
-        lambchat_compat.repositories,
-        "get_authorized_session_projection",
+        _owner_conversations_infrastructure_postgres,
+        'get_authorized_session_projection',
         get_authorized_session_projection,
     )
     monkeypatch.setattr(
@@ -398,16 +398,16 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
         return f"msg-copy-{len(copied)}"
 
     monkeypatch.setattr(
-        session_actions.repositories, "get_session_for_action", get_session_for_action
+        _owner_conversations_infrastructure_postgres, 'get_session_for_action', get_session_for_action
     )
     monkeypatch.setattr(
-        session_actions.repositories,
-        "list_session_messages_for_fork",
+        _owner_conversations_infrastructure_postgres,
+        'list_session_messages_for_fork',
         list_session_messages_for_fork,
     )
-    monkeypatch.setattr(session_actions.repositories, "ensure_user", ensure_user)
-    monkeypatch.setattr(session_actions.repositories, "create_session", create_session)
-    monkeypatch.setattr(session_actions.repositories, "append_message", append_message)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', ensure_user)
+    monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'create_session', create_session)
+    monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'append_message', append_message)
 
     owner = AuthPrincipal(
         user_id="user-a", display_name="A", tenant_id="default", roles=["user"]
@@ -553,10 +553,10 @@ def default_lambchat_stream_projection(monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_events", empty_run_events
+        "app.streaming.infrastructure.run_events_postgres.list_run_events", empty_run_events
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        "app.artifacts.infrastructure.records_postgres.list_run_artifacts",
         empty_run_artifacts,
     )
 
@@ -659,7 +659,7 @@ def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_sessions",
+        "app.conversations.infrastructure.postgres.list_authorized_sessions",
         fake_list_authorized_sessions,
     )
     client = TestClient(create_app())
@@ -699,7 +699,7 @@ def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     client = TestClient(create_app())
@@ -731,7 +731,7 @@ def test_lambchat_session_detail_redacts_custom_retired_agent(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     client = TestClient(create_app())
@@ -1309,19 +1309,19 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_events",
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
         fake_list_run_events,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        "app.artifacts.infrastructure.records_postgres.list_run_artifacts",
         empty_artifacts,
     )
     client = TestClient(create_app())
@@ -2385,11 +2385,11 @@ def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        "app.runs.infrastructure.creation_postgres.get_authorized_run",
         fake_get_authorized_run,
     )
     client = TestClient(create_app())
@@ -2430,11 +2430,11 @@ def test_lambchat_status_rejects_an_absent_explicit_run_without_falling_back(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        "app.runs.infrastructure.creation_postgres.get_authorized_run",
         fake_get_authorized_run,
     )
     client = TestClient(create_app())
@@ -2477,15 +2477,15 @@ def test_lambchat_status_uses_exact_authorized_run_beyond_latest_list_and_reject
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        "app.runs.infrastructure.creation_postgres.get_authorized_run",
         fake_get_authorized_run,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         unexpected_recent_list,
     )
     client = TestClient(create_app())
@@ -2548,11 +2548,11 @@ def test_lambchat_status_keeps_latest_selection_scoped_to_tenant_and_user(monkey
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     client = TestClient(create_app())
@@ -2605,11 +2605,11 @@ def test_lambchat_session_runs_normalizes_legacy_canceled_status(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     client = TestClient(create_app())
@@ -2650,11 +2650,11 @@ def test_lambchat_session_runs_redacts_raw_skill_agent_id_for_ordinary_user(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     client = TestClient(create_app())
@@ -2695,11 +2695,11 @@ def test_lambchat_session_runs_include_latest_frontend_run_aliases(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     client = TestClient(create_app())
@@ -2741,11 +2741,11 @@ def test_lambchat_session_runs_redacts_runtime_private_error(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     client = TestClient(create_app())
@@ -2836,15 +2836,15 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_events",
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
         fake_list_run_events,
     )
     client = TestClient(create_app())
@@ -2951,15 +2951,15 @@ def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        "app.conversations.infrastructure.postgres.list_authorized_user_messages_for_runs",
         fake_list_authorized_user_messages_for_runs,
     )
     client = TestClient(create_app())
@@ -3038,15 +3038,15 @@ def test_lambchat_failed_run_projects_only_safe_native_skill_sandbox_stage(monke
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_events",
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
         fake_list_run_events,
     )
 
@@ -3108,15 +3108,15 @@ def test_lambchat_default_history_queries_user_messages_for_only_latest_fifty_ru
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        "app.conversations.infrastructure.postgres.list_authorized_user_messages_for_runs",
         fake_list_authorized_user_messages_for_runs,
     )
 
@@ -3263,15 +3263,15 @@ async def test_lambchat_session_events_use_persisted_message_repository_contract
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", message_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        "app.conversations.infrastructure.postgres.list_authorized_user_messages_for_runs",
         real_list_authorized_user_messages_for_runs,
     )
 
@@ -3341,11 +3341,11 @@ def test_lambchat_routes_keep_running_latest_run_stable_with_legacy_queued_at_ti
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     client = TestClient(create_app())
@@ -3418,19 +3418,19 @@ def test_lambchat_exact_session_events_restore_an_authorized_run_beyond_the_late
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        "app.runs.infrastructure.creation_postgres.get_authorized_run",
         fake_get_authorized_run,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fail_latest_run_list,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        "app.conversations.infrastructure.postgres.list_authorized_user_messages_for_runs",
         fake_list_authorized_user_messages_for_runs,
     )
     client = TestClient(create_app())
@@ -3468,11 +3468,11 @@ def test_lambchat_session_events_reject_cross_tenant_before_listing_messages(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        "app.conversations.infrastructure.postgres.list_authorized_user_messages_for_runs",
         fail_list_authorized_user_messages_for_runs,
     )
     client = TestClient(create_app())
@@ -3502,11 +3502,11 @@ def test_lambchat_exact_session_events_hide_missing_or_wrong_session_runs(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        "app.runs.infrastructure.creation_postgres.get_authorized_run",
         fake_get_authorized_run,
     )
     client = TestClient(create_app())
@@ -3549,15 +3549,15 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_events",
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
         fake_list_run_events,
     )
     client = TestClient(create_app())
@@ -3615,15 +3615,15 @@ def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch)
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_events",
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
         fake_list_run_events,
     )
     client = TestClient(create_app())
@@ -3727,19 +3727,19 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_events",
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
         fake_list_run_events,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        "app.artifacts.infrastructure.records_postgres.list_run_artifacts",
         fake_list_run_artifacts,
     )
     client = TestClient(create_app())
@@ -3869,19 +3869,19 @@ def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_events",
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
         fake_list_run_events,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        "app.artifacts.infrastructure.records_postgres.list_run_artifacts",
         fake_list_run_artifacts,
     )
     client = TestClient(create_app())
@@ -3964,15 +3964,15 @@ def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
         fake_list_authorized_session_runs,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_run_events",
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
         fake_list_run_events,
     )
     client = TestClient(create_app())

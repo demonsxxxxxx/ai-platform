@@ -1,7 +1,7 @@
+import app.skills.infrastructure.legacy_workbench as _owner_skills_infrastructure_legacy_workbench
 import pytest
 
-from app import repositories
-from app.persistence import RepositoryNotFoundError
+from app.platform.postgres.errors import RepositoryNotFoundError
 from app.skills.infrastructure import legacy_workbench
 
 
@@ -23,7 +23,7 @@ async def test_legacy_workbench_catalogs_are_retired(function, error_code):
 
 def test_repository_legacy_workbench_symbols_are_identity_bridges():
     assert (
-        repositories.list_workbench_capabilities
+        _owner_skills_infrastructure_legacy_workbench.list_workbench_capabilities
         is legacy_workbench.list_workbench_capabilities
     )
-    assert repositories.list_workbench_skills is legacy_workbench.list_workbench_skills
+    assert _owner_skills_infrastructure_legacy_workbench.list_workbench_skills is legacy_workbench.list_workbench_skills

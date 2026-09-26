@@ -1,3 +1,9 @@
+import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
+import app.identity.infrastructure.capability_distributions_postgres as _owner_identity_infrastructure_capability_distributions_postgres
+import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
+import app.skills.infrastructure.catalog_postgres as _owner_skills_infrastructure_catalog_postgres
+import app.skills.infrastructure.file_overlays_postgres as _owner_skills_infrastructure_file_overlays_postgres
+import app.skills.infrastructure.versions_postgres as _owner_skills_infrastructure_versions_postgres
 import base64
 from contextlib import asynccontextmanager
 import io
@@ -7,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
 
@@ -166,7 +172,7 @@ def install_route_fakes(
                 ),
                 None,
             )
-            if skills_marketplace.repositories.is_capability_distribution_archived(distribution):
+            if _owner_identity_infrastructure_capability_distributions_postgres.is_capability_distribution_archived(distribution):
                 continue
             projected = dict(row)
             if release_policy and release_policy["skill_id"] == row["skill_id"]:
@@ -230,7 +236,7 @@ def install_route_fakes(
         )
         for row in distributions:
             if row.get("capability_kind") == capability_kind and row.get("capability_id") == capability_id:
-                if skills_marketplace.repositories.is_capability_distribution_archived(row):
+                if _owner_identity_infrastructure_capability_distributions_postgres.is_capability_distribution_archived(row):
                     raise RepositoryConflictError("capability_distribution_archived")
                 current = str(row.get("status") or "disabled")
                 row["status"] = "active" if (enabled if enabled is not None else current != "active") else "disabled"
@@ -373,20 +379,20 @@ def install_route_fakes(
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(skills_marketplace, "transaction", fake_transaction)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_public_skill_catalog", fake_list)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_capability_distribution_rows", fake_list_distributions)
-    monkeypatch.setattr(skills_marketplace.repositories, "get_capability_distribution_row", fake_get_distribution)
-    monkeypatch.setattr(skills_marketplace.repositories, "toggle_capability_distribution_row", fake_toggle_distribution)
-    monkeypatch.setattr(skills_marketplace.repositories, "archive_capability_distribution_row", fake_archive_distribution)
-    monkeypatch.setattr(skills_marketplace.repositories, "acquire_capability_distribution_lifecycle_locks", fake_acquire_distribution_locks)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_user_skill_file_overlays", fake_list_overlays)
-    monkeypatch.setattr(skills_marketplace.repositories, "upsert_user_skill_file", fake_upsert_file)
-    monkeypatch.setattr(skills_marketplace.repositories, "delete_user_skill_file", fake_delete_file)
-    monkeypatch.setattr(skills_marketplace.repositories, "set_public_skill_enabled", fake_set_status)
-    monkeypatch.setattr(skills_marketplace.repositories, "upsert_skill_version", fail_direct_release_write)
-    monkeypatch.setattr(skills_marketplace.repositories, "set_skill_release_policy", fail_direct_release_write)
-    monkeypatch.setattr(skills_marketplace.repositories, "ensure_user", fake_ensure_user)
-    monkeypatch.setattr(skills_marketplace.repositories, "append_audit_log", fake_audit)
+    monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'list_public_skill_catalog', fake_list)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', fake_list_distributions)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'get_capability_distribution_row', fake_get_distribution)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'toggle_capability_distribution_row', fake_toggle_distribution)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'archive_capability_distribution_row', fake_archive_distribution)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'acquire_capability_distribution_lifecycle_locks', fake_acquire_distribution_locks)
+    monkeypatch.setattr(_owner_skills_infrastructure_file_overlays_postgres, 'list_user_skill_file_overlays', fake_list_overlays)
+    monkeypatch.setattr(_owner_skills_infrastructure_file_overlays_postgres, 'upsert_user_skill_file', fake_upsert_file)
+    monkeypatch.setattr(_owner_skills_infrastructure_file_overlays_postgres, 'delete_user_skill_file', fake_delete_file)
+    monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'set_public_skill_enabled', fake_set_status)
+    monkeypatch.setattr(_owner_skills_infrastructure_versions_postgres, 'upsert_skill_version', fail_direct_release_write)
+    monkeypatch.setattr(_owner_skills_infrastructure_versions_postgres, 'set_skill_release_policy', fail_direct_release_write)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', fake_ensure_user)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', fake_audit)
     return calls
 
 
@@ -583,7 +589,7 @@ def test_skill_source_reads_require_same_tenant_admin_scope(monkeypatch):
         return _catalog_rows()
 
     monkeypatch.setattr(
-        "app.routes.skills_marketplace.repositories.list_public_skill_catalog",
+        "app.skills.infrastructure.catalog_postgres.list_public_skill_catalog",
         tenant_scoped_catalog,
     )
     client = TestClient(create_app())
@@ -645,10 +651,10 @@ def test_public_skill_reads_hide_disabled_tenant_availability(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(skills_marketplace, "transaction", fake_transaction)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_public_skill_catalog", fake_list)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_user_skill_file_overlays", fake_list_overlays)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_capability_distribution_rows", fake_list_distributions)
-    monkeypatch.setattr(skills_marketplace.repositories, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'list_public_skill_catalog', fake_list)
+    monkeypatch.setattr(_owner_skills_infrastructure_file_overlays_postgres, 'list_user_skill_file_overlays', fake_list_overlays)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', fake_list_distributions)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'get_capability_distribution_row', fake_get_distribution)
     client = TestClient(create_app())
 
     list_response = client.get("/api/skills/", headers=headers())
@@ -716,10 +722,10 @@ def test_public_skill_reads_hide_non_runnable_versions(monkeypatch, version_stat
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(skills_marketplace, "transaction", fake_transaction)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_public_skill_catalog", fake_list)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_user_skill_file_overlays", fake_list_overlays)
-    monkeypatch.setattr(skills_marketplace.repositories, "list_capability_distribution_rows", fake_list_distributions)
-    monkeypatch.setattr(skills_marketplace.repositories, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'list_public_skill_catalog', fake_list)
+    monkeypatch.setattr(_owner_skills_infrastructure_file_overlays_postgres, 'list_user_skill_file_overlays', fake_list_overlays)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', fake_list_distributions)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'get_capability_distribution_row', fake_get_distribution)
     client = TestClient(create_app())
 
     assert client.get("/api/skills/", headers=headers()).json()["skills"] == []
@@ -1243,7 +1249,7 @@ def test_skill_batch_delete_returns_partial_results_inside_one_transaction(monke
         return {"capability_id": capability_id, "status": "disabled", "visible_to_user": False}
 
     monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
-    monkeypatch.setattr("app.routes.skills_marketplace.repositories.archive_capability_distribution_row", archive_partial)
+    monkeypatch.setattr("app.identity.infrastructure.capability_distributions_postgres.archive_capability_distribution_row", archive_partial)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1282,7 +1288,7 @@ def test_skill_batch_delete_rolls_back_when_audit_write_fails(monkeypatch):
         raise RuntimeError("audit_write_failed")
 
     monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
-    monkeypatch.setattr("app.routes.skills_marketplace.repositories.append_audit_log", fail_audit)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_audit)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     response = client.post(
@@ -1302,7 +1308,7 @@ def test_public_skill_write_routes_map_missing_skill_to_stable_json_404(monkeypa
         raise RepositoryNotFoundError("capability_distribution_not_found")
 
     monkeypatch.setattr(
-        "app.routes.skills_marketplace.repositories.toggle_capability_distribution_row",
+        "app.identity.infrastructure.capability_distributions_postgres.toggle_capability_distribution_row",
         missing_distribution,
     )
     client = TestClient(create_app())
@@ -1473,7 +1479,7 @@ def test_public_skill_overlay_keeps_fallback_skill_md_when_snapshot_has_no_files
         return [row]
 
     monkeypatch.setattr(
-        "app.routes.skills_marketplace.repositories.list_public_skill_catalog",
+        "app.skills.infrastructure.catalog_postgres.list_public_skill_catalog",
         fake_list_without_files,
     )
     client = TestClient(create_app())
@@ -2283,7 +2289,7 @@ def test_marketplace_activation_uses_non_rollout_admin_response_inside_write_tra
         return [dict(_catalog_rows()[0])]
 
     monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
-    monkeypatch.setattr("app.routes.skills_marketplace.repositories.list_public_skill_catalog", fake_list)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_public_skill_catalog", fake_list)
     client = TestClient(create_app())
 
     response = client.patch(
@@ -2405,7 +2411,7 @@ def test_marketplace_writes_roll_back_when_response_catalog_row_is_missing(monke
 
     monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
     monkeypatch.setattr(
-        "app.routes.skills_marketplace.repositories.list_public_skill_catalog",
+        "app.skills.infrastructure.catalog_postgres.list_public_skill_catalog",
         missing_response_catalog,
     )
     client = TestClient(create_app(), raise_server_exceptions=False)
@@ -2427,7 +2433,7 @@ def test_public_skill_batch_routes_are_permission_gated_and_report_item_errors(m
         raise RepositoryNotFoundError(f"{capability_id}_not_found")
 
     monkeypatch.setattr(
-        "app.routes.skills_marketplace.repositories.toggle_capability_distribution_row",
+        "app.identity.infrastructure.capability_distributions_postgres.toggle_capability_distribution_row",
         fail_missing,
     )
     client = TestClient(create_app())

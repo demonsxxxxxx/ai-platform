@@ -9,7 +9,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from app import repositories
+from app.runs.infrastructure import postgres as runs_postgres
+
 from app.context.api import ProviderSessionConflictError, ProviderSessionContinuityError
 from app.db import transaction
 from app.execution.api import restored_sandbox_run_payload
@@ -323,7 +324,7 @@ async def _terminalize_reconciliation_failure(
         )
         if not claimed:
             raise RuntimeError("executor_reconciliation_claim_lost")
-        run = await repositories.get_run(
+        run = await runs_postgres.get_run(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -720,7 +721,7 @@ async def probe_suspect_executor_tasks_once(
             client = SandboxExecutorClient(timeout_seconds=10.0)
             failure_stage = "run_state_check"
             async with transaction() as conn:
-                run = await repositories.get_run(
+                run = await runs_postgres.get_run(
                     conn,
                     tenant_id=str(lease_row["tenant_id"]),
                     run_id=str(lease_row["run_id"]),
@@ -909,7 +910,7 @@ async def reconcile_pending_executor_terminals_once(
                     )
                     if not claimed_current:
                         raise RuntimeError("executor_reconciliation_claim_lost")
-                    run = await repositories.get_run(
+                    run = await runs_postgres.get_run(
                         conn,
                         tenant_id=str(lease_row["tenant_id"]),
                         run_id=str(lease_row["run_id"]),

@@ -1,9 +1,9 @@
+import app.mcp.infrastructure.tool_policies_postgres as _owner_mcp_infrastructure_tool_policies_postgres
 from fastapi.testclient import TestClient
 import pytest
 
-from app import repositories
 from app.main import create_app
-from app.repositories import RepositoryNotFoundError
+from app.platform.postgres.errors import RepositoryNotFoundError
 from app.settings import Settings
 from tests.support.db_transactions import opaque_transaction
 
@@ -75,7 +75,7 @@ async def test_admin_builtin_policy_mutation_refuses_foreign_dynamic_tool_id():
 
     conn = Connection()
     with pytest.raises(RepositoryNotFoundError, match="mcp_tool_not_found"):
-        await repositories.upsert_admin_tool_policy(
+        await _owner_mcp_infrastructure_tool_policies_postgres.upsert_admin_tool_policy(
             conn,
             tenant_id="tenant-a",
             tool_id="mcpt-owned-by-tenant-b",
@@ -108,7 +108,7 @@ async def test_admin_builtin_policy_mutation_refuses_unknown_legacy_tool_id():
 
     conn = Connection()
     with pytest.raises(RepositoryNotFoundError, match="mcp_tool_not_found"):
-        await repositories.upsert_admin_tool_policy(
+        await _owner_mcp_infrastructure_tool_policies_postgres.upsert_admin_tool_policy(
             conn,
             tenant_id="tenant-a",
             tool_id="legacy-untrusted",
@@ -141,7 +141,7 @@ async def test_admin_policy_list_contains_only_retained_code_owned_builtin_rows(
             return Cursor()
 
     conn = Connection()
-    rows = await repositories.list_admin_tool_policies(
+    rows = await _owner_mcp_infrastructure_tool_policies_postgres.list_admin_tool_policies(
         conn,
         tenant_id="tenant-a",
         include_disabled=True,
@@ -160,7 +160,7 @@ def test_admin_list_tool_policies_requires_admin(monkeypatch):
         raise AssertionError("ordinary users must not reach tool policy inventory")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_tool_policies.repositories.list_admin_tool_policies", fail_list_tool_policies, raising=False)
+    monkeypatch.setattr('app.mcp.infrastructure.tool_policies_postgres.list_admin_tool_policies', fail_list_tool_policies, raising=False)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/tool-policies", headers=user_headers())
@@ -178,7 +178,7 @@ def test_admin_list_tool_policies_returns_same_tenant_operational_projection(mon
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
-    monkeypatch.setattr("app.routes.admin_tool_policies.repositories.list_admin_tool_policies", fake_list_tool_policies, raising=False)
+    monkeypatch.setattr('app.mcp.infrastructure.tool_policies_postgres.list_admin_tool_policies', fake_list_tool_policies, raising=False)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/tool-policies?include_disabled=true&limit=25", headers=admin_headers())
@@ -219,7 +219,7 @@ def test_admin_tool_policy_history_requires_admin(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(
-        "app.routes.admin_tool_policies.repositories.list_admin_tool_policy_history",
+        'app.mcp.infrastructure.tool_policies_postgres.list_admin_tool_policy_history',
         fail_history,
         raising=False,
     )
@@ -261,7 +261,7 @@ def test_admin_tool_policy_history_returns_bounded_same_tenant_secret_safe_proje
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_tool_policies.repositories.list_admin_tool_policy_history",
+        'app.mcp.infrastructure.tool_policies_postgres.list_admin_tool_policy_history',
         fake_history,
         raising=False,
     )
@@ -329,7 +329,7 @@ def test_admin_tool_policy_history_drops_dirty_scalars_and_nested_allowed_payloa
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_tool_policies.repositories.list_admin_tool_policy_history",
+        'app.mcp.infrastructure.tool_policies_postgres.list_admin_tool_policy_history',
         fake_history,
         raising=False,
     )
@@ -384,9 +384,9 @@ def test_admin_update_tool_policy_audits_and_keeps_risky_tools_fail_closed(monke
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
-    monkeypatch.setattr("app.routes.admin_tool_policies.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.admin_tool_policies.repositories.upsert_admin_tool_policy", fake_update_tool_policy, raising=False)
-    monkeypatch.setattr("app.routes.admin_tool_policies.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fake_ensure_user)
+    monkeypatch.setattr('app.mcp.infrastructure.tool_policies_postgres.upsert_admin_tool_policy', fake_update_tool_policy, raising=False)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.put(
@@ -434,8 +434,8 @@ def test_admin_update_tool_policy_returns_404_for_missing_tool(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_tool_policies.transaction", opaque_transaction)
-    monkeypatch.setattr("app.routes.admin_tool_policies.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.admin_tool_policies.repositories.upsert_admin_tool_policy", fake_update_tool_policy, raising=False)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fake_ensure_user)
+    monkeypatch.setattr('app.mcp.infrastructure.tool_policies_postgres.upsert_admin_tool_policy', fake_update_tool_policy, raising=False)
     client = TestClient(create_app())
 
     response = client.put(

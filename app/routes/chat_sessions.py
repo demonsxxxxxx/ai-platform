@@ -6,9 +6,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app import agent_conversation_repository, repositories
 from app.auth import AuthPrincipal, require_principal
 from app.chat_session_projection import session_response
+from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
 from app.models import ChatSessionsResponse
 from app.validation import assert_safe_id
@@ -94,7 +94,7 @@ async def list_sessions(
     )
     if not agent_scope_requested:
         async with transaction() as conn:
-            rows = await repositories.list_authorized_sessions(
+            rows = await conversations_postgres.list_authorized_sessions(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -113,7 +113,7 @@ async def list_sessions(
     async with transaction() as conn:
         # Historical reads are authorized by session ownership and immutable
         # profile pins. Current publication only gates new conversations/runs.
-        rows = await agent_conversation_repository.list_authorized_agent_conversations(
+        rows = await conversations_postgres.list_authorized_agent_conversations(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

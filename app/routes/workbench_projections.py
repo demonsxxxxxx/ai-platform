@@ -5,9 +5,9 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
-from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
+from app.identity.infrastructure import audit_postgres as identity_audit
 from app.models import (
     WorkbenchFeedbackItemResponse,
     WorkbenchFeedbackListResponse,
@@ -116,7 +116,7 @@ async def _record_operation(
     if payload_json:
         audit_payload.update(payload_json)
     async with transaction() as conn:
-        audit_id = await repositories.append_audit_log(
+        audit_id = await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

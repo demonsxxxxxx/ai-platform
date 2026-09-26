@@ -1,9 +1,10 @@
+import app.platform.postgres.errors as _owner_platform_postgres_errors
+import app.skills.infrastructure.postgres as _owner_skills_infrastructure_postgres
 import base64
 import json
 
 import pytest
 
-from app import repositories as repository_module
 from app.skills.pinning import (
     attach_skill_snapshot_governance,
     build_skill_manifest_ref,
@@ -81,13 +82,13 @@ def test_snapshot_source_locks_canonical_builtin_tool_identities(tmp_path):
         builtin_skills=skills,
     )[0]
 
-    expected = repository_module.run_skill_snapshot_source_json(manifest)
+    expected = _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(manifest)
     reordered = {**manifest, "builtin_tool_identities": ["Write", "Bash", "Write"]}
 
-    assert repository_module.run_skill_snapshot_source_json(reordered) == expected
+    assert _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(reordered) == expected
     for forged_identity in ("Agent", "WebFetch"):
-        with pytest.raises(repository_module.RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
-            repository_module.run_skill_snapshot_source_json(
+        with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
+            _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
                 {**manifest, "builtin_tool_identities": ["Bash", "Write", forged_identity]}
             )
 
@@ -448,8 +449,8 @@ def test_snapshot_source_rejects_forged_uploaded_execution_profile():
         },
     }
 
-    with pytest.raises(repository_module.RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
-        repository_module.run_skill_snapshot_source_json(forged)
+    with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
+        _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(forged)
 
 
 def test_build_skill_version_policy_manifest_pins_accepts_zero_dependency_builtin_version():

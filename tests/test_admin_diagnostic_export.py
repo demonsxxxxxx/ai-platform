@@ -156,11 +156,11 @@ def test_admin_diagnostic_export_is_admin_scoped_audited_and_no_store(monkeypatc
         lambda _request: FakeDiagnosticsService(),
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.append_audit_log",
+        "app.identity.infrastructure.audit_postgres.append_audit_log",
         fake_append_audit_log,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.new_id",
+        "app.platform.postgres.values.new_id",
         lambda prefix: f"{prefix}_a",
     )
     client = TestClient(create_app())
@@ -208,7 +208,7 @@ def test_admin_diagnostic_export_does_not_return_package_when_audit_fails(monkey
         lambda _request: FakeDiagnosticsService(),
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.append_audit_log",
+        "app.identity.infrastructure.audit_postgres.append_audit_log",
         failing_audit,
     )
     client = TestClient(create_app(), raise_server_exceptions=False)

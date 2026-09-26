@@ -1,3 +1,4 @@
+import app.identity.infrastructure.capability_distributions_postgres as _owner_identity_infrastructure_capability_distributions_postgres
 import asyncio
 import os
 from pathlib import Path
@@ -8,7 +9,6 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
 from app.identity.infrastructure import capability_distributions_postgres as distribution_persistence
 
 
@@ -168,39 +168,39 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
         await admin_conn.execute(
             """
             insert into mcp_servers(
-              tenant_id, name, status, allowed_roles, department_ids
-            ) values (%s, %s, 'active', '[1,"QA-Operator"]'::jsonb, array['QA']::text[])
+              id, tenant_id, name, status, allowed_roles, department_ids
+            ) values (%s, %s, %s, 'active', '[1,"QA-Operator"]'::jsonb, array['QA']::text[])
             """,
-            (tenant_id, "malformed-legacy-mcp"),
+            ("mcp-malformed-legacy", tenant_id, "malformed-legacy-mcp"),
         )
         await admin_conn.execute(
             """
             insert into mcp_servers(
-              tenant_id, name, status, allowed_roles, department_ids
+              id, tenant_id, name, status, allowed_roles, department_ids
             ) values (
-              %s, %s, 'active', '[" QA-Operator ","qa-operator","Reviewer"]'::jsonb,
+              %s, %s, %s, 'active', '[" QA-Operator ","qa-operator","Reviewer"]'::jsonb,
               array['QA']::text[]
             )
             """,
-            (tenant_id, "normalized-legacy-mcp"),
+            ("mcp-normalized-legacy", tenant_id, "normalized-legacy-mcp"),
         )
         await admin_conn.execute(
             """
             insert into mcp_servers(
-              tenant_id, name, status, allowed_roles, department_ids
+              id, tenant_id, name, status, allowed_roles, department_ids
             ) values (
-              %s, %s, 'active', '["Reviewer"]'::jsonb,
+              %s, %s, %s, 'active', '["Reviewer"]'::jsonb,
               array['QA', '   ']::text[]
             )
             """,
-            (tenant_id, "malformed-department-legacy-mcp"),
+            ("mcp-malformed-department", tenant_id, "malformed-department-legacy-mcp"),
         )
 
-        await repositories.ensure_tenant_capability_distribution_backfill(
+        await _owner_identity_infrastructure_capability_distributions_postgres.ensure_tenant_capability_distribution_backfill(
             admin_conn,
             tenant_id=tenant_id,
         )
-        await repositories.ensure_tenant_capability_distribution_backfill(
+        await _owner_identity_infrastructure_capability_distributions_postgres.ensure_tenant_capability_distribution_backfill(
             admin_conn,
             tenant_id=tenant_id,
         )
@@ -284,10 +284,10 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
         await admin_conn.execute(
             """
             insert into mcp_servers(
-              tenant_id, name, status, allowed_roles, department_ids
-            ) values (%s, %s, 'active', '["Reviewer"]'::jsonb, array['QA']::text[])
+              id, tenant_id, name, status, allowed_roles, department_ids
+            ) values (%s, %s, %s, 'active', '["Reviewer"]'::jsonb, array['QA']::text[])
             """,
-            (concurrent_tenant_id, "concurrent-legacy-mcp"),
+            ("mcp-concurrent-legacy", concurrent_tenant_id, "concurrent-legacy-mcp"),
         )
         await admin_conn.execute(
             """
@@ -305,7 +305,7 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
             await first_conn.execute("set local statement_timeout = '5s'")
             first_pid_cursor = await first_conn.execute("select pg_backend_pid() as pid")
             first_pid = int((await first_pid_cursor.fetchone())["pid"])
-            await repositories.ensure_tenant_capability_distribution_backfill(
+            await _owner_identity_infrastructure_capability_distributions_postgres.ensure_tenant_capability_distribution_backfill(
                 first_conn,
                 tenant_id=concurrent_tenant_id,
             )
@@ -314,7 +314,7 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
             second_pid_cursor = await second_conn.execute("select pg_backend_pid() as pid")
             second_pid = int((await second_pid_cursor.fetchone())["pid"])
             second_task = asyncio.create_task(
-                repositories.ensure_tenant_capability_distribution_backfill(
+                _owner_identity_infrastructure_capability_distributions_postgres.ensure_tenant_capability_distribution_backfill(
                     second_conn,
                     tenant_id=concurrent_tenant_id,
                 )
@@ -328,10 +328,10 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
             await admin_conn.execute(
                 """
                 insert into mcp_servers(
-                  tenant_id, name, status, allowed_roles, department_ids
-                ) values (%s, %s, 'active', '["Reviewer"]'::jsonb, array['QA']::text[])
+                  id, tenant_id, name, status, allowed_roles, department_ids
+                ) values (%s, %s, %s, 'active', '["Reviewer"]'::jsonb, array['QA']::text[])
                 """,
-                (concurrent_tenant_id, "late-legacy-mcp"),
+                ("mcp-late-legacy", concurrent_tenant_id, "late-legacy-mcp"),
             )
 
             await first_conn.commit()
@@ -398,6 +398,10 @@ async def test_capability_distribution_lifecycle_lock_serializes_missing_row_arc
             (tenant_id, "Lifecycle Lock Test"),
         )
         await admin_conn.execute(
+            "insert into mcp_servers(id, tenant_id, name) values (%s, %s, %s)",
+            ("mcp-lifecycle-lock", tenant_id, capability_id),
+        )
+        await admin_conn.execute(
             "insert into tenant_capability_distribution_backfills(tenant_id, completed_at) values (%s, now())",
             (tenant_id,),
         )
@@ -424,7 +428,7 @@ async def test_capability_distribution_lifecycle_lock_serializes_missing_row_arc
         monkeypatch.setattr(distribution_persistence, "_require_unarchived_capability_distribution", pause_first_writer)
 
         async def upsert_active(conn, *, updated_by):
-            return await repositories.upsert_capability_distribution_row(
+            return await _owner_identity_infrastructure_capability_distributions_postgres.upsert_capability_distribution_row(
                 conn,
                 tenant_id=tenant_id,
                 capability_kind="mcp_server",
@@ -439,7 +443,7 @@ async def test_capability_distribution_lifecycle_lock_serializes_missing_row_arc
             )
 
         async def second_writer():
-            return await repositories.archive_capability_distribution_row(
+            return await _owner_identity_infrastructure_capability_distributions_postgres.archive_capability_distribution_row(
                 second_conn,
                 tenant_id=tenant_id,
                 capability_kind="mcp_server",
@@ -472,7 +476,7 @@ async def test_capability_distribution_lifecycle_lock_serializes_missing_row_arc
         assert final_row is not None
         assert final_row["status"] == "disabled"
         assert final_row["visible_to_user"] is False
-        assert repositories.is_capability_distribution_archived(final_row) is True
+        assert _owner_identity_infrastructure_capability_distributions_postgres.is_capability_distribution_archived(final_row) is True
         assert final_row["metadata_json"]["archived_by"] == "writer-b"
     finally:
         for task in (first_task, second_task):

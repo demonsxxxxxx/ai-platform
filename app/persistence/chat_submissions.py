@@ -8,7 +8,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from app.persistence import RepositoryNotFoundError
+from app.platform.postgres.errors import RepositoryNotFoundError
 
 
 def chat_submission_fingerprint(

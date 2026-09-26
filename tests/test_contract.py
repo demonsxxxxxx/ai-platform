@@ -9,7 +9,7 @@ from app.control_plane_contracts import (
     is_legacy_synthetic_chat_identity,
     sanitize_public_payload,
 )
-from app.repositories import new_id
+from app.platform.postgres.values import new_id
 from fastapi.testclient import TestClient
 
 

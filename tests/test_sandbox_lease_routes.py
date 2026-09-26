@@ -88,9 +88,9 @@ def test_create_sandbox_lease_records_run_scoped_lease_and_event(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.create_sandbox_lease", fake_create_sandbox_lease)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -148,9 +148,9 @@ def test_public_create_never_persists_an_unverified_active_real_provider_lease(m
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.create_sandbox_lease", fake_create_sandbox_lease)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -182,8 +182,8 @@ def test_renew_expired_sandbox_lease_fails_closed(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.get_sandbox_lease", fake_get_sandbox_lease)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.renew_sandbox_lease", fake_renew_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.get_sandbox_lease", fake_get_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.renew_sandbox_lease", fake_renew_sandbox_lease)
     client = TestClient(create_app())
 
     response = client.post(
@@ -212,9 +212,9 @@ def test_release_sandbox_lease_records_release_event(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.get_sandbox_lease", fake_get_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.get_sandbox_lease", fake_get_sandbox_lease)
     monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.release_sandbox_lease", fake_release_sandbox_lease)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -263,7 +263,7 @@ def test_public_real_provider_release_stops_before_db_release(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", tracked_transaction)
     monkeypatch.setattr(
-        "app.routes.sandbox_leases.repositories.get_sandbox_lease",
+        "app.sandbox.infrastructure.leases_postgres.get_sandbox_lease",
         fake_get_sandbox_lease,
     )
     monkeypatch.setattr(
@@ -271,7 +271,7 @@ def test_public_real_provider_release_stops_before_db_release(monkeypatch):
         fake_release_sandbox_lease,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_leases.repositories.append_event",
+        "app.streaming.infrastructure.run_events_postgres.append_event",
         fake_append_event,
     )
     monkeypatch.setattr(
@@ -310,7 +310,7 @@ def test_public_release_is_idempotent_after_release(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.sandbox_leases.repositories.get_sandbox_lease",
+        "app.sandbox.infrastructure.leases_postgres.get_sandbox_lease",
         fake_get_sandbox_lease,
     )
     monkeypatch.setattr(
@@ -361,9 +361,9 @@ def test_public_release_does_not_mark_real_provider_lease_released_without_confi
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.get_sandbox_lease", fake_get_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.get_sandbox_lease", fake_get_sandbox_lease)
     monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.release_sandbox_lease", fake_release_sandbox_lease)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     monkeypatch.setattr("app.runtime.sandbox.container_provider.create_container_provider", provider_factory)
     monkeypatch.setattr("app.routes.sandbox_leases.create_container_provider", provider_factory, raising=False)
     client = TestClient(create_app(), raise_server_exceptions=False)
@@ -398,7 +398,7 @@ def test_release_denied_lookup_has_no_provider_or_db_side_effects(monkeypatch, m
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.sandbox_leases.repositories.get_sandbox_lease", fake_get_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.get_sandbox_lease", fake_get_sandbox_lease)
     monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.release_sandbox_lease", fail_release_sandbox_lease)
     monkeypatch.setattr("app.runtime.sandbox.container_provider.create_container_provider", fail_provider_factory)
     monkeypatch.setattr("app.routes.sandbox_leases.create_container_provider", fail_provider_factory, raising=False)

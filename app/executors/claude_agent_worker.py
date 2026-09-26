@@ -7,14 +7,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
-from app import control_plane_contracts as run_controls, repositories
+from app import control_plane_contracts as run_controls
 from app.capabilities import required_artifact_types_for_skill
 from app.context_builder import executor_context_pack_from_snapshot
 from app.context.api import (
     ContextFileContentError,
     context_file_executor_failure,
 )
-from app.context.file_continuity import materialize_run_context_files
+from app.bootstrap.context import materialize_worker_context_files
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.context.retrieval import ContextRetrievalAuthority
 from app.control_plane_contracts import (
@@ -1427,9 +1427,8 @@ class ClaudeAgentWorkerAdapter:
             return []
         if workspace.exists() and workspace.is_symlink():
             raise ValueError("run workspace must not be a symlink")
-        result = await materialize_run_context_files(
+        result = await materialize_worker_context_files(
             transaction_factory=transaction,
-            repository=repositories,
             storage=ObjectStorage(),
             storage_io=run_storage_io,
             storage_size_limit_error=ObjectStorageSizeLimitError,

@@ -1,3 +1,10 @@
+import app.conversations.infrastructure.session_queries_postgres as _owner_conversations_infrastructure_session_queries_postgres
+import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
+import app.identity.infrastructure.capability_distributions_postgres as _owner_identity_infrastructure_capability_distributions_postgres
+import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
+import app.mcp.infrastructure.registry_postgres as _owner_mcp_infrastructure_registry_postgres
+import app.mcp.repository as _owner_mcp_repository
+import app.platform.postgres.errors as _owner_platform_postgres_errors
 import base64
 from contextlib import asynccontextmanager
 import json
@@ -22,7 +29,7 @@ from app.mcp.infrastructure.runtime import (
     open_mcp_server_credentials,
     seal_mcp_server_credentials,
 )
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
 
@@ -436,7 +443,7 @@ def install_mcp_route_fakes(
         calls.append(("upsert_server", dict(kwargs)))
         existing = servers.get(kwargs["name"])
         if existing is not None and bool(existing.get("is_system")) != bool(kwargs["is_system"]):
-            raise mcp.repositories.RepositoryConflictError("mcp_server_scope_conflict")
+            raise _owner_platform_postgres_errors.RepositoryConflictError("mcp_server_scope_conflict")
         server = {
             "name": kwargs["name"],
             "transport": kwargs["transport"],
@@ -597,34 +604,34 @@ def install_mcp_route_fakes(
         lambda **_kwargs: "sealed-mcp-credential-envelope",
     )
     monkeypatch.setattr(mcp, "transaction", fake_transaction)
-    monkeypatch.setattr(mcp.repositories, "list_workbench_mcp_tools", fake_list, raising=False)
+    monkeypatch.setattr(_owner_mcp_repository, 'list_workbench_mcp_tools', fake_list, raising=False)
     monkeypatch.setattr(
-        mcp.repositories,
-        "get_authorized_session",
+        _owner_conversations_infrastructure_session_queries_postgres,
+        'get_authorized_session',
         fake_get_authorized_session,
     )
-    monkeypatch.setattr(mcp.repositories, "list_mcp_server_registry", fake_list_servers, raising=False)
-    monkeypatch.setattr(mcp.repositories, "list_tenant_mcp_server_registry", fake_list_servers, raising=False)
-    monkeypatch.setattr(mcp.repositories, "list_mcp_server_registry_names", fake_list_server_names, raising=False)
-    monkeypatch.setattr(mcp.repositories, "list_capability_distribution_rows", fake_list_distributions, raising=False)
-    monkeypatch.setattr(mcp.repositories, "get_capability_distribution_row", fake_get_distribution, raising=False)
-    monkeypatch.setattr(mcp.repositories, "upsert_mcp_server_registry", fake_upsert_server, raising=False)
+    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'list_mcp_server_registry', fake_list_servers, raising=False)
+    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'list_tenant_mcp_server_registry', fake_list_servers, raising=False)
+    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'list_mcp_server_registry_names', fake_list_server_names, raising=False)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', fake_list_distributions, raising=False)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'get_capability_distribution_row', fake_get_distribution, raising=False)
+    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'upsert_mcp_server_registry', fake_upsert_server, raising=False)
     monkeypatch.setattr(
-        mcp.repositories,
-        "upsert_capability_distribution_row",
+        _owner_identity_infrastructure_capability_distributions_postgres,
+        'upsert_capability_distribution_row',
         fake_upsert_distribution,
         raising=False,
     )
     monkeypatch.setattr(
-        mcp.repositories,
-        "set_capability_distribution_status",
+        _owner_identity_infrastructure_capability_distributions_postgres,
+        'set_capability_distribution_status',
         fake_set_distribution_status,
         raising=False,
     )
-    monkeypatch.setattr(mcp.repositories, "archive_capability_distribution_row", fake_archive_distribution, raising=False)
-    monkeypatch.setattr(mcp.repositories, "toggle_mcp_server_registry", fake_toggle_server, raising=False)
-    monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
-    monkeypatch.setattr(mcp.repositories, "record_mcp_server_credential", fake_record_credential, raising=False)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'archive_capability_distribution_row', fake_archive_distribution, raising=False)
+    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'toggle_mcp_server_registry', fake_toggle_server, raising=False)
+    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'delete_mcp_server_registry', fake_delete_server, raising=False)
+    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'record_mcp_server_credential', fake_record_credential, raising=False)
     monkeypatch.setattr(mcp.mcp_repository, "list_mcp_server_registry", fake_list_servers)
     monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_credential", fake_get_credential)
     monkeypatch.setattr(mcp.mcp_repository, "upsert_mcp_server_registry", fake_upsert_server)
@@ -636,8 +643,8 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp.mcp_repository, "toggle_mcp_server_registry", fake_toggle_server)
     monkeypatch.setattr(mcp.mcp_repository, "delete_mcp_server_registry", fake_delete_server)
     monkeypatch.setattr(mcp.mcp_repository, "record_mcp_server_credential", fake_record_credential)
-    monkeypatch.setattr(mcp.repositories, "ensure_user", fake_ensure_user)
-    monkeypatch.setattr(mcp.repositories, "append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', fake_ensure_user)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', fake_append_audit_log)
     monkeypatch.setattr(mcp, "get_mcp_principal_jwt_store", lambda: FakePrincipalJwtStore())
     monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", FakeRouteLiveCatalog())
     return calls
@@ -1673,7 +1680,7 @@ def test_mcp_status_mutations_map_distribution_errors_without_audit_or_partial_c
     mutation_name = (
         "archive_capability_distribution_row" if method == "delete" else "set_capability_distribution_status"
     )
-    monkeypatch.setattr(mcp.repositories, mutation_name, fail_distribution_mutation)
+    monkeypatch.setattr(f"app.identity.infrastructure.capability_distributions_postgres.{mutation_name}", fail_distribution_mutation)
     client = TestClient(create_app())
 
     response = (

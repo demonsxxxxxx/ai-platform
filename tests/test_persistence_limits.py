@@ -1,8 +1,13 @@
 import pytest
 
-from app import repositories, run_event_repository
+from app import run_event_repository
 from app.bootstrap.run_lifecycle import build_run_lifecycle_service
-from app.persistence_limits import (
+from app.artifacts.infrastructure.records_postgres import create_artifact
+from app.context.infrastructure.snapshot_postgres import create_context_snapshot
+from app.conversations.infrastructure.postgres import append_message
+from app.identity.infrastructure.audit_postgres import append_audit_log
+from app.platform.postgres.errors import RepositoryConflictError
+from app.platform.postgres.limits import (
     ARTIFACT_MANIFEST_MAX_BYTES,
     AUDIT_PAYLOAD_MAX_BYTES,
     CONTEXT_SNAPSHOT_PAYLOAD_MAX_BYTES,
@@ -16,6 +21,7 @@ from app.persistence_limits import (
     ensure_json_size,
     ensure_text_size,
 )
+from app.runs.infrastructure.creation_postgres import create_run
 
 
 class NoDatabaseWrites:
@@ -51,8 +57,8 @@ def test_json_limits_use_deterministic_compact_utf8_and_safe_invalid_errors():
 @pytest.mark.asyncio
 async def test_run_input_and_result_reject_oversize_before_database_access():
     conn = NoDatabaseWrites()
-    with pytest.raises(repositories.RepositoryConflictError, match="run_input_too_large"):
-        await repositories.create_run(
+    with pytest.raises(RepositoryConflictError, match="run_input_too_large"):
+        await create_run(
             conn,
             tenant_id="default",
             workspace_id="default",
@@ -62,7 +68,7 @@ async def test_run_input_and_result_reject_oversize_before_database_access():
             skill_id="general-chat",
             input_json=oversized_json(RUN_INPUT_MAX_BYTES),
         )
-    with pytest.raises(repositories.RepositoryConflictError, match="run_result_too_large"):
+    with pytest.raises(RepositoryConflictError, match="run_result_too_large"):
         await build_run_lifecycle_service().complete_run(
             conn,
             tenant_id="default",
@@ -74,8 +80,8 @@ async def test_run_input_and_result_reject_oversize_before_database_access():
 @pytest.mark.asyncio
 async def test_message_manifest_audit_and_snapshot_have_safe_stable_errors():
     conn = NoDatabaseWrites()
-    with pytest.raises(repositories.RepositoryConflictError, match="message_content_too_large"):
-        await repositories.append_message(
+    with pytest.raises(RepositoryConflictError, match="message_content_too_large"):
+        await append_message(
             conn,
             tenant_id="default",
             session_id="session-a",
@@ -83,8 +89,8 @@ async def test_message_manifest_audit_and_snapshot_have_safe_stable_errors():
             role="user",
             content="x" * (MESSAGE_CONTENT_MAX_BYTES + 1),
         )
-    with pytest.raises(repositories.RepositoryConflictError, match="artifact_manifest_too_large"):
-        await repositories.create_artifact(
+    with pytest.raises(RepositoryConflictError, match="artifact_manifest_too_large"):
+        await create_artifact(
             conn,
             artifact_id="artifact-a",
             tenant_id="default",
@@ -96,8 +102,8 @@ async def test_message_manifest_audit_and_snapshot_have_safe_stable_errors():
             size_bytes=1,
             manifest_json=oversized_json(ARTIFACT_MANIFEST_MAX_BYTES),
         )
-    with pytest.raises(repositories.RepositoryConflictError, match="audit_payload_too_large"):
-        await repositories.append_audit_log(
+    with pytest.raises(RepositoryConflictError, match="audit_payload_too_large"):
+        await append_audit_log(
             conn,
             tenant_id="default",
             user_id="user-a",
@@ -106,8 +112,8 @@ async def test_message_manifest_audit_and_snapshot_have_safe_stable_errors():
             target_id="run-a",
             payload_json=oversized_json(AUDIT_PAYLOAD_MAX_BYTES),
         )
-    with pytest.raises(repositories.RepositoryConflictError, match="context_snapshot_payload_too_large"):
-        await repositories.create_context_snapshot(
+    with pytest.raises(RepositoryConflictError, match="context_snapshot_payload_too_large"):
+        await create_context_snapshot(
             conn,
             tenant_id="default",
             workspace_id="default",

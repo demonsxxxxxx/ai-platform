@@ -1,4 +1,6 @@
 """Opt-in PostgreSQL evidence for the A3 schema and repository ledger facade."""
+import app.platform.postgres.errors as _owner_platform_postgres_errors
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 
 import asyncio
 import os
@@ -10,7 +12,6 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
 from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 
@@ -52,7 +53,7 @@ async def _seed_run(conn: psycopg.AsyncConnection) -> None:
 def _run_event_repair_statements(schema_sql: str) -> tuple[str, str]:
     repair_start = schema_sql.index("do $$\ndeclare\n  unique_index_present boolean;")
     index_start = schema_sql.index("create unique index if not exists uq_run_events_tenant_run_sequence", repair_start)
-    section_end = schema_sql.index("\n\ncreate table if not exists run_tool_permission_requests", index_start)
+    section_end = schema_sql.index("\n\n-- Settle only open Runs whose historical payload", index_start)
     return schema_sql[repair_start:index_start], schema_sql[index_start:section_end]
 
 
@@ -206,7 +207,7 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
 
         async def append_one(conn: psycopg.AsyncConnection, message: str) -> str:
             async with conn.transaction():
-                return await repositories.append_event(
+                return await _owner_streaming_infrastructure_run_events_postgres.append_event(
                     conn,
                     tenant_id="tenant-a",
                     run_id="run-a",
@@ -228,7 +229,7 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
         assert [row["sequence"] for row in await allocated.fetchall()] == [4, 5]
 
         async with first.transaction():
-            initial_receipt = await repositories.append_event_batch(
+            initial_receipt = await _owner_streaming_infrastructure_run_events_postgres.append_event_batch(
                 first,
                 tenant_id="tenant-a",
                 run_id="run-a",
@@ -248,9 +249,9 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
         assert first_timestamps["callback_received_at"] is not None
         assert first_timestamps["durable_committed_at"] is not None
         assert first_timestamps["callback_received_at"] <= first_timestamps["durable_committed_at"]
-        with pytest.raises(repositories.RepositoryConflictError, match="run_event_batch_conflict"):
+        with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError, match="run_event_batch_conflict"):
             async with second.transaction():
-                await repositories.append_event_batch(
+                await _owner_streaming_infrastructure_run_events_postgres.append_event_batch(
                     second,
                     tenant_id="tenant-a",
                     run_id="run-a",
@@ -270,7 +271,7 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
         before_rollback = await admin.execute("select next_sequence from run_event_cursors where tenant_id = 'tenant-a' and run_id = 'run-a'")
         with pytest.raises(RuntimeError, match="rollback"):
             async with first.transaction():
-                await repositories.append_event_batch(
+                await _owner_streaming_infrastructure_run_events_postgres.append_event_batch(
                     first,
                     tenant_id="tenant-a",
                     run_id="run-a",
@@ -295,14 +296,14 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
                     fence_ready.set()
                 await _within_postgres_stage("terminal_fence_contender_ready", fence_ready.wait())
                 try:
-                    receipt = await repositories.acquire_run_event_terminal_drain_fence(
+                    receipt = await _owner_streaming_infrastructure_run_events_postgres.acquire_run_event_terminal_drain_fence(
                         conn,
                         tenant_id="tenant-a",
                         run_id="run-a",
                         attempt_id="attempt-a",
                         batch_id=batch_id,
                     )
-                except repositories.RepositoryConflictError as exc:
+                except _owner_platform_postgres_errors.RepositoryConflictError as exc:
                     return "conflict", batch_id, str(exc)
                 return "accepted", batch_id, receipt
 
@@ -320,12 +321,12 @@ async def test_run_event_ledger_schema_and_repository_facade_in_postgres():
         assert conflicts == [("conflict", "batch-a" if accepted[0][1] == "batch-other" else "batch-other", "terminal_drain_already_consumed")]
         winning_batch_id = accepted[0][1]
         async with first.transaction():
-            replay_fence = await repositories.acquire_run_event_terminal_drain_fence(
+            replay_fence = await _owner_streaming_infrastructure_run_events_postgres.acquire_run_event_terminal_drain_fence(
                 first, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", batch_id=winning_batch_id
             )
         assert replay_fence == {"accepted": True, "duplicate": True}
         async with second.transaction():
-            isolated_fence = await repositories.acquire_run_event_terminal_drain_fence(
+            isolated_fence = await _owner_streaming_infrastructure_run_events_postgres.acquire_run_event_terminal_drain_fence(
                 second, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-b", batch_id="batch-other"
             )
         assert isolated_fence == {"accepted": True, "duplicate": False}

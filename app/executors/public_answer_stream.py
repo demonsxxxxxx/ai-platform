@@ -2,7 +2,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from app.execution.api import public_answer_failure_reason
-from app.memory_redaction import sanitizer_unstable_suffix_length
+from app.kernel.memory_redaction import sanitizer_unstable_suffix_length
 
 
 _RECOVERED_TEXT = "[content unavailable]"

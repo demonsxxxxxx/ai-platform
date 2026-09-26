@@ -1,3 +1,4 @@
+import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,8 +27,7 @@ from app.models import (
     SelectedAgentProfileRequest,
     SelectedSkillRequest,
 )
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError
-from app import repositories as repository_module
+from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.main import create_app
 from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
@@ -975,7 +975,7 @@ async def test_bound_profile_repository_uses_the_session_revision_and_hash_but_r
 
 
 def test_legacy_run_snapshot_without_agent_profile_remains_compatible():
-    from app.repositories import copied_run_execution_snapshot
+    from app.runs.infrastructure.replay_postgres import copied_run_execution_snapshot
 
     snapshot = copied_run_execution_snapshot(
         {
@@ -993,11 +993,7 @@ def test_legacy_run_snapshot_without_agent_profile_remains_compatible():
 
 
 def test_profile_copy_snapshot_preserves_private_prompt_model_and_exact_pins():
-    from app.repositories import (
-        admitted_agent_profile_pins_for_copy,
-        copied_run_execution_snapshot,
-        preserved_server_owned_execution_snapshot,
-    )
+    from app.runs.infrastructure.replay_postgres import admitted_agent_profile_pins_for_copy, copied_run_execution_snapshot, preserved_server_owned_execution_snapshot
 
     source_snapshot = copied_run_execution_snapshot(
         {
@@ -1103,7 +1099,7 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
             ),
         )
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', get_run)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
 
@@ -1166,7 +1162,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         "dependency_ids": [],
         "mcp_tool_ids": ["profile-tool-secondary"],
     }
-    manifest_refs = repository_module.skill_manifest_refs([full_manifest, secondary_manifest])
+    manifest_refs = _owner_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs([full_manifest, secondary_manifest])
     skill_set = [
         {"skill_id": "profile-skill", "expected_version": locked_version},
         {
@@ -1259,17 +1255,17 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             raise RepositoryConflictError("run_skill_materialization_identity_mismatch")
         return [full_manifest, secondary_manifest]
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', get_run)
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.require_replay_source_identity",
+        'app.runs.infrastructure.capability_admission_postgres.require_replay_source_identity',
         require_replay_source_identity,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        'app.skills.infrastructure.postgres.validate_replay_skill_manifests',
         validate_replay_skill_manifests,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.materialize_run_skill_manifests",
+        'app.skills.infrastructure.run_snapshots_postgres.materialize_run_skill_manifests',
         materialize_run_skill_manifests,
     )
     authority = AgentProfileAuthority()
@@ -1304,7 +1300,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        'app.skills.infrastructure.postgres.validate_replay_skill_manifests',
         reject_malformed_manifest,
     )
     with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
@@ -1315,7 +1311,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         )
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.validate_replay_skill_manifests",
+        'app.skills.infrastructure.postgres.validate_replay_skill_manifests',
         validate_replay_skill_manifests,
     )
 
@@ -1370,7 +1366,7 @@ async def test_replay_authority_accepts_legacy_required_skill_snapshot_without_c
             "executor_type": "claude-agent-worker",
             "skill_version": version,
             "release_decision": {"selected_version": version},
-            "skill_manifests": repository_module.skill_manifest_refs([manifest]),
+            "skill_manifests": _owner_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs([manifest]),
             "model_id": "model-a",
             "model_value": "provider-model-a",
             "agent_profile": {
@@ -1426,10 +1422,10 @@ async def test_replay_authority_accepts_legacy_required_skill_snapshot_without_c
     async def validate(*_args, **_kwargs):
         return ["profile-tool"]
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_run", get_run)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.materialize_run_skill_manifests", materialize)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.validate_replay_skill_manifests", validate)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.require_replay_source_identity", lambda **_kwargs: None)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', get_run)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.materialize_run_skill_manifests', materialize)
+    monkeypatch.setattr('app.skills.infrastructure.postgres.validate_replay_skill_manifests', validate)
+    monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.require_replay_source_identity', lambda **_kwargs: None)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
 

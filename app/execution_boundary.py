@@ -176,7 +176,8 @@ def decide_worker_execution_boundary(
     *,
     context_snapshot: Mapping[str, Any] | None = None,
 ) -> ExecutionBoundaryDecision:
-    from app import repositories
+    from app.runs.infrastructure import capability_admission_postgres as runs_capability_admission_postgres
+
 
     return decide_payload_execution_boundary(
         executor_type=payload.executor_type,
@@ -185,7 +186,7 @@ def decide_worker_execution_boundary(
             payload.context_snapshot if context_snapshot is None else context_snapshot
         ),
         mcp_requires_sandbox=bool(
-            repositories.extract_run_mcp_tool_ids(payload.input)
+            runs_capability_admission_postgres.extract_run_mcp_tool_ids(payload.input)
         ),
     )
 

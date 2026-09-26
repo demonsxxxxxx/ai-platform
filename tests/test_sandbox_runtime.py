@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from app.repositories import RepositoryConflictError
+from app.platform.postgres.errors import RepositoryConflictError
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import FakeContainerProvider
 from app.runtime.sandbox.contracts import (

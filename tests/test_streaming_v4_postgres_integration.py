@@ -1,4 +1,6 @@
 from __future__ import annotations
+import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -16,7 +18,7 @@ from redis.asyncio import Redis
 
 from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
-from app import repositories, schema_migrations
+from app import schema_migrations
 from app.bootstrap import run_lifecycle
 from app.bootstrap.context import configure_context_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
@@ -94,7 +96,7 @@ def _callback_capabilities(dsn: str, schema_name: str, *, bridge=None) -> Worker
         pending_admissions=object(),
         event_persistence=PostgresWorkerEventPersistence(
             factory,
-            append_event=repositories.append_event,
+            append_event=_owner_streaming_infrastructure_run_events_postgres.append_event,
             is_cancel_requested=run_lifecycle.build_run_lifecycle_service().is_cancel_requested,
             load_terminal_event_fact=load_current_terminal_event_fact,
         ),
@@ -553,7 +555,7 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
 
         event_persistence = PostgresWorkerEventPersistence(
             factory,
-            append_event=repositories.append_event,
+            append_event=_owner_streaming_infrastructure_run_events_postgres.append_event,
             is_cancel_requested=run_lifecycle.build_run_lifecycle_service().is_cancel_requested,
             load_terminal_event_fact=load_current_terminal_event_fact,
         )
@@ -731,7 +733,7 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
             state_patch={},
             events=[AgentEvent(**adapter.accept_answer_text("answer")[0].as_agent_event_fields())],
         )
-        original_list_leases = runtime_callbacks.repositories.list_current_sandbox_runtime_leases_for_attempt
+        original_list_leases = _owner_sandbox_infrastructure_leases_postgres.list_current_sandbox_runtime_leases_for_attempt
         lease_checks = 0
 
         async def list_leases_with_final_loss(conn, **kwargs):
@@ -743,8 +745,8 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
 
         monkeypatch.setattr(runtime_callbacks, "transaction", lambda: _connection_factory(dsn, schema_name))
         monkeypatch.setattr(
-            runtime_callbacks.repositories,
-            "list_current_sandbox_runtime_leases_for_attempt",
+            _owner_sandbox_infrastructure_leases_postgres,
+            'list_current_sandbox_runtime_leases_for_attempt',
             list_leases_with_final_loss,
         )
 

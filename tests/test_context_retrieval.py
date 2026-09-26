@@ -656,7 +656,7 @@ async def test_repository_context_retrieval_stages_file_through_scoped_repositor
             calls.append(("storage", storage_key, max_bytes))
             return b"repository backed file content"
 
-    monkeypatch.setattr("app.context.retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr("app.context.infrastructure.sources_postgres.get_scoped_context_file", fake_get_scoped_context_file)
     retrieval = ContextRetrievalAuthority.for_connection(object(), FakeStorage())
 
     result = await retrieval.stage_context_file_to_workspace(
@@ -713,7 +713,7 @@ async def test_transaction_factory_is_owned_by_authority(monkeypatch):
         ]
 
     monkeypatch.setattr(
-        "app.context.retrieval.repositories.list_scoped_context_messages",
+        "app.context.infrastructure.sources_postgres.list_scoped_context_messages",
         fake_list_messages,
     )
     retrieval = ContextRetrievalAuthority.for_transaction(
@@ -759,7 +759,7 @@ async def test_repository_stage_context_file_rejects_oversize_metadata_before_st
             calls.append(("storage", storage_key))
             return b"x" * 4096
 
-    monkeypatch.setattr("app.context.retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr("app.context.infrastructure.sources_postgres.get_scoped_context_file", fake_get_scoped_context_file)
     retrieval = ContextRetrievalAuthority.for_connection(object(), FakeStorage())
 
     with pytest.raises(ContextRetrievalDenied, match="context_file_too_large"):
@@ -808,7 +808,7 @@ async def test_repository_stage_context_file_requires_declared_size_before_stora
             calls.append(("storage", storage_key))
             return b"x" * 4096
 
-    monkeypatch.setattr("app.context.retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr("app.context.infrastructure.sources_postgres.get_scoped_context_file", fake_get_scoped_context_file)
     retrieval = ContextRetrievalAuthority.for_connection(object(), FakeStorage())
 
     with pytest.raises(ContextRetrievalDenied, match="context_file_size_required"):
@@ -858,7 +858,7 @@ async def test_repository_stage_context_file_bounds_storage_read_by_declared_siz
             raise ObjectStorageSizeLimitError("object_size_limit_exceeded")
 
     monkeypatch.setattr(
-        "app.context.retrieval.repositories.get_scoped_context_file",
+        "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
     retrieval = ContextRetrievalAuthority.for_connection(object(), FakeStorage())
@@ -907,7 +907,7 @@ async def test_repository_context_retrieval_message_pagination_uses_limit_plus_o
         ]
 
     monkeypatch.setattr(
-        "app.context.retrieval.repositories.list_scoped_context_messages",
+        "app.context.infrastructure.sources_postgres.list_scoped_context_messages",
         fake_list_scoped_context_messages,
     )
     retrieval = ContextRetrievalAuthority.for_connection(object(), object())

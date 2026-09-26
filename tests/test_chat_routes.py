@@ -1,3 +1,16 @@
+import app.agent_apps.infrastructure.catalog_postgres as _owner_agent_apps_infrastructure_catalog_postgres
+import app.conversations.infrastructure.postgres as _owner_conversations_infrastructure_postgres
+import app.conversations.infrastructure.session_queries_postgres as _owner_conversations_infrastructure_session_queries_postgres
+import app.files.infrastructure.run_bindings_postgres as _owner_files_infrastructure_run_bindings_postgres
+import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
+import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
+import app.persistence.chat_submissions as _owner_persistence_chat_submissions
+import app.platform.postgres.errors as _owner_platform_postgres_errors
+import app.runs.infrastructure.capability_admission_postgres as _owner_runs_infrastructure_capability_admission_postgres
+import app.runs.infrastructure.creation_postgres as _owner_runs_infrastructure_creation_postgres
+import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
+import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 import asyncio
 import base64
 import hashlib
@@ -11,7 +24,11 @@ import pytest
 from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
 
-from app import repositories as repository_module
+import app.conversations.infrastructure.session_queries_postgres as _repo_app_conversations_infrastructure_session_queries_postgres
+import app.persistence.chat_submissions as _repo_app_persistence_chat_submissions
+import app.platform.postgres.errors as _repo_app_platform_postgres_errors
+import app.runs.infrastructure.capability_admission_postgres as _repo_app_runs_infrastructure_capability_admission_postgres
+import app.skills.infrastructure.resolution_postgres as _repo_app_skills_infrastructure_resolution_postgres
 from app.agent_apps.infrastructure import principal_catalog_postgres as principal_catalog_persistence
 from app.runs.infrastructure import capability_admission_postgres as capability_admission_persistence
 from app.auth import AuthPrincipal
@@ -26,7 +43,7 @@ from app.models import (
 )
 from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
 from app.queue_payload_validation import queue_payload_invalid_detail
-from app.repositories import RepositoryConflictError
+from app.platform.postgres.errors import RepositoryConflictError
 from app.runs.api import RunTerminalizationProgress
 from app.routes.chat import (
     _admit_chat_submission as _route_admit_chat_submission,
@@ -45,9 +62,9 @@ from app.routes.chat import (
 )
 from app.settings import Settings
 
-_ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
+_ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = _repo_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities
 _ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT = (
-    repository_module.get_latest_authorized_session_run_input
+    _repo_app_conversations_infrastructure_session_queries_postgres.get_latest_authorized_session_run_input
 )
 
 
@@ -191,7 +208,7 @@ def test_chat_submission_resolver_success_is_private_no_store(
         }
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", found_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', found_submission)
 
     response = chat_submission_client.get(
         f"{prefix}/chat/submissions/{submission_id}",
@@ -240,8 +257,8 @@ def test_chat_submission_resolver_projects_authorized_run_status(
         return {"status": raw_status}
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", found_submission)
-    monkeypatch.setattr(repository_module, "get_authorized_run", authorized_run)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', found_submission)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', authorized_run)
 
     response = chat_submission_client.get(
         f"/api/chat/submissions/{submission_id}",
@@ -294,8 +311,8 @@ def test_chat_submission_resolver_missing_or_unreachable_run_projects_null_statu
         return None
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", found_submission)
-    monkeypatch.setattr(repository_module, "get_authorized_run", missing_run)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', found_submission)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', missing_run)
 
     response = chat_submission_client.get(
         f"{prefix}/chat/submissions/{submission_id}",
@@ -314,7 +331,7 @@ def test_chat_submission_resolver_missing_is_private_no_store_over_http(
         return None
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", missing_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', missing_submission)
 
     response = chat_submission_client.get(
         f"{prefix}/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
@@ -553,7 +570,7 @@ async def test_mcp_denial_audit_redacts_raw_identity_and_correlates_deterministi
         scope_mode="allowlist",
         decision_reason="capability_not_available",
     )
-    error = repository_module.RepositoryAuthorizationError(
+    error = _owner_platform_postgres_errors.RepositoryAuthorizationError(
         "mcp_tool_not_available",
         denial=denial,
     )
@@ -580,28 +597,28 @@ def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
     async def no_submission(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(repository_module, "get_chat_submission", no_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', no_submission)
     monkeypatch.setattr(
         "app.routes.chat._skill_manifest_pins",
         lambda skill_id, input_payload: [snapshot_manifest(skill_id)],
     )
 
     async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
-        return await repository_module.resolve_agent_skill(
+        return await _repo_app_skills_infrastructure_resolution_postgres.resolve_agent_skill(
             conn,
             tenant_id=tenant_id,
             agent_id=agent_id,
             skill_id=skill_id,
         )
 
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", allow, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', allow, raising=False)
 
     async def insert_creation_snapshots(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(
-        repository_module,
-        "insert_run_skill_snapshots_at_creation",
+        _owner_skills_infrastructure_run_snapshots_postgres,
+        'insert_run_skill_snapshots_at_creation',
         insert_creation_snapshots,
         raising=False,
     )
@@ -621,24 +638,24 @@ def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
         }
 
     monkeypatch.setattr(
-        repository_module, "authorize_files_for_run", authorize_files, raising=False
+        _owner_files_infrastructure_run_bindings_postgres, 'authorize_files_for_run', authorize_files, raising=False
     )
     monkeypatch.setattr(
-        repository_module,
-        "ensure_workspace_belongs_to_tenant",
+        _owner_conversations_infrastructure_postgres,
+        'ensure_workspace_belongs_to_tenant',
         ensure_workspace,
         raising=False,
     )
     monkeypatch.setattr(
-        repository_module, "get_agent", active_harness_chat_agent, raising=False
+        _owner_agent_apps_infrastructure_catalog_postgres, 'get_agent', active_harness_chat_agent, raising=False
     )
 
     async def no_latest_run_input(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(
-        repository_module,
-        "get_latest_authorized_session_run_input",
+        _owner_conversations_infrastructure_session_queries_postgres,
+        'get_latest_authorized_session_run_input',
         no_latest_run_input,
         raising=False,
     )
@@ -650,7 +667,7 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
         message="durable replay",
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
     )
-    fingerprint = repository_module.chat_submission_fingerprint(
+    fingerprint = _owner_persistence_chat_submissions.chat_submission_fingerprint(
         {"request": request.model_dump(mode="json", exclude={"submission_id"}), "query_agent_id": None},
         tenant_id="tenant-a",
         user_id="user-a",
@@ -675,7 +692,7 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
         raise AssertionError("replay must not route intent")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", existing_submission, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', existing_submission, raising=False)
     monkeypatch.setattr("app.routes.chat.route_intent", forbidden_route)
 
     response = await chat_stream(request, principal=principal())
@@ -747,17 +764,17 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", resolve_model)
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize_run)
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', authorize_run)
     monkeypatch.setattr(
         "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_tools,
     )
-    monkeypatch.setattr(repository_module, "ensure_user", noop)
-    monkeypatch.setattr(repository_module, "create_session", create_session)
-    monkeypatch.setattr(repository_module, "create_run", create_run)
-    monkeypatch.setattr(repository_module, "append_message", append_message)
-    monkeypatch.setattr(repository_module, "bind_files_to_run", noop)
-    monkeypatch.setattr(repository_module, "append_event", noop)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', noop)
+    monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'create_session', create_session)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'create_run', create_run)
+    monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'append_message', append_message)
+    monkeypatch.setattr(_owner_files_infrastructure_run_bindings_postgres, 'bind_files_to_run', noop)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', noop)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
 
@@ -799,8 +816,17 @@ async def test_chat_stream_never_turns_bash_text_into_required_capability(
             ("append_event", None),
         )
     }
+    targets = {
+        "ensure_user": "app.identity.infrastructure.postgres.ensure_user",
+        "create_session": "app.conversations.infrastructure.postgres.create_session",
+        "create_run": "app.runs.infrastructure.creation_postgres.create_run",
+        "insert_run_skill_snapshots_at_creation": "app.skills.infrastructure.run_snapshots_postgres.insert_run_skill_snapshots_at_creation",
+        "append_message": "app.conversations.infrastructure.postgres.append_message",
+        "bind_files_to_run": "app.files.infrastructure.run_bindings_postgres.bind_files_to_run",
+        "append_event": "app.streaming.infrastructure.run_events_postgres.append_event",
+    }
     for name, mock in business.items():
-        monkeypatch.setattr(repository_module, name, mock)
+        monkeypatch.setattr(targets[name], mock)
     authorize = AsyncMock(
         return_value={
             "executor_type": "claude-agent-worker",
@@ -810,7 +836,7 @@ async def test_chat_stream_never_turns_bash_text_into_required_capability(
     )
     manifests, enqueue = AsyncMock(return_value=[manifest]), AsyncMock(return_value=1)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", authorize)
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', authorize)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
     request = ChatStreamRequest(message=message)
@@ -846,7 +872,7 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
         session_id="session-owned",
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
     )
-    fingerprint = repository_module.chat_submission_fingerprint(
+    fingerprint = _owner_persistence_chat_submissions.chat_submission_fingerprint(
         {"request": request.model_dump(mode="json", exclude={"submission_id"}), "query_agent_id": None},
         tenant_id="tenant-a",
         user_id="user-a",
@@ -902,19 +928,19 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
         calls.append("admission_lock")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission, raising=False)
-    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_session", owned_session, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', no_existing_submission, raising=False)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', provision_principal, raising=False)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_authorized_session', owned_session, raising=False)
     monkeypatch.setattr(
-        repository_module,
-        "get_latest_authorized_session_run_input",
+        _owner_conversations_infrastructure_session_queries_postgres,
+        'get_latest_authorized_session_run_input',
         latest_input,
         raising=False,
     )
-    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', claim_submission, raising=False)
     monkeypatch.setattr(
-        repository_module,
-        "acquire_user_active_run_admission_lock",
+        _owner_runs_infrastructure_postgres,
+        'acquire_user_active_run_admission_lock',
         admission_lock,
         raising=False,
     )
@@ -987,7 +1013,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         calls.append(("claim", kwargs["request_fingerprint_sha256"]))
         fingerprint_request = request.model_dump(mode="json", exclude={"submission_id"})
         fingerprint_request["selected_mcp_tool_ids"] = ["locked-search"]
-        assert kwargs["request_fingerprint_sha256"] == repository_module.chat_submission_fingerprint(
+        assert kwargs["request_fingerprint_sha256"] == _repo_app_persistence_chat_submissions.chat_submission_fingerprint(
             {"request": fingerprint_request, "query_agent_id": None},
             tenant_id="tenant-a",
             user_id="user-a",
@@ -1008,17 +1034,17 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", resolve_model)
-    monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission)
-    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
-    monkeypatch.setattr(repository_module, "get_authorized_session", owned_session)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', no_existing_submission)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', provision_principal)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_authorized_session', owned_session)
     monkeypatch.setattr(
-        repository_module,
-        "get_latest_authorized_session_run_input",
+        _owner_conversations_infrastructure_session_queries_postgres,
+        'get_latest_authorized_session_run_input',
         latest_input,
     )
     monkeypatch.setattr(
-        repository_module,
-        "acquire_user_active_run_admission_lock",
+        _owner_runs_infrastructure_postgres,
+        'acquire_user_active_run_admission_lock',
         admission_lock,
         raising=False,
     )
@@ -1026,7 +1052,7 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
         "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_tools,
     )
-    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', claim_submission)
 
     response = await chat_stream(request, principal=principal())
 
@@ -1079,10 +1105,10 @@ async def test_keyed_rejection_provisions_principal_before_saved_workspace_ledge
         assert kwargs["state"] == "rejected_before_persist"
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_session", owned_session, raising=False)
-    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission, raising=False)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission, raising=False)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', provision_principal, raising=False)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_authorized_session', owned_session, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', claim_submission, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize_submission, raising=False)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(request, principal=principal())
@@ -1125,9 +1151,9 @@ async def test_keyed_legacy_mcp_rejection_is_durable_replay_safe_and_payload_mis
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
-    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', provision_principal)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', claim_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize_submission)
 
     def rejected_request(message: str) -> ChatStreamRequest:
         return ChatStreamRequest(
@@ -1172,10 +1198,10 @@ async def test_chat_submission_resolver_missing_is_read_only_and_fail_closed(mon
         calls.append(kwargs)
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", missing_submission, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', missing_submission, raising=False)
     monkeypatch.setattr(
-        repository_module,
-        "claim_chat_submission",
+        _owner_persistence_chat_submissions,
+        'claim_chat_submission',
         lambda *_args, **_kwargs: pytest.fail("GET must not claim a tombstone"),
         raising=False,
     )
@@ -1219,9 +1245,9 @@ async def test_retry_admission_returns_versioned_absence_before_attempting_admis
         raise AssertionError("a new tombstone must not attempt queue admission")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "ensure_submission_principal", ensure_principal, raising=False)
-    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_tombstone, raising=False)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_tombstone, raising=False)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', ensure_principal, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', claim_tombstone, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize_tombstone, raising=False)
     monkeypatch.setattr("app.routes.chat._admit_chat_submission", forbidden_admission)
     response_headers = Response()
 
@@ -1257,7 +1283,7 @@ async def test_chat_submission_get_resolves_a_durable_recovery_tombstone(monkeyp
         }
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", durable_tombstone, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', durable_tombstone, raising=False)
     response_headers = Response()
 
     response = await get_chat_submission(
@@ -1299,8 +1325,8 @@ async def test_retry_admission_preserves_existing_submission_admission(monkeypat
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "ensure_submission_principal", ensure_principal, raising=False)
-    monkeypatch.setattr(repository_module, "claim_chat_submission", existing_submission, raising=False)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', ensure_principal, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', existing_submission, raising=False)
     monkeypatch.setattr("app.routes.chat._admit_chat_submission", admit)
 
     response = await retry_chat_submission_admission(
@@ -1332,8 +1358,8 @@ async def test_retry_admission_error_keeps_resolution_response_private_and_uncac
         raise HTTPException(status_code=404, detail="chat_submission_not_found")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "ensure_submission_principal", ensure_principal, raising=False)
-    monkeypatch.setattr(repository_module, "claim_chat_submission", existing_submission, raising=False)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', ensure_principal, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', existing_submission, raising=False)
     monkeypatch.setattr("app.routes.chat._admit_chat_submission", missing_admission)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -1379,9 +1405,9 @@ async def test_late_chat_post_is_rejected_after_recovery_tombstone_wins(monkeypa
         raise AssertionError("a tombstone must prevent intent routing and run creation")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", initially_missing, raising=False)
-    monkeypatch.setattr(repository_module, "ensure_submission_principal", ensure_principal, raising=False)
-    monkeypatch.setattr(repository_module, "claim_chat_submission", tombstone_wins, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', initially_missing, raising=False)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', ensure_principal, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', tombstone_wins, raising=False)
     monkeypatch.setattr("app.routes.chat.route_intent", forbidden_route)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -1489,14 +1515,14 @@ async def test_profile_retry_admission_uses_fresh_authority_transaction_for_comm
         calls.append("finalize")
 
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission)
-    monkeypatch.setattr(repository_module, "get_authorized_run", get_run)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
-    monkeypatch.setattr(repository_module, "append_event", append_event)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize)
 
     response = await _admit_chat_submission(
         principal=principal(),
@@ -1591,14 +1617,14 @@ async def test_profile_postcommit_lost_ack_is_recoverable_and_duplicate_retry_do
         raise AssertionError("an ambiguous post-commit publish must remain recoverable")
 
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission)
-    monkeypatch.setattr(repository_module, "get_authorized_run", get_run)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
-    monkeypatch.setattr(repository_module, "append_event", append_event)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
 
     first = await _admit_chat_submission(
@@ -1657,12 +1683,12 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_only_fo
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize, raising=False)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -1715,13 +1741,13 @@ async def test_retry_admission_keeps_unknown_enqueue_outcome_recoverable_without
         raise AssertionError("an unknown enqueue result must not terminalize the run")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_exact_admission)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", forbidden_failure_transition, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', forbidden_failure_transition, raising=False)
 
     response = await _admit_chat_submission(
         principal=principal(),
@@ -1760,13 +1786,13 @@ async def test_retry_admission_reconciles_concurrent_redis_success_without_termi
         raise AssertionError("concurrent success must not be replaced by enqueue_failed")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", forbidden_failure_transition, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', forbidden_failure_transition, raising=False)
 
     response = await _admit_chat_submission(
         principal=principal(),
@@ -1848,13 +1874,13 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     )
 
     monkeypatch.setattr("app.routes.chat.transaction", transaction_with_rollback_tracking)
-    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize, raising=False)
 
     with pytest.raises(HTTPException) as exc_info:
         await _admit_chat_submission(
@@ -1902,10 +1928,10 @@ async def test_retry_admission_does_not_requeue_a_processing_run(monkeypatch):
         finalized.append(kwargs)
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", forbidden_enqueue)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize, raising=False)
 
     response = await _admit_chat_submission(
         principal=principal(),
@@ -1947,13 +1973,13 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
         submission["outcome_json"] = kwargs["outcome_json"]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
-    monkeypatch.setattr(repository_module, "append_event", append_event, raising=False)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize, raising=False)
 
     with pytest.raises(RuntimeError, match="ledger update lost"):
         await _admit_chat_submission(
@@ -1981,9 +2007,9 @@ async def test_chat_stream_selected_skill_maps_stale_lock_to_stable_409_before_w
         raise AssertionError("stale selected Skill must not write chat state")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "authorize_selected_run_capabilities", stale, raising=False)
-    monkeypatch.setattr(repository_module, "create_run", forbidden_write)
-    monkeypatch.setattr(repository_module, "append_event", forbidden_write)
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_selected_run_capabilities', stale, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'create_run', forbidden_write)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', forbidden_write)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -2173,22 +2199,22 @@ def default_active_run_count(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "app.routes.chat.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        'app.runs.infrastructure.postgres.acquire_user_active_run_admission_lock',
         fake_acquire_user_active_run_admission_lock,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission_under_lock',
         fake_enforce_user_active_run_admission_under_lock,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.ensure_submission_principal",
+        'app.identity.infrastructure.postgres.ensure_submission_principal',
         fake_ensure_submission_principal,
         raising=False,
     )
@@ -2236,7 +2262,7 @@ async def test_get_session_recovers_safe_agent_conversation_identity(monkeypatch
         }
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session_projection", projection)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.get_authorized_session_projection', projection)
 
     response = await get_session("ses_profile", principal=principal())
 
@@ -2284,11 +2310,11 @@ async def test_create_chat_session_uses_platform_principal(monkeypatch):
         ]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_agent", fake_get_agent)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_sessions", fake_list_authorized_sessions)
+    monkeypatch.setattr('app.agent_apps.infrastructure.catalog_postgres.get_agent', fake_get_agent)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.ensure_workspace', fake_ensure_workspace)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fake_ensure_user)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.list_authorized_sessions', fake_list_authorized_sessions)
 
     response = await create_chat_session(
         ChatSessionRequest(agent_id="general-agent", title="General chat"),
@@ -2322,7 +2348,7 @@ async def test_create_chat_session_rejects_inactive_custom_agent_after_migration
         return None
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_agent", fake_get_agent)
+    monkeypatch.setattr('app.agent_apps.infrastructure.catalog_postgres.get_agent', fake_get_agent)
 
     with pytest.raises(HTTPException) as exc_info:
         await create_chat_session(
@@ -2364,11 +2390,11 @@ async def test_create_chat_session_maps_public_agent_id_before_persisting(monkey
         ]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_agent", fake_get_agent)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_sessions", fake_list_authorized_sessions)
+    monkeypatch.setattr('app.agent_apps.infrastructure.catalog_postgres.get_agent', fake_get_agent)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.ensure_workspace', fake_ensure_workspace)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fake_ensure_user)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.list_authorized_sessions', fake_list_authorized_sessions)
 
     response = await create_chat_session(
         ChatSessionRequest(agent_id="document-review", title="Review"),
@@ -2388,8 +2414,8 @@ async def test_list_messages_rejects_cross_user_session(monkeypatch):
         raise AssertionError("messages must not be listed for unauthorized sessions")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_messages", fake_list_authorized_messages)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.get_authorized_session', fake_get_authorized_session)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.list_authorized_messages', fake_list_authorized_messages)
 
     with pytest.raises(Exception) as exc_info:
         await list_messages("ses_b", principal=principal())
@@ -2446,8 +2472,8 @@ async def test_list_messages_redacts_raw_skill_metadata_for_ordinary_user(monkey
         ]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_messages", fake_list_authorized_messages)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.get_authorized_session', fake_get_authorized_session)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.list_authorized_messages', fake_list_authorized_messages)
 
     response = await list_messages("ses_a", principal=principal())
 
@@ -2493,8 +2519,8 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
         ]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_messages", fake_list_authorized_messages)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.get_authorized_session', fake_get_authorized_session)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.list_authorized_messages', fake_list_authorized_messages)
 
     response = await list_messages("ses_a", cursor=None, limit=2, principal=principal())
 
@@ -2628,21 +2654,21 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
         "app.routes.chat.resolve_chat_model_selection",
         fake_resolve_chat_model_selection,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.authorize_selected_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
         fake_authorize_selected,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fake_ensure_user)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.insert_run_skill_snapshots_at_creation",
+        'app.skills.infrastructure.run_snapshots_postgres.insert_run_skill_snapshots_at_creation',
         fake_insert_creation_snapshots,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", fake_read_queue_admission)
@@ -2729,15 +2755,15 @@ async def test_chat_stream_capability_distribution_denial_precedes_create_run(mo
 
     async def deny(*args, **kwargs):
         calls.append(("authorize", kwargs["skill_id"]))
-        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+        raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
 
     async def fail_create_run(*args, **kwargs):
         calls.append(("create_run", kwargs))
         raise AssertionError("authorization denial must precede create_run")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', deny)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -2783,7 +2809,7 @@ async def test_chat_stream_audits_capability_denial_after_source_transaction_rol
 
     async def deny(*args, **kwargs):
         events.append(("authorize", kwargs["skill_id"]))
-        raise repository_module.RepositoryAuthorizationError(
+        raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError(
             "capability_not_authorized",
             denial=denial,
         )
@@ -2793,8 +2819,8 @@ async def test_chat_stream_audits_capability_denial_after_source_transaction_rol
         return "aud-denied"
 
     monkeypatch.setattr("app.routes.chat.transaction", ordered_transaction)
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
-    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', deny)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_capability_authorization_denial_audit', record_audit)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -2823,14 +2849,14 @@ async def test_chat_stream_direct_ragflow_without_explicit_selector_uses_unified
 
     async def deny(*args, **kwargs):
         calls.append(kwargs)
-        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+        raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
 
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("direct ragflow denial must precede create_run")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', deny)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -2854,7 +2880,7 @@ async def test_chat_stream_legacy_nested_mcp_selector_returns_controlled_400_bef
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("invalid MCP selector must fail before create_run")
 
-    monkeypatch.setattr(repository_module, "create_run", fail_create_run)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'create_run', fail_create_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -2875,7 +2901,7 @@ async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_cr
 
     async def deny_selection(*_args, **kwargs):
         calls.append(("authorize", kwargs["tool_ids"]))
-        raise repository_module.RepositoryAuthorizationError("mcp_tool_not_available")
+        raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("mcp_tool_not_available")
 
     async def fail_create_run(*_args, **_kwargs):
         raise AssertionError("unauthorized MCP selection must fail before create_run")
@@ -2885,7 +2911,7 @@ async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_cr
         "app.routes.chat.authorize_selected_chat_mcp_tools",
         deny_selection,
     )
-    monkeypatch.setattr(repository_module, "create_run", fail_create_run)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'create_run', fail_create_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -2908,7 +2934,7 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
     finalizations = []
 
     async def deny_selection(*_args, **_kwargs):
-        raise repository_module.RepositoryAuthorizationError("mcp_tool_not_available")
+        raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("mcp_tool_not_available")
 
     async def provision_principal(*_args, **_kwargs):
         return {"id": "user-a", "tenant_id": "tenant-a"}
@@ -2937,9 +2963,9 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
         "app.routes.chat.authorize_selected_chat_mcp_tools",
         deny_selection,
     )
-    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal)
-    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission)
-    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', provision_principal)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', claim_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize_submission)
 
     def rejected_request(tool_ids):
         return ChatStreamRequest(
@@ -3017,13 +3043,13 @@ async def test_chat_stream_prevalidates_queue_payload_before_persisting(monkeypa
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fail_persist)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_persist)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_persist)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_persist)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fail_persist)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fail_persist)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fail_persist)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fail_persist)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_persist)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fail_persist)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fail_persist)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fail_persist)
     monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fail_persist)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
 
@@ -3051,10 +3077,10 @@ async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monk
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", reject_model)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_side_effect)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_side_effect)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_side_effect)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fail_side_effect)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fail_side_effect)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_side_effect)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fail_side_effect)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fail_side_effect)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fail_side_effect)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -3094,10 +3120,10 @@ async def test_chat_stream_rejects_non_string_model_id_without_coercion(
         raise AssertionError("non-string model_id must be rejected before side effects")
 
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_side_effect)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_side_effect)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_side_effect)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fail_side_effect)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fail_side_effect)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_side_effect)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fail_side_effect)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fail_side_effect)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fail_side_effect)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -3186,14 +3212,14 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", fake_resolve_chat_model_selection)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fake_ensure_user)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
     monkeypatch.setattr("app.execution.application.model_selection.bind_run_model", fake_bind_run_model)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -3269,14 +3295,14 @@ async def test_chat_stream_developer_fixture_uses_skillless_harness_chat(monkeyp
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fake_record_context)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -3320,9 +3346,9 @@ async def test_chat_stream_rejects_unsafe_principal_user_id_before_persistence(m
         raise AssertionError("unsafe principal user_id should fail before persistence")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fail_persistence)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_persistence)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fail_persistence)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_persistence)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -3372,10 +3398,10 @@ async def test_chat_stream_rejects_release_policy_version_that_differs_from_prim
         return None
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.get_effective_skill_version_for_policy",
+        'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
     monkeypatch.setattr("app.routes.chat._skill_manifest_pins", fake_skill_manifest_pins)
@@ -3419,8 +3445,8 @@ async def test_chat_stream_rejects_invalid_snapshot_governance_manifest_as_mater
         ]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
     monkeypatch.setattr("app.routes.chat._skill_manifest_pins", fake_skill_manifest_pins)
 
     with pytest.raises(Exception) as exc_info:
@@ -3484,17 +3510,17 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.get_effective_skill_version_for_policy",
+        'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -3583,17 +3609,17 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.get_effective_skill_version_for_policy",
+        'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -3652,17 +3678,17 @@ async def test_chat_stream_rejects_reviewed_rollout_previous_version(monkeypatch
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.get_effective_skill_version_for_policy",
+        'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', noop)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -3720,17 +3746,17 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.authorize_selected_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
         fake_authorize_selected,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     await chat_stream(
@@ -3809,13 +3835,13 @@ async def test_lambchat_chat_stream_uses_skillless_harness_for_chat_agents(
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -3876,17 +3902,17 @@ async def test_chat_stream_redacts_raw_skill_id_from_ordinary_user_response(monk
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.authorize_selected_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
         fake_authorize_selected,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -3927,13 +3953,13 @@ async def test_chat_stream_rejects_raw_skill_id_for_ordinary_user(monkeypatch):
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -3975,13 +4001,13 @@ async def test_general_chat_queues_claude_agent_worker_executor(monkeypatch):
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(ChatStreamRequest(message="hello"), principal=principal())
@@ -4019,13 +4045,13 @@ async def test_lambchat_word_review_attachment_routes_to_qa_agent(monkeypatch):
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -4091,14 +4117,14 @@ async def test_chat_stream_word_review_file_id_routes_to_qa_agent(monkeypatch):
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_file", fake_get_file)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.get_file', fake_get_file)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -4161,14 +4187,14 @@ async def test_chat_stream_ignores_file_id_metadata_outside_request_scope(monkey
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_file", fake_get_file)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.get_file', fake_get_file)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -4304,27 +4330,27 @@ async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(mo
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.get_authorized_session', fake_get_authorized_session)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.list_authorized_session_runs",
+        'app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs',
         fake_list_authorized_session_runs,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace_belongs_to_tenant", fake_workspace)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_files_for_run", fake_authorize_files)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.ensure_workspace_belongs_to_tenant', fake_workspace)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.authorize_files_for_run', fake_authorize_files)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.list_authorized_session_input_files",
+        'app.context.file_continuity.list_authorized_session_input_files',
         fake_list_authorized_session_input_files,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.new_id",
+        'app.platform.postgres.values.new_id',
         lambda kind: "ses_routed" if kind == "ses" else f"{kind}_unexpected",
     )
 
@@ -4411,26 +4437,26 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
 
     async def deny_preserved_skill(conn, **kwargs):
         calls.append(("authorize", kwargs["tenant_id"], kwargs["agent_id"], kwargs["skill_id"]))
-        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+        raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
 
     async def noop(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.get_authorized_session', owned_session)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        'app.runs.infrastructure.postgres.acquire_user_active_run_admission_lock',
         admission_lock,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission_under_lock',
         forbidden_limit_check,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.list_authorized_session_runs", prior_runs)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", deny_preserved_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.append_capability_authorization_denial_audit", noop)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs', prior_runs)
+    monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities', deny_preserved_skill)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_capability_authorization_denial_audit', noop)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -4791,16 +4817,16 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
 
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        'app.runs.infrastructure.postgres.acquire_user_active_run_admission_lock',
         admission_lock,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.ensure_submission_principal",
+        'app.identity.infrastructure.postgres.ensure_submission_principal',
         ensure_principal,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", late_ensure_user)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', late_ensure_user)
     monkeypatch.setattr(
         "app.routes.chat._agent_profile_authority.resolve_for_admission",
         profile_admission,
@@ -4817,37 +4843,37 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         "app.routes.chat.resolve_chat_model_selection",
         fixed_profile_model,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.get_authorized_session', owned_session)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.authorize_selected_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
         authorize_profile_skill,
     )
     monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.ensure_workspace_belongs_to_tenant",
+        'app.conversations.infrastructure.postgres.ensure_workspace_belongs_to_tenant',
         authorize_workspace,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_files_for_run", authorize_files)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.authorize_files_for_run', authorize_files)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.list_authorized_session_input_files",
+        'app.context.file_continuity.list_authorized_session_input_files',
         list_reusable_files,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.insert_run_skill_snapshots_at_creation", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", append_message)
-    monkeypatch.setattr("app.routes.chat.repositories.claim_chat_submission", claim_submission)
-    monkeypatch.setattr("app.routes.chat.repositories.get_chat_submission", get_submission)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_run", get_run)
-    monkeypatch.setattr("app.routes.chat.repositories.finalize_chat_submission", finalize_submission)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', create_run)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.insert_run_skill_snapshots_at_creation', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
+    monkeypatch.setattr('app.persistence.chat_submissions.claim_chat_submission', claim_submission)
+    monkeypatch.setattr('app.persistence.chat_submissions.get_chat_submission', get_submission)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', get_run)
+    monkeypatch.setattr('app.persistence.chat_submissions.finalize_chat_submission', finalize_submission)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", existing_queue_admission)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.new_id",
+        'app.platform.postgres.values.new_id',
         lambda kind: "ses-profile-lock-order" if kind == "ses" else "run-profile-lock-order",
     )
 
@@ -5060,7 +5086,7 @@ async def test_concurrent_profile_submits_serialize_on_user_lock_before_profile_
 
     monkeypatch.setattr("app.routes.chat.transaction", serialized_transaction)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        'app.runs.infrastructure.postgres.acquire_user_active_run_admission_lock',
         admission_lock,
         raising=False,
     )
@@ -5109,11 +5135,11 @@ async def test_profile_secondary_skill_denial_is_audited_after_transaction_rollb
 
     async def deny_profile(*_args, **_kwargs):
         try:
-            raise repository_module.RepositoryAuthorizationError(
+            raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError(
                 "capability_not_authorized",
                 denial=denial,
             )
-        except repository_module.RepositoryAuthorizationError as exc:
+        except _repo_app_platform_postgres_errors.RepositoryAuthorizationError as exc:
             raise HTTPException(
                 status_code=403,
                 detail="agent_profile_capability_not_available",
@@ -5124,7 +5150,7 @@ async def test_profile_secondary_skill_denial_is_audited_after_transaction_rollb
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        'app.runs.infrastructure.postgres.acquire_user_active_run_admission_lock',
         admission_lock,
         raising=False,
     )
@@ -5223,14 +5249,14 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         return None
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.get_authorized_session', owned_session)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        'app.runs.infrastructure.postgres.acquire_user_active_run_admission_lock',
         admission_lock,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.ensure_submission_principal",
+        'app.identity.infrastructure.postgres.ensure_submission_principal',
         ensure_principal,
         raising=False,
     )
@@ -5240,15 +5266,15 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         authorize_transport_mcp_defaults,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.list_authorized_session_runs",
+        'app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs',
         forbidden_prior_run,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.authorize_selected_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
         authorize_selected,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.claim_chat_submission",
+        'app.persistence.chat_submissions.claim_chat_submission',
         forbidden_submission_claim,
     )
 
@@ -5291,15 +5317,15 @@ async def test_chat_stream_rejects_a_rotated_principal_stale_session_before_capa
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.get_authorized_session",
+        'app.conversations.infrastructure.session_queries_postgres.get_authorized_session',
         no_owned_session,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.authorize_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities',
         forbidden_after_ownership_check,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.create_session",
+        'app.conversations.infrastructure.postgres.create_session',
         forbidden_after_ownership_check,
     )
 
@@ -5339,13 +5365,13 @@ async def test_chat_stream_rejects_a_continuation_workspace_mismatch_before_rout
         raise AssertionError("workspace mismatch must not inspect another workspace's prior Skill")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.get_authorized_session', owned_session)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.list_authorized_session_runs",
+        'app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs',
         forbidden_prior_skill_lookup,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", forbidden_after_workspace_check)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", forbidden_after_workspace_check)
+    monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities', forbidden_after_workspace_check)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', forbidden_after_workspace_check)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -5390,13 +5416,13 @@ async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fake_bind_files_to_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -5445,21 +5471,21 @@ async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creati
         ]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fail_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fail_resolve_agent_skill)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        'app.runs.infrastructure.postgres.acquire_user_active_run_admission_lock',
         admission_lock,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission_under_lock',
         forbidden_limit_check,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.list_principal_lambchat_agents",
+        'app.agent_apps.infrastructure.principal_catalog_postgres.list_principal_lambchat_agents',
         all_principal_agents,
         raising=False,
     )
@@ -5494,7 +5520,7 @@ async def test_chat_stream_filters_confirmation_suggestions_through_principal_pr
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.list_principal_lambchat_agents",
+        'app.agent_apps.infrastructure.principal_catalog_postgres.list_principal_lambchat_agents',
         principal_agents,
         raising=False,
     )
@@ -5537,7 +5563,7 @@ async def test_chat_stream_falls_back_to_general_chat_when_implicit_knowledge_ad
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         calls.append(("resolve", agent_id, skill_id))
         if (agent_id, skill_id) == ("sop-assistant", "ragflow-knowledge-search"):
-            raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+            raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
         assert (agent_id, skill_id) == ("general-agent", "general-chat")
         return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
 
@@ -5556,13 +5582,13 @@ async def test_chat_stream_falls_back_to_general_chat_when_implicit_knowledge_ad
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -5605,13 +5631,13 @@ async def test_chat_stream_keeps_implicit_knowledge_intent_when_rag_admission_su
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -5635,7 +5661,7 @@ async def test_chat_stream_fails_closed_when_implicit_knowledge_intent_has_no_sa
 
     async def deny(conn, **kwargs):
         calls.append(("authorize", kwargs["agent_id"], kwargs["skill_id"]))
-        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+        raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
 
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("denied implicit routing must not create a run")
@@ -5644,9 +5670,9 @@ async def test_chat_stream_fails_closed_when_implicit_knowledge_intent_has_no_sa
         return None
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", deny)
-    monkeypatch.setattr("app.routes.chat.repositories.get_agent", missing_harness_agent)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+    monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities', deny)
+    monkeypatch.setattr('app.agent_apps.infrastructure.catalog_postgres.get_agent', missing_harness_agent)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -5671,7 +5697,7 @@ async def test_chat_stream_admin_implicit_disabled_knowledge_falls_back_with_str
         calls.append((kwargs["agent_id"], kwargs["skill_id"], kwargs["is_admin"]))
         assert kwargs["is_admin"] is False
         if kwargs["skill_id"] == "ragflow-knowledge-search":
-            raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+            raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
         return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
 
     async def noop(*args, **kwargs):
@@ -5687,13 +5713,13 @@ async def test_chat_stream_admin_implicit_disabled_knowledge_falls_back_with_str
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", authorize)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities', authorize)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -5767,16 +5793,16 @@ async def test_chat_stream_implicit_rag_backing_mcp_failure_falls_back_to_genera
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", authorize)
+    monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities', authorize)
     monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", resolve_agent_skill)
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", get_distribution)
     monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", get_tool)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -5875,13 +5901,13 @@ async def test_chat_stream_records_intent_decision_and_confirmed_event(monkeypat
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
-    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
-    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
-    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
+    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
 
     response = await chat_stream(
@@ -5925,18 +5951,18 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
 
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: LimitSettings())
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
-        "app.routes.chat.repositories.acquire_user_active_run_admission_lock",
+        'app.runs.infrastructure.postgres.acquire_user_active_run_admission_lock',
         fake_acquire_user_active_run_admission_lock,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.repositories.enforce_user_active_run_admission_under_lock",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission_under_lock',
         fake_enforce_user_active_run_admission_under_lock,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_create_session)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fail_create_session)
 
     with pytest.raises(Exception) as exc_info:
         await chat_stream(
@@ -5965,8 +5991,8 @@ async def test_chat_stream_maps_unreleased_skill_version_conflict_to_409(monkeyp
         raise AssertionError("chat stream must not create a session for unreleased skill version")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_create_session)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fail_create_session)
 
     with pytest.raises(Exception) as exc_info:
         await chat_stream(
@@ -6037,12 +6063,12 @@ async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403
 
     monkeypatch.setattr("app.routes.chat.transaction", lifecycle_transaction)
     monkeypatch.setattr(
-        repository_module,
-        "authorize_run_capabilities",
+        _owner_runs_infrastructure_capability_admission_postgres,
+        'authorize_run_capabilities',
         _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES,
     )
-    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
-    monkeypatch.setattr(repository_module, "create_session", fail_create_session)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_capability_authorization_denial_audit', record_audit)
+    monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'create_session', fail_create_session)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(

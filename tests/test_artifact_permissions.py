@@ -28,20 +28,20 @@ class RecordingConnection:
 
 @pytest.mark.asyncio
 async def test_get_authorized_run_scopes_by_tenant_run_and_user():
-    from app.repositories import get_authorized_run
+    from app.runs.infrastructure.creation_postgres import get_authorized_run
 
     conn = RecordingConnection()
 
     await get_authorized_run(conn, tenant_id="tenant-a", user_id="user-b", run_id="run-a")
 
     sql, params = conn.executed[-1]
-    assert "where tenant_id = %s and id = %s and user_id = %s" in sql
+    assert "where runs.tenant_id = %s and runs.id = %s and runs.user_id = %s" in sql
     assert params == ("tenant-a", "run-a", "user-b")
 
 
 @pytest.mark.asyncio
 async def test_get_authorized_artifact_scopes_by_tenant_artifact_and_run_owner():
-    from app.repositories import get_authorized_artifact
+    from app.persistence.artifacts import get_authorized_artifact
 
     conn = RecordingConnection()
 
@@ -283,6 +283,9 @@ def test_admin_preview_fallback_writes_audit(monkeypatch):
             "content_type": "application/pdf",
         }
 
+    async def fake_active_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "status": "succeeded"}
+
     async def fake_append_audit_log(conn, **kwargs):
         calls.append(kwargs)
         return "aud-a"
@@ -292,6 +295,7 @@ def test_admin_preview_fallback_writes_audit(monkeypatch):
             return b"pdf-bytes"
 
     monkeypatch.setattr("app.auth.get_settings", route_auth_settings)
+    monkeypatch.setattr("app.routes.files.get_authorized_run", fake_active_run)
     monkeypatch.setattr("app.routes.files.transaction", fake_route_transaction)
     monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
     monkeypatch.setattr("app.routes.files.get_admin_artifact", fake_get_admin_artifact)

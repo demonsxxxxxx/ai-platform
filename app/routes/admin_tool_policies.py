@@ -2,11 +2,18 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
+from app.control_plane_contracts import (
+    sanitize_public_payload,
+    sanitize_public_text,
+    standard_trace_id,
+)
 from app.db import transaction
+from app.identity.infrastructure import audit_postgres as identity_audit
+from app.identity.infrastructure import postgres as identity_postgres
+from app.mcp.infrastructure import tool_policies_postgres as mcp_tool_policies
 from app.models import AdminToolPolicyUpdateRequest
+from app.platform.postgres import errors as platform_errors
 from app.tool_policy import RISK_ORDER
 from app.validation import assert_safe_id
 
@@ -100,7 +107,7 @@ async def admin_list_tool_policies(
     """Return admin-only tenant-scoped tool policy inventory."""
     _require_admin(principal)
     async with transaction() as conn:
-        rows = await repositories.list_admin_tool_policies(
+        rows = await mcp_tool_policies.list_admin_tool_policies(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=include_disabled,
@@ -128,7 +135,7 @@ async def admin_list_tool_policy_history(
     _require_admin(principal)
     safe_tool_id = _safe_tool_id(tool_id) if tool_id else None
     async with transaction() as conn:
-        rows = await repositories.list_admin_tool_policy_history(
+        rows = await mcp_tool_policies.list_admin_tool_policy_history(
             conn,
             tenant_id=principal.tenant_id,
             tool_id=safe_tool_id,
@@ -158,13 +165,13 @@ async def admin_update_tool_policy(
     reason = sanitize_public_text(request.reason)
     try:
         async with transaction() as conn:
-            await repositories.ensure_user(
+            await identity_postgres.ensure_user(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 display_name=principal.display_name or principal.user_id,
             )
-            row = await repositories.upsert_admin_tool_policy(
+            row = await mcp_tool_policies.upsert_admin_tool_policy(
                 conn,
                 tenant_id=principal.tenant_id,
                 tool_id=tool_id,
@@ -175,7 +182,7 @@ async def admin_update_tool_policy(
                 reason=reason,
                 updated_by=principal.user_id,
             )
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -194,7 +201,7 @@ async def admin_update_tool_policy(
                     }
                 ),
             )
-    except repositories.RepositoryNotFoundError as exc:
+    except platform_errors.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
         "contract_version": ADMIN_TOOL_POLICIES_CONTRACT_VERSION,

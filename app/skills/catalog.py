@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Sequence
 
-from app import repositories
+from app.identity.infrastructure import capability_distributions_postgres as identity_capability_distributions_postgres
+from app.skills.infrastructure import catalog_postgres as skills_catalog_postgres
+
 from app.capability_distribution import (
     CapabilityAccessContext,
     CapabilityDistributionSubject,
@@ -864,13 +866,13 @@ async def resolve_authorized_skill_catalog(
 
     if not _valid_binding(binding):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_binding_invalid")
-    rows = await repositories.list_public_skill_catalog(
+    rows = await skills_catalog_postgres.list_public_skill_catalog(
         conn,
         tenant_id=binding.tenant_id,
         include_disabled=False,
         rollout_key=binding.user_id,
     )
-    distributions = await repositories.list_capability_distribution_rows(
+    distributions = await identity_capability_distributions_postgres.list_capability_distribution_rows(
         conn,
         tenant_id=binding.tenant_id,
         capability_kind="skill",

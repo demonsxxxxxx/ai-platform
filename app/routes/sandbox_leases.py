@@ -2,15 +2,24 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app import repositories
 from app.auth import AuthPrincipal, require_principal
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
-from app.models import SandboxLeaseReleaseRequest, SandboxLeaseRenewRequest, SandboxLeaseRequest
-from app.repositories import RepositoryNotFoundError
-from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
-from app.runtime.sandbox.container_provider import create_container_provider
+from app.models import (
+    SandboxLeaseReleaseRequest,
+    SandboxLeaseRenewRequest,
+    SandboxLeaseRequest,
+)
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.platform.postgres.errors import RepositoryNotFoundError
+from app.routes.sandbox_runtime_cleanup import (
+    SandboxRuntimeCleanupError,
+    stop_sandbox_leases,
+)
+from app.runs.infrastructure import creation_postgres as runs_creation
+from app.runtime.sandbox.container_provider import create_container_provider
+from app.sandbox.infrastructure import leases_postgres as sandbox_leases
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 
 router = APIRouter()
 
@@ -67,7 +76,7 @@ async def create_sandbox_lease(
         raise HTTPException(status_code=409, detail="sandbox_provider_managed_by_runtime")
     try:
         async with transaction() as conn:
-            run = await repositories.get_authorized_run(
+            run = await runs_creation.get_authorized_run(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -92,7 +101,7 @@ async def create_sandbox_lease(
                 user_visible_payload_json=_user_visible_workspace(),
                 lease_payload_json=request.lease_payload,
             )
-            await repositories.append_event(
+            await streaming_run_events.append_event(
                 conn,
                 tenant_id=principal.tenant_id,
                 run_id=run_id,
@@ -121,7 +130,7 @@ async def renew_sandbox_lease(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        existing = await repositories.get_sandbox_lease(
+        existing = await sandbox_leases.get_sandbox_lease(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -130,7 +139,7 @@ async def renew_sandbox_lease(
         )
         if existing is None:
             raise HTTPException(status_code=404, detail="sandbox_lease_not_found")
-        row = await repositories.renew_sandbox_lease(
+        row = await sandbox_leases.renew_sandbox_lease(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -141,7 +150,7 @@ async def renew_sandbox_lease(
         if row is None:
             raise HTTPException(status_code=409, detail="sandbox_lease_not_active")
         trace_id = str(row.get("trace_id") or existing.get("trace_id") or standard_trace_id(run_id))
-        await repositories.append_event(
+        await streaming_run_events.append_event(
             conn,
             tenant_id=principal.tenant_id,
             run_id=run_id,
@@ -164,7 +173,7 @@ async def release_sandbox_lease(
     existing: dict[str, Any] | None = None
     try:
         async with transaction() as conn:
-            existing = await repositories.get_sandbox_lease(
+            existing = await sandbox_leases.get_sandbox_lease(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -196,7 +205,7 @@ async def release_sandbox_lease(
             if row is None:
                 raise HTTPException(status_code=409, detail="sandbox_lease_not_active")
             trace_id = str(row.get("trace_id") or existing.get("trace_id") or standard_trace_id(run_id))
-            await repositories.append_event(
+            await streaming_run_events.append_event(
                 conn,
                 tenant_id=principal.tenant_id,
                 run_id=run_id,
@@ -209,7 +218,7 @@ async def release_sandbox_lease(
     except SandboxRuntimeCleanupError as exc:
         try:
             async with transaction() as conn:
-                await repositories.record_sandbox_runtime_cleanup_outcome(
+                await sandbox_leases.record_sandbox_runtime_cleanup_outcome(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=run_id,
