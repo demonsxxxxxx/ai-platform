@@ -5090,6 +5090,87 @@ async def test_sdk_target_terminal_reason_fails_closed_for_non_success_outcomes(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    (
+        "terminal_kind",
+        "expected_error",
+        "expected_reason",
+        "expected_received_terminal",
+        "expected_failure_source",
+        "expected_public_text",
+    ),
+    [
+        (
+            "result_error",
+            "claude_agent_sdk_upstream_error",
+            None,
+            False,
+            "sdk_result_error",
+            "",
+        ),
+        (
+            "abnormal_terminal",
+            "claude_agent_sdk_turn_limit_exceeded",
+            "max_turns",
+            False,
+            "sdk_abnormal_terminal",
+            "",
+        ),
+        ("success", None, "end_turn", True, None, "terminal final"),
+    ],
+)
+async def test_sdk_terminal_snapshots_preserve_shared_fields_and_release_semantics(
+    monkeypatch,
+    tmp_path,
+    terminal_kind,
+    expected_error,
+    expected_reason,
+    expected_received_terminal,
+    expected_failure_source,
+    expected_public_text,
+):
+    captured = {}
+    sdk = _streaming_sdk(captured, [], result_text="terminal final")
+    sdk.ResultMessage.usage = {"input_tokens": 7, "output_tokens": 3}
+    if terminal_kind == "result_error":
+        sdk.ResultMessage.is_error = True
+        sdk.ResultMessage.errors = ["upstream unavailable"]
+    elif terminal_kind == "abnormal_terminal":
+        sdk.ResultMessage.terminal_reason = "max_turns"
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    public_chunks = []
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        on_text=public_chunks.append,
+    )
+
+    assert result.used_sdk is True
+    assert result.session_id == "sdk-session"
+    assert result.usage == {"input_tokens": 7, "output_tokens": 3}
+    assert result.used_skills == []
+    assert result.used_skills_source == ""
+    assert result.capability_evidence == []
+    assert result.response_files == []
+    assert result.response_file_descriptors == []
+    assert result.provider_final_sequence is None
+    assert result.error == expected_error
+    assert result.terminal_reason == expected_reason
+    assert result.received_structured_terminal is expected_received_terminal
+    assert result.message == expected_public_text
+    assert "".join(public_chunks) == expected_public_text
+    assert result.turn_diagnostics["error_code"] == expected_error
+    assert (
+        result.runtime_diagnostics.get("failure_source")
+        if result.runtime_diagnostics
+        else None
+    ) == expected_failure_source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "hostile_name", ["qa-review,Skill(other)", " qa-review", "/qa-review", "qa\nreview"]
 )
 async def test_sdk_rejects_hostile_skill_names_before_options_construction(

@@ -125,22 +125,9 @@ from app.runs.infrastructure import steps_postgres as runs_steps
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.settings import get_settings
-from app.skills.api import materialize_skill_manifest_pins
-from app.skills.infrastructure import catalog_postgres as skills_catalog
+from app.skills.api import admit_skill_run, pin_skill_run_mcp_tools
 from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots
-from app.skills.infrastructure import versions_postgres as skills_versions
-from app.skills.lifecycle import is_user_runnable_status
-from app.skills.pinning import (
-    SkillVersionMaterializationError,
-    attach_skill_snapshot_governance,
-    build_skill_version_policy_manifest_pins,
-    governed_locked_skill_version,
-    validate_skill_manifest_refs,
-)
-from app.skills.release_policy import (
-    release_decision_payload_for_locked_version,
-    resolve_rollout_skill_decision,
-)
+from app.skills.pinning import SkillVersionMaterializationError, validate_skill_manifest_refs
 from app.streaming.api import (
     V4PublicationTransportUnavailable,
     WorkerV4Capabilities,
@@ -246,10 +233,6 @@ async def _remove_cancelled_queue_payloads(
     return failures
 
 
-def _skill_manifest_pins(skill_id: str, input_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    raise SkillVersionMaterializationError("skill_version_not_materializable")
-
-
 def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         validated = QueueRunPayload.model_validate(payload)
@@ -264,29 +247,6 @@ def _validate_principal_user_id_for_route(principal: AuthPrincipal) -> None:
         assert_safe_principal_user_id(principal.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid_principal_user_id") from exc
-
-
-async def _governed_skill_manifest_pins(
-    conn,
-    *,
-    skill_id: str,
-    input_payload: dict[str, Any],
-    release_policy_version: object | None,
-) -> list[dict[str, Any]]:
-    try:
-        return await materialize_skill_manifest_pins(
-            conn,
-            skill_id=skill_id,
-            input_payload=input_payload,
-            release_policy_version=release_policy_version,
-            get_skill=skills_catalog.get_skill,
-            get_effective_skill_version=skills_versions.get_effective_skill_version_for_policy,
-            is_user_runnable_status=is_user_runnable_status,
-            build_skill_version_policy_manifest_pins=build_skill_version_policy_manifest_pins,
-            materialization_error=SkillVersionMaterializationError,
-        )
-    except AttributeError:
-        return _skill_manifest_pins(skill_id, input_payload)
 
 
 def _release_decision_event_payload(release_decision: dict[str, Any], *, skill_id: str) -> dict[str, Any]:
@@ -959,36 +919,18 @@ async def create_run(
             await enforce_user_active_run_limit(conn, tenant_id=tenant_id, user_id=user_id)
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 assert skill is not None and resolved_skill_id is not None
-                release_decision = resolve_rollout_skill_decision(
-                    skill,
-                    tenant_id=tenant_id,
-                    skill_id=resolved_skill_id,
-                    rollout_key=user_id,
-                )
-                selected_policy_version = release_decision.selected_version
-                release_decision_payload = release_decision.to_payload()
-                release_policy_version = selected_policy_version if release_decision.policy_active else None
-                skill_manifests = await _governed_skill_manifest_pins(
+                admission = await admit_skill_run(
                     conn,
+                    skill=skill,
                     skill_id=resolved_skill_id,
                     input_payload=run_input,
-                    release_policy_version=release_policy_version,
+                    tenant_id=tenant_id,
+                    rollout_key=user_id,
                 )
-                skill_version = governed_locked_skill_version(
-                    skill_id=resolved_skill_id,
-                    skill_manifests=skill_manifests,
-                    fallback_version=selected_policy_version,
-                    release_policy_version=release_policy_version,
-                )
-                release_decision_payload = release_decision_payload_for_locked_version(
-                    release_decision,
-                    locked_version=skill_version,
-                )
-                skill_manifests = attach_skill_snapshot_governance(
-                    skill_manifests,
-                    release_decision=release_decision_payload,
-                )
-                skill_manifests = skills_run_snapshots.pin_primary_skill_mcp_tool_ids(
+                skill_manifests = admission.skill_manifests
+                skill_version = admission.skill_version
+                release_decision_payload = admission.release_decision
+                skill_manifests = pin_skill_run_mcp_tools(
                     skill_manifests,
                     skill_id=resolved_skill_id,
                     mcp_tool_ids=runs_capability_admission.run_mcp_tool_ids_for_skill(skill, run_input),

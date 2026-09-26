@@ -10,6 +10,8 @@ import app.runs.infrastructure.capability_admission_postgres as _owner_runs_infr
 import app.runs.infrastructure.creation_postgres as _owner_runs_infrastructure_creation_postgres
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
+from app.skills.application.run_admission import SkillRunAdmissionService as _owner_skills_application_run_admission
+from app.bootstrap.skills import configure_skill_services
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 import asyncio
 import base64
@@ -61,6 +63,7 @@ from app.routes.chat import (
     retry_chat_submission_admission as _route_retry_chat_submission_admission,
 )
 from app.settings import Settings
+_ORIGINAL_SKILL_RUN_MATERIALIZER = _owner_skills_application_run_admission._materialize_manifest_pins
 
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = _repo_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities
 _ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT = (
@@ -594,13 +597,26 @@ async def test_mcp_denial_audit_redacts_raw_identity_and_correlates_deterministi
 
 @pytest.fixture(autouse=True)
 def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
+    configure_skill_services()
     async def no_submission(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', no_submission)
+
+    async def materialize_skill_manifests(_service,
+        _conn,
+        *,
+        skill_id,
+        input_payload,
+        release_policy_version,
+    ):
+        del input_payload, release_policy_version
+        return [snapshot_manifest(skill_id)]
+
     monkeypatch.setattr(
-        "app.routes.chat._skill_manifest_pins",
-        lambda skill_id, input_payload: [snapshot_manifest(skill_id)],
+        _owner_skills_application_run_admission,
+        "_materialize_manifest_pins",
+        materialize_skill_manifests,
     )
 
     async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
@@ -775,7 +791,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'append_message', append_message)
     monkeypatch.setattr(_owner_files_infrastructure_run_bindings_postgres, 'bind_files_to_run', noop)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', noop)
-    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
 
     response = await chat_stream(
@@ -837,7 +853,7 @@ async def test_chat_stream_never_turns_bash_text_into_required_capability(
     manifests, enqueue = AsyncMock(return_value=[manifest]), AsyncMock(return_value=1)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', authorize)
-    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", manifests)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
     request = ChatStreamRequest(message=message)
 
@@ -3038,11 +3054,11 @@ async def test_chat_stream_prevalidates_queue_payload_before_persisting(monkeypa
         calls.append(("enqueue", payload))
         raise AssertionError("invalid queue payload must be rejected before enqueue")
 
-    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+    async def fake_materialize_governed_skill_manifests(_service, conn, *, skill_id, input_payload, release_policy_version):
         return [snapshot_manifest(skill_id)]
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", fake_materialize_governed_skill_manifests)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fail_persist)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fail_persist)
@@ -3195,7 +3211,7 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
         calls.append(("queue_payload", payload))
         return 1
 
-    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+    async def fake_materialize_governed_skill_manifests(_service, conn, *, skill_id, input_payload, release_policy_version):
         return [snapshot_manifest(skill_id)]
 
     async def fake_resolve_chat_model_selection(conn, *, selection):
@@ -3211,7 +3227,7 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", fake_resolve_chat_model_selection)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", fake_materialize_governed_skill_manifests)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fake_ensure_user)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
@@ -3379,20 +3395,6 @@ async def test_chat_stream_rejects_release_policy_version_that_differs_from_prim
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("run must not be created when policy version cannot be materialized")
 
-    def fake_skill_manifest_pins(skill_id, input_payload):
-        return [
-            {
-                "skill_id": "qa-file-reviewer",
-                "version": "current-hash",
-                "content_hash": "current-hash",
-                "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer"},
-                "files": [],
-                "dependency_ids": [],
-                "allowed": True,
-                "staged": False,
-                "used": False,
-            }
-        ]
 
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
         return None
@@ -3404,7 +3406,7 @@ async def test_chat_stream_rejects_release_policy_version_that_differs_from_prim
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr("app.routes.chat._skill_manifest_pins", fake_skill_manifest_pins)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
 
     with pytest.raises(Exception) as exc_info:
         await chat_stream(
@@ -3429,7 +3431,9 @@ async def test_chat_stream_rejects_invalid_snapshot_governance_manifest_as_mater
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("run must not be created when snapshot governance cannot be materialized")
 
-    def fake_skill_manifest_pins(skill_id, input_payload):
+    async def fake_materialize_skill_manifests(_service,
+        _conn, *, skill_id, input_payload, release_policy_version
+    ):
         return [
             {
                 "skill_id": skill_id,
@@ -3444,10 +3448,10 @@ async def test_chat_stream_rejects_invalid_snapshot_governance_manifest_as_mater
             }
         ]
 
+    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fake_materialize_skill_manifests)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
-    monkeypatch.setattr("app.routes.chat._skill_manifest_pins", fake_skill_manifest_pins)
 
     with pytest.raises(Exception) as exc_info:
         await chat_stream(
@@ -3509,12 +3513,12 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
         return 4
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
+    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
@@ -3608,12 +3612,12 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
         return 4
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
+    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
@@ -3677,12 +3681,12 @@ async def test_chat_stream_rejects_reviewed_rollout_previous_version(monkeypatch
         raise AssertionError("queue must not receive reviewed rollout previous version")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry, raising=False)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
+    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', noop)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
@@ -4848,7 +4852,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
         authorize_profile_skill,
     )
-    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifest)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", governed_manifest)
     monkeypatch.setattr(
         'app.conversations.infrastructure.postgres.ensure_workspace_belongs_to_tenant',
         authorize_workspace,

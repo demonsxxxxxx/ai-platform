@@ -101,29 +101,40 @@ def test_safe_agent_avatar_seed_has_one_projection_contract(value, expected):
 
 
 @pytest.mark.asyncio
-async def test_agent_skill_set_pinning_accepts_empty_primary_release_decision_payload():
-    version = "version-a"
+async def test_agent_skill_set_pinning_accepts_empty_primary_release_decision_payload(monkeypatch):
+    from types import SimpleNamespace
 
-    async def governed_manifest_pins(*_args, **_kwargs):
-        return [{"skill_id": "qa-review", "content_hash": version}]
+    version = "version-a"
+    skill = {
+        "skill_id": "qa-review",
+        "skill_version": version,
+        "backing_mcp_tool_id": "tool-a",
+    }
+
+    async def admit_skill_run(*_args, **kwargs):
+        assert kwargs["skill"] == skill
+        return SimpleNamespace(
+            skill_manifests=[{"skill_id": "qa-review", "content_hash": version}],
+            skill_version=version,
+            release_decision={},
+        )
+
+    monkeypatch.setattr(
+        "app.agent_apps.application.skill_set_pinning.admit_skill_run",
+        admit_skill_run,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.application.skill_set_pinning.pin_skill_run_mcp_tools",
+        lambda manifests, **_kwargs: manifests,
+    )
 
     manifests, primary_version, primary_decision = await pin_agent_skill_set(
-        [{"skill_id": "qa-review", "skill_version": version}],
-        manifest_scope=object(),
+        object(),
+        [skill],
         input_payload={},
         tenant_id="default",
         rollout_key="user-a",
-        resolve_release_decision=lambda *_args, **_kwargs: type(
-            "Decision",
-            (),
-            {"selected_version": version, "policy_active": False},
-        )(),
-        governed_manifest_pins=governed_manifest_pins,
-        locked_skill_version=lambda **_kwargs: version,
-        decision_payload_for_version=lambda *_args, **_kwargs: {},
-        attach_snapshot_governance=lambda values, **_kwargs: values,
-        pin_mcp_tool_ids=lambda values, **_kwargs: values,
-        mcp_tool_ids_for_skill=lambda *_args, **_kwargs: [],
+        mcp_tool_ids_for_skill=lambda *_args: ["tool-a"],
         conflict_error=RepositoryConflictError,
     )
 
@@ -132,6 +143,38 @@ async def test_agent_skill_set_pinning_accepts_empty_primary_release_decision_pa
     ]
     assert primary_version == version
     assert primary_decision == {}
+
+
+@pytest.mark.asyncio
+async def test_agent_skill_set_checks_stale_version_before_mcp_selection(monkeypatch):
+    from app.skills.api import SkillRunVersionMismatch
+
+    async def admit_skill_run(*_args, **kwargs):
+        assert kwargs["expected_version"] == "locked-v1"
+        raise SkillRunVersionMismatch("skill_run_version_mismatch")
+
+    def fail_mcp_pin(*_args, **_kwargs):
+        raise AssertionError("MCP selection must follow the expected-version check")
+
+    monkeypatch.setattr(
+        "app.agent_apps.application.skill_set_pinning.admit_skill_run",
+        admit_skill_run,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.application.skill_set_pinning.pin_skill_run_mcp_tools",
+        fail_mcp_pin,
+    )
+
+    with pytest.raises(RepositoryConflictError, match="agent_profile_skill_set_stale"):
+        await pin_agent_skill_set(
+            object(),
+            [{"skill_id": "qa-review", "skill_version": "locked-v1"}],
+            input_payload={},
+            tenant_id="default",
+            rollout_key="user-a",
+            mcp_tool_ids_for_skill=lambda *_args: [],
+            conflict_error=RepositoryConflictError,
+        )
 
 
 def auth_settings():

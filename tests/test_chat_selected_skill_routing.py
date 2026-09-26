@@ -17,6 +17,8 @@ from fastapi import HTTPException
 
 import app.platform.postgres.errors as _repo_app_platform_postgres_errors
 from app.auth import AuthPrincipal
+from app.bootstrap.skills import configure_skill_services
+from app.skills.application.run_admission import SkillRunAdmissionService
 from app.models import ChatStreamRequest
 from app.routes.chat import chat_stream as _route_chat_stream
 
@@ -90,6 +92,8 @@ def snapshot_manifest(skill_id, *, description="Pinned skill"):
 
 @pytest.fixture(autouse=True)
 def default_chat_stream_dependencies(monkeypatch):
+    configure_skill_services()
+
     async def no_submission(*_args, **_kwargs):
         return None
 
@@ -257,7 +261,7 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
         authorize_selected,
     )
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', authorize_default)
-    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", governed_manifests)
+    monkeypatch.setattr(SkillRunAdmissionService, "_materialize_manifest_pins", governed_manifests)
     monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', noop)
     monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'create_session', create_session)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'create_run', create_run)
