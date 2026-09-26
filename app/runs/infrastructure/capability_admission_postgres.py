@@ -117,19 +117,6 @@ def normalize_run_input_for_enqueue(input_payload: object, *, redact_public: boo
             normalized.pop(key, None)
     if top_level_tools_present:
         normalized["mcp_tool_ids"] = top_level_tool_ids
-
-    original_steps = input_payload.get("multi_agent_steps")
-    normalized_steps = normalized.get("multi_agent_steps")
-    if isinstance(original_steps, list) and isinstance(normalized_steps, list):
-        for original_step, normalized_step in zip(original_steps, normalized_steps):
-            if not isinstance(original_step, dict) or not isinstance(normalized_step, dict):
-                continue
-            step_tools_present, step_tool_ids = _explicit_mcp_tool_scope(original_step)
-            if redact_public:
-                for key in _MCP_TOOL_ID_KEYS:
-                    normalized_step.pop(key, None)
-            if step_tools_present:
-                normalized_step["mcp_tool_ids"] = step_tool_ids
     return normalized
 
 
