@@ -5,6 +5,7 @@ import pytest
 
 from app import repositories
 from app import run_event_repository
+from app import schema_migrations
 from app.platform.postgres.errors import RepositoryConflictError
 from app.streaming import postgres as ledger
 from app.streaming.authority import RunCursor
@@ -381,9 +382,7 @@ async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sq
 
 
 def test_run_event_schema_declares_repairable_composite_ledger_authority():
-    content = (
-        Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
-    )
+    content = schema_migrations.schema_sql()
 
     assert "unique (tenant_id, id)" in content
     assert "create table if not exists run_event_cursors" in content
@@ -401,13 +400,16 @@ def test_run_event_schema_declares_repairable_composite_ledger_authority():
 
 
 def test_run_event_schema_locks_for_missing_current_schema_unique_index_before_repair():
-    schema = (
-        Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
+    schema = schema_migrations.schema_sql()
+    unique_index = (
+        "create unique index if not exists "
+        "uq_run_events_tenant_run_sequence on run_events(tenant_id, run_id, sequence);"
     )
     migration = schema[
         schema.index("declare\n  unique_index_present boolean;") : schema.index(
-            "create table if not exists run_tool_permission_requests"
+            "where run_event_cursors.next_sequence < excluded.next_sequence;"
         )
+        + len("where run_event_cursors.next_sequence < excluded.next_sequence;")
     ]
 
     assert (
@@ -428,15 +430,13 @@ def test_run_event_schema_locks_for_missing_current_schema_unique_index_before_r
     ) < migration.index(
         "create unique index if not exists uq_run_events_tenant_run_sequence"
     )
-    assert migration.index(
-        "create unique index if not exists uq_run_events_tenant_run_sequence"
-    ) < migration.index("insert into run_event_cursors")
+    assert migration.index(unique_index) < migration.index(
+        "insert into run_event_cursors"
+    )
 
 
 def test_run_event_schema_retains_every_a1_ledger_written_column():
-    schema = (
-        Path(repositories.__file__).with_name("schema.sql").read_text(encoding="utf-8")
-    )
+    schema = schema_migrations.schema_sql()
     ledger_source = Path(run_event_repository._ledger.__file__).read_text(
         encoding="utf-8"
     )
