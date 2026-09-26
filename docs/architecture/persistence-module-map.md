@@ -4,7 +4,8 @@ Persistence code now enters through modules named for their owning domain or
 explicit platform responsibility. The former top-level compatibility facades
 (`app.repositories`, `app.agent_conversation_repository`,
 `app.artifact_lifecycle_repository`, `app.session_continuity`,
-`app.memory_redaction`, and `app.persistence_limits`) have been removed. Callers
+`app.memory_redaction`, `app.persistence_limits`, and `app.run_event_repository`)
+have been removed. Callers
 use the canonical module that owns the operation. The caller supplies the
 PostgreSQL connection and owns the transaction; adapters do not acquire a second
 connection or commit independently.
@@ -18,7 +19,7 @@ connection or commit independently.
 | `execution` | `app/execution/api.py` | Provider session dispatch contract |
 | `files` | `app/files/infrastructure/run_bindings_postgres.py` | File records and scoped Run bindings |
 | `identity` | `app/identity/infrastructure/postgres.py`, `audit_postgres.py`, `capability_distributions_postgres.py` | User identity, audit records, and capability distribution persistence |
-| `mcp` | `app/mcp/infrastructure/registry_postgres.py`, `tool_policies_postgres.py`, `chat_access_postgres.py`; `app/mcp/repository.py` | MCP registry, tool policy, and Chat access persistence |
+| `mcp` | `app/mcp/infrastructure/postgres.py`, `registry_postgres.py`, `tool_policies_postgres.py`, `chat_access_postgres.py`; `app/mcp/repository.py` | Server CRUD delegates to the runtime registry implementation; tool policy and Chat access have separate adapters |
 | `platform` | `app/platform/postgres/errors.py`, `limits.py`, `values.py`; `app/kernel/memory_redaction.py` | Shared PostgreSQL errors, value encoding, payload bounds, and memory redaction rules |
 | `runs` | `app/runs/infrastructure/` adapters | Run creation, admission, control operations, lifecycle, steps, replay, and administrative queries |
 | `sandbox` | `app/sandbox/infrastructure/leases_postgres.py` | Sandbox lease persistence |
@@ -51,3 +52,12 @@ adapter calls described above.
 An implementation test must patch dependencies in the adapter that reads them.
 A route test must patch the route's actual collaborator. The former compatibility
 aliases no longer forward patches to canonical adapter globals.
+
+Run event construction, size validation, ledger receipts, and cursor reads live
+in `app.streaming.infrastructure.run_events_postgres`; the durable ledger remains
+`app.streaming.postgres`. Active runtime lease queries live in
+`app.sandbox.infrastructure.leases_postgres`.
+
+Persistence tests are grouped by the same domain responsibilities under `tests/`.
+Shared connection and cursor doubles live in `tests/support/repository_fixtures.py`;
+CI selects the domain suites directly.

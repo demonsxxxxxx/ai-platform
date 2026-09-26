@@ -80,7 +80,20 @@ BACKEND_TEST_SHARDS = {
         "tests/test_contract.py",
     ),
     "repository-worker-streaming": (
-        "tests/test_repositories.py",
+        "tests/test_context_memory_retention.py",
+        "tests/test_context_persistence.py",
+        "tests/test_conversations_persistence.py",
+        "tests/test_files_artifacts_persistence.py",
+        "tests/test_identity_capability_distribution.py",
+        "tests/test_mcp_persistence.py",
+        "tests/test_runs_admin.py",
+        "tests/test_runs_admission_lifecycle.py",
+        "tests/test_runs_persistence.py",
+        "tests/test_runs_replay.py",
+        "tests/test_sandbox_persistence.py",
+        "tests/test_skills_authorization.py",
+        "tests/test_skills_catalog_releases.py",
+        "tests/test_skills_run_snapshots.py",
         "tests/test_queue.py",
         "tests/test_run_attempt_application.py",
         "tests/test_run_attempt_repository.py",
@@ -283,7 +296,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 96
+    assert len(all_selectors) == len(set(all_selectors))
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

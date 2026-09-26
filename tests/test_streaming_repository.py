@@ -1,12 +1,10 @@
 import app.platform.postgres.errors as _owner_platform_postgres_errors
-import app.run_event_repository as _owner_run_event_repository
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 from pathlib import Path
 from types import MappingProxyType
 
 import pytest
 
-from app import run_event_repository
 from app import schema_migrations
 from app.platform.postgres.errors import RepositoryConflictError
 from app.streaming import postgres as ledger
@@ -64,7 +62,7 @@ async def test_append_event_uses_ledger_and_preserves_generic_conflict_identity(
         observed.append((tenant_id, run_id, event))
         return ledger.EventReceipt("evt_1", RunCursor(run_id, 4))
 
-    monkeypatch.setattr(run_event_repository._ledger, "append_event", append_one)
+    monkeypatch.setattr(ledger, "append_event", append_one)
 
     event_id = await _owner_streaming_infrastructure_run_events_postgres.append_event(
         conn,
@@ -107,7 +105,7 @@ async def test_append_event_record_returns_exact_post_commit_projection_facts(
             "2026-08-09T00:00:00Z",
         )
 
-    monkeypatch.setattr(run_event_repository._ledger, "append_event", append_one)
+    monkeypatch.setattr(ledger, "append_event", append_one)
 
     record = await _owner_streaming_infrastructure_run_events_postgres.append_event(
         _Connection(),
@@ -147,9 +145,9 @@ async def test_batch_receipt_and_terminal_fence_keep_existing_dict_contract(
     async def fence(_conn, **_kwargs):
         return ledger.TerminalDrainReceipt(duplicate=False)
 
-    monkeypatch.setattr(run_event_repository._ledger, "append_batch", append_batch)
+    monkeypatch.setattr(ledger, "append_batch", append_batch)
     monkeypatch.setattr(
-        run_event_repository._ledger, "acquire_terminal_drain_fence", fence
+        ledger, "acquire_terminal_drain_fence", fence
     )
 
     receipt = await _owner_streaming_infrastructure_run_events_postgres.append_event_batch(
@@ -270,7 +268,7 @@ async def test_batch_event_validation_is_strict_and_ledger_conflicts_only_are_tr
         called = True
         raise ledger.RunEventLedgerConflictError("terminal_drain_already_consumed")
 
-    monkeypatch.setattr(run_event_repository._ledger, "append_batch", append_batch)
+    monkeypatch.setattr(ledger, "append_batch", append_batch)
 
     with pytest.raises(ValueError, match="run_event_payload_invalid"):
         await _owner_streaming_infrastructure_run_events_postgres.append_event_batch(
@@ -311,25 +309,6 @@ async def test_batch_event_validation_is_strict_and_ledger_conflicts_only_are_tr
 
 
 @pytest.mark.asyncio
-async def test_terminal_lease_lookup_is_exactly_scoped_and_locked():
-    conn = _Connection()
-
-    await _owner_run_event_repository.list_terminal_sandbox_runtime_leases_for_attempt(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        release_reason="run_completed",
-    )
-
-    statement, params = conn.calls[-1]
-    assert "status = 'released'" in statement
-    assert "release_reason = %s" in statement
-    assert "for update" in statement
-    assert params == ("tenant-a", "run-a", "attempt-a", "run_completed")
-
-
-@pytest.mark.asyncio
 async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sql(
     monkeypatch,
 ):
@@ -355,7 +334,7 @@ async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sq
         observed.append((received_conn, tenant_id, cursor, limit))
         return adapter_rows[cursor.sequence]
 
-    monkeypatch.setattr(run_event_repository._ledger, "read_event_rows", read_rows)
+    monkeypatch.setattr(ledger, "read_event_rows", read_rows)
 
     unbounded = await _owner_streaming_infrastructure_run_events_postgres.list_run_events(
         conn, tenant_id="tenant-a", run_id="run-a"
@@ -439,7 +418,7 @@ def test_run_event_schema_locks_for_missing_current_schema_unique_index_before_r
 
 def test_run_event_schema_retains_every_a1_ledger_written_column():
     schema = schema_migrations.schema_sql()
-    ledger_source = Path(run_event_repository._ledger.__file__).read_text(
+    ledger_source = Path(ledger.__file__).read_text(
         encoding="utf-8"
     )
     required_columns = {
@@ -490,10 +469,3 @@ def test_run_event_schema_retains_every_a1_ledger_written_column():
     assert "durable_committed_at = now()" in ledger_source
     assert "callback_received_at timestamptz not null default now()" in schema
     assert "durable_committed_at timestamptz" in schema
-
-
-def test_repository_dependency_direction_keeps_ledger_adapter_independent():
-    implementation = Path(run_event_repository.__file__).read_text(encoding="utf-8")
-
-    assert "from app import repositories" not in implementation
-    assert "from app.streaming import postgres as _ledger" in implementation

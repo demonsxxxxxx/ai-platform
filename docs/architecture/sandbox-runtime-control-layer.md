@@ -180,6 +180,11 @@ output-directory write allowlist and `outputs/**/delivery/`-only collection rule
 are retired together so a permitted write cannot disappear solely because of its
 path.
 
+The host-bind path resolution, sentinel read, and selected-file snapshot routines
+are owned by `app.sandbox.domain.host_bind` and exposed through `app.sandbox.api`.
+The provider calls this boundary directly. The previous recursive workspace
+manifest and file-upload helpers have been removed from both modules.
+
 ## Native local tool admission
 
 The platform does not duplicate the Claude SDK's parameter schema for these local
