@@ -3,7 +3,6 @@ import pytest
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     CONTEXT_SNAPSHOT_SCHEMA_VERSION,
-    EVENT_ENVELOPE_SCHEMA_VERSION,
     RUN_CONTRACT_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION,
     SKILL_MANIFEST_SCHEMA_VERSION,
@@ -19,11 +18,12 @@ from app.control_plane_contracts import (
     is_standard_event_type,
     sanitize_public_payload,
     sanitize_public_text,
-    standard_error_code,
     standard_trace_id,
 )
 from app.projection_redaction import redact_raw_skill_references, sanitize_user_control_input
 from app.platform import public_payload
+from app.streaming.domain.run_events import standard_error_code
+from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
 
 
 def test_control_plane_public_sanitizers_are_platform_identity_aliases():

@@ -15,6 +15,7 @@ from app.runs.api import (
     normalize_thinking_effort,
 )
 from app.validation import assert_safe_id
+from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION as _EVENT_ENVELOPE_SCHEMA_VERSION
 
 
 RUN_CONTRACT_VERSION = "ai-platform.run.v1"
@@ -83,7 +84,6 @@ def is_legacy_synthetic_chat_identity(
 
 
 EXECUTOR_RESULT_SCHEMA_VERSION = "ai-platform.executor-result.v1"
-EVENT_ENVELOPE_SCHEMA_VERSION = "ai-platform.event-envelope.v1"
 ARTIFACT_MANIFEST_SCHEMA_VERSION = "ai-platform.artifact-manifest.v1"
 SKILL_MANIFEST_SCHEMA_VERSION = "ai-platform.skill-manifest.v1"
 TOOL_POLICY_SCHEMA_VERSION = "ai-platform.tool-policy.v1"
@@ -199,7 +199,7 @@ class EventEnvelope:
     token_counts: dict[str, int] = field(default_factory=dict)
     cost: dict[str, Any] = field(default_factory=dict)
     payload: dict[str, Any] = field(default_factory=dict)
-    schema_version: str = EVENT_ENVELOPE_SCHEMA_VERSION
+    schema_version: str = _EVENT_ENVELOPE_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -225,11 +225,6 @@ class ContextSnapshot:
     included_file_ids: list[str] = field(default_factory=list)
     included_memory_record_ids: list[str] = field(default_factory=list)
     schema_version: str = CONTEXT_SNAPSHOT_SCHEMA_VERSION
-
-
-def standard_error_code(value: str | None) -> str:
-    normalized = (value or "").strip()
-    return normalized or "unknown_error"
 
 
 def is_standard_event_type(value: str | None) -> bool:

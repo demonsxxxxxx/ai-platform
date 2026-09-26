@@ -5,7 +5,7 @@ from __future__ import annotations
 from app.artifacts.infrastructure.records_postgres import list_run_artifacts
 from app.control_plane_contracts import ARTIFACT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import AUDIT_EVENT_SCHEMA_VERSION
-from app.control_plane_contracts import EVENT_ENVELOPE_SCHEMA_VERSION
+from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
 from app.control_plane_contracts import EXECUTOR_RESULT_SCHEMA_VERSION
 from app.control_plane_contracts import RUN_CONTRACT_VERSION
 from app.control_plane_contracts import RUN_EXECUTION_KIND_SKILL

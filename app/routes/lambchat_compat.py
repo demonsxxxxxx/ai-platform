@@ -15,10 +15,8 @@ from fastapi.responses import StreamingResponse
 from app import session_actions
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.control_plane_contracts import (
-    EVENT_ENVELOPE_SCHEMA_VERSION,
-    standard_trace_id,
-)
+from app.platform.tracing import standard_trace_id
+from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.conversations.infrastructure import (
     session_queries_postgres as conversations_session_queries,

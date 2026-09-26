@@ -17,12 +17,12 @@ from datetime import datetime, timezone
 
 from psycopg import AsyncConnection
 
-from app.control_plane_contracts import (
+from app.platform.tracing import standard_trace_id
+from app.streaming.domain.run_events import (
     EVENT_ENVELOPE_SCHEMA_VERSION,
+    RunCursor,
     standard_error_code,
-    standard_trace_id,
 )
-from app.streaming.domain.run_events import RunCursor
 
 
 class RunEventLedgerConflictError(ValueError):

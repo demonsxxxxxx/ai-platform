@@ -6,6 +6,14 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 
+EVENT_ENVELOPE_SCHEMA_VERSION = "ai-platform.event-envelope.v1"
+
+
+def standard_error_code(value: str | None) -> str:
+    normalized = (value or "").strip()
+    return normalized or "unknown_error"
+
+
 _TERMINAL_TYPES = frozenset({"run_succeeded", "run_failed", "run_cancelled", "run_canceled"})
 _CANONICAL_DELTA_PAYLOAD_KEYS = frozenset({"delta", "source", "visible_to_user", "severity"})
 _CANONICAL_DELTA_SOURCE = "worker_answer_delta_v1"
