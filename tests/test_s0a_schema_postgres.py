@@ -1,3 +1,7 @@
+import app.context.infrastructure.snapshot_postgres as _owner_context_infrastructure_snapshot_postgres
+import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
+import app.persistence.chat_submissions as _owner_persistence_chat_submissions
+import app.platform.postgres.errors as _owner_platform_postgres_errors
 import hashlib
 import json
 import os
@@ -11,7 +15,6 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
 from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from app.platform.postgres.errors import RepositoryConflictError
 from app.runs.domain.execution_spec import (
@@ -421,13 +424,13 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
         # A first authenticated principal has no pre-existing users row. The
         # ledger's immediate user FK must therefore be provisioned before its
         # first claim, in the exact tenant scope of the principal.
-        await repositories.ensure_submission_principal(
+        await _owner_identity_infrastructure_postgres.ensure_submission_principal(
             conn,
             tenant_id="tenant-a",
             user_id="user-first-submission",
             display_name="First Submission User",
         )
-        submission, created = await repositories.claim_chat_submission(
+        submission, created = await _owner_persistence_chat_submissions.claim_chat_submission(
             conn,
             tenant_id="tenant-a",
             user_id="user-first-submission",
@@ -523,7 +526,7 @@ async def test_context_snapshot_member_eligibility_is_atomic_in_postgres():
             "redaction_summary_json": {},
             "payload_json": {},
         }
-        snapshot = await repositories.create_context_snapshot(
+        snapshot = await _owner_context_infrastructure_snapshot_postgres.create_context_snapshot(
             conn,
             included_message_ids=["msg-prior"],
             included_file_ids=["file-prior"],
@@ -550,8 +553,8 @@ async def test_context_snapshot_member_eligibility_is_atomic_in_postgres():
                 "included_memory_record_ids": ["mem-prior"],
             }
             material_ids[field] = member_ids
-            with pytest.raises(repositories.RepositoryConflictError, match="context_snapshot_material_invalid"):
-                await repositories.create_context_snapshot(conn, **common, **material_ids)
+            with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError, match="context_snapshot_material_invalid"):
+                await _owner_context_infrastructure_snapshot_postgres.create_context_snapshot(conn, **common, **material_ids)
             count_cursor = await conn.execute("select count(*) as count from run_context_snapshots")
             assert (await count_cursor.fetchone())["count"] == 1
     finally:
@@ -567,6 +570,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
     """Exercise cleanup, recovery, and terminalization against the real schema."""
 
     from app.context.application import provider_sessions
+    from app.bootstrap.run_lifecycle import build_run_lifecycle_service
     from app.context.infrastructure.provider_epochs import PostgresProviderEpochRepository
     from app.executor_reconciler import reconcile_pending_executor_terminals_once
     from app.platform.postgres import sandbox_leases as sandbox_lease_repository
@@ -627,15 +631,15 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
         await conn.execute(
             """
             insert into artifacts(
-              id, tenant_id, run_id, artifact_type, label, content_type,
+              id, tenant_id, run_id, trace_id, artifact_type, label, content_type,
               storage_key, size_bytes, expires_at, lifecycle_state, manifest_json
             ) values
-              ('artifact-a', 'tenant-a', 'run-a', 'text', 'result.txt',
+              ('artifact-a', 'tenant-a', 'run-a', 'trace-a', 'text', 'result.txt',
                'text/plain', 'artifacts/result.txt', 8, now() + interval '1 day', 'active', '{}'),
-              ('artifact-deleted', 'tenant-a', null, 'text', 'deleted.txt',
+              ('artifact-deleted', 'tenant-a', null, 'trace-a', 'text', 'deleted.txt',
                'text/plain', 'artifacts/deleted.txt', 8, now() + interval '1 day', 'deleted',
                '{"retention_artifact_cleanup":true,"deletion_owner_run_id":"run-a"}'),
-              ('artifact-expired', 'tenant-a', 'run-a', 'text', 'expired.txt',
+              ('artifact-expired', 'tenant-a', 'run-a', 'trace-a', 'text', 'expired.txt',
                'text/plain', 'artifacts/expired.txt', 8, now() - interval '1 day', 'active', '{}')
             """
         )
@@ -781,17 +785,10 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             async with conn.transaction():
                 yield conn
 
-        async def ignore_terminal_child(**_kwargs):
-            return None
-
         async def ignore_terminal_publish(*_args, **_kwargs):
             return None
 
         monkeypatch.setattr("app.executor_reconciler.transaction", test_transaction)
-        monkeypatch.setattr(
-            "app.executor_reconciler.reconcile_terminalized_permission_run",
-            ignore_terminal_child,
-        )
         monkeypatch.setattr(
             "app.executor_reconciler.publish_run_event",
             ignore_terminal_publish,
@@ -804,6 +801,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
         assert await reconcile_pending_executor_terminals_once(
             worker_id="worker-a", v4_capabilities=_callback_capabilities(dsn, schema_name),
             attempt_lifecycle=lifecycle,
+            lifecycle=build_run_lifecycle_service(),
         ) == 1
         run = await (
             await conn.execute(
