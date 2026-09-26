@@ -675,6 +675,8 @@ def test_definition_retirement_allows_only_exact_constant_alias_deletion(
     if change in {"delete", "rebind", "change_value", "undeclared_delete"}:
         policy["definition_retirements"] = []
         _write(repo, "architecture-policy.json", json.dumps(policy))
+    else:
+        _write(repo, "README.md", "The declared constant alias remains unchanged.\n")
     head = _commit(repo, "consume or retain constant alias retirement")
 
     evaluation = _evaluate(repo, authority, authority, head)
