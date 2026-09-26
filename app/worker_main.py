@@ -309,14 +309,13 @@ def _durable_queue_lease(
 
 
 async def cleanup_expired_sandbox_leases() -> None:
+    try:
+        await cleanup_expired_sandbox_runtime_leases(
+            provider_factory=create_container_provider,
+        )
+    except SandboxRuntimeCleanupError:
+        logger.exception("Sandbox runtime cleanup maintenance failed")
     async with transaction() as conn:
-        try:
-            await cleanup_expired_sandbox_runtime_leases(
-                conn,
-                provider_factory=create_container_provider,
-            )
-        except SandboxRuntimeCleanupError:
-            logger.exception("Sandbox runtime cleanup maintenance failed")
         await _cleanup_expired_sandbox_lease_records(conn)
 
 

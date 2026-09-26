@@ -3551,19 +3551,16 @@ class DockerContainerProvider:
             self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
             raise
 
-        callback_reachable = await asyncio.to_thread(
-            self._callback_reachability_probe,
-            container,
-            egress_admission.callback_base_url,
-            egress_admission.runtime_commit,
-        )
-        if not callback_reachable:
-            egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.CALLBACK_REACHABILITY)
-            try:
-                self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
-            except ContainerCleanupFailedError as cleanup_exc:
-                raise cleanup_exc
-            raise GovernedEgressAdmissionError()
+        try:
+            if not await asyncio.to_thread(
+                self._callback_reachability_probe, container,
+                egress_admission.callback_base_url, egress_admission.runtime_commit,
+            ):
+                egress_diagnostics.record_admission_failure(egress_diagnostics.AdmissionGate.CALLBACK_REACHABILITY)
+                raise GovernedEgressAdmissionError()
+        except BaseException as exc:
+            self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
+            raise
 
         publish_wait_started_at = time.monotonic()
         try:

@@ -190,7 +190,7 @@ def patch_db_only_cleanup(monkeypatch):
 
 
 def patch_empty_leases(monkeypatch):
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
         assert reason == "expired"
         return []
@@ -209,7 +209,7 @@ def patch_empty_leases(monkeypatch):
 
 
 def patch_real_leases(monkeypatch, *run_ids):
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
         return []
 
@@ -524,7 +524,7 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
             }
         ]
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
         assert reason == "expired"
         return []
@@ -596,7 +596,7 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
             assert filters == {"tenant_id": "default"}
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
         assert reason == "expired"
         return []
@@ -652,7 +652,7 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
             assert filters == {"tenant_id": "default"}
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
         assert reason == "expired"
         return []
@@ -775,7 +775,7 @@ def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_histor
     )
     forged_historical["lease_payload_json"]["governed_egress_proof"]["signature"] = "0" * 64
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
         assert reason == "expired"
         return []
@@ -811,7 +811,7 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
             assert filters == {"tenant_id": "default"}
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         assert tenant_id == "default"
         return []
 
@@ -882,7 +882,7 @@ def test_admin_runtime_containers_cleans_expired_leases_before_listing(monkeypat
             calls.append(("containers", filters))
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         calls.append(("cleanup", tenant_id, reason))
         return []
 
@@ -924,7 +924,7 @@ def test_admin_runtime_containers_cleans_provider_orphans_before_listing(monkeyp
             calls.append(("containers", filters))
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         calls.append(("db_cleanup", tenant_id, reason))
         return []
 
@@ -1038,7 +1038,7 @@ def test_admin_runtime_containers_fails_closed_when_sandbox_cleanup_fails(monkey
             calls.append(("containers", filters))
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         calls.append(("cleanup", tenant_id, reason))
         raise SandboxRuntimeCleanupError([{"container_id": "exec-run-a", "message": "cleanup failed"}])
 
@@ -1113,7 +1113,7 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
                 ),
             ]
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         calls.append(("runtime_cleanup", tenant_id, reason))
         return []
 
@@ -1877,7 +1877,7 @@ def test_admin_runtime_overview_fails_closed_when_sandbox_cleanup_fails(monkeypa
             calls.append(("containers", filters))
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
         calls.append(("cleanup", tenant_id, reason))
         raise SandboxRuntimeCleanupError([{"container_id": "exec-run-a", "message": "cleanup failed"}])
 

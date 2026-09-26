@@ -3521,7 +3521,7 @@ async def test_run_once_reclaims_queue_when_sandbox_runtime_cleanup_fails(monkey
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-    async def cleanup_expired_sandbox_runtime_leases(_conn, **_kwargs):
+    async def cleanup_expired_sandbox_runtime_leases(**_kwargs):
         calls.append(("sandbox_runtime_cleanup",))
         raise worker_main.SandboxRuntimeCleanupError(
             [{"lease_id": "lease-a", "error": "provider_failed"}]

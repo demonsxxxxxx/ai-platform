@@ -686,10 +686,13 @@ async def test_runtime_cancel_cleanup_has_a_hard_deadline(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider_name", ["docker", "opensandbox"])
+@pytest.mark.parametrize("executor_status,expected_stops", [("accepted", 0), ("completed", 1)])
 async def test_two_independent_runtimes_claim_before_zero_inventory_create(
     tmp_path,
     monkeypatch,
     provider_name,
+    executor_status,
+    expected_stops,
 ):
     """The loser never reaches provider inventory/create after the winner persists its lease."""
 
@@ -723,7 +726,7 @@ async def test_two_independent_runtimes_claim_before_zero_inventory_create(
 
     async def execute(*_args, **_kwargs):
         await asyncio.wait_for(store.active_observed.wait(), timeout=1)
-        return {"status": "accepted", "session_id": "session-a", "run_id": "run-a"}
+        return {"status": executor_status, "session_id": "session-a", "run_id": "run-a"}
 
     runtimes = [
         SandboxRuntime(
@@ -741,8 +744,8 @@ async def test_two_independent_runtimes_claim_before_zero_inventory_create(
     outcomes = await asyncio.gather(*(runtime.submit(_runtime_request()) for runtime in runtimes), return_exceptions=True)
 
     assert sum(provider.create_count for provider in providers) == 1
-    # An accepted asynchronous handoff keeps the winner's runtime alive.
-    assert sum(provider.stop_count for provider in providers) == 0
-    assert sorted((provider.create_count, provider.stop_count) for provider in providers) == [(0, 0), (1, 0)]
+    # Accepted handoffs stay alive; completed ephemeral runs are stopped.
+    assert sum(provider.stop_count for provider in providers) == expected_stops
+    assert sorted((provider.create_count, provider.stop_count) for provider in providers) == [(0, 0), (1, expected_stops)]
     assert sum(isinstance(outcome, ContainerStartFailedError) for outcome in outcomes) == 1
-    assert sum(getattr(outcome, "status", None) == "accepted" for outcome in outcomes) == 1
+    assert sum(getattr(outcome, "status", None) == executor_status for outcome in outcomes) == 1

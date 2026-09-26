@@ -101,6 +101,36 @@ def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | 
     ):
         return None
     labels: dict[str, str] = {}
+    if provider == "docker":
+        lease_payload = row.get("lease_payload_json")
+        if not isinstance(lease_payload, dict):
+            lease_payload = row.get("lease_payload")
+        lease_payload = lease_payload if isinstance(lease_payload, dict) else {}
+        attempt_id = row.get("attempt_id")
+        if attempt_id is None:
+            attempt_id = lease_payload.get("attempt_id")
+        persisted_labels = lease_payload.get("labels")
+        persisted_labels = persisted_labels if isinstance(persisted_labels, dict) else {}
+        if attempt_id is None and persisted_labels.get("ai-platform.attempt_id") is not None:
+            return None
+        if attempt_id is not None:
+            try:
+                labels["ai-platform.attempt_id"] = assert_safe_id(attempt_id, "attempt_id")
+            except (TypeError, ValueError):
+                return None
+            if any(
+                value is not None and value != attempt_id
+                for value in (
+                    lease_payload.get("attempt_id"),
+                    persisted_labels.get("ai-platform.attempt_id"),
+                )
+            ):
+                return None
+        native_required = persisted_labels.get("ai-platform.native_tool_required")
+        if native_required is not None:
+            if native_required not in ("true", "false") or (native_required == "true" and not attempt_id):
+                return None
+            labels["ai-platform.native_tool_required"] = native_required
     if provider == "opensandbox":
         lease_payload = row.get("lease_payload_json")
         if not isinstance(lease_payload, dict):
@@ -452,21 +482,15 @@ async def cleanup_failed_sandbox_executor_reconciliation_leases(
 
 
 async def cleanup_expired_sandbox_runtime_leases(
-    conn: Any,
     *,
     tenant_id: str | None = None,
     reason: str = "expired",
     provider_factory: ProviderFactory,
     limit: int = 100,
+    transaction_factory: Any | None = None,
 ) -> list[dict[str, Any]]:
-    """Stop expired runtime containers before releasing their DB lease rows."""
-    expired_leases = await sandbox_lease_repository.list_expired_active_sandbox_leases(
-        conn,
-        tenant_id=tenant_id,
-        limit=limit,
-    )
-    if not expired_leases:
-        return []
+    """Own the locked cleanup transaction and commit outcomes before reporting failure."""
+    transaction_factory = transaction_factory or transaction
 
     async def release_stopped_with_conn(release_conn: Any, stopped_leases: list[dict[str, Any]]) -> list[dict[str, Any]]:
         released: list[dict[str, Any]] = []
@@ -484,7 +508,7 @@ async def cleanup_expired_sandbox_runtime_leases(
             )
         return released
 
-    async def compensate_failure_committed(exc: SandboxRuntimeCleanupError) -> None:
+    async def record_partial_failure(conn: Any, exc: SandboxRuntimeCleanupError) -> None:
         grouped: dict[tuple[str, str], dict[str, Any]] = {}
         for lease, failure in zip(exc.failed_leases, exc.failures, strict=True):
             key = (str(lease["tenant_id"]), str(lease["run_id"]))
@@ -494,31 +518,37 @@ async def cleanup_expired_sandbox_runtime_leases(
             )
             subject["lease_ids"].append(str(lease["id"]))
             subject["failures"].append(failure)
-        async with transaction() as compensation_conn:
-            if exc.stopped_leases:
-                await release_stopped_with_conn(compensation_conn, exc.stopped_leases)
-            for (failure_tenant_id, failure_run_id), subject in grouped.items():
-                await repositories.record_sandbox_runtime_cleanup_outcome(
-                    compensation_conn,
-                    tenant_id=failure_tenant_id,
-                    run_id=failure_run_id,
-                    trace_id=subject["trace_id"],
-                    requested_by_role="maintenance",
-                    reason=reason,
-                    status="failed",
-                    lease_ids=subject["lease_ids"],
-                    failures=subject["failures"],
-                )
+        if exc.stopped_leases:
+            await release_stopped_with_conn(conn, exc.stopped_leases)
+        for (failure_tenant_id, failure_run_id), subject in grouped.items():
+            await repositories.record_sandbox_runtime_cleanup_outcome(
+                conn,
+                tenant_id=failure_tenant_id,
+                run_id=failure_run_id,
+                trace_id=subject["trace_id"],
+                requested_by_role="maintenance",
+                reason=reason,
+                status="failed",
+                lease_ids=subject["lease_ids"],
+                failures=subject["failures"],
+            )
 
-    try:
-        stopped_leases = await stop_sandbox_leases(
-            expired_leases,
-            reason=reason,
-            provider_factory=provider_factory,
+    failure: SandboxRuntimeCleanupError | None = None
+    async with transaction_factory() as conn:
+        expired_leases = await sandbox_lease_repository.list_expired_active_sandbox_leases(
+            conn, tenant_id=tenant_id, limit=limit,
         )
-    except SandboxRuntimeCleanupError as exc:
-        await compensate_failure_committed(exc)
-        raise
-    if not stopped_leases:
-        return []
-    return await release_stopped_with_conn(conn, stopped_leases)
+        if not expired_leases:
+            return []
+        try:
+            stopped_leases = await stop_sandbox_leases(
+                expired_leases, reason=reason, provider_factory=provider_factory,
+            )
+        except SandboxRuntimeCleanupError as exc:
+            await record_partial_failure(conn, exc)
+            failure = exc
+        else:
+            released = await release_stopped_with_conn(conn, stopped_leases)
+    if failure is not None:
+        raise failure
+    return released
