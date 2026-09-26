@@ -19,10 +19,6 @@
     "forbidden_module_names",
     "forbidden_delivery_tokens",
     "frozen_hot_files",
-    "compatibility_facades",
-    "migration_bridges",
-    "definition_retirements",
-    "legacy_api_cutovers",
     "production_registries",
     "governed_symbols",
     "exception_contract"
@@ -52,7 +48,12 @@
     "layers": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["domain", "application", "infrastructure", "transport"],
+      "required": [
+        "domain",
+        "application",
+        "infrastructure",
+        "transport"
+      ],
       "properties": {
         "domain": {
           "$ref": "#/$defs/layerPolicy"
@@ -94,35 +95,6 @@
       "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/hotFile"
-      }
-    },
-    "compatibility_facades": {
-      "type": "array",
-      "minItems": 0,
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/$defs/facade"
-      }
-    },
-    "migration_bridges": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/$defs/migrationBridge"
-      }
-    },
-    "definition_retirements": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/$defs/definitionRetirement"
-      }
-    },
-    "legacy_api_cutovers": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/$defs/legacyApiCutover"
       }
     },
     "production_registries": {
@@ -212,128 +184,24 @@
     "hotFile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "max_lines", "owner", "reason"],
-      "properties": {
-        "path": {
-          "$ref": "#/$defs/repositoryPath"
-        },
-        "max_lines": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "owner": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "reason": {
-          "$ref": "#/$defs/nonEmptyString"
-        }
-      }
-    },
-    "facade": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path", "canonical_prefix", "max_lines", "shape", "owner", "reason"],
-      "properties": {
-        "path": {
-          "$ref": "#/$defs/repositoryPath"
-        },
-        "canonical_prefix": {
-          "type": "string",
-          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
-        },
-        "max_lines": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "shape": {
-          "enum": ["imports_only"]
-        },
-        "owner": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "reason": {
-          "$ref": "#/$defs/nonEmptyString"
-        }
-      }
-    },
-    "migrationBridge": {
-      "type": "object",
-      "additionalProperties": false,
       "required": [
-        "source_path",
-        "target_module",
-        "module_alias",
-        "symbols",
+        "path",
+        "max_lines",
         "owner",
-        "reason",
-        "removal_condition"
+        "reason"
       ],
       "properties": {
-        "source_path": {
+        "path": {
           "$ref": "#/$defs/repositoryPath"
         },
-        "target_module": {
-          "type": "string",
-          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
-        },
-        "module_alias": {
-          "type": "string",
-          "pattern": "^_?[a-z][a-z0-9_]*$"
-        },
-        "symbols": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
-          }
+        "max_lines": {
+          "type": "integer",
+          "minimum": 1
         },
         "owner": {
           "$ref": "#/$defs/nonEmptyString"
         },
         "reason": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "removal_condition": {
-          "$ref": "#/$defs/nonEmptyString"
-        }
-      }
-    },
-    "definitionRetirement": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["source_path", "symbols", "owner", "reason", "removal_condition"],
-      "properties": {
-        "source_path": {
-          "$ref": "#/$defs/repositoryPath"
-        },
-        "symbols": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
-          }
-        },
-        "imports": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": { "$ref": "#/$defs/retiredImportBinding" }
-        },
-        "bridge_symbols": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": { "$ref": "#/$defs/retiredBridgeSymbol" }
-        },
-        "owner": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "reason": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "removal_condition": {
           "$ref": "#/$defs/nonEmptyString"
         }
       }
@@ -341,104 +209,52 @@
     "retiredImportBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "module", "name", "asname"],
+      "required": [
+        "kind",
+        "module",
+        "name",
+        "asname"
+      ],
       "properties": {
-        "kind": { "enum": ["import", "from_import"] },
-        "module": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
-        "name": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
-        "asname": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        "kind": {
+          "enum": [
+            "import",
+            "from_import"
+          ]
+        },
+        "module": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "asname": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        }
       }
     },
     "retiredBridgeSymbol": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["target_module", "symbol"],
-      "properties": {
-        "target_module": { "type": "string", "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$" },
-        "symbol": { "type": "string", "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$" }
-      }
-    },
-    "legacyApiCutover": {
-      "type": "object",
-      "additionalProperties": false,
       "required": [
-        "source_path",
-        "public_module",
-        "canonical_module",
-        "module_alias",
-        "removed_imports",
-        "rewrites",
-        "owner",
-        "reason",
-        "removal_condition"
+        "target_module",
+        "symbol"
       ],
       "properties": {
-        "source_path": {
-          "$ref": "#/$defs/repositoryPath"
-        },
-        "public_module": {
+        "target_module": {
           "type": "string",
           "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
         },
-        "canonical_module": {
-          "type": "string",
-          "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$"
-        },
-        "module_alias": {
-          "type": "string",
-          "pattern": "^_?[a-z][a-z0-9_]*$"
-        },
-        "removed_imports": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/legacyRemovedImport"
-          }
-        },
-        "rewrites": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/legacyApiRewrite"
-          }
-        },
-        "owner": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "reason": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "removal_condition": {
-          "$ref": "#/$defs/nonEmptyString"
-        }
-      }
-    },
-    "legacyApiRewrite": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["old_symbol", "new_symbol"],
-      "properties": {
-        "old_symbol": {
-          "type": "string",
-          "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
-        },
-        "new_symbol": {
-          "type": "string",
-          "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
-        }
-      }
-    },
-    "legacyRemovedImport": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["module", "name"],
-      "properties": {
-        "module": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9_]*$"
-        },
-        "name": {
+        "symbol": {
           "type": "string",
           "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
         }
@@ -508,7 +324,10 @@
     "adapterConstructor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "name"],
+      "required": [
+        "module",
+        "name"
+      ],
       "properties": {
         "module": {
           "type": "string",
@@ -523,7 +342,10 @@
     "selectorOwner": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "symbol"],
+      "required": [
+        "path",
+        "symbol"
+      ],
       "properties": {
         "path": {
           "$ref": "#/$defs/repositoryPath"
@@ -537,7 +359,12 @@
     "governedSymbol": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "path", "owner", "reason"],
+      "required": [
+        "name",
+        "path",
+        "owner",
+        "reason"
+      ],
       "properties": {
         "name": {
           "type": "string",

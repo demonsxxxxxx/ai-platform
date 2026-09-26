@@ -98,9 +98,12 @@
   ],
   "approved_root_modules": [
     "app/__init__.py",
+    "app/agent_conversation_repository.py",
     "app/agent_profile_execution_validation.py",
+    "app/agent_profiles.py",
     "app/alert_slo_readiness.py",
     "app/alert_trace_export_runtime_acceptance.py",
+    "app/artifact_lifecycle_repository.py",
     "app/artifact_preview.py",
     "app/auth.py",
     "app/auth_sessions.py",
@@ -127,11 +130,14 @@
     "app/intent_router.py",
     "app/main.py",
     "app/memory_erasure_readiness.py",
+    "app/memory_redaction.py",
+    "app/model_catalog.py",
     "app/models.py",
     "app/observability_readiness.py",
     "app/office_context_readiness.py",
     "app/office_execution_tier.py",
     "app/path_safety.py",
+    "app/persistence_limits.py",
     "app/principal_authority.py",
     "app/product_events.py",
     "app/projection_redaction.py",
@@ -143,6 +149,7 @@
     "app/redis_client.py",
     "app/release_evidence_export_acceptance.py",
     "app/release_evidence_readiness.py",
+    "app/repositories.py",
     "app/required_tool_contract.py",
     "app/run_admission_policy.py",
     "app/run_admission_terminalization.py",
@@ -153,6 +160,7 @@
     "app/sandbox_hardening_contract.py",
     "app/schema_migrations.py",
     "app/session_actions.py",
+    "app/session_continuity.py",
     "app/settings.py",
     "app/storage.py",
     "app/tool_policy.py",
@@ -198,6 +206,12 @@
       "reason": "Legacy global DTO bucket is frozen while contracts move to owning domains."
     },
     {
+      "path": "app/repositories.py",
+      "max_lines": 11945,
+      "owner": "platform-architecture",
+      "reason": "Legacy global persistence facade is frozen while SQL and ports move to owning domains."
+    },
+    {
       "path": "app/routes/chat.py",
       "max_lines": 2684,
       "owner": "conversations",
@@ -231,7 +245,7 @@
       ],
       "selector_owners": [
         {
-          "path": "app/skills/infrastructure/resolution_postgres.py",
+          "path": "app/repositories.py",
           "symbol": "DEFAULT_RUN_EXECUTOR_TYPES"
         }
       ],
