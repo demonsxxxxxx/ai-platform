@@ -558,6 +558,18 @@ class ArchitectureEvaluator:
                                 known_modules=base_modules,
                             )
                         }
+                        relocated_edges.update(
+                            _identity_import_contraction_edges(
+                                path=path,
+                                base_tree=base_tree,
+                                head_tree=head_tree,
+                                git=self._git,
+                                base=base,
+                                head=head,
+                                base_modules=base_modules,
+                                head_modules=head_modules,
+                            )
+                        )
             for edge in _import_edges(head_tree, path, known_modules=head_modules):
                 if edge.target in base_targets:
                     continue
@@ -635,7 +647,25 @@ class ArchitectureEvaluator:
             head_text = self._git.text(head, path)
             old_lines = 0 if old_text is None else len(old_text.splitlines())
             head_lines = len(head_text.splitlines())
-            if head_lines > old_lines or head_lines > hot_file["max_lines"]:
+            import_only_expansion = False
+            if old_text is not None and head_lines > old_lines:
+                old_tree = _parse_python(old_text, path, candidate=False)
+                new_tree = _parse_python(head_text, path, candidate=True)
+                contractions = _identity_import_contraction_edges(
+                    path=path, base_tree=old_tree, head_tree=new_tree,
+                    git=self._git, base=base, head=head,
+                    base_modules=base_modules, head_modules=head_modules,
+                )
+                import_only_expansion = bool(contractions) and (
+                    _identity_normalized_body(
+                        old_tree, git=self._git, revision=base,
+                        known_modules=base_modules, candidate=False,
+                    ) == _identity_normalized_body(
+                        new_tree, git=self._git, revision=head,
+                        known_modules=head_modules, candidate=True,
+                    )
+                )
+            if (head_lines > old_lines and not import_only_expansion) or head_lines > hot_file["max_lines"]:
                 findings.append(
                     Finding(
                         "frozen_hot_file_growth",
@@ -1058,6 +1088,7 @@ def _validate_policy(policy: dict[str, Any], git: _GitObjects, authority: str) -
         git=git,
         authority=authority,
         extra_validator=_validate_facade_entry,
+        allow_empty=True,
     )
     _validate_migration_bridges(
         policy["migration_bridges"],
@@ -1120,9 +1151,11 @@ def _validate_owned_entries(
     authority: str,
     extra_validator: Any,
     unique_field: str = "path",
+    allow_empty: bool = False,
 ) -> None:
-    if not isinstance(value, list) or not value:
-        raise ArchitectureError("invalid_policy", f"{label} must be a non-empty list")
+    if not isinstance(value, list) or (not value and not allow_empty):
+        qualifier = "a list" if allow_empty else "a non-empty list"
+        raise ArchitectureError("invalid_policy", f"{label} must be {qualifier}")
     seen: set[str] = set()
     for index, entry in enumerate(value):
         item_label = f"{label}[{index}]"
@@ -2947,6 +2980,424 @@ def _static_import_bindings(
             if alias_binding is not None:
                 bindings[alias_binding[0]] = alias_binding[1]
     return bindings
+
+
+def _top_level_import_binding_counts(tree: ast.Module) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    counts[alias.asname] += 1
+                elif "." not in alias.name:
+                    counts[alias.name] += 1
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name != "*":
+                    counts[alias.asname or alias.name] += 1
+    return counts
+
+
+def _identity_import_bindings(
+    tree: ast.Module, known_modules: set[str]
+) -> list[tuple[str, tuple[str, str | None], ast.alias]]:
+    imports: list[tuple[str, tuple[str, str | None], ast.alias]] = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                # An unaliased dotted import binds its first component in Python.
+                # Keep this proof limited to unambiguous local binding names.
+                if not alias.asname and "." in alias.name:
+                    continue
+                local_name = alias.asname or alias.name
+                single = ast.Module(
+                    body=[ast.Import(names=[alias])], type_ignores=[]
+                )
+                origin = _static_import_bindings(single, known_modules).get(local_name)
+                if origin is not None:
+                    imports.append((local_name, origin, alias))
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                local_name = alias.asname or alias.name
+                single = ast.Module(
+                    body=[ast.ImportFrom(module=node.module, names=[alias], level=0)],
+                    type_ignores=[],
+                )
+                origin = _static_import_bindings(single, known_modules).get(local_name)
+                if origin is not None:
+                    imports.append((local_name, origin, alias))
+    return imports
+
+
+def _identity_import_name_is_shadowed(
+    tree: ast.Module, name: str, selected_alias: ast.alias
+) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.alias) and node is not selected_alias:
+            imported_name = node.asname or node.name.split(".", 1)[0]
+            if imported_name == name:
+                return True
+        elif isinstance(node, ast.arg) and node.arg == name:
+            return True
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name and node is not tree:
+                return True
+        elif isinstance(node, ast.Name) and node.id == name and isinstance(
+            node.ctx, (ast.Store, ast.Del)
+        ):
+            return True
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+            return True
+        elif isinstance(node, ast.ExceptHandler) and node.name == name:
+            return True
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name:
+            return True
+        elif isinstance(node, ast.MatchMapping) and node.rest == name:
+            return True
+    return False
+
+
+def _identity_import_uses(
+    tree: ast.Module,
+    name: str,
+    origin: tuple[str, str | None],
+    *,
+    git: _GitObjects,
+    revision: str,
+    known_modules: set[str],
+    candidate: bool,
+) -> set[tuple[str, str]] | None:
+    """Return the canonical symbols reached by one unambiguous imported name."""
+    selected_alias = _identity_selected_alias(tree, name)
+    if selected_alias is None or _identity_import_name_is_shadowed(tree, name, selected_alias):
+        return None
+    parents = {
+        child: node
+        for node in ast.walk(tree)
+        for child in ast.iter_child_nodes(node)
+    }
+    symbols: set[tuple[str, str]] = set()
+    found = False
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, ast.Load)
+        ):
+            continue
+        parent = parents.get(node)
+        if origin[1] is None:
+            if not (
+                isinstance(parent, ast.Attribute)
+                and parent.value is node
+                and isinstance(parent.ctx, ast.Load)
+            ):
+                return None
+            grandparent = parents.get(parent)
+            if isinstance(grandparent, ast.Attribute) and grandparent.value is parent:
+                return None
+            symbol = parent.attr
+            canonical = _identity_import_module_symbol_origin(
+                git, revision, origin[0], symbol, known_modules,
+                candidate=candidate,
+            )
+        else:
+            if (
+                isinstance(parent, ast.Call)
+                and isinstance(parent.func, ast.Name)
+                and parent.func.id == "getattr"
+                and node in parent.args
+            ):
+                return None
+            symbol = origin[1]
+            canonical = _identity_import_module_symbol_origin(
+                git, revision, origin[0], symbol, known_modules,
+                candidate=candidate,
+            )
+        if canonical is None or (candidate and canonical != (origin[0], symbol)):
+            return None
+        symbols.add(canonical)
+        found = True
+    return symbols if found else None
+
+
+def _identity_selected_alias(tree: ast.Module, name: str) -> ast.alias | None:
+    aliases = [
+        alias
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+        if alias.name != "*" and (alias.asname or alias.name) == name
+    ]
+    return aliases[0] if len(aliases) == 1 else None
+
+
+def _identity_import_module_symbol_origin(
+    git: _GitObjects, revision: str, module: str, symbol: str,
+    known_modules: set[str], *, candidate: bool,
+    seen: frozenset[tuple[str, str]] = frozenset(),
+) -> tuple[str, str] | None:
+    if (module, symbol) in seen:
+        return None
+    cache = getattr(git, "_identity_origins", None)
+    if cache is None:
+        cache = {}
+        git._identity_origins = cache
+    key = (revision, module, symbol, candidate)
+    if key not in cache:
+        cache[key] = _resolve_identity_import_symbol(
+            git, revision, module, symbol, known_modules,
+            candidate=candidate, seen=seen,
+        )
+    return cache[key]
+
+
+def _resolve_identity_import_symbol(
+    git: _GitObjects,
+    revision: str,
+    module: str,
+    symbol: str,
+    known_modules: set[str],
+    *,
+    candidate: bool,
+    seen: frozenset[tuple[str, str]] = frozenset(),
+) -> tuple[str, str] | None:
+    key = (module, symbol)
+    if key in seen:
+        return None
+    source_path = _module_python_path(module)
+    source = git.text(revision, source_path, required=False)
+    if source is None:
+        source_path = f"{module.replace('.', '/')}/__init__.py"
+        source = git.text(revision, source_path, required=False)
+    if source is None:
+        return None
+    tree = _parse_python(source, source_path, candidate=candidate)
+    bindings = _static_import_bindings(tree, known_modules)
+    import_counts = _top_level_import_binding_counts(tree)
+    local_counts = _top_level_local_binding_counts(tree)
+    total_count = import_counts[symbol] + local_counts[symbol]
+    if total_count != 1:
+        return None
+
+    direct_binding_nodes = [
+        node
+        for node in tree.body
+        if symbol in _top_level_node_binding_names(node)
+        or (
+            isinstance(node, (ast.Import, ast.ImportFrom))
+            and symbol in _top_level_import_binding_counts(ast.Module(body=[node], type_ignores=[]))
+        )
+    ]
+    if len(direct_binding_nodes) != 1:
+        return None
+    for node in tree.body:
+        if node is not direct_binding_nodes[0] and symbol in _module_scope_rebindings(node):
+            return None
+
+    origin = bindings.get(symbol)
+    if origin is not None:
+        if origin[1] is None:
+            # A facade export that is itself a module is outside this symbol proof.
+            return None
+        return _identity_import_module_symbol_origin(
+            git,
+            revision,
+            origin[0],
+            origin[1],
+            known_modules,
+            candidate=candidate,
+            seen=seen | {key},
+        )
+
+    if local_counts[symbol] != 1 or import_counts[symbol]:
+        return None
+    return module, symbol
+
+
+def _identity_local_import_edges(
+    *, path: str, base_tree: ast.Module, head_tree: ast.Module,
+    git: _GitObjects, base: str, head: str,
+    base_modules: set[str], head_modules: set[str],
+) -> set[_ImportEdge]:
+    """Check function-local imports in their own static scope."""
+    definitions = {
+        node.name: node for node in base_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    helpers: dict[str, str] = {}
+    for name, definition in definitions.items():
+        body = [node for node in definition.body if not (
+            isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        )]
+        args = definition.args
+        if (not isinstance(definition, ast.FunctionDef) or definition.decorator_list
+            or args.posonlyargs or args.args or args.kwonlyargs or args.vararg or args.kwarg
+            or len(body) != 2 or not isinstance(body[0], (ast.Import, ast.ImportFrom))
+            or not isinstance(body[1], ast.Return) or not isinstance(body[1].value, ast.Name)):
+            continue
+        bindings = _static_import_bindings(ast.Module(body=[body[0]], type_ignores=[]), base_modules)
+        origin = bindings.get(body[1].value.id)
+        if origin is not None and origin[1] is None and _top_level_local_binding_counts(base_tree)[name] == 1:
+            if not any(isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)) for node in ast.walk(base_tree)):
+                helpers[name] = origin[0]
+
+    def scope(tree: ast.Module, definition: ast.FunctionDef | ast.AsyncFunctionDef, *, expand_helpers: bool) -> ast.Module:
+        body = copy.deepcopy(definition.body)
+        argument_names = {arg.arg for arg in ast.walk(definition.args) if isinstance(arg, ast.arg)}
+        imports = [copy.deepcopy(node) for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+        if expand_helpers:
+            scoped_helpers = {
+                name: module for name, module in helpers.items()
+                if name not in argument_names and not any(
+                    isinstance(node, (ast.Name, ast.arg)) and (
+                        isinstance(node, ast.arg) and node.arg == name
+                        or isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del))
+                    ) for statement in body for node in ast.walk(statement)
+                )
+            }
+            class Expand(ast.NodeTransformer):
+                def visit_Assign(self, node: ast.Assign) -> ast.AST:
+                    if (len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                        and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
+                        and node.value.func.id in scoped_helpers and not node.value.args and not node.value.keywords):
+                        return ast.copy_location(ast.Import(names=[ast.alias(
+                            name=scoped_helpers[node.value.func.id], asname=node.targets[0].id,
+                        )]), node)
+                    return self.generic_visit(node)
+                def visit_Call(self, node: ast.Call) -> ast.AST:
+                    if isinstance(node.func, ast.Name) and node.func.id in scoped_helpers and not node.args and not node.keywords:
+                        alias = f"_identity_helper_{node.func.id}"
+                        if not any(isinstance(item, ast.Name) and item.id == alias for item in ast.walk(base_tree)):
+                            imports.append(ast.Import(names=[ast.alias(name=scoped_helpers[node.func.id], asname=alias)]))
+                            return ast.copy_location(ast.Name(id=alias, ctx=ast.Load()), node)
+                    return self.generic_visit(node)
+            body = [Expand().visit(node) for node in body]
+        # Parameter shadowing never supplies import evidence.
+        for node in imports:
+            node.names = [alias for alias in node.names if (alias.asname or alias.name.split('.')[0]) not in argument_names]
+        return ast.fix_missing_locations(ast.Module(body=[*imports, *body], type_ignores=[]))
+
+    allowed: set[_ImportEdge] = set()
+    for definition in head_tree.body:
+        if not isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)) or definition.name not in definitions:
+            continue
+        if not any(isinstance(node, (ast.Import, ast.ImportFrom)) for node in definition.body):
+            continue
+        allowed.update(_identity_import_contraction_edges(
+            path=path,
+            base_tree=scope(base_tree, definitions[definition.name], expand_helpers=True),
+            head_tree=scope(head_tree, definition, expand_helpers=False),
+            git=git, base=base, head=head, base_modules=base_modules,
+            head_modules=head_modules, include_local=False,
+        ))
+    return allowed
+
+
+def _identity_import_contraction_edges(
+    *,
+    path: str,
+    base_tree: ast.Module,
+    head_tree: ast.Module,
+    git: _GitObjects,
+    base: str,
+    head: str,
+    base_modules: set[str],
+    head_modules: set[str],
+    include_local: bool = True,
+) -> set[_ImportEdge]:
+    """Permit new edges only for canonical symbols statically used at base."""
+    base_imports = _identity_import_bindings(base_tree, base_modules)
+    head_imports = _identity_import_bindings(head_tree, head_modules)
+    base_counts = _top_level_import_binding_counts(base_tree) + _top_level_local_binding_counts(base_tree)
+    head_counts = _top_level_import_binding_counts(head_tree) + _top_level_local_binding_counts(head_tree)
+    base_symbols: set[tuple[str, str]] = set()
+    for name, old_origin, old_alias in base_imports:
+        if base_counts[name] != 1 or _identity_import_name_is_shadowed(base_tree, name, old_alias):
+            continue
+        symbols = _identity_import_uses(
+            base_tree, name, old_origin, git=git, revision=base,
+            known_modules=base_modules, candidate=False,
+        )
+        if symbols:
+            base_symbols.update(symbols)
+
+    allowed = _identity_local_import_edges(
+        path=path, base_tree=base_tree, head_tree=head_tree, git=git,
+        base=base, head=head, base_modules=base_modules, head_modules=head_modules,
+    ) if include_local else set()
+    if not base_symbols:
+        return allowed
+    denied: set[_ImportEdge] = set()
+    for name, new_origin, new_alias in head_imports:
+        source_import = next(
+            node for node in head_tree.body
+            if isinstance(node, (ast.Import, ast.ImportFrom)) and new_alias in node.names
+        )
+        single_import = copy.copy(source_import)
+        single_import.names = [new_alias]
+        edges = set(_import_edges(
+            ast.Module(body=[single_import], type_ignores=[]), path,
+            known_modules=head_modules,
+        ))
+        symbols = None
+        if head_counts[name] == 1 and not _identity_import_name_is_shadowed(head_tree, name, new_alias):
+            symbols = _identity_import_uses(
+                head_tree, name, new_origin, git=git, revision=head,
+                known_modules=head_modules, candidate=True,
+            )
+        if symbols and symbols <= base_symbols:
+            allowed.update(edges)
+        else:
+            denied.update(edges)
+    allowed.difference_update(denied)
+    return allowed
+
+
+def _identity_normalized_body(
+    tree: ast.Module, *, git: _GitObjects, revision: str,
+    known_modules: set[str], candidate: bool,
+) -> str:
+    origins = {
+        name: origin
+        for name, origin, alias in _identity_import_bindings(tree, known_modules)
+        if not _identity_import_name_is_shadowed(tree, name, alias)
+    }
+
+    def canonical(module: str, symbol: str) -> str | None:
+        origin = _identity_import_module_symbol_origin(
+            git, revision, module, symbol, known_modules, candidate=candidate,
+        )
+        return ".".join(origin) if origin else None
+
+    class Normalize(ast.NodeTransformer):
+        def visit_Import(self, node: ast.Import) -> None:
+            return None
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            return None
+
+        def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            if isinstance(node.value, ast.Name) and isinstance(node.ctx, ast.Load):
+                origin = origins.get(node.value.id)
+                if origin is not None and origin[1] is None:
+                    name = canonical(origin[0], node.attr)
+                    if name is not None:
+                        return ast.Name(id=name, ctx=ast.Load())
+            return self.generic_visit(node)
+
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            origin = origins.get(node.id)
+            if origin is not None and origin[1] is not None and isinstance(node.ctx, ast.Load):
+                name = canonical(origin[0], origin[1])
+                if name is not None:
+                    return ast.Name(id=name, ctx=ast.Load())
+            return node
+
+    return ast.dump(Normalize().visit(copy.deepcopy(tree)), include_attributes=False)
 
 
 def _definition_global_references(node: ast.stmt) -> set[str]:

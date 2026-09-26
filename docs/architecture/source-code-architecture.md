@@ -539,6 +539,22 @@ alias and its locally owned target definition. Remove consumed entries and
 retired bridge symbols in the implementation change so the next authority has
 no stale grant.
 
+For an internal import-only facade, callers may contract a statically proven
+identity path directly to the existing definition before removing the facade.
+The dependency checker resolves the symbols actually used by that caller in the
+trusted base; each new import must refer to the same canonical definition.
+Import splitting, function-local imports and local alias renaming are allowed.
+A synchronous undecorated helper consisting only of one static module import
+and its return may be resolved within the same function scope. New symbols, dynamic
+module access, module forwarding, shadowing and rebinding do not qualify, and
+candidate re-exports cannot grant authority. This preserves existing dependency
+debt rather than treating it as a new domain API: future cross-domain operations
+still use the normal API/port boundary. Retirement of the source's bridge and
+facade inventory precedes its deletion in a dependent implementation change.
+The frozen-file line budget may ignore import expansion only when canonicalized
+executable ASTs are identical; its absolute size ceiling still applies.
+An empty compatibility-facade inventory is valid after its last entry retires.
+
 The replay corpus MUST be committed as deterministic focused contract or
 integration tests with fixed clocks/identities where those affect output. The
 PR records the exact base/head, test paths, command, result, and which observable
