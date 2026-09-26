@@ -56,6 +56,10 @@ from app.streaming.domain.public_events_v4 import (
     validate_internal_envelope_v4,
     validate_public_application_payload_v4,
 )
+from app.streaming.domain.run_events import (
+    RunCursor,
+    event_page,
+)
 from app.streaming.domain.transport import (
     ResumeDecision,
     StreamCursor,
@@ -65,6 +69,8 @@ from app.streaming.domain.transport import (
 
 
 __all__ = [
+    "RunCursor",
+    "event_page",
     "REDIS_ID_PATTERN",
     "RUN_ID_PATTERN",
     "STREAM_KEY_PREFIX",

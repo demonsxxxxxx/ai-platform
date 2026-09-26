@@ -13,7 +13,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app.streaming import postgres
+from app.streaming.infrastructure import event_ledger_postgres as postgres
 from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 

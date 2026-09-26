@@ -6,7 +6,6 @@ from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
-    EVENT_ENVELOPE_SCHEMA_VERSION,
     EXECUTOR_RESULT_SCHEMA_VERSION,
     RUN_CONTRACT_VERSION,
     artifact_lineage_contract,
@@ -16,6 +15,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
 from app.kernel.memory_redaction import sanitizer_unstable_suffix_length
 from app.platform.public_payload import sanitize_public_answer_text
 from app.projection_redaction import (

@@ -435,10 +435,6 @@ def install_mcp_route_fakes(
         row = distributions.get(capability_id)
         return dict(row) if row and row["capability_kind"] == capability_kind else None
 
-    async def fake_list_server_names(conn, *, tenant_id):
-        calls.append(("list_server_names", {"tenant_id": tenant_id}))
-        return [str(row["name"]) for row in servers.values() if row.get("status") != "deleted"]
-
     async def fake_upsert_server(conn, **kwargs):
         calls.append(("upsert_server", dict(kwargs)))
         existing = servers.get(kwargs["name"])
@@ -610,12 +606,8 @@ def install_mcp_route_fakes(
         'get_authorized_session',
         fake_get_authorized_session,
     )
-    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'list_mcp_server_registry', fake_list_servers, raising=False)
-    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'list_tenant_mcp_server_registry', fake_list_servers, raising=False)
-    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'list_mcp_server_registry_names', fake_list_server_names, raising=False)
     monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', fake_list_distributions, raising=False)
     monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'get_capability_distribution_row', fake_get_distribution, raising=False)
-    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'upsert_mcp_server_registry', fake_upsert_server, raising=False)
     monkeypatch.setattr(
         _owner_identity_infrastructure_capability_distributions_postgres,
         'upsert_capability_distribution_row',
@@ -629,8 +621,6 @@ def install_mcp_route_fakes(
         raising=False,
     )
     monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'archive_capability_distribution_row', fake_archive_distribution, raising=False)
-    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'toggle_mcp_server_registry', fake_toggle_server, raising=False)
-    monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'delete_mcp_server_registry', fake_delete_server, raising=False)
     monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'record_mcp_server_credential', fake_record_credential, raising=False)
     monkeypatch.setattr(mcp.mcp_repository, "list_mcp_server_registry", fake_list_servers)
     monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_credential", fake_get_credential)

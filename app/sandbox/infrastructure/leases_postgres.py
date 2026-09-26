@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from app import run_event_repository as _run_event_repository
 from app.identity.infrastructure.audit_postgres import append_audit_log
 from app.streaming.infrastructure.run_events_postgres import append_event
 from psycopg import AsyncConnection
@@ -84,12 +83,31 @@ async def list_current_sandbox_runtime_leases_for_attempt(
     run_id: str,
     attempt_id: str,
 ) -> list[dict[str, Any]]:
-    return await _run_event_repository.list_current_sandbox_runtime_leases_for_attempt(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        attempt_id=attempt_id,
+    """Lock exact-attempt unexpired active runtime leases for one authoritative run."""
+
+    cursor = await conn.execute(
+        """
+        select sandbox_leases.*
+        from sandbox_leases
+        join run_attempts
+          on run_attempts.tenant_id = sandbox_leases.tenant_id
+         and run_attempts.run_id = sandbox_leases.run_id
+         and run_attempts.id = sandbox_leases.attempt_id
+        where sandbox_leases.tenant_id = %s
+          and sandbox_leases.run_id = %s
+          and sandbox_leases.lease_payload_json ->> 'attempt_id' = %s
+          and sandbox_leases.attempt_id = sandbox_leases.lease_payload_json ->> 'attempt_id'
+          and sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text
+          and run_attempts.status in ('running', 'cancel_requested')
+          and sandbox_leases.status = 'active'
+          and sandbox_leases.expires_at is not null
+          and sandbox_leases.expires_at > clock_timestamp()
+        order by sandbox_leases.created_at asc
+        for update of sandbox_leases, run_attempts
+        """,
+        (tenant_id, run_id, attempt_id),
     )
+    return list(await cursor.fetchall())
 
 
 async def list_sandbox_leases_for_run(

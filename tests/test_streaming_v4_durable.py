@@ -27,8 +27,8 @@ from app.streaming.api import (
     project_public_v4,
     validate_public_application_payload_v4,
 )
-from app.streaming.authority import RunCursor
-from app.streaming.postgres import EventReceipt
+from app.streaming.domain.run_events import RunCursor
+from app.streaming.infrastructure.event_ledger_postgres import EventReceipt
 from app.streaming.redis import StreamAuthority
 from app.streaming.domain.transport import canonical_json_bytes
 from app.streaming.infrastructure import run_v4_events, worker_v4

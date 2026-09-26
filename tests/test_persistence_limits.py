@@ -1,6 +1,5 @@
 import pytest
 
-from app import run_event_repository
 from app.bootstrap.run_lifecycle import build_run_lifecycle_service
 from app.artifacts.infrastructure.records_postgres import create_artifact
 from app.context.infrastructure.snapshot_postgres import create_context_snapshot
@@ -22,6 +21,7 @@ from app.platform.postgres.limits import (
     ensure_text_size,
 )
 from app.runs.infrastructure.creation_postgres import create_run
+from app.streaming.infrastructure.run_events_postgres import _ledger_event_from_values
 
 
 class NoDatabaseWrites:
@@ -133,13 +133,13 @@ async def test_message_manifest_audit_and_snapshot_have_safe_stable_errors():
 
 def test_run_event_message_and_payload_limits_are_enforced_before_ledger_write():
     with pytest.raises(PersistenceSizeLimitError, match="run_event_message_too_large"):
-        run_event_repository._ledger_event_from_values(
+        _ledger_event_from_values(
             event_type="status",
             stage="worker",
             message="x" * (RUN_EVENT_MESSAGE_MAX_BYTES + 1),
         )
     with pytest.raises(PersistenceSizeLimitError, match="run_event_payload_too_large"):
-        run_event_repository._ledger_event_from_values(
+        _ledger_event_from_values(
             event_type="status",
             stage="worker",
             payload=oversized_json(RUN_EVENT_PAYLOAD_MAX_BYTES),

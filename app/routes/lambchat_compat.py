@@ -15,10 +15,8 @@ from fastapi.responses import StreamingResponse
 from app import session_actions
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.control_plane_contracts import (
-    EVENT_ENVELOPE_SCHEMA_VERSION,
-    standard_trace_id,
-)
+from app.platform.tracing import standard_trace_id
+from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.conversations.infrastructure import (
     session_queries_postgres as conversations_session_queries,
@@ -58,14 +56,15 @@ from app.runs import api as runs_api
 from app.runs.infrastructure import creation_postgres as runs_creation
 from app.settings import get_settings
 from app.streaming.api import (
+    RunCursor,
     V4ProjectionError,
     V4StreamEntry,
+    event_page,
     live_redis_id_is_after,
     project_persisted_message_delta_v4,
     project_public_envelope_v4,
     validate_public_application_payload_v4,
 )
-from app.streaming.authority import RunCursor, event_page
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.streaming.redis import (
     SSE_AUTHORITY_LEASE_SECONDS,

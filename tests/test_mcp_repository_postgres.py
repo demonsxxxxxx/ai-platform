@@ -8,7 +8,6 @@ from psycopg.rows import dict_row
 import pytest
 
 from app.mcp.infrastructure import postgres as mcp_repository
-from app.mcp.infrastructure import registry_postgres
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_MCP_CATALOG_TEST_DSN"
@@ -113,8 +112,7 @@ async def test_postgres_keeps_only_server_credentials_and_lightweight_tool_refs(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("registry", [mcp_repository, registry_postgres])
-async def test_postgres_mcp_server_registry_crud_uses_current_schema(registry):
+async def test_postgres_mcp_server_registry_crud_uses_current_schema():
     dsn = _postgres_dsn()
     schema_name = f"mcp_registry_crud_{uuid.uuid4().hex}"
     schema_source = Path("app/schema.sql").read_text(encoding="utf-8")
@@ -134,7 +132,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema(registry):
             ("tenant-mcp-crud", "MCP Registry CRUD Test"),
         )
 
-        created = await registry.upsert_mcp_server_registry(
+        created = await mcp_repository.upsert_mcp_server_registry(
             conn,
             tenant_id="tenant-mcp-crud",
             name="crud-gateway",
@@ -156,7 +154,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema(registry):
         assert created["role_quotas"] == {"Reviewer": 3}
         assert "catalog_status" not in created
 
-        updated = await registry.upsert_mcp_server_registry(
+        updated = await mcp_repository.upsert_mcp_server_registry(
             conn,
             tenant_id="tenant-mcp-crud",
             name="crud-gateway",
@@ -175,7 +173,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema(registry):
         assert updated["transport"] == "sse"
         assert updated["allowed_roles"] == ["Admin"]
         assert updated["department_ids"] == ["Platform"]
-        listed = await registry.list_mcp_server_registry(
+        listed = await mcp_repository.list_mcp_server_registry(
             conn,
             tenant_id="tenant-mcp-crud",
             department_id="Platform",
@@ -183,7 +181,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema(registry):
         assert [row["name"] for row in listed] == ["crud-gateway"]
         assert listed[0]["role_quotas"] == {"Admin": 5}
 
-        disabled = await registry.toggle_mcp_server_registry(
+        disabled = await mcp_repository.toggle_mcp_server_registry(
             conn,
             tenant_id="tenant-mcp-crud",
             name="crud-gateway",
@@ -191,7 +189,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema(registry):
             updated_by="user-mcp",
         )
         assert disabled["status"] == "disabled"
-        assert await registry.list_mcp_server_registry(
+        assert await mcp_repository.list_mcp_server_registry(
             conn,
             tenant_id="tenant-mcp-crud",
             department_id="Platform",
@@ -199,17 +197,17 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema(registry):
         ) == []
         assert [
             row["name"]
-            for row in await registry.list_mcp_server_registry(
+            for row in await mcp_repository.list_mcp_server_registry(
                 conn,
                 tenant_id="tenant-mcp-crud",
                 department_id="Platform",
             )
         ] == ["crud-gateway"]
-        deleted = await registry.delete_mcp_server_registry(
+        deleted = await mcp_repository.delete_mcp_server_registry(
             conn, tenant_id="tenant-mcp-crud", name="crud-gateway", updated_by="user-mcp"
         )
         assert deleted["status"] == "deleted"
-        assert await registry.list_mcp_server_registry(
+        assert await mcp_repository.list_mcp_server_registry(
             conn, tenant_id="tenant-mcp-crud", department_id="Platform"
         ) == []
     finally:
