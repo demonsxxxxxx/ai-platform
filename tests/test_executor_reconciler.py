@@ -59,6 +59,7 @@ class _EventPersistence:
 
 
 _TEST_V4_CAPABILITIES = SimpleNamespace(event_persistence=_EventPersistence())
+_TEST_RUN_LIFECYCLE = SimpleNamespace()
 
 
 async def _unexpected_attempt_operation(*_args, **_kwargs):
@@ -73,6 +74,7 @@ _TEST_ATTEMPT_LIFECYCLE = SimpleNamespace(
 
 async def _terminalize_reconciliation_failure(*args, **kwargs):
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     kwargs.setdefault("run_diagnostics", None)
     kwargs.setdefault("reconciliation_error_code", "test_reconciliation_failure")
     return await _terminalize_reconciliation_failure_impl(*args, **kwargs)
@@ -80,17 +82,20 @@ async def _terminalize_reconciliation_failure(*args, **kwargs):
 
 async def _finish_terminal_reconciliation_failure(*args, **kwargs):
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     kwargs.setdefault("run_diagnostics", None)
     return await _finish_terminal_reconciliation_failure_impl(*args, **kwargs)
 
 
 async def reconcile_pending_executor_terminals_once(*args, **kwargs):
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     return await reconcile_pending_executor_terminals_once_impl(*args, **kwargs)
 
 
 async def run_executor_terminal_reconciler(*args, **kwargs):
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
+    kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     return await run_executor_terminal_reconciler_impl(*args, **kwargs)
 
 
@@ -1850,7 +1855,6 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
 
     class Progress:
         did_transition = True
-        needs_reconcile = True
         status = "failed"
 
         @staticmethod
@@ -1877,9 +1881,6 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         calls.append(("terminalize_attempt", kwargs))
         return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
 
-    async def reconcile_child(**kwargs):
-        calls.append(("reconcile_child", kwargs))
-
     async def publish(_transaction_factory, **kwargs):
         calls.append(("publish", kwargs))
         return True
@@ -1894,15 +1895,12 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
-    monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
+    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
     monkeypatch.setattr(
         "app.runs.application.provider_terminalization.release_provider_lineage",
         no_provider_lineage,
     )
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
-    monkeypatch.setattr(
-        f"{owner}.reconcile_terminalized_permission_run", reconcile_child
-    )
     monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
@@ -1935,7 +1933,6 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         "diagnostics",
         "fail_run",
         "terminalize_attempt",
-        "reconcile_child",
         "publish",
     ]
     diagnostic_call = next(value for name, value in calls if name == "diagnostics")
@@ -1963,7 +1960,6 @@ async def test_terminal_reconciliation_failure_honors_existing_cancel_request(mo
 
     class Progress:
         did_transition = True
-        needs_reconcile = False
         status = "cancelled"
 
         @staticmethod
@@ -2076,7 +2072,7 @@ async def test_terminal_reconciliation_failure_does_not_republish_an_already_ter
         has_claim,
     )
     monkeypatch.setattr(f"{owner}.repositories.get_run", get_run)
-    monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
+    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
     monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
@@ -2112,7 +2108,7 @@ async def test_terminal_reconciliation_failure_cannot_mutate_run_after_claim_los
         f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
-    monkeypatch.setattr(f"{owner}.repositories.fail_run", fail_run)
+    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
 
     with pytest.raises(RuntimeError, match="executor_reconciliation_claim_lost"):
         await _terminalize_reconciliation_failure(

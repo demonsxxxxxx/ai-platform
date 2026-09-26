@@ -1,6 +1,6 @@
 # 状态事实与运行恢复收敛：技术实施方案
 
-状态：**待实施方案**。本文把 Yuxi 对比中发现的具体问题拆成实施批次，供主控组织探索、实现和验收。文中的目标接口、数据字段与新增测试均为设计要求，不能作为已经实现或已经部署的证明。执行进度、提交 SHA、测试结果和阻塞项记录在当前任务或 PR。
+状态：**分批实施方案**。本文的固定样本分析保留原证据；S5 的普通终态服务与旧审批/平台父子恢复退役已在源码中完成，详见 Run lifecycle 契约。其余目标接口、数据字段与新增测试仍按各批次核验，不能作为已经部署的证明。提交 SHA、测试结果和阻塞项记录在当前任务或 PR。
 
 ## 1. 目标与设计依据
 
@@ -57,6 +57,10 @@ ai-platform 已采用 PostgreSQL 保存持久化事实、Redis 承担队列和�
 
 ### 3.2 必须先迁移的活跃实现
 
+下表保留固定样本的问题定位。通用终态与仓储混合职责已由 S5 的显式
+`RunLifecycleService` 和 SQL adapter 接管，旧 permission 模块已删除；
+这些两行不再是待迁移源码清单。
+
 | 问题 | 证据与影响 | 处理方向 |
 | --- | --- | --- |
 | 通用终态逻辑仍挂在 permission 名下 | [`tool_permission_lifecycle.py:161`](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/tool_permission_lifecycle.py#L161) 的 complete/fail/cancel/drain 服务于 Worker、取消接口、入队补偿和 reconciler | 迁入 Runs application；SQL 原语交给 Runs persistence。原有返回值、事务、锁序和历史 drain 行为逐项回放。 |
@@ -73,7 +77,7 @@ ai-platform 已采用 PostgreSQL 保存持久化事实、Redis 承担队列和�
 | `RedisStreamBridge`、v4 candidate 操作、client 生命周期 | [`V4RedisStreamBridge`](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/infrastructure/v4.py#L589) 和 rebuild 共用 | 只有完成所有 v4 调用方迁移及等价测试后，才可拆共享设施。 |
 | `create_or_get_stream_admission_v4`、confirmation、terminal intent persistence | 现行 v4 准入、冻结语义身份、重试与终态恢复 | 作为现行机制保留；删除旧封装不改变其语义。 |
 | Redis 物理命名空间与队列 v1/v2 lease 读取 | 现存数据及混合版本消费者 | 按队列契约完成 fleet/租约排空证明后再退出。名称含旧版本不等于闲置。 |
-| 历史 permission/child-parent drain | 旧持久化记录可能尚待收敛 | 用有界查询确认剩余状态并完成迁移；保留历史读取不授予旧 producer 写入权。数据库列更名另做 schema 批次。 |
+| 历史审批及平台父子任务记录 | schema `2026.09.26.1` 负责一次性处置 | 停止旧进程后事务化升级；历史 Run/Attempt 保留，旧审批表删除，普通终态列改名。Python drain 已退役。 |
 | `lambchat_compat` 的现行路由、历史投影与同名常量 | 当前 HTTP/历史读取消费者 | 逐个接口证明替代消费者和数据处理完成；不能按 `compat` 文件名整删。 |
 | 旧 producer 的守卫字符串、历史 ADR | 防止重新引入退役写入入口；保留决策历史 | 保留守卫及其合成输入测试。ADR 的历史定位由文档索引说明，不改写成当前实现。 |
 | Profile 准入中的 Run/Profile 锁；Sandbox stop-under-lock | 分别保护授权与投递顺序、资源停止操作 | 每项分别提供 claim、外部操作身份、receipt、并发接管与混合版本证据后才能缩短锁区间。 |
@@ -219,13 +223,13 @@ S3 同批必须处理补投与 `reconcile_stale_runs_for_worker` 的竞争：明
 
 ### 8.1 S5 通用终态服务
 
-扩展已有 `RunCancellationUseCase` 和 [`build_run_cancellation_use_case`](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/bootstrap/run_lifecycle.py#L21) 的职责边界，按 Run lifecycle 契约组织 `RunLifecycleService`；不并行保留两套 cancellation 策略。
+当前 `RunLifecycleService` 承担普通完成、失败、取消和入队失败补偿，`RunCancellationUseCase` 复用其终态能力。`bootstrap.run_lifecycle` 构造显式端口，API、Worker 和 reconciler 注入同一服务契约。
 
-按纯策略、SQL 原语、application orchestration、API/Worker 注入、旧出口删除逐片交付。每片回放同样的成功、失败、取消、入队补偿、stale-owner、历史 child/parent 收敛输入。保持状态、事件、审计、terminal intent 的同连接同事务及提交后发布。
+纯策略、SQL 原语和 application orchestration 分属 Runs 对应层，旧 repository 生命周期出口已经删除。回放成功、失败、取消、入队补偿和 stale-owner 输入；状态、事件、审计在同一连接与事务内提交，随后发布。
 
 调用闭环至少覆盖 `app/worker.py`、`app/worker_main.py`、`app/executor_reconciler.py`、`app/routes/runs.py`、`app/routes/admin_runs.py`、`app/run_admission_terminalization.py`、`app/bootstrap/run_lifecycle.py`。不能只修改 import 后继续把整个 repositories 对象作为 service 注入。
 
-历史 drain 保留每批事务、最大批次数、attempt terminalization、child identity fence 和 parent exactly-once durable facts。`tool_permission_lifecycle.py` 还承载其他 permission budget 职责，移走通用终态逻辑并不自动证明可整文件删除。数据库 `permission_terminalization_*` 的重命名必须独立评估 schema 与旧镜像读取，不随 Python 搬迁同时修改。
+旧审批 drain、TTL 维护和平台 child/parent recovery 已随消费者一起删除。schema `2026.09.26.1` 通过合法 Attempt 转换收尾历史开放任务，删除审批表并将五个 `permission_terminalization_*` 列更名。真实旧库升级、重放及普通任务保留由 schema integration tests 覆盖；旧镜像不得与该 schema 混跑，升级及备份回滚遵守 [Run lifecycle](../architecture/run-lifecycle-boundary.md)。
 
 ### 8.2 S6 Queue payload 收缩
 
@@ -272,7 +276,7 @@ python tools/run_test_stage.py \
 python tools/run_test_stage.py \
   --stage run-owner-wiring --timeout-seconds 300 \
   -- tests/test_run_attempt_application.py tests/test_worker_attempt_lifecycle.py \
-  tests/test_run_cancellation_use_case.py tests/test_tool_permission_lifecycle.py \
+  tests/test_run_cancellation_use_case.py tests/test_run_lifecycle.py \
   tests/test_production_bootstrap.py
 ```
 
@@ -303,7 +307,7 @@ S2b/S3 复用 `tests/test_chat_routes.py`，尤其以下已存在回归入口：
 | 恢复积压和依赖卡顿 | 多批 eligible 记录、丢通知、延迟 Redis、阻塞 cleanup | 在声明预算内持续前进；关键恢复可见、无无限任务/重试增长 | S3；RCV-03/RCV-04 |
 | 旧执行者迟到 | 接管后送旧 heartbeat/callback/collection/terminal | 拒绝过期写入；合法异步 Executor 交接仍可接收 | S4；RUN-03 |
 | 终态事务回滚及发布未知 | PG commit 前失败；commit 后 Redis 失败 | 前者无部分终态事实；后者沿用冻结身份/bytes 恢复，同一 incarnation 保持 terminal/end 顺序 | S1/S5；RUN-02/SSE-05 |
-| 历史 drain 与重复取消 | 无 Attempt 历史行、分批 drain、重复 child receipt | 原有 no-op、批次、事务和父子身份校验保持；历史事件/审计不重复创建 | S5；RUN-02/OWN-01 |
+| 历史升级与重复取消 | 旧 schema、开放 Run/Attempt、已终态记录、重复升级 | 合法收尾且 Run/Attempt 终态一致，保留普通记录与结果，重复升级/取消不追加终态事实 | S5；RUN-02/OWN-01 |
 | 两套服务实例同进程 | 不同端口替身构造两套 API/Worker 能力 | 不互相覆盖注册；缺失依赖在 bootstrap 报错 | S2a；OWN-01 |
 | 旧队列与回滚 | 旧生产者/新消费者、新 lease/旧 reclaimer、DLQ 重放 | 版本拒绝/读取符合契约，旧 owner 不能修改新租约；保留持久化事实 | S4/S6；RUN-03/REL-01 |
 

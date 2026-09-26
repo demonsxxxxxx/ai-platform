@@ -9,6 +9,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import repositories
+from app.identity.infrastructure import capability_distributions_postgres as distribution_persistence
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_CAPABILITY_DISTRIBUTION_TEST_DSN"
@@ -410,7 +411,7 @@ async def test_capability_distribution_lifecycle_lock_serializes_missing_row_arc
         first_pid = int((await (await first_conn.execute("select pg_backend_pid() as pid")).fetchone())["pid"])
         second_pid = int((await (await second_conn.execute("select pg_backend_pid() as pid")).fetchone())["pid"])
 
-        original_require_unarchived = repositories._require_unarchived_capability_distribution
+        original_require_unarchived = distribution_persistence._require_unarchived_capability_distribution
         negative_lookup_complete = asyncio.Event()
         release_first_writer = asyncio.Event()
 
@@ -420,7 +421,7 @@ async def test_capability_distribution_lifecycle_lock_serializes_missing_row_arc
                 negative_lookup_complete.set()
                 await release_first_writer.wait()
 
-        monkeypatch.setattr(repositories, "_require_unarchived_capability_distribution", pause_first_writer)
+        monkeypatch.setattr(distribution_persistence, "_require_unarchived_capability_distribution", pause_first_writer)
 
         async def upsert_active(conn, *, updated_by):
             return await repositories.upsert_capability_distribution_row(

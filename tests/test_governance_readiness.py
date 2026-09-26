@@ -72,6 +72,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     }
     assert "admin_tool_policy_inventory" in domains["tool_permission"]["implemented"]
     assert "zero_click_model_tool_policy" in domains["tool_permission"]["implemented"]
+    assert "public_tool_permission_card_projection" not in domains["tool_permission"]["implemented"]
     assert "audit_visible_legacy_frontend_route_policy_mapping" in domains["tool_permission"]["implemented"]
     assert "allow_deny_tool_policy_taxonomy_evidence" in domains["tool_permission"]["implemented"]
     assert "synchronous_capability_subject_source_tests" in domains["tool_permission"]["implemented"]

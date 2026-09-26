@@ -15,7 +15,6 @@ ROOT = Path(__file__).resolve().parents[1]
 V4_PUBLICATION_CALLS = frozenset(
     {
         'admit_v4_stream',
-        'finalize_parent_and_publish',
         'publish_callback_rows',
         'publish_run_event',
     }
@@ -27,7 +26,6 @@ V4_PUBLICATION_OWNER_MANIFEST = frozenset(
         ('app/routes/runs.py', 'cancel_run'),
         ('app/routes/runtime_callbacks.py', 'record_executor_callback'),
         ('app/streaming/application/worker_publication_v4.py', 'admit_v4_stream'),
-        ('app/streaming/application/worker_publication_v4.py', 'finalize_parent_and_publish'),
         ('app/streaming/application/worker_publication_v4.py', 'publish_callback_rows'),
         ('app/streaming/application/worker_publication_v4.py', 'publish_run_event'),
         ('app/worker.py', 'process_run_payload'),

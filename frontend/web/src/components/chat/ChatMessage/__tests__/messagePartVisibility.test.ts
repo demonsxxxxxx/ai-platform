@@ -23,7 +23,6 @@ test("classifies every work activity without hiding answers, artifacts, or actio
     "sandbox",
     "artifact",
     "run_status",
-    "tool_permission",
     "summary",
   ] as const) {
     assert.equal(isWorkActivityPart({ type } as MessagePart), false, type);
@@ -296,14 +295,6 @@ test("keeps user-actionable run status cards visible", () => {
     },
     {
       type: "run_status",
-      event_id: "evt-warning",
-      event_type: "tool_permission_required",
-      stage: "policy",
-      message: "工具调用需要权限决策",
-      severity: "warning",
-    },
-    {
-      type: "run_status",
       event_id: "evt-error",
       event_type: "run_failed",
       stage: "worker",
@@ -314,6 +305,6 @@ test("keeps user-actionable run status cards visible", () => {
 
   assert.deepEqual(
     getVisibleMessageParts(parts).map((part) => part.type),
-    ["run_status", "run_status", "run_status"],
+    ["run_status", "run_status"],
   );
 });

@@ -60,6 +60,30 @@ _DISPATCH_V4_CAPABILITIES = types.SimpleNamespace(
 )
 
 
+class _TestRunLifecycle:
+    async def complete_run(self, _conn, **_kwargs):
+        return True
+
+    async def fail_run(self, _conn, **_kwargs):
+        return RunTerminalizationProgress(
+            completed=True, status="failed", did_transition=True
+        )
+
+    async def cancel_run(self, _conn, **_kwargs):
+        return RunTerminalizationProgress(
+            completed=True, status="cancelled", did_transition=True
+        )
+
+    async def is_cancel_requested(self, _conn, **_kwargs):
+        return False
+
+    async def classify_success_commit_block(self, _conn, **_kwargs):
+        return "stale_terminal_state"
+
+
+_TEST_RUN_LIFECYCLE = _TestRunLifecycle()
+
+
 async def _no_attempt_lifecycle_operation(*_args, **_kwargs):
     return None
 
@@ -823,7 +847,6 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
             completed=True,
             status="failed",
             did_transition=True,
-            needs_reconcile=True,
         )
 
     async def append_event(_conn, **kwargs):
@@ -842,10 +865,6 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         }
         return [primary_manifest]
 
-    async def reconcile(**kwargs):
-        calls.append(("reconcile", kwargs))
-        return None
-
     async def no_publication(*_args, **_kwargs):
         return None
 
@@ -862,16 +881,15 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         )}
 
     monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
     monkeypatch.setattr(
         "app.worker.repositories.materialize_run_skill_manifests",
         materialize_run_skill_manifests,
     )
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
+        "app.runs.application.terminalization_v4.release_provider_lineage",
         no_provider_lineage,
     )
     monkeypatch.setattr("app.worker.admit_v4_stream", no_publication)
@@ -889,13 +907,6 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
                 "resume": {"copied_from_run_id": "source-run", "completed_step_outputs": {}},
             },
             id="resume",
-        ),
-        pytest.param(
-            {
-                "copied_from_run_id": "parent-run",
-                "multi_agent_dispatch": {"parent_run_id": "parent-run", "step_key": "child-a"},
-            },
-            id="multi-agent-child",
         ),
     ],
 )
@@ -934,6 +945,7 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
         registry=ForbiddenRegistry(),
         v4_capabilities=_DISPATCH_V4_CAPABILITIES,
         run_attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
+        run_lifecycle=_TEST_RUN_LIFECYCLE,
     )
 
     assert outcome.status == "failed"
@@ -1015,6 +1027,7 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
         registry=ForbiddenRegistry(),
         v4_capabilities=_DISPATCH_V4_CAPABILITIES,
         run_attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
+        run_lifecycle=_TEST_RUN_LIFECYCLE,
     )
 
     assert locked_run["principal_roles"] == ["admin"]

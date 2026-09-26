@@ -657,7 +657,7 @@ async def test_owner_cancel_does_not_transfer_attempt_execution_owner(monkeypatc
 
     monkeypatch.setattr(
         run_attempt_repository,
-        "_stage_run_tool_permission_terminalization",
+        "stage_run_terminalization",
         stage,
     )
     persistence = run_attempt_repository.PostgresRunCancellationPersistence(

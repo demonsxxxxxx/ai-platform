@@ -23,7 +23,6 @@ def test_schema_declares_platform_fact_tables():
         "runs",
         "run_attempts",
         "run_events",
-        "run_tool_permission_requests",
         "sandbox_leases",
         "files",
         "artifacts",
@@ -351,12 +350,13 @@ def test_schema_declares_p0_memory_tool_event_and_sandbox_contracts():
     assert "schema_version text not null default 'ai-platform.context-snapshot.v1'" in schema
     assert "included_memory_record_ids jsonb not null default '[]'::jsonb" in schema
     assert "create index if not exists idx_run_events_run_sequence" in schema
-    assert "create table if not exists run_tool_permission_requests" in schema
+    assert "drop table if exists run_tool_permission_requests" in schema
+    assert "create table if not exists run_tool_permission_requests" not in schema
     assert "create table if not exists tool_policies" in schema
     assert "primary key (tenant_id, tool_id)" in schema
     assert "references mcp_tools(id)" in schema
     assert "create index if not exists idx_tool_policies_tool" in schema
-    assert "unique(tenant_id, run_id, tool_call_id)" in schema
+    assert "unique(tenant_id, run_id, tool_call_id)" not in schema
     assert "create table if not exists sandbox_leases" in schema
     assert "heartbeat_at timestamptz" in schema
     assert "expires_at timestamptz" in schema
@@ -589,19 +589,27 @@ def test_schema_declares_mcp_server_lifecycle_registry_and_credentials():
     assert "idx_mcp_servers_tenant_status" in schema
 
 
-def test_schema_declares_tool_permission_inbox_index():
+def test_schema_retires_tool_permission_inbox():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
-    assert "idx_run_tool_permission_requests_inbox" in schema
-    assert "on run_tool_permission_requests(tenant_id, user_id, status, created_at desc)" in schema
+    assert "idx_run_tool_permission_requests_inbox" not in schema
+    assert "idx_run_tool_permission_requests_pending_expiry" not in schema
+    assert "drop table if exists run_tool_permission_requests" in schema
 
 
-def test_schema_additively_upgrades_permission_request_expiry_without_changing_memory_null_expiry():
+def test_schema_renames_terminalization_staging_and_preserves_expiry_cleanup_contract():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
-    assert "alter table run_tool_permission_requests add column if not exists expires_at timestamptz;" in schema
-    assert "idx_run_tool_permission_requests_pending_expiry" in schema
-    assert "where status = 'pending';" in schema
+    for name in (
+        "terminalization_target",
+        "terminalization_reason",
+        "terminalization_result_json",
+        "terminalization_error_code",
+        "terminalization_error_message",
+    ):
+        assert name in schema
+    assert "alter table runs rename column permission_terminalization_target to terminalization_target" in schema
+    assert "permission_terminalization_target text" not in schema
     assert "idx_memory_records_expired_cleanup" in schema
     assert "and expires_at is not null;" in schema
 

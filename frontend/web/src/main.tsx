@@ -13,7 +13,6 @@ import "./styles/skill.css";
 import "./styles/skill-management-table.css";
 import "./styles/card-base.css";
 import "./styles/welcome.css";
-import "./styles/approval.css";
 import "./styles/syntax-highlight.css";
 import "./styles/markdown.css";
 import "./styles/utilities.css";

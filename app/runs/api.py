@@ -51,6 +51,14 @@ from app.runs.domain.thinking import (
 from app.runs.application.cancellation import (
     CancelRequestAuthority as CancelRequestAuthority,
 )
+from app.runs.application.lifecycle import RunLifecycleService as RunLifecycleService
+from app.runs.application.terminalization_v4 import (
+    cancel_run_with_v4 as cancel_run_with_v4,
+    complete_run_with_v4 as complete_run_with_v4,
+    fail_run_with_v4 as fail_run_with_v4,
+    finish_run_terminalization as finish_run_terminalization,
+    progress_run_terminalization_with_v4 as progress_run_terminalization_with_v4,
+)
 from app.runs.application.cancellation import (
     CancelRequestResult as CancelRequestResult,
 )

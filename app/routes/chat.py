@@ -549,6 +549,7 @@ async def _admit_chat_submission(
     principal: AuthPrincipal,
     submission_id: str,
     v4_capabilities: WorkerV4Capabilities,
+    run_lifecycle: Any,
 ) -> ChatSubmissionResponse:
     """Admit one already-persisted run without replaying chat creation work."""
 
@@ -595,7 +596,6 @@ async def _admit_chat_submission(
             run_id=run_id,
             run=run,
             execution_snapshot=execution_snapshot,
-            v4_capabilities=v4_capabilities,
         ):
             return ChatSubmissionResponse(
                 submission_id=submission_id,
@@ -671,7 +671,7 @@ async def _admit_chat_submission(
                 ):
                     await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
                         tenant_id=principal.tenant_id,
-                        user_id=principal.user_id,
+                        lifecycle=run_lifecycle, user_id=principal.user_id,
                         run_id=run_id,
                         trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
                         diagnostic_error=profile_enqueue_error,
@@ -758,7 +758,7 @@ async def _admit_chat_submission(
             # planning and commits before the HTTP error.
             await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
                 tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
+                lifecycle=run_lifecycle, user_id=principal.user_id,
                 run_id=run_id,
                 trace_id=str(current_run.get("trace_id") or standard_trace_id(run_id)),
                 diagnostic_error=exc,
@@ -2436,13 +2436,12 @@ async def chat_stream(
         ) from None
     if submission_id is not None:
         try:
-            admitted = _require_chat_submission_admitted(
-                await _admit_chat_submission(
+            admitted = _require_chat_submission_admitted(await _admit_chat_submission(
                 principal=principal,
                 submission_id=submission_id,
                 v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
-            )
-            )
+                run_lifecycle=http_request.app.state.run_lifecycle,
+            ))
         except HTTPException:
             raise
         except Exception:
@@ -2469,7 +2468,7 @@ async def chat_stream(
                 await terminalize_enqueue_failure_with_v4(
                     http_request.app.state.run_stream_runtime.worker_capabilities, conn,
                     tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
+                    lifecycle=http_request.app.state.run_lifecycle, user_id=principal.user_id,
                     run_id=run_id,
                     trace_id=standard_trace_id(run_id),
                     diagnostic_error=enqueue_error,
@@ -2546,13 +2545,12 @@ async def retry_chat_submission_admission(
         )
         if isinstance(resolved, ChatSubmissionPreLedgerAbsenceResponse):
             return resolved
-        return _require_chat_submission_admitted(
-            await _admit_chat_submission(
+        return _require_chat_submission_admitted(await _admit_chat_submission(
             principal=principal,
             submission_id=str(submission_id),
             v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
-        )
-        )
+            run_lifecycle=request.app.state.run_lifecycle,
+        ))
     except HTTPException as exc:
         headers = {**(exc.headers or {}), "Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL}
         raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers) from exc

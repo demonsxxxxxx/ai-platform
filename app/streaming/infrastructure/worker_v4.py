@@ -163,7 +163,6 @@ class PostgresWorkerEventPersistence(WorkerEventPersistence):
         stage: str,
         message: str,
         payload: dict[str, Any] | None,
-        record_run_step: Callable[..., Awaitable[None]],
     ) -> bool:
         async with self._transaction_factory() as conn:
             if persist_event:
@@ -178,14 +177,6 @@ class PostgresWorkerEventPersistence(WorkerEventPersistence):
                     stage=stage,
                     message=message,
                     payload=merged,
-                )
-                await record_run_step(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    message=message,
-                    payload=payload,
                 )
             return await self._is_cancel_requested(
                 conn,

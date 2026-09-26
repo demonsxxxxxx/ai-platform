@@ -1,5 +1,4 @@
 PLATFORM_MULTI_AGENT_NOT_SUPPORTED = "platform_multi_agent_not_supported"
-RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON = "retired_platform_multi_agent_control"
 
 _PLATFORM_MULTI_AGENT_CONTROL_KEYS = {
     "multiagentdispatch",

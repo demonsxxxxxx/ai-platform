@@ -1,4 +1,7 @@
+import importlib
 import inspect
+import json
+from pathlib import Path
 
 from app import artifact_lifecycle_repository as legacy_artifact_lifecycle
 from app import agent_conversation_repository as legacy_agent_conversations
@@ -14,7 +17,22 @@ from app.persistence import (
 )
 from app.platform.postgres import limits as postgres_limits
 from app.platform.postgres.errors import RepositoryNotFoundError
+from app.runs.infrastructure import lifecycle_postgres
 from app.runs.infrastructure import postgres as run_persistence
+
+
+def test_all_repository_bridges_keep_the_canonical_object_identity():
+    policy_path = Path(__file__).resolve().parents[1] / "architecture-policy.json"
+    bridges = json.loads(policy_path.read_text())["migration_bridges"]
+    for bridge in bridges:
+        if (
+            bridge["source_path"] != "app/repositories.py"
+            or bridge["module_alias"] not in vars(repositories)
+        ):
+            continue
+        owner = importlib.import_module(bridge["target_module"])
+        for name in bridge["symbols"]:
+            assert getattr(repositories, name) is getattr(owner, name), name
 
 
 def test_repository_facade_binds_each_lifecycle_operation_to_one_canonical_module():
@@ -123,7 +141,6 @@ def test_persistence_limit_facade_binds_each_symbol_to_one_canonical_module():
 
 def test_run_repository_facade_binds_each_primitive_to_one_canonical_adapter():
     symbols = (
-        "_stage_run_tool_permission_terminalization",
         "acquire_user_active_run_admission_lock",
         "count_active_runs_for_user",
         "enforce_user_active_run_admission",
@@ -136,3 +153,7 @@ def test_run_repository_facade_binds_each_primitive_to_one_canonical_adapter():
 
     for name in symbols:
         assert getattr(repositories, name) is getattr(run_persistence, name)
+    assert (
+        run_persistence.stage_run_terminalization
+        is lifecycle_postgres.stage_run_terminalization
+    )

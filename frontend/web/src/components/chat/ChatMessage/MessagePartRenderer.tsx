@@ -8,7 +8,6 @@ import {
   Download,
   Eye,
   LoaderCircle,
-  ShieldAlert,
   XCircle,
 } from "lucide-react";
 import type { MessagePart } from "../../../types";
@@ -33,9 +32,6 @@ import { SummaryItem } from "./SummaryItem";
 import { PublicExecutionProcess } from "./PublicExecutionProcess";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
-import {
-  getOrdinaryUserToolPermissionPresentation,
-} from "./toolPermissionCardState";
 import { buildArtifactPreviewRequest } from "./items/artifactPreview";
 import { downloadArtifactFile } from "./items/artifactDownload";
 import {
@@ -168,10 +164,6 @@ export function MessagePartRenderer({
     return <RunStatusItem part={part} isStreaming={isStreaming === true} />;
   }
 
-  if (part.type === "tool_permission") {
-    return <ToolPermissionCardItem part={part} />;
-  }
-
   if (part.type === "artifact") {
     return (
       <ArtifactCardItem
@@ -233,10 +225,6 @@ const RUN_STATUS_EVENT_I18N_KEYS: Readonly<Record<string, string>> = {
   agent_step_completed: "chat.runStatus.event.agentStepCompleted",
   agent_step_blocked: "chat.runStatus.event.agentStepBlocked",
   agent_step_failed: "chat.runStatus.event.agentStepFailed",
-  subagent_started: "chat.runStatus.event.subagentStarted",
-  subagent_completed: "chat.runStatus.event.subagentCompleted",
-  subagent_failed: "chat.runStatus.event.subagentFailed",
-  run_child_created: "chat.runStatus.event.runChildCreated",
   capability_selected: "chat.runStatus.event.capabilitySelected",
   intent_detected: "chat.runStatus.event.intentDetected",
   intent_confirmed: "chat.runStatus.event.intentConfirmed",
@@ -272,9 +260,7 @@ function RunStatusItem({
     part.event_type === "run_started" ||
     part.event_type === "tool_call_started" ||
     part.event_type === "agent_step_started" ||
-    part.event_type === "agent_step_reused" ||
-    part.event_type === "subagent_started" ||
-    part.event_type === "run_child_created";
+    part.event_type === "agent_step_reused";
   const Icon =
     part.severity === "error"
       ? XCircle
@@ -388,7 +374,6 @@ function createMessagePartIdentity(part: MessagePart, index: number): string {
         ? `${part.type}:${part.id}`
         : `${part.type}:object:${getMessagePartObjectToken(part)}`;
     case "run_status":
-    case "tool_permission":
       return part.event_id
         ? `${part.type}:${part.event_id}`
         : `${part.type}:object:${getMessagePartObjectToken(part)}`;
@@ -573,41 +558,6 @@ function ArtifactCardItem({
           {ARTIFACT_DOWNLOAD_FAILURE_MESSAGE}
         </div>
       )}
-    </div>
-  );
-}
-
-/** Render recorded permission history only; no model-tool action is available. */
-export function ToolPermissionCardItem({
-  part,
-}: {
-  part: Extract<MessagePart, { type: "tool_permission" }>;
-}) {
-  const { t } = useTranslation();
-  const presentation = getOrdinaryUserToolPermissionPresentation(part);
-
-  return (
-    <div
-      className={clsx(
-        "my-1 max-w-xl rounded-lg border px-3 py-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
-        "border-amber-200/80 bg-amber-50/80 text-stone-800",
-        "dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-stone-100",
-      )}
-    >
-      <div className="flex min-w-0 items-start gap-2">
-        <ShieldAlert
-          size={18}
-          className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="break-words text-sm font-semibold">
-            {t(presentation.titleKey)}
-          </div>
-          <div className="mt-1 text-xs text-stone-600 dark:text-stone-300">
-            {t(presentation.messageKey)}
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

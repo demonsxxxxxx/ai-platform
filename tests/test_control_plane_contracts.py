@@ -62,25 +62,14 @@ def test_standard_event_taxonomy_covers_g2_lifecycle_events():
     assert "artifact_created" in STANDARD_EVENT_TYPES
     assert "mcp_tool_call_completed" in STANDARD_EVENT_TYPES
     assert "context_snapshot_created" in STANDARD_EVENT_TYPES
-    assert "tool_permission_requested" in STANDARD_EVENT_TYPES
-    assert "tool_permission_authorized" in STANDARD_EVENT_TYPES
-    assert "tool_permission_terminalized" in STANDARD_EVENT_TYPES
     assert "sandbox_lease_created" in STANDARD_EVENT_TYPES
     assert "checkpoint_created" in STANDARD_EVENT_TYPES
     assert "subagent_started" in STANDARD_EVENT_TYPES
     assert "subagent_completed" in STANDARD_EVENT_TYPES
     assert "subagent_failed" in STANDARD_EVENT_TYPES
-    assert "multi_agent_dispatch_handoff" in STANDARD_EVENT_TYPES
-    assert "run_multi_agent_child_created" in STANDARD_EVENT_TYPES
-    assert "multi_agent_dispatch_enqueue_failed" in STANDARD_EVENT_TYPES
-    assert "multi_agent_dispatch_reconciled" in STANDARD_EVENT_TYPES
-    assert "multi_agent_dispatch_parent_parked" in STANDARD_EVENT_TYPES
-    assert "multi_agent_parent_finalized" in STANDARD_EVENT_TYPES
-    assert is_standard_event_type("multi_agent_dispatch_handoff") is True
-    assert is_standard_event_type("run_multi_agent_child_created") is True
-    assert is_standard_event_type("multi_agent_dispatch_enqueue_failed") is True
-    assert is_standard_event_type("multi_agent_dispatch_reconciled") is True
-    assert is_standard_event_type("multi_agent_dispatch_parent_parked") is True
+    assert is_standard_event_type("tool_permission_requested") is False
+    assert is_standard_event_type("multi_agent_dispatch_handoff") is False
+    assert is_standard_event_type("run_multi_agent_child_created") is False
     assert is_standard_event_type("run_succeeded") is True
     assert is_standard_event_type("unknown_custom_event") is False
     assert standard_error_code(None) == "unknown_error"

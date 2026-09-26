@@ -16,7 +16,10 @@ from app.bootstrap.model_services import (
     configure_model_services,
 )
 from app.bootstrap.mcp import configure_mcp_runtime
-from app.bootstrap.run_lifecycle import build_run_cancellation_use_case
+from app.bootstrap.run_lifecycle import (
+    build_run_cancellation_use_case,
+    build_run_lifecycle_service,
+)
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.skills import configure_skill_services
@@ -62,10 +65,15 @@ def _cors_origins(raw_value: str) -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    run_stream_runtime = build_run_stream_runtime(transaction)
+    app.state.run_lifecycle = build_run_lifecycle_service()
+    run_stream_runtime = build_run_stream_runtime(
+        transaction,
+        app.state.run_lifecycle,
+    )
     app.state.run_stream_runtime = run_stream_runtime
     app.state.run_cancellation_use_case = build_run_cancellation_use_case(
         attempt_lifecycle=app.state.run_attempt_lifecycle,
+        lifecycle=app.state.run_lifecycle,
     )
     try:
         yield

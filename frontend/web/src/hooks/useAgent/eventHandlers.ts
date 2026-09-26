@@ -1323,7 +1323,6 @@ export function handleStreamEvent(
     dismissQueueToast(ctx);
     ctx.setConnectionStatus("disconnected");
     ctx.setIsInitializingSandbox(false);
-    ctx.options?.onClearApprovals?.();
   }
   return true;
 }
@@ -1444,7 +1443,6 @@ function handleError(
     ctx.setConnectionStatus("disconnected");
     ctx.setIsInitializingSandbox(false);
   }
-  ctx.options?.onClearApprovals?.();
 }
 
 function appendCancelledPart(parts: MessagePart[]): MessagePart[] {

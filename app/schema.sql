@@ -599,11 +599,11 @@ create table if not exists runs (
   copied_from_run_id text references runs(id),
   cancel_requested_at timestamptz,
   cancel_requested_by text,
-  permission_terminalization_target text,
-  permission_terminalization_reason text not null default '',
-  permission_terminalization_result_json jsonb not null default '{}'::jsonb,
-  permission_terminalization_error_code text,
-  permission_terminalization_error_message text,
+  terminalization_target text,
+  terminalization_reason text not null default '',
+  terminalization_result_json jsonb not null default '{}'::jsonb,
+  terminalization_error_code text,
+  terminalization_error_message text,
   constraint fk_runs_tenant_agent foreign key (tenant_id, agent_id)
     references agents(tenant_id, id),
   constraint fk_runs_agent_profile_pin foreign key (
@@ -1075,11 +1075,71 @@ alter table runs add column if not exists session_generation bigint;
 alter table runs add column if not exists copied_from_run_id text references runs(id);
 alter table runs add column if not exists cancel_requested_at timestamptz;
 alter table runs add column if not exists cancel_requested_by text;
-alter table runs add column if not exists permission_terminalization_target text;
-alter table runs add column if not exists permission_terminalization_reason text not null default '';
-alter table runs add column if not exists permission_terminalization_result_json jsonb not null default '{}'::jsonb;
-alter table runs add column if not exists permission_terminalization_error_code text;
-alter table runs add column if not exists permission_terminalization_error_message text;
+-- These fields are ordinary Run terminalization staging. Rename in place so
+-- upgrades retain pending intent and its payload instead of treating it as an
+-- approval-specific record.
+do $$ begin
+  if exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'permission_terminalization_target'
+      and not attisdropped
+  ) and not exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'terminalization_target'
+      and not attisdropped
+  ) then
+    alter table runs rename column permission_terminalization_target to terminalization_target;
+  end if;
+  if exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'permission_terminalization_reason'
+      and not attisdropped
+  ) and not exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'terminalization_reason'
+      and not attisdropped
+  ) then
+    alter table runs rename column permission_terminalization_reason to terminalization_reason;
+  end if;
+  if exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'permission_terminalization_result_json'
+      and not attisdropped
+  ) and not exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'terminalization_result_json'
+      and not attisdropped
+  ) then
+    alter table runs rename column permission_terminalization_result_json to terminalization_result_json;
+  end if;
+  if exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'permission_terminalization_error_code'
+      and not attisdropped
+  ) and not exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'terminalization_error_code'
+      and not attisdropped
+  ) then
+    alter table runs rename column permission_terminalization_error_code to terminalization_error_code;
+  end if;
+  if exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'permission_terminalization_error_message'
+      and not attisdropped
+  ) and not exists (
+    select 1 from pg_attribute
+    where attrelid = 'runs'::regclass and attname = 'terminalization_error_message'
+      and not attisdropped
+  ) then
+    alter table runs rename column permission_terminalization_error_message to terminalization_error_message;
+  end if;
+end $$;
+alter table runs add column if not exists terminalization_target text;
+alter table runs add column if not exists terminalization_reason text not null default '';
+alter table runs add column if not exists terminalization_result_json jsonb not null default '{}'::jsonb;
+alter table runs add column if not exists terminalization_error_code text;
+alter table runs add column if not exists terminalization_error_message text;
 alter table runs add column if not exists latency_ms integer;
 alter table runs add column if not exists input_token_count integer not null default 0;
 alter table runs add column if not exists output_token_count integer not null default 0;
@@ -2090,39 +2150,159 @@ select tenant_id, run_id, coalesce(max(sequence), 0) + 1 from run_events group b
 on conflict (tenant_id, run_id) do update set next_sequence = excluded.next_sequence, updated_at = now()
 where run_event_cursors.next_sequence < excluded.next_sequence;
 
-create table if not exists run_tool_permission_requests (
-  id text primary key,
-  tenant_id text not null references tenants(id),
-  workspace_id text not null references workspaces(id),
-  user_id text not null references users(id),
-  session_id text not null references sessions(id),
-  run_id text not null references runs(id),
-  trace_id text not null default '',
-  tool_id text not null,
-  tool_call_id text not null,
-  action text not null default 'execute',
-  risk_level text not null default 'low',
-  write_capable boolean not null default false,
-  status text not null default 'pending',
-  decision text,
-  reason text not null default '',
-  request_payload_json jsonb not null default '{}'::jsonb,
-  decision_payload_json jsonb not null default '{}'::jsonb,
-  expires_at timestamptz,
-  decided_at timestamptz,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique(tenant_id, run_id, tool_call_id)
-);
+-- Settle only open Runs whose historical payload identifies the retired
+-- platform multi-agent recovery flow. Generic Run/Attempt history and unrelated
+-- input fields remain intact. The Attempt trigger owns parent projection.
+do $$
+declare
+  legacy_run record;
+  open_attempt record;
+  terminal_status text;
+  requested_terminal_status text;
+  attempt_terminal_status text;
+begin
+  if not exists (
+    select 1 from schema_migrations where version = '2026.09.26.1'
+  ) then
+  for legacy_run in
+    select runs.tenant_id, runs.id, runs.cancel_requested_at, runs.started_at,
+           runs.terminalization_target, runs.terminalization_result_json,
+           runs.terminalization_error_code,
+           runs.terminalization_error_message
+    from runs
+    where runs.status in ('queued', 'running')
+      and (
+        exists (
+          select 1
+          from jsonb_each(
+            case when jsonb_typeof(runs.input_json) = 'object'
+              then runs.input_json else '{}'::jsonb end
+          ) payload(key, value)
+          where regexp_replace(lower(payload.key), '[_-]', '', 'g')
+            in ('multiagentdispatch', 'multiagentsteps')
+            or (
+              regexp_replace(lower(payload.key), '[_-]', '', 'g') = 'executionmode'
+              and regexp_replace(lower(payload.value #>> '{}'), '[_-]', '', 'g') = 'multiagent'
+            )
+        )
+        or exists (
+          select 1
+          from jsonb_each(
+            case when jsonb_typeof(runs.input_json->'input') = 'object'
+              then runs.input_json->'input' else '{}'::jsonb end
+          ) payload(key, value)
+          where regexp_replace(lower(payload.key), '[_-]', '', 'g')
+            in ('multiagentdispatch', 'multiagentsteps')
+            or (
+              regexp_replace(lower(payload.key), '[_-]', '', 'g') = 'executionmode'
+              and regexp_replace(lower(payload.value #>> '{}'), '[_-]', '', 'g') = 'multiagent'
+            )
+        )
+      )
+    order by runs.tenant_id, runs.id
+    for update
+  loop
+    requested_terminal_status := case
+      when legacy_run.terminalization_target = 'failed' then 'failed'
+      when legacy_run.cancel_requested_at is not null
+        or legacy_run.terminalization_target in ('cancel_requested', 'cancelled')
+        then 'cancelled'
+      else 'failed'
+    end;
+    terminal_status := requested_terminal_status;
 
-create index if not exists idx_run_tool_permission_requests_run
-  on run_tool_permission_requests(tenant_id, run_id, created_at desc);
-create index if not exists idx_run_tool_permission_requests_inbox
-  on run_tool_permission_requests(tenant_id, user_id, status, created_at desc);
-alter table run_tool_permission_requests add column if not exists expires_at timestamptz;
-create index if not exists idx_run_tool_permission_requests_pending_expiry
-  on run_tool_permission_requests(tenant_id, expires_at asc, created_at asc, id)
-  where status = 'pending';
+    for open_attempt in
+      select id, status
+      from run_attempts
+      where tenant_id = legacy_run.tenant_id
+        and run_id = legacy_run.id
+        and status in ('created', 'queued', 'claimed', 'running', 'cancel_requested', 'expired')
+      order by ordinal, id
+      for update
+    loop
+      -- Follow only transitions accepted by the lifecycle guard. Queued work
+      -- can be cancelled directly; claimed work is failed without inventing a
+      -- start, while running cancellation follows cancel_requested -> cancelled.
+      if open_attempt.status in ('created', 'queued') then
+        attempt_terminal_status := 'cancelled';
+      elsif open_attempt.status = 'cancel_requested' then
+        attempt_terminal_status := 'cancelled';
+      elsif open_attempt.status = 'running' and terminal_status = 'cancelled' then
+        update run_attempts
+        set status = 'cancel_requested',
+            owner_kind = 'reconciler',
+            owner_id = 'schema-retirement',
+            owner_generation = owner_generation + 1,
+            updated_at = clock_timestamp()
+        where id = open_attempt.id;
+        attempt_terminal_status := 'cancelled';
+      elsif open_attempt.status = 'expired' and terminal_status = 'cancelled' then
+        attempt_terminal_status := 'cancelled';
+      else
+        attempt_terminal_status := 'failed';
+      end if;
+      update run_attempts
+      set status = attempt_terminal_status,
+          owner_kind = 'reconciler',
+          owner_id = 'schema-retirement',
+          owner_generation = owner_generation + 1,
+          terminal_reason = 'legacy_multi_agent_recovery_retired',
+          error_code = case when attempt_terminal_status = 'failed'
+            then coalesce(error_code, legacy_run.terminalization_error_code,
+                          'legacy_multi_agent_recovery_retired')
+            else error_code end,
+          finished_at = coalesce(finished_at, clock_timestamp()),
+          updated_at = clock_timestamp()
+      where id = open_attempt.id;
+      terminal_status := attempt_terminal_status;
+    end loop;
+
+    -- An attempt transition may project a terminal status. This fallback also
+    -- closes legacy Runs that never had an Attempt. Consume staged payloads
+    -- before clearing them, and restore the historical start timestamp so a
+    -- claimed-but-not-started Attempt does not acquire a fabricated start.
+    update runs
+    set status = terminal_status,
+        error_code = case when terminal_status = 'failed'
+          then coalesce(legacy_run.terminalization_error_code, error_code,
+                        'legacy_multi_agent_recovery_retired')
+          else null end,
+        error_message = case when terminal_status = 'failed'
+          then coalesce(legacy_run.terminalization_error_message, error_message,
+                        'Legacy multi-agent recovery was retired during schema upgrade.')
+        else null end,
+        result_json = case
+          when legacy_run.terminalization_target is not null
+            then legacy_run.terminalization_result_json
+          else coalesce(result_json, '{}'::jsonb)
+        end,
+        started_at = legacy_run.started_at,
+        finished_at = coalesce(finished_at, clock_timestamp()),
+        terminalization_target = null,
+        terminalization_reason = '',
+        terminalization_result_json = '{}'::jsonb,
+        terminalization_error_code = null,
+        terminalization_error_message = null
+    where tenant_id = legacy_run.tenant_id and id = legacy_run.id
+      and status in ('queued', 'running', 'failed', 'cancelled');
+
+    update run_steps
+    set status = terminal_status,
+        payload_json = coalesce(payload_json, '{}'::jsonb) || jsonb_build_object(
+          'terminal_reason', 'legacy_multi_agent_recovery_retired'
+        ),
+        finished_at = coalesce(finished_at, clock_timestamp()),
+        updated_at = clock_timestamp()
+    where tenant_id = legacy_run.tenant_id and run_id = legacy_run.id
+      and finished_at is null
+      and status in ('created', 'queued', 'claimed', 'running', 'pending', 'in_progress');
+  end loop;
+  end if;
+end $$;
+
+-- Human tool approvals are retired as a relation. The schema upgrade is
+-- transactional, so any outstanding requests disappear with the old contract.
+drop table if exists run_tool_permission_requests;
 
 create table if not exists sandbox_leases (
   id text primary key,

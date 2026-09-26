@@ -26,8 +26,6 @@ class RunTerminalizationProgress:
     completed: bool
     status: str | None
     did_transition: bool = False
-    needs_reconcile: bool = False
-    terminalized_count: int = 0
 
     def get(self, key: str, default: Any = None) -> Any:
         """Return one field with mapping-style compatibility for existing callers."""
@@ -64,6 +62,4 @@ def progress_for_requested_status(
         completed=False,
         status=progress.status,
         did_transition=progress.did_transition,
-        needs_reconcile=progress.needs_reconcile,
-        terminalized_count=progress.terminalized_count,
     )

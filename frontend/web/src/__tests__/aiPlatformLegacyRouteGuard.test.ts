@@ -19,19 +19,11 @@ const legacyRouteChecks: Array<{
     bannedPatterns: [/new WebSocket\(/, /\/ws\b/],
   },
   {
-    relativePath: "../hooks/useApprovals.ts",
-    bannedPatterns: [/\/human(?:\/|`|["'])/],
-  },
-  {
     relativePath: "../hooks/useAgent/eventHandlers.ts",
     bannedPatterns: [/\/human\/\$\{/],
   },
   {
     relativePath: "../hooks/useAgent/historyLoader.ts",
-    bannedPatterns: [/\/human\/\$\{/],
-  },
-  {
-    relativePath: "../components/panels/ApprovalPanel.tsx",
     bannedPatterns: [/\/human\/\$\{/],
   },
   {
@@ -55,6 +47,16 @@ test("active ai-platform source does not contain legacy LambChat runtime routes"
   assert.deepEqual(violations, []);
 });
 
+test("retired human approval UI is absent", () => {
+  for (const relativePath of [
+    "../hooks/useApprovals.ts",
+    "../components/panels/ApprovalPanel.tsx",
+    "../styles/approval.css",
+  ]) {
+    assert.equal(existsSync(new URL(relativePath, import.meta.url)), false, relativePath);
+  }
+});
+
 test("legacy profile modal and its product tabs are removed", () => {
   for (const relativePath of [
     "../components/profile/ProfileModal.tsx",
@@ -72,5 +74,5 @@ test("legacy profile modal and its product tabs are removed", () => {
 test("MCP tool endpoints remain allowed through ai-platform /api/mcp routes", () => {
   const useToolsSource = readSource("../hooks/useTools.ts");
 
-  assert.match(useToolsSource, /\$\{API_BASE\}\/mcp\/\$\{/);
+  assert.match(useToolsSource, /authenticatedRequest\(`\/api\/mcp\/chat-tools\$\{query\}`\)/);
 });

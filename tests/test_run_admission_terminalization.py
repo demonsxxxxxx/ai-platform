@@ -1,332 +1,199 @@
-import json
 from types import SimpleNamespace
 
 import pytest
 
-from app import repositories
 from app import run_admission_terminalization as terminalization
+from app.runs.api import RunLifecycleService
 
 
-@pytest.fixture(autouse=True)
-def _stub_terminal_context_ports(monkeypatch):
-    async def release(_conn, **_kwargs):
-        return None
+def lifecycle_for_enqueue_failure(conn, calls, *, already_terminal=False):
+    class Persistence:
+        async def stage_run_terminalization(self, observed_conn, **kwargs):
+            assert observed_conn is conn
+            calls.append(("stage_terminalization", observed_conn))
+            assert kwargs == {
+                "tenant_id": "tenant-a",
+                "run_id": "run-a",
+                "target_status": "failed",
+                "terminal_reason": "run_failed",
+                "result_json": {
+                    "message": "Queue admission failed; retry this run.",
+                    "retryable": True,
+                },
+                "error_code": "queue_enqueue_failed",
+                "error_message": "Queue admission failed; retry this run.",
+            }
+            return {"terminalization_target": "failed"}
 
-    monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
-        release,
-    )
+        async def load_staged_terminalization(self, observed_conn, **kwargs):
+            assert observed_conn is conn
+            calls.append(("load_terminalization", observed_conn))
+            assert kwargs == {"tenant_id": "tenant-a", "run_id": "run-a"}
+            return {
+                "status": "failed" if already_terminal else "queued",
+                "trace_id": "trace-run-a",
+                "terminalization_target": "failed",
+                "terminalization_reason": "run_failed",
+                "terminalization_result_json": {
+                    "message": "Queue admission failed; retry this run.",
+                    "retryable": True,
+                },
+                "terminalization_error_code": "queue_enqueue_failed",
+                "terminalization_error_message": "Queue admission failed; retry this run.",
+            }
 
+        async def finalize_staged_terminalization(self, observed_conn, **kwargs):
+            assert observed_conn is conn
+            calls.append(("finalize_terminalization", observed_conn))
+            assert kwargs["tenant_id"] == "tenant-a"
+            assert kwargs["run_id"] == "run-a"
+            assert kwargs["target_status"] == "failed"
+            return {
+                "already_terminal": False,
+                "artifact_count": 0,
+                "latency_ms": None,
+                "input_token_count": 0,
+                "output_token_count": 0,
+                "total_token_count": 0,
+                "estimated_cost_minor": 0,
+            }
 
-class Cursor:
-    def __init__(self, *, row=None, rows=None):
-        self.row = row
-        self.rows = rows or []
-
-    async def fetchone(self):
-        return self.row
-
-    async def fetchall(self):
-        return self.rows
-
-
-class DelayedPermissionDrainConnection:
-    def __init__(self):
-        self.status = "queued"
-        self.target = None
-        self.reason = ""
-        self.result = {}
-        self.error_code = None
-        self.error_message = None
-        self.remaining = [f"tpr-{index}" for index in range(51)]
-
-    async def execute(self, sql, params):
-        normalized = " ".join(sql.split())
-        lowered = normalized.lower()
-        if "set permission_terminalization_target = case" in lowered:
-            if self.status in {"succeeded", "failed", "cancelled"}:
-                return Cursor()
-            self.target = params[1]
-            self.reason = params[3]
-            self.result = json.loads(params[5])
-            self.error_code = params[7]
-            self.error_message = params[9]
-            return Cursor(
-                row={
-                    "id": "run-retired",
-                    "user_id": "user-a",
-                    "trace_id": "trace-retired",
-                    "permission_terminalization_target": self.target,
-                }
-            )
-        if lowered.startswith("update runs") and "set latency_ms" in lowered:
-            return Cursor()
-        if lowered.startswith("select id, trace_id, status, permission_terminalization_target"):
-            return Cursor(
-                row={
-                    "id": "run-retired",
-                    "user_id": "user-a",
-                    "trace_id": "trace-retired",
-                    "status": self.status,
-                    "permission_terminalization_target": self.target,
-                    "permission_terminalization_reason": self.reason,
-                    "permission_terminalization_result_json": self.result,
-                    "permission_terminalization_error_code": self.error_code,
-                    "permission_terminalization_error_message": self.error_message,
-                }
-            )
-        if lowered.startswith("with locked_run as materialized"):
-            batch, self.remaining = self.remaining[:50], self.remaining[50:]
-            return Cursor(
-                rows=[
-                    {
-                        "id": request_id,
-                        "user_id": "user-a",
-                        "trace_id": "trace-retired",
-                        "tool_id": "Bash",
-                        "tool_call_id": f"call-{request_id}",
-                        "action": "execute",
-                        "risk_level": "high",
-                        "write_capable": True,
-                        "decision": "allow_for_run",
-                    }
-                    for request_id in batch
-                ]
-            )
-        if "has_unterminalized" in lowered:
-            return Cursor(row={"has_unterminalized": bool(self.remaining)})
-        if lowered.startswith("update runs") and "set status = 'failed'" in lowered:
-            self.status = "failed"
-            self.target = None
-            return Cursor(row={"id": "run-retired", "status": "failed"})
-        if lowered.startswith("select count(*) as artifact_count from artifacts"):
-            return Cursor(row={"artifact_count": 0})
-        if lowered.startswith("update run_steps"):
-            return Cursor()
-        raise AssertionError(normalized)
-
-
-@pytest.mark.asyncio
-async def test_retired_admission_terminalization_emits_one_hidden_fact_after_delayed_drain(
-    monkeypatch,
-):
-    events: list[dict[str, object]] = []
-    audits: list[dict[str, object]] = []
-
-    async def append_event(_conn, **kwargs):
-        events.append(kwargs)
-        return "evt-terminal"
-
-    async def append_audit_log(_conn, **kwargs):
-        audits.append(kwargs)
-        return "aud-terminal"
-
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
-    terminal_rows: list[tuple[str, str]] = []
-
-    class EventPersistence:
-        async def append_terminal_row(self, _conn, *, tenant_id, run_id):
-            terminal_rows.append((tenant_id, run_id))
-            return None
-
-    v4_capabilities = SimpleNamespace(event_persistence=EventPersistence())
-    conn = DelayedPermissionDrainConnection()
-
-    first = await terminalization.terminalize_retired_platform_multi_agent_run(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-retired",
-        v4_capabilities=v4_capabilities,
-    )
-    assert first.completed is False
-    assert conn.reason == "retired_platform_multi_agent_control"
-    assert len(conn.remaining) == 1
-    assert not [event for event in events if event["event_type"] == "run_failed"]
-
-    second = await terminalization.terminalize_retired_platform_multi_agent_run(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-retired",
-        v4_capabilities=v4_capabilities,
-    )
-    assert second.completed is True and second.did_transition is True
-    assert len([event for event in events if event["event_type"] == "run_failed"]) == 1
-    assert len([audit for audit in audits if audit["target_type"] == "run"]) == 1
-    first_terminal_fact_counts = (len(events), len(audits))
-
-    await terminalization.terminalize_retired_platform_multi_agent_run(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-retired",
-        v4_capabilities=v4_capabilities,
-    )
-    await terminalization.terminalize_retired_platform_multi_agent_run(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-retired",
-        v4_capabilities=v4_capabilities,
-    )
-    assert (len(events), len(audits)) == first_terminal_fact_counts
-    assert terminal_rows == [("tenant-a", "run-retired")]
-
-    run_events = [event for event in events if event["event_type"] == "run_failed"]
-    run_audits = [audit for audit in audits if audit["target_type"] == "run"]
-    assert len(run_events) == len(run_audits) == 1
-    assert run_events[0]["stage"] == "control"
-    assert run_events[0]["visible_to_user"] is False
-    assert run_events[0]["payload"]["visible_to_user"] is False
-    assert run_events[0]["payload"]["error_code"] == "platform_multi_agent_not_supported"
-    assert run_events[0]["payload"]["retryable"] is False
-    assert run_audits[0]["action"] == "run.admission.rejected"
-    assert run_audits[0]["user_id"] == "user-a"
-    assert run_audits[0]["payload_json"]["reason"] == "retired_platform_multi_agent_control"
-    assert run_audits[0]["payload_json"]["error_code"] == "platform_multi_agent_not_supported"
-    assert run_audits[0]["payload_json"]["retryable"] is False
-
-
-@pytest.mark.asyncio
-async def test_enqueue_failure_prepares_authority_then_terminal_row_on_same_connection(monkeypatch):
-    calls: list[tuple[str, object]] = []
-    conn = object()
-
-    async def mark_enqueue_failed(observed_conn, **kwargs):
+    async def append_event(observed_conn, **kwargs):
         assert observed_conn is conn
-        calls.append(("transition", observed_conn))
-        assert kwargs == {
-            "tenant_id": "tenant-a",
-            "user_id": "user-a",
-            "run_id": "run-a",
-            "trace_id": "trace-run-a",
-        }
-        return terminalization.RunTerminalizationProgress(
-            completed=True,
-            status="failed",
-            did_transition=True,
-        )
+        calls.append((f"event:{kwargs['event_type']}", observed_conn))
 
+    async def append_audit_log(observed_conn, **kwargs):
+        assert observed_conn is conn
+        calls.append((f"audit:{kwargs['action']}", observed_conn))
+
+    return RunLifecycleService(
+        persistence=Persistence(),
+        append_event=append_event,
+        append_audit_log=append_audit_log,
+        validate_result_size=lambda _result: None,
+        sanitize_payload=lambda payload: payload,
+        sanitize_text=lambda value: str(value or ""),
+        make_trace_id=lambda run_id: f"trace-{run_id}",
+    )
+
+
+def v4_capabilities(calls, *, terminal_row="row-a"):
     class PendingAdmissions:
         async def prepare_pending_authority_in_transaction(
-            self, observed_conn, *, tenant_id, run_id, attempt_id
+            self, conn, *, tenant_id, run_id, attempt_id
         ):
-            assert observed_conn is conn
+            calls.append(("authority", conn))
             assert (tenant_id, run_id, attempt_id) == (
                 "tenant-a",
                 "run-a",
                 "enqueue_failure_run-a",
             )
-            calls.append(("authority", observed_conn))
             return object()
 
     class EventPersistence:
-        async def append_terminal_row(self, observed_conn, *, tenant_id, run_id):
-            assert observed_conn is conn
+        async def append_terminal_row(self, conn, *, tenant_id, run_id):
+            calls.append(("terminal_row", conn))
             assert (tenant_id, run_id) == ("tenant-a", "run-a")
-            calls.append(("terminal_row", observed_conn))
-            return "row-a"
+            return terminal_row
 
-    class Diagnostics:
-        async def capture_failure_result(self, observed_conn, **kwargs):
-            assert observed_conn is conn
-            assert kwargs["attempt_id"] is None
-            assert kwargs["source"] == "run_admission"
-            assert kwargs["stage"] == "queue_enqueue"
-            assert kwargs["result_json"]["runtime_diagnostics"]["sdk"][
-                "exception_type"
-            ] == "RuntimeError"
-            calls.append(("diagnostics", observed_conn))
+    return SimpleNamespace(
+        pending_admissions=PendingAdmissions(),
+        event_persistence=EventPersistence(),
+    )
 
-    monkeypatch.setattr(repositories, "mark_run_enqueue_failed", mark_enqueue_failed)
+
+class Diagnostics:
+    def __init__(self, calls, conn):
+        self.calls = calls
+        self.conn = conn
+
+    async def capture_failure_result(self, observed_conn, **kwargs):
+        assert observed_conn is self.conn
+        assert kwargs["attempt_id"] is None
+        assert kwargs["source"] == "run_admission"
+        assert kwargs["stage"] == "queue_enqueue"
+        assert kwargs["error_code"] == "queue_enqueue_failed"
+        assert kwargs["result_json"]["runtime_diagnostics"]["sdk"][
+            "exception_type"
+        ] == "RuntimeError"
+        self.calls.append(("diagnostics", observed_conn))
+
+
+@pytest.mark.asyncio
+async def test_enqueue_failure_transitions_before_persisting_v4_terminal_row():
+    calls = []
+    conn = object()
+    lifecycle = lifecycle_for_enqueue_failure(conn, calls)
 
     progress = await terminalization.terminalize_enqueue_failure_with_v4(
-        SimpleNamespace(
-            pending_admissions=PendingAdmissions(),
-            event_persistence=EventPersistence(),
-        ),
+        v4_capabilities(calls),
         conn,
+        lifecycle=lifecycle,
         tenant_id="tenant-a",
         user_id="user-a",
         run_id="run-a",
         trace_id="trace-run-a",
         diagnostic_error=RuntimeError("queue payload invalid"),
-        run_diagnostics=Diagnostics(),
+        run_diagnostics=Diagnostics(calls, conn),
     )
 
+    assert progress.completed is True
+    assert progress.status == "failed"
     assert progress.did_transition is True
     assert calls == [
         ("authority", conn),
-        ("transition", conn),
+        ("stage_terminalization", conn),
+        ("load_terminalization", conn),
+        ("finalize_terminalization", conn),
+        ("event:run_failed", conn),
+        ("audit:run.failed", conn),
+        ("event:queue_enqueue_failed", conn),
+        ("audit:run.queue.enqueue_failed", conn),
         ("diagnostics", conn),
         ("terminal_row", conn),
     ]
 
 
 @pytest.mark.asyncio
-async def test_enqueue_failure_rejects_missing_v4_terminal_row(monkeypatch):
-    async def mark_enqueue_failed(_conn, **_kwargs):
-        return terminalization.RunTerminalizationProgress(
-            completed=True,
-            status="failed",
-            did_transition=True,
-        )
-
-    class PendingAdmissions:
-        async def prepare_pending_authority_in_transaction(self, *_args, **_kwargs):
-            return object()
-
-    class EventPersistence:
-        async def append_terminal_row(self, *_args, **_kwargs):
-            return None
-
-    monkeypatch.setattr(repositories, "mark_run_enqueue_failed", mark_enqueue_failed)
+async def test_enqueue_failure_rejects_missing_v4_terminal_row():
+    calls = []
+    conn = object()
 
     with pytest.raises(RuntimeError, match="enqueue_failure_v4_terminal_row_missing"):
         await terminalization.terminalize_enqueue_failure_with_v4(
-            SimpleNamespace(
-                pending_admissions=PendingAdmissions(),
-                event_persistence=EventPersistence(),
-            ),
-            object(),
+            v4_capabilities(calls, terminal_row=None),
+            conn,
+            lifecycle=lifecycle_for_enqueue_failure(conn, calls),
             tenant_id="tenant-a",
             user_id="user-a",
             run_id="run-a",
             trace_id="trace-run-a",
         )
+
+    assert ("finalize_terminalization", conn) in calls
+    assert calls[-1] == ("terminal_row", conn)
 
 
 @pytest.mark.asyncio
-async def test_enqueue_failure_rejects_a_non_winning_transition(monkeypatch):
-    terminal_row_called = False
-
-    async def mark_enqueue_failed(_conn, **_kwargs):
-        return terminalization.RunTerminalizationProgress(
-            completed=True,
-            status="failed",
-            did_transition=False,
-        )
-
-    class PendingAdmissions:
-        async def prepare_pending_authority_in_transaction(self, *_args, **_kwargs):
-            return object()
-
-    class EventPersistence:
-        async def append_terminal_row(self, *_args, **_kwargs):
-            nonlocal terminal_row_called
-            terminal_row_called = True
-            return "unexpected-row"
-
-    monkeypatch.setattr(repositories, "mark_run_enqueue_failed", mark_enqueue_failed)
+async def test_enqueue_failure_rejects_a_non_winning_transition():
+    calls = []
+    conn = object()
 
     with pytest.raises(RuntimeError, match="enqueue_failure_terminal_transition_missing"):
         await terminalization.terminalize_enqueue_failure_with_v4(
-            SimpleNamespace(
-                pending_admissions=PendingAdmissions(),
-                event_persistence=EventPersistence(),
+            v4_capabilities(calls),
+            conn,
+            lifecycle=lifecycle_for_enqueue_failure(
+                conn, calls, already_terminal=True
             ),
-            object(),
             tenant_id="tenant-a",
             user_id="user-a",
             run_id="run-a",
             trace_id="trace-run-a",
         )
-    assert terminal_row_called is False
+
+    assert calls == [
+        ("authority", conn),
+        ("stage_terminalization", conn),
+        ("load_terminalization", conn),
+    ]

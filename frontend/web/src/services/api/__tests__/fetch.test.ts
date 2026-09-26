@@ -206,37 +206,6 @@ test("authFetch strips caller-supplied Authorization headers in browser mode", a
   }
 });
 
-test("authFetch exposes only the safe server status and detail code to governance clients", async () => {
-  const stubs = installFetchAuthStubs({
-    fetchImpl: async () =>
-      new Response(
-        JSON.stringify({ detail: "tool_permission_decision_not_supported" }),
-        {
-          status: 409,
-          headers: { "Content-Type": "application/json" },
-        },
-      ),
-  });
-
-  try {
-    await assert.rejects(
-      () => authFetch("/api/ai/tool-permissions/inbox/request/decision"),
-      (error: unknown) => {
-        assert.equal(error instanceof ApiRequestError, true);
-        assert.equal((error as ApiRequestError).status, 409);
-        assert.equal(
-          (error as ApiRequestError).code,
-          "tool_permission_decision_not_supported",
-        );
-        assert.doesNotMatch((error as Error).message, /private|token/i);
-        return true;
-      },
-    );
-  } finally {
-    stubs.restore();
-  }
-});
-
 test("authFetch emits recovery for a current ordinary 401", async () => {
   const stubs = installFetchAuthStubs({
     initialLocalStorage: {

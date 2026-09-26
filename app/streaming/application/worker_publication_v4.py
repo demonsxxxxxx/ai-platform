@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
-from contextlib import AbstractAsyncContextManager
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -20,7 +19,6 @@ from app.streaming.application.durable_v4 import (
 
 from app.streaming.domain.public_events_v4 import V4ProjectionError, project_public_v4
 
-TransactionFactory = Callable[[], AbstractAsyncContextManager[Any]]
 
 
 
@@ -89,7 +87,6 @@ class WorkerEventPersistence(Protocol):
         stage: str,
         message: str,
         payload: dict[str, Any] | None,
-        record_run_step: Callable[..., Awaitable[None]],
     ) -> bool: ...
 
 
@@ -215,7 +212,6 @@ async def persist_worker_event(
     stage: str,
     message: str,
     payload: dict[str, Any] | None,
-    record_run_step: Callable[..., Awaitable[None]],
 ) -> bool:
     """Persist the business event and inspect cancellation in its transaction."""
 
@@ -226,34 +222,7 @@ async def persist_worker_event(
         stage=stage,
         message=message,
         payload=payload,
-        record_run_step=record_run_step,
     )
-
-
-async def finalize_parent_and_publish(
-    transaction_factory: TransactionFactory,
-    capabilities: WorkerV4Capabilities,
-    finalize_parent: Callable[[TransactionFactory, Any, Any], Awaitable[Any]],
-    payload: Any,
-    reconciled_parent: Any,
-) -> None:
-    finalized_parent = await finalize_parent(transaction_factory, payload, reconciled_parent)
-    await publish_run_event(
-        capabilities,
-        tenant_id=payload.tenant_id,
-        run_id=payload.run_id,
-    )
-    parent_run_id = (
-        finalized_parent.get("parent_run_id")
-        if isinstance(finalized_parent, dict)
-        else getattr(finalized_parent, "parent_run_id", None)
-    )
-    if isinstance(parent_run_id, str) and parent_run_id and parent_run_id != payload.run_id:
-        await publish_run_event(
-            capabilities,
-            tenant_id=payload.tenant_id,
-            run_id=parent_run_id,
-        )
 
 
 async def publish_run_event(
@@ -287,7 +256,6 @@ __all__ = [
     "WorkerEventPersistence",
     "WorkerV4Capabilities",
     "admit_v4_stream",
-    "finalize_parent_and_publish",
     "persist_worker_event",
     "publish_run_event",
 ]

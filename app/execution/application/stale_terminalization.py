@@ -41,17 +41,17 @@ async def stage_stale_run_reconciliation(
     cursor = await conn.execute(
         """
         update runs
-        set permission_terminalization_target = %s,
-            permission_terminalization_reason = 'stale_run_no_owner',
-            permission_terminalization_result_json = %s::jsonb,
-            permission_terminalization_error_code = %s,
-            permission_terminalization_error_message = %s
+        set terminalization_target = %s,
+            terminalization_reason = 'stale_run_no_owner',
+            terminalization_result_json = %s::jsonb,
+            terminalization_error_code = %s,
+            terminalization_error_message = %s
         where tenant_id = %s
           and workspace_id = %s
           and user_id is not distinct from %s
           and id = %s
           and status = %s
-          and permission_terminalization_target is null
+          and terminalization_target is null
           and (%s <> 'cancelled' or cancel_requested_at is not null)
           and (%s <> 'failed' or cancel_requested_at is null)
           and not exists (
@@ -79,7 +79,7 @@ async def stage_stale_run_reconciliation(
                   created_at
                 ) <= %s::timestamptz)
           )
-        returning id, trace_id, permission_terminalization_target
+        returning id, trace_id, terminalization_target
         """,
         (
             terminal_status,

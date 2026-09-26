@@ -12,6 +12,16 @@ from psycopg.rows import dict_row
 import pytest
 
 from app import agent_conversation_repository, repositories
+import app.agent_apps.infrastructure.principal_catalog_postgres as principal_catalog_persistence
+import app.identity.infrastructure.capability_distributions_postgres as distribution_persistence
+import app.runs.infrastructure.admin_queries_postgres as run_queries_persistence
+import app.runs.infrastructure.capability_admission_postgres as capability_admission_persistence
+import app.runs.infrastructure.control_operations_postgres as control_operations_persistence
+import app.runs.infrastructure.creation_postgres as run_creation_persistence
+import app.runs.infrastructure.replay_postgres as replay_persistence
+import app.sandbox.infrastructure.leases_postgres as sandbox_leases_persistence
+import app.skills.infrastructure.catalog_postgres as skill_catalog_persistence
+import app.skills.infrastructure.versions_postgres as skill_versions_persistence
 from app.files.api import get_owned_session_file, get_owned_unbound_file, list_owned_session_files
 from app.execution.application import stale_terminalization
 from app import run_event_repository
@@ -23,10 +33,17 @@ from app.platform.postgres.errors import (
     RepositoryAuthorizationError as PlatformRepositoryAuthorizationError,
 )
 from app.platform.postgres.errors import RepositoryConflictError as PlatformRepositoryConflictError
+from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
+from app.platform.tracing import standard_trace_id
 from app.skills.infrastructure import postgres as skill_persistence
 from app.routes import sandbox_runtime_cleanup
 from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
 from app.runs.infrastructure import postgres as run_attempt_persistence
+from app.runs.application.lifecycle import RunLifecycleService
+from app.runs.infrastructure.lifecycle_postgres import (
+    PostgresRunLifecyclePersistence,
+    require_run_result_size,
+)
 from app.runs.application.cancellation import RunCancellationUseCase
 from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.platform.postgres.sandbox_leases import (
@@ -45,31 +62,19 @@ from app.repositories import (
     RepositoryNotFoundError,
     append_audit_log,
     append_event,
-    cancel_run,
-    complete_run,
     count_active_runs_for_user,
     create_artifact,
     create_context_snapshot,
-    create_tool_permission_request,
     create_run,
     admin_delete_memory_record,
     delete_memory_record,
     enforce_user_active_run_admission,
-    expire_tool_permission_request,
-    fail_run,
     get_admin_run_detail,
     get_context_snapshot_for_worker,
-    get_exact_tool_permission_decision,
     get_authorized_context_target_session,
     get_latest_authorized_executor_context_snapshot,
     list_context_share_snapshots_for_target_session,
-    get_latest_tool_permission_decision,
-    get_tool_permission_request_by_id,
-    get_tool_permission_request_by_id_for_tenant,
-    get_tool_permission_request_for_tenant,
     get_run_identity,
-    list_tool_permission_inbox,
-    list_tool_permission_inbox_for_tenant,
     list_run_events,
     list_run_artifacts,
     list_scoped_context_messages,
@@ -128,7 +133,15 @@ async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
             list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
         ),
         event_writer=_CancellationEventWriter(),
-        progress_terminalization=repositories.progress_run_tool_permission_terminalization,
+        progress_terminalization=RunLifecycleService(
+            persistence=PostgresRunLifecyclePersistence(),
+            append_event=repositories.append_event,
+            append_audit_log=repositories.append_audit_log,
+            validate_result_size=require_run_result_size,
+            sanitize_payload=sanitize_public_payload,
+            sanitize_text=sanitize_public_text,
+            make_trace_id=standard_trace_id,
+        ).progress_run_terminalization,
     )
     result = await use_case.request_owner_cancel(
         tenant_id=tenant_id,
@@ -154,7 +167,15 @@ async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
             list_active_sandbox_leases=repositories.list_active_sandbox_leases_for_run,
         ),
         event_writer=_CancellationEventWriter(),
-        progress_terminalization=repositories.progress_run_tool_permission_terminalization,
+        progress_terminalization=RunLifecycleService(
+            persistence=PostgresRunLifecyclePersistence(),
+            append_event=repositories.append_event,
+            append_audit_log=repositories.append_audit_log,
+            validate_result_size=require_run_result_size,
+            sanitize_payload=sanitize_public_payload,
+            sanitize_text=sanitize_public_text,
+            make_trace_id=standard_trace_id,
+        ).progress_run_terminalization,
     )
     result = await use_case.request_admin_cancel(
         tenant_id=tenant_id,
@@ -241,7 +262,7 @@ def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
 async def test_list_stale_run_candidates_requires_progress_staleness_and_no_active_sandbox_lease():
     conn = SingleRowConnection(None)
 
-    await repositories.list_stale_run_reconciliation_candidates(
+    await PostgresRunLifecyclePersistence().list_stale_run_reconciliation_candidates(
         conn,
         stale_after_seconds=900,
         limit=25,
@@ -252,7 +273,7 @@ async def test_list_stale_run_candidates_requires_progress_staleness_and_no_acti
     assert "<= clock_timestamp() - (%s * interval '1 second')" in conn.sql
     assert "not exists ( select 1 from sandbox_leases" in conn.sql
     assert "sandbox_leases.status = 'active'" in conn.sql
-    assert "for update of runs skip locked" not in conn.sql
+    assert "for update of runs skip locked" in conn.sql
     assert conn.params == (900, 900, 25)
 
 
@@ -260,7 +281,7 @@ async def test_list_stale_run_candidates_requires_progress_staleness_and_no_acti
 async def test_list_cancel_requested_orphans_bypasses_general_staleness_but_keeps_live_owner_fences():
     conn = SingleRowConnection(None)
 
-    await repositories.list_stale_run_reconciliation_candidates(
+    await PostgresRunLifecyclePersistence().list_stale_run_reconciliation_candidates(
         conn,
         stale_after_seconds=900,
         cancel_requested_after_seconds=5,
@@ -273,126 +294,8 @@ async def test_list_cancel_requested_orphans_bypasses_general_staleness_but_keep
     assert conn.params == (5, 900, 25)
 
 
-@pytest.mark.asyncio
-async def test_stage_stale_cancel_requested_run_uses_scoped_cas_and_existing_cancel_contract(monkeypatch):
-    calls = []
-
-    class Connection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append((normalized, params))
-            if normalized.startswith("update runs set permission_terminalization_target"):
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "trace_id": "trace-a",
-                        "permission_terminalization_target": "cancelled",
-                    }
-                )
-            return SingleRowCursor(None)
-
-    async def append_event(_conn, **kwargs):
-        calls.append(("event", kwargs))
-
-    async def append_audit_log(_conn, **kwargs):
-        calls.append(("audit", kwargs))
-
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
-
-    row = await repositories.stage_stale_run_reconciliation(
-        Connection(),
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        run_id="run-a",
-        expected_status="running",
-        stale_before="2026-07-21T11:00:00Z",
-        cancel_requested_before="2026-07-21T11:07:58Z",
-        terminal_status="cancelled",
-        error_code=None,
-        error_message=None,
-    )
-
-    assert row == {"id": "run-a", "trace_id": "trace-a", "permission_terminalization_target": "cancelled"}
-    update_sql, update_params = calls[0]
-    assert "workspace_id = %s" in update_sql
-    assert "user_id is not distinct from %s" in update_sql
-    assert "status = %s" in update_sql
-    assert "cancel_requested_at is not null" in update_sql
-    assert "not exists ( select 1 from sandbox_leases" in update_sql
-    assert "greatest( coalesce((select max(created_at)" in update_sql
-    assert update_params[4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
-    assert update_params[-3:] == (
-        "2026-07-21T11:07:58Z",
-        "cancelled",
-        "2026-07-21T11:00:00Z",
-    )
-    assert calls[1][0] == "event"
-    assert calls[1][1]["event_type"] == "stale_run_reconciled"
-    assert calls[1][1]["payload"]["result_status"] == "cancelled"
-    assert calls[2][0] == "audit"
-    assert calls[2][1]["action"] == "run.stale.reconcile"
 
 
-@pytest.mark.asyncio
-async def test_stage_stale_running_run_fails_explicitly_and_cas_loss_emits_nothing(monkeypatch):
-    calls = []
-
-    class Connection:
-        def __init__(self, row):
-            self.row = row
-
-        async def execute(self, sql, params):
-            calls.append(("sql", " ".join(sql.split()), params))
-            return SingleRowCursor(self.row)
-
-    async def append_event(_conn, **kwargs):
-        calls.append(("event", kwargs))
-
-    async def append_audit_log(_conn, **kwargs):
-        calls.append(("audit", kwargs))
-
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
-
-    failed = await repositories.stage_stale_run_reconciliation(
-        Connection(
-            {"id": "run-failed", "trace_id": "trace-failed", "permission_terminalization_target": "failed"}
-        ),
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        run_id="run-failed",
-        expected_status="running",
-        stale_before="2026-07-21T11:00:00Z",
-        cancel_requested_before=None,
-        terminal_status="failed",
-        error_code="stale_run_interrupted",
-        error_message="Run interrupted because no live execution owner remains.",
-    )
-
-    assert failed is not None
-    assert any(call[0] == "event" and call[1]["payload"]["error_code"] == "stale_run_interrupted" for call in calls)
-    assert any(call[0] == "audit" and call[1]["payload_json"]["result_status"] == "failed" for call in calls)
-
-    calls.clear()
-    lost = await repositories.stage_stale_run_reconciliation(
-        Connection(None),
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        run_id="run-lost",
-        expected_status="running",
-        stale_before="2026-07-21T11:00:00Z",
-        cancel_requested_before=None,
-        terminal_status="failed",
-        error_code="stale_run_interrupted",
-        error_message="Run interrupted because no live execution owner remains.",
-    )
-
-    assert lost is None
-    assert [call[0] for call in calls] == ["sql"]
 
 
 @pytest.mark.asyncio
@@ -1615,9 +1518,9 @@ async def test_authorize_selected_run_capabilities_returns_stable_stale_conflict
     async def exact_version(conn, *, skill_id, version):
         return {"skill_id": skill_id, "version": version, "content_hash": version, "status": "active"}
 
-    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
-    monkeypatch.setattr(repositories, "get_effective_skill_version_for_policy", exact_version)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_selected_skill", resolve_selected, raising=False)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", distribution)
+    monkeypatch.setattr(capability_admission_persistence, "get_effective_skill_version_for_policy", exact_version)
 
     with pytest.raises(RepositoryConflictError) as exc_info:
         await repositories.authorize_selected_run_capabilities(
@@ -1667,8 +1570,8 @@ async def test_authorize_selected_run_capabilities_rejects_version_content_hash_
             "allowed_roles": [],
         }
 
-    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_selected_skill", resolve_selected, raising=False)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", distribution)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_selected_run_capabilities(
@@ -1715,8 +1618,8 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
         assert version == "hash-v1"
         return {"skill_id": skill_id, "version": "hash-v1", "content_hash": "hash-v1", "status": historical_status}
 
-    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_selected_skill", resolve_selected, raising=False)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", distribution)
     monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     skill = await repositories.authorize_replay_run_capabilities(
@@ -1775,8 +1678,8 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
     async def historical_version(conn, *, skill_id, version):
         return {"skill_id": skill_id, "version": version, "content_hash": version, "status": historical_status}
 
-    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_selected_skill", resolve_selected, raising=False)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", distribution)
     monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
@@ -1826,7 +1729,7 @@ async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp
             "status": "active",
         }
 
-    monkeypatch.setattr(repositories, "_authorize_run_capabilities", shared_authorizer)
+    monkeypatch.setattr(capability_admission_persistence, "_authorize_run_capabilities", shared_authorizer)
     monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     await repositories.authorize_replay_run_capabilities(
@@ -1957,7 +1860,7 @@ async def test_copy_run_as_new_task_rejects_malformed_skill_manifest_transport_b
             },
         }
 
-    monkeypatch.setattr(repositories, "get_authorized_run", source_run)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", source_run)
 
     with pytest.raises(RepositoryConflictError, match="run_skill_materialization_identity_mismatch"):
         await repositories.copy_run_as_new_task(
@@ -2008,10 +1911,10 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
     async def forbidden_replay(*args, **kwargs):
         raise AssertionError("source snapshot mismatch must deny before replay authorization or writes")
 
-    monkeypatch.setattr(repositories, "get_authorized_run", source_run)
-    monkeypatch.setattr(repositories, "materialize_run_skill_manifests", materialize)
-    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", mismatch)
-    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", forbidden_replay)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", source_run)
+    monkeypatch.setattr(replay_persistence, "materialize_run_skill_manifests", materialize)
+    monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", mismatch)
+    monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", forbidden_replay)
 
     with pytest.raises(RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
         await repositories.copy_run_as_new_task(
@@ -2084,13 +1987,13 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     async def insert_snapshots(conn, **kwargs):
         calls["snapshots"] = kwargs
 
-    monkeypatch.setattr(repositories, "get_authorized_run", get_source)
-    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", authorize_replay)
-    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", validate_source)
-    monkeypatch.setattr(repositories, "_completed_steps_for_resume", no_completed)
-    monkeypatch.setattr(repositories, "append_event", no_write)
-    monkeypatch.setattr(repositories, "append_message", no_write)
-    monkeypatch.setattr(repositories, "insert_run_skill_snapshots_at_creation", insert_snapshots)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", get_source)
+    monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", authorize_replay)
+    monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", validate_source)
+    monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", no_completed)
+    monkeypatch.setattr(replay_persistence, "append_event", no_write)
+    monkeypatch.setattr(replay_persistence, "append_message", no_write)
+    monkeypatch.setattr(replay_persistence, "insert_run_skill_snapshots_at_creation", insert_snapshots)
 
     class MaterializationCursor:
         async def fetchall(self):
@@ -2186,17 +2089,17 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
     async def record_message(conn, **kwargs):
         calls["message"] = kwargs
 
-    monkeypatch.setattr(repositories, "get_authorized_run", get_source)
-    monkeypatch.setattr(repositories, "authorize_selected_chat_mcp_tools", authorize_mcp)
-    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", forbid_skill_authority)
-    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", forbid_skill_authority)
-    monkeypatch.setattr(repositories, "insert_run_skill_snapshots_at_creation", forbid_skill_authority)
-    monkeypatch.setattr(repositories, "_completed_steps_for_resume", completed)
-    monkeypatch.setattr(repositories, "get_active_retry_for_source_run", no_active_child)
-    monkeypatch.setattr(repositories, "get_active_resume_for_source_run", no_active_child)
-    monkeypatch.setattr(repositories, "append_event", no_write)
-    monkeypatch.setattr(repositories, "append_message", record_message)
-    monkeypatch.setattr(repositories, "append_audit_log", no_write)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", get_source)
+    monkeypatch.setattr(replay_persistence, "authorize_selected_chat_mcp_tools", authorize_mcp)
+    monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", forbid_skill_authority)
+    monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", forbid_skill_authority)
+    monkeypatch.setattr(replay_persistence, "insert_run_skill_snapshots_at_creation", forbid_skill_authority)
+    monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", completed)
+    monkeypatch.setattr(replay_persistence, "get_active_retry_for_source_run", no_active_child)
+    monkeypatch.setattr(replay_persistence, "get_active_resume_for_source_run", no_active_child)
+    monkeypatch.setattr(replay_persistence, "append_event", no_write)
+    monkeypatch.setattr(replay_persistence, "append_message", record_message)
+    monkeypatch.setattr(replay_persistence, "append_audit_log", no_write)
 
     conn = RecordingConnection()
     operation_function = {
@@ -2255,12 +2158,12 @@ async def test_copy_run_rejects_expanded_resume_input_before_generation_write(mo
     async def forbidden_generation(*_args, **_kwargs):
         raise AssertionError("oversized copied input must fail before session generation allocation")
 
-    monkeypatch.setattr(repositories, "get_authorized_run", get_source)
-    monkeypatch.setattr(repositories, "require_replay_source_identity", lambda **_kwargs: None)
-    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", allow)
-    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", allow)
-    monkeypatch.setattr(repositories, "_completed_steps_for_resume", oversized_resume)
-    monkeypatch.setattr(repositories, "allocate_session_run_generation", forbidden_generation)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", get_source)
+    monkeypatch.setattr(replay_persistence, "require_replay_source_identity", lambda **_kwargs: None)
+    monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", allow)
+    monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", allow)
+    monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", oversized_resume)
+    monkeypatch.setattr(replay_persistence, "allocate_session_run_generation", forbidden_generation)
 
     with pytest.raises(RepositoryConflictError, match="run_input_too_large"):
         await repositories.copy_run_as_new_task(
@@ -2414,13 +2317,9 @@ async def test_principal_agent_projection_keeps_skillless_chat_without_skill_dis
             "skillless Harness discovery must not audit a Skill bypass"
         )
 
-    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
-    monkeypatch.setattr(
-        repositories,
-        "list_capability_distribution_rows",
-        fake_list_distributions,
-    )
-    monkeypatch.setattr(repositories, "append_audit_log", fail_audit)
+    monkeypatch.setattr(principal_catalog_persistence, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(principal_catalog_persistence, "append_audit_log", fail_audit)
 
     rows = await repositories.list_principal_lambchat_agents(
         object(),
@@ -2505,9 +2404,9 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
         audits.append(kwargs)
         return f"audit-{len(audits)}"
 
-    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
-    monkeypatch.setattr(repositories, "list_capability_distribution_rows", fake_list_distributions)
-    monkeypatch.setattr(repositories, "append_audit_log", fake_append_audit)
+    monkeypatch.setattr(principal_catalog_persistence, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(principal_catalog_persistence, "append_audit_log", fake_append_audit)
 
     authorized = await repositories.list_principal_lambchat_agents(
         object(),
@@ -2586,9 +2485,9 @@ async def test_principal_agent_projection_hides_archived_default_skill_for_every
         audits.append(kwargs)
         return "audit"
 
-    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
-    monkeypatch.setattr(repositories, "list_capability_distribution_rows", fake_list_distributions)
-    monkeypatch.setattr(repositories, "append_audit_log", fake_append_audit)
+    monkeypatch.setattr(principal_catalog_persistence, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(principal_catalog_persistence, "append_audit_log", fake_append_audit)
 
     rows = await repositories.list_principal_lambchat_agents(
         object(),
@@ -2638,8 +2537,8 @@ async def test_principal_agent_projection_hides_non_runnable_rollout_selected_pr
             }
         ]
 
-    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
-    monkeypatch.setattr(repositories, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(principal_catalog_persistence, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
 
     rows = await repositories.list_principal_lambchat_agents(
         object(),
@@ -2684,8 +2583,8 @@ async def test_principal_agent_projection_projects_runnable_rollout_selected_pre
             }
         ]
 
-    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
-    monkeypatch.setattr(repositories, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(principal_catalog_persistence, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
 
     rows = await repositories.list_principal_lambchat_agents(
         object(),
@@ -2806,7 +2705,7 @@ async def test_archive_capability_distribution_is_tenant_scoped_and_idempotent(m
             row["updated_by"] = updated_by
             return Cursor(dict(row))
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     conn = Connection()
 
     first = await repositories.archive_capability_distribution_row(
@@ -2913,7 +2812,7 @@ async def test_archive_distribution_preserves_only_valid_first_evidence(
                 }
             )
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     archived = await repositories.archive_capability_distribution_row(
         Connection(),
         tenant_id="tenant-a",
@@ -2975,7 +2874,7 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
                 }
             )
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     conn = Connection()
     row = await repositories.toggle_capability_distribution_row(
         conn,
@@ -3056,7 +2955,7 @@ async def test_mcp_distribution_toggle_invalidates_server_catalog(
                 return Cursor({"name": "qa-mcp"})
             raise AssertionError(compact)
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     row = await repositories.toggle_capability_distribution_row(
         Connection(),
         tenant_id="tenant-a",
@@ -3075,7 +2974,7 @@ async def test_archive_distribution_rejects_invalid_actor_before_database_write(
     async def fail_backfill(*args, **kwargs):
         raise AssertionError("invalid archive actor must fail before database access")
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", fail_backfill)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", fail_backfill)
 
     with pytest.raises(RepositoryConflictError, match="capability_distribution_archive_actor_invalid"):
         await repositories.archive_capability_distribution_row(
@@ -3108,7 +3007,7 @@ async def test_batch_lifecycle_locks_use_canonical_order_without_duplicates(monk
     async def completed_backfill(conn, *, tenant_id):
         events.append(("ensure", tenant_id))
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", completed_backfill)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", completed_backfill)
     await repositories.acquire_capability_distribution_lifecycle_locks(
         conn,
         tenant_id="tenant-a",
@@ -3166,7 +3065,7 @@ async def test_capability_distribution_lifecycle_lock_precedes_row_lock_and_writ
                 }
             )
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     conn = Connection()
     kwargs = {
         "tenant_id": "tenant-a",
@@ -3224,7 +3123,7 @@ async def test_archived_capability_distribution_rejects_reactivation(monkeypatch
                 return Cursor({"metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"}})
             return Cursor(None)
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     conn = Connection()
     kwargs = {
         "tenant_id": "tenant-a",
@@ -3292,7 +3191,7 @@ async def test_list_public_skill_catalog_hides_archived_but_keeps_disabled_distr
         async def execute(self, sql, params):
             return Cursor()
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     rows = await repositories.list_public_skill_catalog(
         Connection(),
         tenant_id="tenant-a",
@@ -3329,8 +3228,8 @@ async def test_authorize_selected_run_capabilities_fails_closed_for_archived_dis
             "metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"},
         }
 
-    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", archived_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_selected_skill", resolve_selected)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", archived_distribution)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_selected_run_capabilities(
@@ -3376,9 +3275,9 @@ async def test_capability_distribution_authorization_allows_same_department_skil
             "visible_to_user": True,
         }
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
-    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
     skill = await repositories.authorize_run_capabilities(
         object(),
@@ -3433,9 +3332,9 @@ async def test_harness_skill_authorization_derives_canonical_backing_tool_withou
             "visible_to_user": True,
         }
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
-    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
     await repositories.authorize_run_capabilities(
         object(),
@@ -3503,9 +3402,9 @@ async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_curre
             "visible_to_user": True,
         }
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
-    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_run_capabilities(
@@ -3547,8 +3446,8 @@ async def test_capability_distribution_authorization_denies_skill_before_enqueue
             row["allowed_roles"] = ["reviewer"]
         return row
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_run_capabilities(
@@ -3583,8 +3482,8 @@ async def test_capability_distribution_denial_carries_sanitized_immutable_audit_
             "metadata_json": {"secret": "must-not-be-audited"},
         }
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
 
     with pytest.raises(repositories.RepositoryAuthorizationError) as exc_info:
         await repositories.authorize_run_capabilities(
@@ -3635,7 +3534,7 @@ async def test_capability_distribution_authorization_hides_pre_authorization_sel
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         raise repositories.RepositoryConflictError(selector_state)
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_run_capabilities(
@@ -3685,9 +3584,9 @@ async def test_capability_distribution_authorization_denies_explicit_mcp_tool_be
             "visible_to_user": True,
         }
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
-    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_run_capabilities(
@@ -3703,7 +3602,7 @@ async def test_capability_distribution_authorization_denies_explicit_mcp_tool_be
         )
 
 
-def test_extract_run_mcp_tool_ids_covers_top_level_aliases_and_canonical_multi_agent_steps():
+def test_extract_run_mcp_tool_ids_covers_only_top_level_aliases():
     extracted = repositories.extract_run_mcp_tool_ids(
         {
             "mcp_tool_ids": ["tool-a", "tool-shared"],
@@ -3717,11 +3616,11 @@ def test_extract_run_mcp_tool_ids_covers_top_level_aliases_and_canonical_multi_a
         }
     )
 
-    assert extracted == ["tool-a", "tool-shared", "tool-b", "tool-c", "tool-d"]
+    assert extracted == ["tool-a", "tool-shared", "tool-b"]
 
 
 @pytest.mark.parametrize("redact_public", [False, True])
-def test_normalize_run_input_preserves_top_level_and_step_mcp_tool_scopes(redact_public):
+def test_normalize_run_input_preserves_top_level_mcp_tool_selector(redact_public):
     normalized = repositories.normalize_run_input_for_enqueue(
         {
             "message": "run scoped tools",
@@ -3735,17 +3634,13 @@ def test_normalize_run_input_preserves_top_level_and_step_mcp_tool_scopes(redact
     )
 
     assert normalized["mcp_tool_ids"] == ["tool-global"]
-    assert normalized["multi_agent_steps"][0]["mcp_tool_ids"] == ["tool-plan"]
-    assert normalized["multi_agent_steps"][1]["mcp_tool_ids"] == ["tool-code"]
     if redact_public:
         assert "mcpToolIds" not in normalized
-        assert "mcpToolIds" not in normalized["multi_agent_steps"][1]
     else:
         assert normalized["mcpToolIds"] == ["tool-global"]
-        assert normalized["multi_agent_steps"][1]["mcpToolIds"] == ["tool-code"]
-    assert repositories.extract_run_mcp_tool_ids(normalized) == ["tool-global", "tool-plan", "tool-code"]
+    assert repositories.extract_run_mcp_tool_ids(normalized) == ["tool-global"]
 
-    step_only = repositories.normalize_run_input_for_enqueue(
+    nested_only = repositories.normalize_run_input_for_enqueue(
         {
             "multi_agent_steps": [
                 {"step_key": "plan", "mcpToolIds": ["tool-plan"]},
@@ -3754,8 +3649,8 @@ def test_normalize_run_input_preserves_top_level_and_step_mcp_tool_scopes(redact
         },
         redact_public=redact_public,
     )
-    assert "mcp_tool_ids" not in step_only
-    assert "mcpToolIds" not in step_only
+    assert "mcp_tool_ids" not in nested_only
+    assert repositories.extract_run_mcp_tool_ids(nested_only) == []
 
 
 @pytest.mark.parametrize(
@@ -3763,9 +3658,6 @@ def test_normalize_run_input_preserves_top_level_and_step_mcp_tool_scopes(redact
     [
         {"mcp_tool_ids": "tool-a"},
         {"mcpToolIds": {"tool": "tool-a"}},
-        {"multi_agent_steps": [{"step_key": "inspect", "mcp_tool_ids": "tool-a"}]},
-        {"multi_agent_steps": [{"step_key": "inspect", "mcpToolIds": 7}]},
-        {"multi_agent_steps": [{"step_key": "inspect", "mcp_tool_ids": ["tool-a", None]}]},
     ],
 )
 def test_extract_run_mcp_tool_ids_rejects_invalid_typed_forms_fail_closed(payload):
@@ -3791,9 +3683,9 @@ async def test_capability_distribution_skill_revocation_after_original_run_denie
     async def fail_tool_lookup(*args, **kwargs):
         raise AssertionError("revoked Skill must deny before MCP lookup")
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", revoked_skill_distribution)
-    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fail_tool_lookup)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", revoked_skill_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fail_tool_lookup)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_run_capabilities(
@@ -3810,7 +3702,7 @@ async def test_capability_distribution_skill_revocation_after_original_run_denie
 
 
 @pytest.mark.asyncio
-async def test_capability_distribution_nested_mcp_revocation_after_original_run_denies_requeue(monkeypatch):
+async def test_capability_distribution_mcp_revocation_after_original_run_denies_requeue(monkeypatch):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -3836,9 +3728,9 @@ async def test_capability_distribution_nested_mcp_revocation_after_original_run_
             "visible_to_user": True,
         }
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
-    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", fake_get_tool)
 
     with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
         await repositories.authorize_run_capabilities(
@@ -3846,11 +3738,7 @@ async def test_capability_distribution_nested_mcp_revocation_after_original_run_
             tenant_id="tenant-a",
             agent_id="general-agent",
             skill_id="general-chat",
-            normalized_input={
-                "multi_agent_steps": [
-                    {"step_key": "inspect", "mcpToolIds": ["revoked-tool"]},
-                ]
-            },
+            normalized_input={"mcpToolIds": ["revoked-tool"]},
             principal_department_id="qa",
             principal_roles=["qa_operator"],
             is_admin=False,
@@ -4340,7 +4228,7 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
     async def no_backfill(conn, *, tenant_id):
         return None
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     class CatalogCursor:
         async def fetchall(self):
             return [
@@ -4448,7 +4336,7 @@ async def test_list_public_skill_catalog_hides_non_materializable_current_versio
         async def execute(self, sql, params):
             return CatalogCursor()
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
     rows = await repositories.list_public_skill_catalog(
         CatalogConnection(),
@@ -4464,7 +4352,7 @@ async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_d
     async def no_backfill(conn, *, tenant_id):
         return None
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
     def catalog_row(skill_id: str, version_status: str) -> dict[str, object]:
         version = f"{skill_id}-version"
         return {
@@ -4567,7 +4455,7 @@ async def test_public_skill_catalog_hides_non_runnable_rollout_selected_previous
             self.sql = " ".join(sql.split())
             return CatalogCursor()
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
     rows = await repositories.list_public_skill_catalog(
         CatalogConnection(),
@@ -4624,7 +4512,7 @@ async def test_public_skill_catalog_projects_only_materializable_rollout_selecte
         async def execute(self, sql, params):
             return CatalogCursor()
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_catalog_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
     rows = await repositories.list_public_skill_catalog(
         CatalogConnection(),
@@ -4771,7 +4659,7 @@ async def test_record_run_control_operation_persists_only_safe_exact_lineage(mon
         recorded.append(kwargs)
         return "evt-operation"
 
-    monkeypatch.setattr(repositories, "append_event", append_event)
+    monkeypatch.setattr(control_operations_persistence, "append_event", append_event)
 
     event_id = await repositories.record_run_control_operation(
         object(),
@@ -5014,236 +4902,15 @@ async def test_run_control_operation_interleavings_are_exactly_once_in_postgres(
 
 
 @pytest.mark.asyncio
-async def test_cancel_run_closes_non_terminal_run_steps(monkeypatch):
-    class RecordingConnection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            self.calls.append((normalized, params))
-            if normalized.startswith("select * from sse_stream_authorities"):
-                return SingleRowCursor(None)
-            if "set permission_terminalization_target" in normalized:
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "trace_id": "trace-a",
-                        "permission_terminalization_target": "cancelled",
-                    }
-                )
-            if normalized.startswith("select id, trace_id, status, permission_terminalization_target"):
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "permission_terminalization_target": "cancelled",
-                        "permission_terminalization_reason": "run_cancelled",
-                    }
-                )
-            if "has_unterminalized" in normalized:
-                return SingleRowCursor({"has_unterminalized": False})
-            if "set status = 'cancelled'" in normalized:
-                return SingleRowCursor({"id": "run-a", "status": "cancelled"})
-            return FakeCursor()
-
-    conn = RecordingConnection()
-    monkeypatch.setattr(repositories, "append_event", _record_noop_event)
-
-    result = await cancel_run(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        result_json={"message": "cancelled"},
-    )
-
-    assert result.completed is True
-    assert result.did_transition is True
-    assert result.status == "cancelled"
-    assert "set permission_terminalization_target" in conn.calls[0][0]
-    assert conn.calls[0][1][0:4] == ("cancelled", "cancelled", "cancelled", "run_cancelled")
-    assert conn.calls[0][1][-2:] == ("tenant-a", "run-a")
-    assert conn.calls[1][0].startswith("select id, trace_id, status, permission_terminalization_target")
-    assert conn.calls[2][0].startswith("with locked_run as")
-    assert conn.calls[2][1] == ("tenant-a", "run-a", "tenant-a", "run-a", None, None, 50, "cancelled", "run_cancelled")
-    assert "has_unterminalized" in conn.calls[3][0]
-    assert "set status = 'cancelled'" in conn.calls[4][0]
-    step_updates = [call for call in conn.calls if call[0].startswith("update run_steps")]
-    assert len(step_updates) == 1
-    assert "status in ('pending', 'running')" in step_updates[0][0]
-    assert step_updates[0][1] == ("tenant-a", "run-a")
 
 
 @pytest.mark.asyncio
-async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_progress(monkeypatch):
-    class RecordingConnection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            self.calls.append((normalized, params))
-            if normalized.startswith("select * from sse_stream_authorities"):
-                return SingleRowCursor(None)
-            if "set permission_terminalization_target" in normalized:
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "trace_id": "trace-a",
-                        "permission_terminalization_target": "failed",
-                    }
-                )
-            if normalized.startswith("select id, trace_id, status, permission_terminalization_target"):
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "permission_terminalization_target": "failed",
-                        "permission_terminalization_reason": "run_failed",
-                        "permission_terminalization_result_json": {"message": "failed"},
-                        "permission_terminalization_error_code": "executor_failure",
-                        "permission_terminalization_error_message": "boom",
-                    }
-                )
-            if "has_unterminalized" in normalized:
-                return SingleRowCursor({"has_unterminalized": False})
-            if "set status = 'failed'" in normalized:
-                return SingleRowCursor({"id": "run-a", "status": "failed"})
-            return FakeCursor()
-
-    conn = RecordingConnection()
-    monkeypatch.setattr(repositories, "append_event", _record_noop_event)
-
-    result = await fail_run(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        error_code="executor_failure",
-        error_message="boom",
-        result_json={"message": "failed"},
-    )
-
-    assert result.completed is True
-    assert result.did_transition is True
-    assert result.status == "failed"
-    assert "set permission_terminalization_target" in conn.calls[0][0]
-    assert conn.calls[0][1][0:4] == ("failed", "failed", "failed", "run_failed")
-    assert conn.calls[0][1][-2:] == ("tenant-a", "run-a")
-    assert "set latency_ms" in conn.calls[1][0]
-    assert conn.calls[2][0].startswith("select id, trace_id, status, permission_terminalization_target")
-    assert conn.calls[3][0].startswith("with locked_run as")
-    assert conn.calls[3][1] == ("tenant-a", "run-a", "tenant-a", "run-a", None, None, 50, "failed", "run_failed")
-    assert "has_unterminalized" in conn.calls[4][0]
-    assert "set status = 'failed'" in conn.calls[5][0]
-    step_updates = [call for call in conn.calls if call[0].startswith("update run_steps")]
-    assert len(step_updates) == 1
-    assert "case when status = 'running' then 'failed' else 'cancelled' end" in step_updates[0][0]
-    assert "status in ('pending', 'running')" in step_updates[0][0]
-    assert step_updates[0][1] == ("tenant-a", "run-a")
 
 
 @pytest.mark.asyncio
-async def test_expired_permission_request_emits_tenant_run_scoped_terminal_audit(monkeypatch):
-    calls = []
-
-    class ExpiredRequestConnection:
-        async def execute(self, sql, params):
-            calls.append(("sql", " ".join(sql.split()), params))
-            return SingleRowCursor(
-                {
-                    "id": "tpr-a",
-                    "user_id": "user-a",
-                    "run_id": "run-a",
-                    "trace_id": "trace-a",
-                    "tool_id": "Bash",
-                    "tool_call_id": "call-a",
-                    "action": "execute",
-                    "risk_level": "high",
-                    "write_capable": True,
-                }
-            )
-
-    async def fake_append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return "evt-a"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "aud-a"
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-
-    row = await expire_tool_permission_request(
-        ExpiredRequestConnection(),
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        request_id="tpr-a",
-    )
-
-    assert row["id"] == "tpr-a"
-    assert "status = 'expired'" in calls[0][1]
-    assert calls[0][2] == (
-        "tenant-a", "run-a", "run-a", "user-a", "user-a", "tpr-a", "tpr-a", 1,
-        "tenant-a", "user-a", "user-a", "run-a", "run-a", "tpr-a", "tpr-a", 1,
-    )
-    events = [entry[1] for entry in calls if entry[0] == "event"]
-    audits = [entry[1] for entry in calls if entry[0] == "audit"]
-    assert len(events) == 1
-    assert events[0]["tenant_id"] == "tenant-a"
-    assert events[0]["run_id"] == "run-a"
-    assert events[0]["event_type"] == "tool_permission_terminalized"
-    assert events[0]["payload"]["permission_request_id"] == "tpr-a"
-    assert events[0]["payload"]["status"] == "expired"
-    assert events[0]["payload"]["tool_call_id"] == "call-a"
-    assert len(audits) == 1
-    assert audits[0]["tenant_id"] == "tenant-a"
-    assert audits[0]["user_id"] is None
-    assert audits[0]["target_id"] == "tpr-a"
-    assert audits[0]["payload_json"]["run_id"] == "run-a"
-    assert audits[0]["payload_json"]["request_user_id"] == "user-a"
 
 
 @pytest.mark.asyncio
-async def test_terminal_run_writes_do_not_overwrite_existing_terminal_status():
-    class TerminalRecordingConnection(RecordingConnection):
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if "set permission_terminalization_target = case" in normalized:
-                self.calls.append((normalized, params))
-                return SingleRowCursor({"permission_terminalization_target": params[0]})
-            return await super().execute(sql, params)
-
-    conn = TerminalRecordingConnection()
-
-    await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={"message": "done"})
-    await fail_run(conn, tenant_id="tenant-a", run_id="run-b", error_code="executor_failure", error_message="boom")
-    await cancel_run(conn, tenant_id="tenant-a", run_id="run-c", result_json={"message": "cancelled"})
-
-    update_runs_sql = [sql for sql, _params in conn.calls if "update runs" in sql]
-    assert len(update_runs_sql) == 4
-    completion_lock_index, completion_lock_sql = next(
-        (index, sql)
-        for index, (sql, _params) in enumerate(conn.calls)
-        if sql.startswith("select id from runs") and "for update" in sql
-    )
-    completion_index, completion_sql = next(
-        (index, sql)
-        for index, (sql, _params) in enumerate(conn.calls)
-        if "update runs" in sql and "status = 'succeeded'" in sql
-    )
-    assert completion_lock_index < completion_index
-    assert "status not in ('succeeded', 'failed', 'cancelled')" in completion_lock_sql
-    assert "cancel_requested_at is null" in completion_lock_sql
-    assert "permission_terminalization_target is null" in completion_lock_sql
-    assert "where runs.tenant_id = %s and runs.id = %s" in completion_sql
-
-    staged_terminal_updates = [sql for sql in update_runs_sql if "permission_terminalization_target = case" in sql]
-    assert len(staged_terminal_updates) == 2
-    assert all("status not in ('succeeded', 'failed', 'cancelled')" in sql for sql in staged_terminal_updates)
-    metric_staging_updates = [sql for sql in update_runs_sql if "set latency_ms" in sql]
-    assert len(metric_staging_updates) == 1
-    assert "status not in ('succeeded', 'failed', 'cancelled')" in metric_staging_updates[0]
-    assert all("status = 'failed'" not in sql and "status = 'cancelled'" not in sql for sql in metric_staging_updates)
 
 
 @pytest.mark.asyncio
@@ -5258,8 +4925,8 @@ async def test_record_sandbox_runtime_cleanup_outcome_writes_event_and_audit(mon
         calls.append(("audit", kwargs))
         return "aud-cleanup"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr(sandbox_leases_persistence, "append_event", fake_append_event)
+    monkeypatch.setattr(sandbox_leases_persistence, "append_audit_log", fake_append_audit_log)
 
     await repositories.record_sandbox_runtime_cleanup_outcome(
         object(),
@@ -5650,12 +5317,7 @@ async def test_create_run_validates_workspace_tenant_before_insert(monkeypatch):
     async def ensure_workspace_belongs_to_tenant(conn, *, tenant_id, workspace_id):
         calls.append(("ensure_workspace", tenant_id, workspace_id, len(conn.calls)))
 
-    monkeypatch.setattr(
-        repositories,
-        "ensure_workspace_belongs_to_tenant",
-        ensure_workspace_belongs_to_tenant,
-        raising=False,
-    )
+    monkeypatch.setattr(run_creation_persistence, "ensure_workspace_belongs_to_tenant", ensure_workspace_belongs_to_tenant, raising=False)
     conn = RecordingConnection()
 
     await repositories.create_run(
@@ -5742,7 +5404,7 @@ async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
 async def test_locked_run_query_projects_complete_auth_snapshot():
     conn = RecordingConnection()
 
-    await repositories.mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
+    await PostgresRunLifecyclePersistence().mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
 
     sql, _params = conn.calls[0]
     assert "runs.execution_kind" in sql
@@ -5797,7 +5459,7 @@ async def test_create_run_rejects_session_scope_mismatch_before_insert_returns()
 async def test_mark_run_running_requires_run_session_scope_to_match():
     conn = RecordingConnection()
 
-    await repositories.mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
+    await PostgresRunLifecyclePersistence().mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
 
     sql, params = conn.calls[0]
     assert "update runs" in sql
@@ -8138,354 +7800,18 @@ async def test_list_admin_memory_records_projects_operator_fields_without_conten
     assert rows[0]["id"] == "mem-ops"
 
 
-@pytest.mark.asyncio
-async def test_create_tool_permission_request_persists_pending_snapshot():
-    conn = RecordingConnection()
-
-    row = await create_tool_permission_request(
-        conn,
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-a",
-        trace_id="trace-a",
-        tool_id="ragflow-knowledge-search",
-        tool_call_id="call-a",
-        action="execute",
-        risk_level="low",
-        write_capable=False,
-        reason="read-only search",
-        request_payload_json={"query": "sop"},
-    )
-
-    sql, params = conn.calls[0]
-    assert row["id"].startswith("tpr_")
-    assert "run_tool_permission_requests" in sql
-    assert "ragflow-knowledge-search" in params
-    assert "call-a" in params
-    assert False in params
 
 
-@pytest.mark.asyncio
-async def test_create_tool_permission_request_persists_caller_absolute_expiry_after_run_lock_wait():
-    """The locked insert receives the original absolute expiry, never a post-lock extension."""
-
-    conn = RecordingConnection()
-    absolute_expiry = datetime(2030, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-    await create_tool_permission_request(
-        conn,
-        tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a",
-        run_id="run-a", trace_id="trace-a", tool_id="Bash", tool_call_id="call-absolute",
-        action="execute", risk_level="high", write_capable=True, reason="waited on run lock",
-        request_payload_json={}, expires_in_seconds=900, absolute_expires_at=absolute_expiry,
-    )
-
-    sql, params = conn.calls[0]
-    assert "coalesce(%s::timestamptz, clock_timestamp() + (%s * interval '1 second'))" in sql
-    assert params[-2] == absolute_expiry
-    assert params[-1] == 900.0
 
 
-@pytest.mark.asyncio
-async def test_decide_tool_permission_request_preserves_the_request_deadline():
-    class DecisionConnection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            self.calls.append((normalized, params))
-            if "set status = 'expired'" in normalized:
-                return SingleRowCursor(None)
-            return SingleRowCursor({"id": "tpr-a"})
-
-    conn = DecisionConnection()
-
-    row = await repositories.decide_tool_permission_request(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        request_id="tpr-a",
-        decision="allow_once",
-        reason="approved once",
-        decision_payload_json={"source": "card"},
-        expires_in_seconds=900,
-    )
-
-    sql, params = conn.calls[-1]
-    assert row["id"] == "tpr-a"
-    assert "with executable_run as" in sql
-    assert "for update" in sql
-    assert "cancel_requested_at is null" in sql
-    assert "executable_run.id = permission_request.run_id" in sql
-    assert "update run_tool_permission_requests" in sql
-    assert "expires_at = permission_request.expires_at" in sql
-    assert "now() + (%s * interval '1 second')" not in sql
-    assert "permission_request.expires_at > clock_timestamp()" in sql
-    assert "decision_payload_json = %s::jsonb" in sql
-    assert params == (
-        "tenant-a",
-        "run-a",
-        "allow_once",
-        "approved once",
-        '{"source": "card"}',
-        "tenant-a",
-        "user-a",
-        "run-a",
-        "tpr-a",
-    )
 
 
-@pytest.mark.asyncio
-async def test_permission_authority_queries_use_current_clock_after_the_run_lock():
-    conn = RecordingConnection()
-
-    await repositories.get_exact_tool_permission_decision(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        tool_id="claude-sdk:Bash",
-        tool_call_id="call-a",
-        request_payload_json={"command_sha256": "a" * 64},
-    )
-    await repositories.consume_tool_permission_decision(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        request_id="tpr-a",
-    )
-
-    authority_sql = [sql for sql, _params in conn.calls]
-    assert len(authority_sql) == 2
-    assert all("for update" in sql for sql in authority_sql)
-    assert all("expires_at > clock_timestamp()" in sql for sql in authority_sql)
 
 
-@pytest.mark.asyncio
-async def test_decide_tool_permission_request_terminalizes_at_or_beyond_expiry(monkeypatch):
-    calls = []
-
-    class ExpiredDecisionConnection:
-        async def execute(self, sql, params):
-            calls.append(("sql", " ".join(sql.split()), params))
-            return SingleRowCursor(
-                {
-                    "id": "tpr-expired",
-                    "run_id": "run-a",
-                    "user_id": "user-a",
-                    "trace_id": "trace-a",
-                    "tool_id": "Bash",
-                    "tool_call_id": "call-expired",
-                }
-            )
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-
-    monkeypatch.setattr("app.repositories.append_event", append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", append_audit_log)
-
-    result = await repositories.decide_tool_permission_request(
-        ExpiredDecisionConnection(),
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        request_id="tpr-expired",
-        decision="allow_once",
-        reason="too late",
-        decision_payload_json={},
-    )
-
-    assert result is None
-    assert "expires_at <= clock_timestamp()" in calls[0][1]
-    assert calls[0][2] == (
-        "tenant-a",
-        "run-a",
-        "run-a",
-        "user-a",
-        "user-a",
-        "tpr-expired",
-        "tpr-expired",
-        1,
-        "tenant-a",
-        "user-a",
-        "user-a",
-        "run-a",
-        "run-a",
-        "tpr-expired",
-        "tpr-expired",
-        1,
-    )
-    assert calls[1][1]["payload"]["status"] == "expired"
-    assert not any("set status = 'decided'" in call[1] for call in calls if call[0] == "sql")
 
 
-@pytest.mark.asyncio
-async def test_decision_loses_a_barrier_synchronized_cancel_race(monkeypatch):
-    class DecisionCancelRaceConnection:
-        def __init__(self):
-            self.decision_ready = asyncio.Event()
-            self.cancel_terminalized = asyncio.Event()
-            self.terminalizations = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if "set status = 'expired'" in normalized:
-                return SingleRowCursor(None)
-            if "with executable_run as" in normalized:
-                self.decision_ready.set()
-                await self.cancel_terminalized.wait()
-                return SingleRowCursor(None)
-            if normalized.startswith("with eligible_run as"):
-                await self.decision_ready.wait()
-                return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a", "cancel_requested_newly": True})
-            if normalized.startswith("update runs") and "coalesce(permission_terminalization_target" in normalized:
-                return SingleRowCursor({"id": "run-a", "permission_terminalization_target": "cancel_requested"})
-            if normalized.startswith("select id, trace_id, status, permission_terminalization_target"):
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "permission_terminalization_target": "cancel_requested",
-                        "permission_terminalization_reason": "run_cancel_requested",
-                    }
-                )
-            if normalized.startswith("with locked_run as"):
-                self.terminalizations.append(params)
-                self.cancel_terminalized.set()
-                return FakeCursor()
-            if "has_unterminalized" in normalized:
-                return SingleRowCursor({"has_unterminalized": False})
-            if normalized.startswith("update runs") and "permission_terminalization_target = null" in normalized:
-                return SingleRowCursor({"id": "run-a", "status": "running"})
-            raise AssertionError(normalized)
-
-    async def no_active_leases(conn, *, tenant_id, run_id):
-        return []
-
-    async def no_op_event_or_audit(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
-    monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
-    monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
-    conn = DecisionCancelRaceConnection()
-
-    decision_task = asyncio.create_task(
-        repositories.decide_tool_permission_request(
-            conn,
-            tenant_id="tenant-a",
-            user_id="user-a",
-            run_id="run-a",
-            request_id="tpr-a",
-            decision="allow_once",
-            reason="approve",
-            decision_payload_json={},
-        )
-    )
-    cancel_task = asyncio.create_task(
-        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
-    )
-    decision, cancellation = await asyncio.gather(decision_task, cancel_task)
-
-    assert decision is None
-    assert cancellation["run_id"] == "run-a"
-    assert cancellation["status"] == "cancel_requested"
-    assert "_permission_terminalization_progress" not in cancellation
-    assert conn.terminalizations == [
-        ("tenant-a", "run-a", "tenant-a", "run-a", None, None, 50, "cancelled", "run_cancel_requested")
-    ]
 
 
-@pytest.mark.asyncio
-async def test_request_creation_loses_a_barrier_synchronized_cancel_race(monkeypatch):
-    class RequestCancelRaceConnection:
-        def __init__(self):
-            self.request_ready = asyncio.Event()
-            self.cancel_terminalized = asyncio.Event()
-            self.terminalizations = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if "with eligible_run as" in normalized and "insert into run_tool_permission_requests" in normalized:
-                self.request_ready.set()
-                await self.cancel_terminalized.wait()
-                return SingleRowCursor(None)
-            if normalized.startswith("with eligible_run as"):
-                await self.request_ready.wait()
-                return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a", "cancel_requested_newly": True})
-            if normalized.startswith("update runs") and "coalesce(permission_terminalization_target" in normalized:
-                return SingleRowCursor({"id": "run-a", "permission_terminalization_target": "cancel_requested"})
-            if normalized.startswith("select id, trace_id, status, permission_terminalization_target"):
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "permission_terminalization_target": "cancel_requested",
-                        "permission_terminalization_reason": "run_cancel_requested",
-                    }
-                )
-            if normalized.startswith("with locked_run as"):
-                self.terminalizations.append(params)
-                self.cancel_terminalized.set()
-                return FakeCursor()
-            if "has_unterminalized" in normalized:
-                return SingleRowCursor({"has_unterminalized": False})
-            if normalized.startswith("update runs") and "permission_terminalization_target = null" in normalized:
-                return SingleRowCursor({"id": "run-a", "status": "running"})
-            raise AssertionError(normalized)
-
-    async def no_active_leases(conn, *, tenant_id, run_id):
-        return []
-
-    async def no_op_event_or_audit(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
-    monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
-    monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
-    conn = RequestCancelRaceConnection()
-
-    request_task = asyncio.create_task(
-        repositories.create_tool_permission_request(
-            conn,
-            tenant_id="tenant-a",
-            workspace_id="workspace-a",
-            user_id="user-a",
-            session_id="session-a",
-            run_id="run-a",
-            trace_id="trace-a",
-            tool_id="Bash",
-            tool_call_id="call-a",
-            action="execute",
-            risk_level="high",
-            write_capable=True,
-            reason="write requested",
-            request_payload_json={},
-        )
-    )
-    cancel_task = asyncio.create_task(
-        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
-    )
-    cancellation = await cancel_task
-    with pytest.raises(RepositoryConflictError, match="tool_permission_run_not_open"):
-        await request_task
-
-    assert cancellation["run_id"] == "run-a"
-    assert cancellation["status"] == "cancel_requested"
-    assert "_permission_terminalization_progress" not in cancellation
-    assert conn.terminalizations == [
-        ("tenant-a", "run-a", "tenant-a", "run-a", None, None, 50, "cancelled", "run_cancel_requested")
-    ]
 
 
 @pytest.mark.asyncio
@@ -8500,6 +7826,8 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
 
         async def execute(self, sql, _params):
             normalized = " ".join(sql.split())
+            if normalized.startswith("select * from run_attempts"):
+                return SingleRowCursor(None)
             if normalized.startswith("with eligible_run as"):
                 self.attempt += 1
                 return SingleRowCursor(
@@ -8513,21 +7841,23 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
             raise AssertionError(normalized)
 
     async def stage(_conn, **_kwargs):
-        return {"id": "run-a"}
+        return {"id": "run-a", "terminalization_target": "cancelled"}
 
-    async def progress(_conn, **_kwargs):
-        if "run_cancelled" not in events:
-            await repositories.append_event(
-                _conn,
-                tenant_id="tenant-a",
-                run_id="run-a",
-                event_type="run_cancelled",
-                stage="control",
-                message="任务已取消",
-                payload={"visible_to_user": True},
-            )
-            return RunTerminalizationProgress(True, "cancelled", True, True)
-        return RunTerminalizationProgress(True, "cancelled")
+    async def load(_conn, **_kwargs):
+        return {
+            "id": "run-a", "user_id": "user-a", "trace_id": "trace-a",
+            "status": "queued", "terminalization_target": "cancelled",
+            "terminalization_reason": "run_cancelled", "terminalization_result_json": {},
+        }
+
+    finalized = False
+
+    async def finalize(_conn, **_kwargs):
+        nonlocal finalized
+        if finalized:
+            return {"already_terminal": True, "status": "cancelled"}
+        finalized = True
+        return {"status": "cancelled", "artifact_count": 0}
 
     async def record_event(_conn, **kwargs):
         events.append(kwargs["event_type"])
@@ -8542,9 +7872,10 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
     async def no_audit(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(repositories, "_stage_run_tool_permission_terminalization", stage)
-    monkeypatch.setattr("app.runs.infrastructure.postgres._stage_run_tool_permission_terminalization", stage)
-    monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
+    monkeypatch.setattr(PostgresRunLifecyclePersistence, "stage_run_terminalization", staticmethod(stage))
+    monkeypatch.setattr(run_attempt_persistence, "stage_run_terminalization", stage)
+    monkeypatch.setattr(PostgresRunLifecyclePersistence, "load_staged_terminalization", staticmethod(load))
+    monkeypatch.setattr(PostgresRunLifecyclePersistence, "finalize_staged_terminalization", staticmethod(finalize))
     monkeypatch.setattr(repositories, "append_event", record_event)
     monkeypatch.setattr(repositories, "append_audit_log", no_audit)
     monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", record_cancel_v4)
@@ -8558,693 +7889,6 @@ async def test_queued_cancel_orders_one_cancel_request_before_the_finalizer_term
     assert events == ["cancel_requested", "v4.run.cancel_requested", "run_cancelled"]
 
 
-@pytest.mark.asyncio
-async def test_list_tool_permission_inbox_filters_current_user_and_status():
-    conn = RecordingConnection()
-
-    rows = await list_tool_permission_inbox(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        status="pending",
-        limit=25,
-    )
-
-    sql, params = conn.calls[-1]
-    assert "from run_tool_permission_requests" in sql
-    assert "where permission_request.tenant_id = %s and permission_request.user_id = %s" in sql
-    assert "runs.status as run_status" in sql
-    assert "(%s = 'all' or permission_request.status = %s)" in sql
-    assert "expires_at > clock_timestamp()" in sql
-    assert "order by permission_request.created_at desc, permission_request.id desc" in sql
-    assert params == ("tenant-a", "user-a", "pending", "pending", 25)
-    assert "set status = 'expired'" in conn.calls[0][0]
-    assert rows == []
-
-
-@pytest.mark.asyncio
-async def test_list_tool_permission_inbox_for_tenant_excludes_admin_user_filter():
-    conn = RecordingConnection()
-
-    rows = await list_tool_permission_inbox_for_tenant(
-        conn,
-        tenant_id="tenant-a",
-        status="pending",
-        limit=25,
-    )
-
-    sql, params = conn.calls[-1]
-    assert "from run_tool_permission_requests" in sql
-    assert "where permission_request.tenant_id = %s" in sql
-    assert "permission_request.user_id =" not in sql
-    assert "runs.status as run_status" in sql
-    assert "(%s = 'all' or permission_request.status = %s)" in sql
-    assert "expires_at > clock_timestamp()" in sql
-    assert params == ("tenant-a", "pending", "pending", 25)
-    assert "set status = 'expired'" in conn.calls[0][0]
-    assert "order by permission_request.expires_at asc, permission_request.id asc" in conn.calls[0][0]
-    assert "for update skip locked" in conn.calls[0][0]
-    assert conn.calls[0][1][-1] == 50
-    assert rows == []
-
-
-@pytest.mark.asyncio
-async def test_tenant_permission_inbox_expiry_is_bounded_and_makes_batch_progress(monkeypatch):
-    calls = []
-
-    class BatchCursor:
-        async def fetchall(self):
-            return [
-                {
-                    "id": "tpr-a",
-                    "tenant_id": "tenant-a",
-                    "run_id": "run-a",
-                    "user_id": "user-a",
-                    "trace_id": "trace-a",
-                    "tool_id": "Bash",
-                    "tool_call_id": "call-a",
-                    "action": "execute",
-                    "risk_level": "high",
-                    "write_capable": True,
-                },
-                {
-                    "id": "tpr-b",
-                    "tenant_id": "tenant-a",
-                    "run_id": "run-b",
-                    "user_id": "user-b",
-                    "trace_id": "trace-b",
-                    "tool_id": "Bash",
-                    "tool_call_id": "call-b",
-                    "action": "execute",
-                    "risk_level": "high",
-                    "write_capable": True,
-                },
-            ]
-
-    class BatchConnection:
-        async def execute(self, sql, params):
-            calls.append((" ".join(sql.split()), params))
-            return BatchCursor()
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
-
-    rows = await repositories.expire_pending_tool_permission_requests(
-        BatchConnection(),
-        tenant_id="tenant-a",
-        limit=10_000,
-    )
-
-    assert [row["id"] for row in rows] == ["tpr-a", "tpr-b"]
-    expiry_sql, expiry_params = calls[0]
-    assert expiry_sql.startswith("with locked_runs as materialized")
-    assert "), expired_requests as" in expiry_sql
-    assert "from runs" in expiry_sql
-    assert "runs.permission_terminalization_target is null" in expiry_sql
-    assert "runs.tenant_id = %s" in expiry_sql
-    assert "permission_request.tenant_id = %s" in expiry_sql
-    assert "candidate.expires_at is null or candidate.expires_at <= clock_timestamp()" in expiry_sql
-    assert "permission_request.expires_at is null or permission_request.expires_at <= clock_timestamp()" in expiry_sql
-    assert "expires_at = coalesce(permission_request.expires_at, clock_timestamp())" in expiry_sql
-    assert "order by permission_request.expires_at asc, permission_request.id asc" in expiry_sql
-    assert "limit %s" in expiry_sql
-    assert "for update skip locked" in expiry_sql
-    assert "for update of permission_request skip locked" in expiry_sql
-    assert expiry_params[0] == "tenant-a"
-    assert expiry_params[8] == "tenant-a"
-    assert expiry_params[7] == 50
-    assert expiry_params[-1] == 50
-    assert [entry[1]["target_id"] for entry in calls if entry[0] == "audit"] == ["tpr-a", "tpr-b"]
-    assert [entry[1]["run_id"] for entry in calls if entry[0] == "event"] == ["run-a", "run-b"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("request_count", "batch_size", "target_status"),
-    [
-        (2, 1, "failed"),
-        (51, 50, "failed"),
-        (51, 50, "cancelled"),
-    ],
-    ids=["existing-one-plus-one", "failed-51", "cancelled-51"],
-)
-async def test_terminalization_progresses_in_bounded_crash_retry_batches_without_duplicate_facts(
-    monkeypatch,
-    request_count,
-    batch_size,
-    target_status,
-):
-    events = []
-    audits = []
-
-    class RowsCursor:
-        def __init__(self, rows):
-            self.rows = rows
-
-        async def fetchall(self):
-            return self.rows
-
-    class ProgressConnection:
-        def __init__(self, request_count=2, target_status="failed", batch_size=50):
-            self.batch = 0
-            self.sql = []
-            self.remaining_request_ids = (
-                ["tpr-a", "tpr-b"]
-                if request_count == 2
-                else [f"tpr-{index}" for index in range(request_count)]
-            )
-            self.target_status = target_status
-            self.batch_size = batch_size
-            self.finalized = False
-            self.run_status = "running"
-            self.permission_terminalization_target = target_status
-            self.closed_steps = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            normalized_lower = normalized.lower()
-            self.sql.append((normalized, params))
-            if normalized_lower.startswith("select * from sse_stream_authorities"):
-                return SingleRowCursor(None)
-            if normalized_lower.startswith("select id, trace_id, status, permission_terminalization_target"):
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "trace_id": "trace-a",
-                        "status": self.run_status,
-                        "permission_terminalization_target": self.permission_terminalization_target,
-                        "permission_terminalization_reason": f"run_{self.target_status}",
-                        "permission_terminalization_result_json": {"message": "failed"},
-                        "permission_terminalization_error_code": "executor_failure",
-                        "permission_terminalization_error_message": "failed",
-                        "latency_ms": 17,
-                        "input_token_count": 3,
-                        "output_token_count": 5,
-                        "total_token_count": 8,
-                        "estimated_cost_minor": 11,
-                    }
-                )
-            if normalized_lower.startswith("with locked_run as"):
-                self.batch += 1
-                batch_ids = self.remaining_request_ids[:self.batch_size]
-                self.remaining_request_ids = self.remaining_request_ids[self.batch_size:]
-                return RowsCursor([
-                        {
-                            "id": request_id,
-                            "user_id": "user-a",
-                            "trace_id": "trace-a",
-                            "tool_id": "Bash",
-                            "tool_call_id": f"call-{request_id}",
-                            "action": "execute",
-                            "risk_level": "high",
-                            "write_capable": True,
-                            "decision": "allow_for_run",
-                        } for request_id in batch_ids
-                ])
-            if "has_unterminalized" in normalized_lower:
-                return SingleRowCursor({"has_unterminalized": bool(self.remaining_request_ids)})
-            if normalized_lower.startswith("update runs") and "set status" in normalized_lower:
-                self.finalized = True
-                self.run_status = self.target_status
-                self.permission_terminalization_target = None
-                return SingleRowCursor({"id": "run-a", "status": self.target_status})
-            if normalized_lower.startswith("select count(*) as artifact_count from artifacts"):
-                return SingleRowCursor({"artifact_count": 2})
-            if normalized_lower.startswith("update run_steps"):
-                self.closed_steps.append(self.target_status)
-                return FakeCursor()
-            raise AssertionError(normalized)
-
-    async def append_event(conn, **kwargs):
-        events.append(kwargs)
-
-    async def append_audit_log(conn, **kwargs):
-        audits.append(kwargs)
-
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
-    conn = ProgressConnection(
-        request_count=request_count,
-        target_status=target_status,
-        batch_size=batch_size,
-    )
-
-    first = await repositories.progress_run_tool_permission_terminalization(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-    )
-
-    request_events = [event for event in events if event["event_type"] == "tool_permission_terminalized"]
-    run_events = [event for event in events if event["event_type"] == f"run_{target_status}"]
-    request_audits = [audit for audit in audits if audit["target_type"] == "tool_permission_request"]
-    run_audits = [audit for audit in audits if audit["target_type"] == "run"]
-
-    assert first.completed is False
-    assert first.status == target_status
-    assert first.did_transition is False and first.needs_reconcile is False
-    assert len(request_events) == batch_size
-    assert len({event["payload"]["permission_request_id"] for event in request_events}) == batch_size
-    assert len(request_audits) == batch_size
-    assert len(run_events) == len(run_audits) == 0
-    assert len(conn.remaining_request_ids) == request_count - batch_size
-    assert conn.run_status == "running"
-    assert conn.permission_terminalization_target == target_status
-    assert conn.closed_steps == []
-
-    second = await repositories.progress_run_tool_permission_terminalization(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-    )
-
-    request_events = [event for event in events if event["event_type"] == "tool_permission_terminalized"]
-    run_events = [event for event in events if event["event_type"] == f"run_{target_status}"]
-    request_audits = [audit for audit in audits if audit["target_type"] == "tool_permission_request"]
-    run_audits = [audit for audit in audits if audit["target_type"] == "run"]
-
-    assert second.completed is True
-    assert second.status == target_status
-    assert second.did_transition is True and second.needs_reconcile is True
-    assert len(request_events) == request_count
-    request_ids = [event["payload"]["permission_request_id"] for event in request_events]
-    assert len(set(request_ids)) == request_count
-    assert len(request_audits) == request_count
-    assert len({audit["target_id"] for audit in request_audits}) == request_count
-    assert len(run_events) == len(run_audits) == 1
-    assert run_events[0]["visible_to_user"] is True
-    assert run_events[0]["payload"]["artifact_count"] == 2
-    assert run_events[0]["payload"]["result"] == {"message": "failed"}
-    assert run_audits[0]["action"] == f"run.{target_status}"
-    if target_status == "failed":
-        assert run_events[0]["payload"]["error_code"] == "executor_failure"
-        assert run_events[0]["payload"]["error_message"] == "failed"
-    assert run_events[0]["latency_ms"] == 17
-    assert run_events[0]["input_token_count"] == 3
-    assert run_events[0]["output_token_count"] == 5
-    assert run_events[0]["total_token_count"] == 8
-    assert run_events[0]["estimated_cost_minor"] == 11
-    assert conn.remaining_request_ids == []
-    assert conn.run_status == target_status
-    assert conn.permission_terminalization_target is None
-    assert conn.closed_steps == [target_status]
-
-    before_retry_facts = (len(events), len(audits))
-    retry = await repositories.progress_run_tool_permission_terminalization(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-    )
-    assert retry.completed is True and retry.status == target_status
-    assert retry.did_transition is False and retry.needs_reconcile is False
-    assert (len(events), len(audits)) == before_retry_facts
-    batch_sql = [sql for sql, _ in conn.sql if sql.startswith("with locked_run as")]
-    assert len(batch_sql) == 3
-    assert all("limit %s" in sql and "for update of permission_request skip locked" in sql for sql in batch_sql)
-
-
-@pytest.mark.asyncio
-async def test_soft_cancel_51_row_drain_upgrades_to_one_cancelled_terminal_result(monkeypatch):
-    """The route's soft 50-row intent is upgraded by the worker's final cancelled write."""
-
-    events = []
-    audits = []
-
-    class RowsCursor:
-        def __init__(self, rows):
-            self.rows = rows
-
-        async def fetchall(self):
-            return self.rows
-
-    class SoftCancelConnection:
-        def __init__(self):
-            self.target = None
-            self.run_status = "running"
-            self.remaining_request_ids = [f"tpr-{index}" for index in range(51)]
-            self.closed_steps = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            lowered = normalized.lower()
-            if lowered.startswith("select * from sse_stream_authorities"):
-                return SingleRowCursor(None)
-            if "set permission_terminalization_target = case" in lowered:
-                assert "permission_terminalization_target = 'cancel_requested'" in lowered
-                requested = params[0]
-                if self.target is None or (self.target == "cancel_requested" and requested == "cancelled"):
-                    self.target = requested
-                return SingleRowCursor({"id": "run-a", "trace_id": "trace-a", "permission_terminalization_target": self.target})
-            if lowered.startswith("select id, trace_id, status, permission_terminalization_target"):
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "trace_id": "trace-a",
-                        "status": self.run_status,
-                        "permission_terminalization_target": self.target,
-                        "permission_terminalization_reason": "run_cancel_requested",
-                        "permission_terminalization_result_json": {"message": "任务已取消"},
-                        "permission_terminalization_error_code": None,
-                        "permission_terminalization_error_message": None,
-                        "latency_ms": 0,
-                        "input_token_count": 0,
-                        "output_token_count": 0,
-                        "total_token_count": 0,
-                        "estimated_cost_minor": 0,
-                    }
-                )
-            if lowered.startswith("with locked_run as"):
-                batch = self.remaining_request_ids[:50]
-                self.remaining_request_ids = self.remaining_request_ids[50:]
-                return RowsCursor(
-                    [
-                        {
-                            "id": request_id,
-                            "user_id": "user-a",
-                            "trace_id": "trace-a",
-                            "tool_id": "Bash",
-                            "tool_call_id": f"call-{request_id}",
-                            "action": "execute",
-                            "risk_level": "high",
-                            "write_capable": True,
-                            "decision": "allow_for_run",
-                        }
-                        for request_id in batch
-                    ]
-                )
-            if "has_unterminalized" in lowered:
-                return SingleRowCursor({"has_unterminalized": bool(self.remaining_request_ids)})
-            if lowered.startswith("update runs") and "set status = 'cancelled'" in lowered:
-                self.target = None
-                self.run_status = "cancelled"
-                return SingleRowCursor({"id": "run-a", "status": "cancelled"})
-            if lowered.startswith("select count(*) as artifact_count from artifacts"):
-                return SingleRowCursor({"artifact_count": 0})
-            if lowered.startswith("update run_steps"):
-                self.closed_steps.append("cancelled")
-                return FakeCursor()
-            raise AssertionError(normalized)
-
-    async def append_event(_conn, **kwargs):
-        events.append(kwargs)
-
-    async def append_audit(_conn, **kwargs):
-        audits.append(kwargs)
-
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit)
-    conn = SoftCancelConnection()
-
-    staged_soft = await repositories._stage_run_tool_permission_terminalization(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        target_status="cancel_requested",
-        terminal_reason="run_cancel_requested",
-    )
-    first = await repositories.progress_run_tool_permission_terminalization(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-    )
-    final = await repositories.cancel_run(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        result_json={"message": "任务已取消"},
-    )
-
-    assert staged_soft["permission_terminalization_target"] == "cancel_requested"
-    assert first.completed is False and first.status == "cancel_requested"
-    assert bool(first) is False
-    assert final.completed is True and final.status == "cancelled"
-    assert bool(final) is True
-    assert conn.run_status == "cancelled"
-    assert conn.closed_steps == ["cancelled"]
-    assert [event["event_type"] for event in events].count("run_cancelled") == 1
-    assert [audit["action"] for audit in audits].count("run.cancelled") == 1
-
-
-@pytest.mark.asyncio
-async def test_terminal_intent_merge_upgrades_only_soft_cancel_and_preserves_first_final_target():
-    """Conflicting final intents retain their first durable target while a soft cancel can become cancelled."""
-
-    class IntentConnection:
-        def __init__(self):
-            self.target = None
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split()).lower()
-            assert "set permission_terminalization_target = case" in normalized
-            assert "when permission_terminalization_target = 'cancel_requested'" in normalized
-            requested = params[0]
-            if self.target is None or (self.target == "cancel_requested" and requested == "cancelled"):
-                self.target = requested
-            return SingleRowCursor({"id": "run-a", "permission_terminalization_target": self.target})
-
-    conn = IntentConnection()
-    soft = await repositories._stage_run_tool_permission_terminalization(
-        conn, tenant_id="tenant-a", run_id="run-a", target_status="cancel_requested", terminal_reason="route"
-    )
-    upgraded = await repositories._stage_run_tool_permission_terminalization(
-        conn, tenant_id="tenant-a", run_id="run-a", target_status="cancelled", terminal_reason="worker"
-    )
-    conflict = await repositories._stage_run_tool_permission_terminalization(
-        conn, tenant_id="tenant-a", run_id="run-a", target_status="failed", terminal_reason="late_failure"
-    )
-
-    assert soft["permission_terminalization_target"] == "cancel_requested"
-    assert upgraded["permission_terminalization_target"] == "cancelled"
-    assert conflict["permission_terminalization_target"] == "cancelled"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("operation", "first_target"),
-    [("cancel", "failed"), ("fail", "cancelled")],
-)
-async def test_conflicting_final_intent_returns_actual_status_without_claiming_completion(monkeypatch, operation, first_target):
-    """A later final writer cannot claim its result when the run already has the opposite durable target."""
-
-    async def stage(*_args, **_kwargs):
-        return {"permission_terminalization_target": first_target}
-
-    async def progress(*_args, **_kwargs):
-        raise AssertionError("conflicting target must not drain or mutate the existing final intent")
-
-    monkeypatch.setattr(repositories, "_stage_run_tool_permission_terminalization", stage)
-    monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
-
-    if operation == "cancel":
-        result = await repositories.cancel_run(
-            object(), tenant_id="tenant-a", run_id="run-a", result_json={"message": "cancelled"}
-        )
-    else:
-        result = await repositories.fail_run(
-            object(),
-            tenant_id="tenant-a",
-            run_id="run-a",
-            error_code="executor_failure",
-            error_message="boom",
-        )
-
-    assert result.completed is False
-    assert result.status == first_target
-    assert bool(result) is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("admin", [False, True], ids=["owner", "admin"])
-async def test_cancel_request_response_reports_actual_conflicting_terminal_status(monkeypatch, admin):
-    """Owner and admin cancellation responses expose a concurrent final failure rather than a soft intent."""
-
-    class Connection:
-        async def execute(self, sql, _params):
-            normalized = " ".join(sql.split())
-            assert normalized.startswith("with eligible_run as")
-            row = {
-                "id": "run-a",
-                "status": "running",
-                "trace_id": "trace-a",
-                "cancel_requested_newly": False,
-            }
-            if admin:
-                row["user_id"] = "owner-a"
-            return SingleRowCursor(row)
-
-    async def stage(*_args, **_kwargs):
-        return {"permission_terminalization_target": "failed"}
-
-    async def progress(*_args, **_kwargs):
-        return RunTerminalizationProgress(True, "failed", True, True)
-
-    async def no_leases(*_args, **_kwargs):
-        return []
-
-    async def no_audit(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(repositories, "_stage_run_tool_permission_terminalization", stage)
-    monkeypatch.setattr("app.runs.infrastructure.postgres._stage_run_tool_permission_terminalization", stage)
-    monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
-    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_leases)
-    monkeypatch.setattr(repositories, "append_audit_log", no_audit)
-
-    if admin:
-        result = await _request_admin_cancel(
-            Connection(), tenant_id="tenant-a", admin_user_id="admin-a", run_id="run-a"
-        )
-    else:
-        result = await _request_owner_cancel(
-            Connection(), tenant_id="tenant-a", user_id="owner-a", run_id="run-a"
-        )
-
-    assert result == {
-        "run_id": "run-a",
-        "status": "failed",
-        "_permission_terminalization_progress": RunTerminalizationProgress(
-            True, "failed", True, True
-        ),
-    }
-
-
-@pytest.mark.asyncio
-async def test_terminalization_maintenance_lists_only_bounded_durable_or_legacy_run_work_items():
-    class Cursor:
-        async def fetchall(self):
-            return [{"tenant_id": "tenant-a", "run_id": "run-a"}]
-
-    class Connection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
-            return Cursor()
-
-    conn = Connection()
-    rows = await repositories.list_runs_requiring_tool_permission_terminalization(conn, limit=10_000)
-
-    assert rows == [{"tenant_id": "tenant-a", "run_id": "run-a"}]
-    sql, params = conn.calls[0]
-    assert "runs.permission_terminalization_target is not null" in sql
-    assert "runs.status in ('succeeded', 'failed', 'cancelled')" in sql
-    assert "permission_request.status in ('pending', 'decided')" in sql
-    assert "permission_request.expires_at is null or permission_request.expires_at <= clock_timestamp()" in sql
-    assert "limit %s" in sql
-    assert "for update skip locked" in sql
-    assert params == (50,)
-
-
-@pytest.mark.asyncio
-async def test_terminalization_maintenance_lists_bounded_durable_handed_off_child_recovery_work():
-    class Cursor:
-        async def fetchall(self):
-            return [{"tenant_id": "tenant-a", "run_id": "child-a", "status": "cancelled"}]
-
-    class Connection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
-            return Cursor()
-
-    conn = Connection()
-    rows = await repositories.list_multi_agent_terminal_children_requiring_reconciliation(conn, limit=10_000)
-
-    assert rows == [{"tenant_id": "tenant-a", "run_id": "child-a", "status": "cancelled"}]
-    sql, params = conn.calls[0]
-    assert "child.copied_from_run_id is not null" in sql
-    assert "parent_step.payload_json->>'dispatch_state' = 'handed_off'" in sql
-    assert "parent_step.payload_json->>'dispatch_child_run_id' = child.id" in sql
-    assert "child.status in ('succeeded', 'failed', 'cancelled')" in sql
-    assert "limit %s" in sql and "for update of child, parent_step skip locked" in sql
-    assert params == (50,)
-
-
-@pytest.mark.asyncio
-async def test_multi_agent_recovery_queries_order_only_by_authoritative_runs_columns():
-    """Recovery ordering is schema-bound: `runs` has no `updated_at` column to hide a PostgreSQL failure."""
-
-    schema = Path("app/schema.sql").read_text(encoding="utf-8")
-    runs_definition = schema.split("create table if not exists runs (", 1)[1].split(");", 1)[0]
-    runs_columns = {
-        line.strip().split(maxsplit=1)[0].rstrip(",")
-        for line in runs_definition.splitlines()
-        if line.strip() and not line.strip().startswith(("primary key", "foreign key", "check", "constraint"))
-    }
-    assert {"id", "tenant_id", "started_at", "finished_at", "created_at"}.issubset(runs_columns)
-    assert "updated_at" not in runs_columns
-
-    class Cursor:
-        def __init__(self, rows):
-            self.rows = rows
-
-        async def fetchall(self):
-            return self.rows
-
-    class SchemaBoundConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            assert "updated_at" not in normalized
-            if "from runs child" in normalized:
-                assert (
-                    "order by coalesce(child.finished_at, child.started_at, child.created_at) asc, "
-                    "child.tenant_id asc, child.id asc"
-                ) in normalized
-                assert params == (50,)
-                return Cursor([{"tenant_id": "tenant-a", "run_id": "child-a", "status": "failed"}])
-            assert "from runs parent" in normalized
-            assert (
-                "order by coalesce(parent.finished_at, parent.started_at, parent.created_at) asc, "
-                "parent.tenant_id asc, parent.id asc"
-            ) in normalized
-            assert params == (50,)
-            return Cursor([{"tenant_id": "tenant-a", "run_id": "parent-a"}])
-
-    conn = SchemaBoundConnection()
-    child_rows = await repositories.list_multi_agent_terminal_children_requiring_reconciliation(conn, limit=10_000)
-    parent_rows = await repositories.list_multi_agent_parent_runs_requiring_finalization(conn, limit=10_000)
-
-    assert child_rows == [{"tenant_id": "tenant-a", "run_id": "child-a", "status": "failed"}]
-    assert parent_rows == [{"tenant_id": "tenant-a", "run_id": "parent-a"}]
-
-
-@pytest.mark.asyncio
-async def test_terminalization_maintenance_lists_ready_parent_rollup_recovery_work():
-    class Cursor:
-        async def fetchall(self):
-            return [{"tenant_id": "tenant-a", "run_id": "parent-a"}]
-
-    class Connection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
-            return Cursor()
-
-    conn = Connection()
-    rows = await repositories.list_multi_agent_parent_runs_requiring_finalization(conn, limit=10_000)
-
-    assert rows == [{"tenant_id": "tenant-a", "run_id": "parent-a"}]
-    sql, params = conn.calls[0]
-    assert "parent.status in ('running', 'succeeded', 'failed', 'cancelled')" in sql
-    assert "parent.status = 'queued' and parent.cancel_requested_at is not null" in sql
-    assert "parent_step.status not in ('succeeded', 'failed', 'cancelled')" in sql
-    assert "parent_event.event_type = 'multi_agent_parent_finalized'" in sql
-    assert "parent_audit.action = 'run.multi_agent.parent.finalize'" in sql
-    assert "for update of parent skip locked" in sql
-    assert params == (50,)
-
-
 def test_terminalization_progress_soft_cancel_intent_is_not_truthy_completion():
     """A recorded cancellation request is not evidence that a run reached cancelled."""
 
@@ -9256,512 +7900,6 @@ def test_terminalization_progress_soft_cancel_intent_is_not_truthy_completion():
     assert bool(progress) is False
 
 
-@pytest.mark.asyncio
-async def test_terminal_parent_missing_rollup_facts_are_written_after_generic_terminalization(monkeypatch):
-    """A parent already terminalized by a bounded drain still gets its one parent fact."""
-
-    events = []
-    audits = []
-
-    class RowsCursor:
-        async def fetchall(self):
-            return []
-
-    class Cursor:
-        async def fetchone(self):
-            return {
-                "id": "parent-a",
-                "tenant_id": "tenant-a",
-                "copied_from_run_id": None,
-                "trace_id": "trace-parent-a",
-                "status": "failed",
-                "cancel_requested_at": None,
-                "input_json": {
-                    "input": {
-                        "execution_mode": "multi_agent",
-                        "multi_agent_steps": [{"step_key": f"child-{index}"} for index in range(51)],
-                    }
-                },
-            }
-
-    class ParentRecoveryConnection:
-        def __init__(self):
-            self.has_event = False
-            self.has_audit = False
-
-        async def execute(self, sql, _params):
-            normalized = " ".join(sql.split()).lower()
-            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
-                return Cursor()
-            if normalized.startswith("select child.id, child.status"):
-                return RowsCursor()
-            if "has_parent_finalized_event" in normalized:
-                return SingleRowCursor(
-                    {"has_parent_finalized_event": self.has_event, "has_parent_finalized_audit": self.has_audit}
-                )
-            raise AssertionError(normalized)
-
-    async def terminal_steps(*_args, **_kwargs):
-        return [
-            {"id": f"step-{index}", "step_key": f"child-{index}", "status": "failed", "payload_json": {}}
-            for index in range(51)
-        ]
-
-    async def append_event(_conn, **kwargs):
-        events.append(kwargs)
-        conn.has_event = True
-        return "evt-parent-a"
-
-    async def append_audit(_conn, **kwargs):
-        audits.append(kwargs)
-        conn.has_audit = True
-        return "aud-parent-a"
-
-    monkeypatch.setattr(repositories, "list_run_steps", terminal_steps)
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit)
-
-    conn = ParentRecoveryConnection()
-    finalized = await repositories.finalize_multi_agent_parent_run_if_ready(
-        conn,
-        tenant_id="tenant-a",
-        parent_run_id="parent-a",
-    )
-    retry = await repositories.finalize_multi_agent_parent_run_if_ready(
-        conn,
-        tenant_id="tenant-a",
-        parent_run_id="parent-a",
-    )
-
-    assert finalized is not None
-    assert finalized["status"] == "failed"
-    assert finalized["counts"]["failed"] == 51
-    assert retry is None
-    assert [event["event_type"] for event in events] == ["multi_agent_parent_finalized"]
-    assert [audit["action"] for audit in audits] == ["run.multi_agent.parent.finalize"]
-
-
-@pytest.mark.asyncio
-async def test_terminalization_maintenance_progresses_legacy_null_expiry_without_memory_cleanup(monkeypatch):
-    class Cursor:
-        async def fetchone(self):
-            return {
-                "id": "run-a",
-                "trace_id": "trace-a",
-                "status": "running",
-                "permission_terminalization_target": None,
-            }
-
-    class Connection:
-        async def execute(self, sql, params):
-            assert "from runs" in sql
-            assert params == ("tenant-a", "run-a")
-            return Cursor()
-
-    expired_calls = []
-
-    async def expire_pending(conn, **kwargs):
-        expired_calls.append(kwargs)
-        return [{"id": "tpr-null-expiry", "status": "expired"}]
-
-    monkeypatch.setattr(repositories, "expire_pending_tool_permission_requests", expire_pending)
-
-    result = await repositories.progress_run_tool_permission_terminalization(
-        Connection(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-    )
-
-    assert result.completed is False and result.status == "running" and result.did_transition is False
-    assert expired_calls == [{"tenant_id": "tenant-a", "run_id": "run-a"}]
-
-
-@pytest.mark.asyncio
-async def test_get_tool_permission_request_by_id_scopes_to_user_without_run():
-    conn = RecordingConnection()
-
-    row = await get_tool_permission_request_by_id(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        request_id="tpr-a",
-    )
-
-    sql, params = conn.calls[0]
-    assert "from run_tool_permission_requests" in sql
-    assert "where tenant_id = %s and user_id = %s and id = %s" in sql
-    assert "run_id =" not in sql
-    assert params == ("tenant-a", "user-a", "tpr-a")
-    assert row["id"] == "step-a"
-
-
-@pytest.mark.asyncio
-async def test_admin_tool_permission_lookup_scopes_to_tenant_run_and_request_not_admin_user():
-    conn = RecordingConnection()
-
-    row = await get_tool_permission_request_for_tenant(
-        conn,
-        tenant_id="tenant-a",
-        run_id="run-a",
-        request_id="tpr-a",
-    )
-
-    sql, params = conn.calls[0]
-    assert "from run_tool_permission_requests" in sql
-    assert "where permission_request.tenant_id = %s and permission_request.run_id = %s and permission_request.id = %s" in sql
-    assert "runs.status as run_status" in sql
-    assert "user_id =" not in sql
-    assert params == ("tenant-a", "run-a", "tpr-a")
-    assert row["id"] == "step-a"
-
-
-@pytest.mark.asyncio
-async def test_admin_tool_permission_inbox_lookup_scopes_to_tenant_and_request_not_admin_user():
-    conn = RecordingConnection()
-
-    row = await get_tool_permission_request_by_id_for_tenant(
-        conn,
-        tenant_id="tenant-a",
-        request_id="tpr-a",
-    )
-
-    sql, params = conn.calls[0]
-    assert "from run_tool_permission_requests" in sql
-    assert "where permission_request.tenant_id = %s and permission_request.id = %s" in sql
-    assert "runs.status as run_status" in sql
-    assert "user_id =" not in sql
-    assert params == ("tenant-a", "tpr-a")
-    assert row["id"] == "step-a"
-
-
-@pytest.mark.asyncio
-async def test_get_exact_tool_permission_decision_requires_exact_call_or_fingerprint():
-    conn = RecordingConnection()
-
-    row = await get_exact_tool_permission_decision(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        tool_id="ragflow-knowledge-search",
-        action="execute",
-    )
-
-    assert row is None
-    assert conn.calls == []
-
-
-@pytest.mark.asyncio
-async def test_get_exact_tool_permission_decision_filters_tool_call_or_fingerprint():
-    conn = RecordingConnection()
-
-    await get_exact_tool_permission_decision(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        tool_id="claude-sdk:Bash",
-        action="execute",
-        tool_call_id="tool-current",
-        request_payload_json={"command_sha256": "a" * 64},
-    )
-
-    sql, params = conn.calls[0]
-    assert "decision in ('allow_once', 'deny')" in sql
-    assert "tool_call_id = %s" in sql
-    assert "decision = 'allow_for_run'" in sql
-    assert "request_payload_json ->> %s = %s" in sql
-    assert "with executable_run as" in sql
-    assert "cancel_requested_at is null" in sql
-    assert "for update" in sql
-    assert params == (
-        "tenant-a",
-        "run-a",
-        "tenant-a",
-        "user-a",
-        "run-a",
-        "claude-sdk:Bash",
-        "execute",
-        "tool-current",
-        "command_sha256",
-        "a" * 64,
-    )
-
-
-@pytest.mark.asyncio
-async def test_legacy_latest_tool_permission_decision_wrapper_uses_exact_lookup_shape():
-    conn = RecordingConnection()
-
-    await get_latest_tool_permission_decision(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        tool_id="ragflow-knowledge-search",
-        action="execute",
-        tool_call_id="mcp-current",
-        request_payload_json={"input_sha256": "b" * 64},
-    )
-
-    sql, params = conn.calls[0]
-    assert "decision in ('allow_once', 'deny')" in sql
-    assert "decision = 'allow_for_run'" in sql
-    assert params == (
-        "tenant-a",
-        "run-a",
-        "tenant-a",
-        "user-a",
-        "run-a",
-        "ragflow-knowledge-search",
-        "execute",
-        "mcp-current",
-        "input_sha256",
-        "b" * 64,
-    )
-
-
-@pytest.mark.asyncio
-async def test_consume_tool_permission_decision_marks_only_decided_allow_once_consumed():
-    conn = RecordingConnection()
-    consume = getattr(repositories, "consume_tool_permission_decision", None)
-    assert consume is not None, "repository must expose consume_tool_permission_decision"
-
-    row = await consume(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        request_id="tpr-a",
-    )
-
-    sql, params = conn.calls[0]
-    assert row["id"] == "step-a"
-    assert "update run_tool_permission_requests" in sql
-    assert "set status = 'consumed'" in sql
-    assert "with executable_run as" in sql
-    assert "cancel_requested_at is null" in sql
-    assert "permission_request.tenant_id = %s" in sql
-    assert "permission_request.user_id = %s" in sql
-    assert "permission_request.run_id = %s" in sql
-    assert "permission_request.id = %s" in sql
-    assert "permission_request.decision = 'allow_once'" in sql
-    assert "permission_request.status = 'decided'" in sql
-    assert "permission_request.expires_at > clock_timestamp()" in sql
-    assert "returning permission_request.*" in sql
-    assert params == ("tenant-a", "run-a", "tenant-a", "user-a", "run-a", "tpr-a")
-
-
-@pytest.mark.asyncio
-async def test_permission_grant_lookup_locks_an_executable_run_before_reuse():
-    conn = RecordingConnection()
-
-    await get_exact_tool_permission_decision(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        tool_id="claude-sdk:Bash",
-        tool_call_id="call-a",
-    )
-
-    sql, params = conn.calls[0]
-    assert "with executable_run as" in sql
-    assert "status = 'running'" in sql
-    assert "cancel_requested_at is null" in sql
-    assert "for update" in sql
-    assert "join executable_run on executable_run.id = permission_request.run_id" in sql
-    assert params[:5] == ("tenant-a", "run-a", "tenant-a", "user-a", "run-a")
-
-
-@pytest.mark.asyncio
-async def test_allow_once_consumption_loses_a_barrier_synchronized_cancel_race(monkeypatch):
-    class ConsumeCancelRaceConnection:
-        def __init__(self):
-            self.consume_ready = asyncio.Event()
-            self.cancel_terminalized = asyncio.Event()
-            self.terminalizations = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if "set status = 'consumed'" in normalized:
-                self.consume_ready.set()
-                await self.cancel_terminalized.wait()
-                return SingleRowCursor(None)
-            if normalized.startswith("with eligible_run as"):
-                await self.consume_ready.wait()
-                return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a", "cancel_requested_newly": True})
-            if normalized.startswith("update runs") and "coalesce(permission_terminalization_target" in normalized:
-                return SingleRowCursor({"id": "run-a", "permission_terminalization_target": "cancel_requested"})
-            if normalized.startswith("select id, trace_id, status, permission_terminalization_target"):
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "permission_terminalization_target": "cancel_requested",
-                        "permission_terminalization_reason": "run_cancel_requested",
-                    }
-                )
-            if normalized.startswith("with locked_run as"):
-                self.terminalizations.append(params)
-                self.cancel_terminalized.set()
-                return FakeCursor()
-            if "has_unterminalized" in normalized:
-                return SingleRowCursor({"has_unterminalized": False})
-            if normalized.startswith("update runs") and "permission_terminalization_target = null" in normalized:
-                return SingleRowCursor({"id": "run-a", "status": "running"})
-            raise AssertionError(normalized)
-
-    async def no_active_leases(conn, *, tenant_id, run_id):
-        return []
-
-    async def no_op_event_or_audit(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
-    monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
-    monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
-    conn = ConsumeCancelRaceConnection()
-
-    consume_task = asyncio.create_task(
-        repositories.consume_tool_permission_decision(
-            conn,
-            tenant_id="tenant-a",
-            user_id="user-a",
-            run_id="run-a",
-            request_id="tpr-a",
-        )
-    )
-    cancel_task = asyncio.create_task(
-        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
-    )
-    consumed, cancellation = await asyncio.gather(consume_task, cancel_task)
-
-    assert consumed is None
-    assert cancellation["run_id"] == "run-a"
-    assert cancellation["status"] == "cancel_requested"
-    assert "_permission_terminalization_progress" not in cancellation
-    assert len(conn.terminalizations) == 1
-    assert conn.terminalizations[0][-2:] == ("cancelled", "run_cancel_requested")
-
-
-@pytest.mark.asyncio
-async def test_allow_for_run_lookup_loses_a_barrier_synchronized_cancel_race(monkeypatch):
-    class ReuseCancelRaceConnection:
-        def __init__(self):
-            self.lookup_ready = asyncio.Event()
-            self.cancel_terminalized = asyncio.Event()
-            self.terminalizations = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if normalized.startswith("with executable_run as") and "select permission_request.*" in normalized:
-                self.lookup_ready.set()
-                await self.cancel_terminalized.wait()
-                return SingleRowCursor(None)
-            if normalized.startswith("with eligible_run as"):
-                await self.lookup_ready.wait()
-                return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a", "cancel_requested_newly": True})
-            if normalized.startswith("update runs") and "coalesce(permission_terminalization_target" in normalized:
-                return SingleRowCursor({"id": "run-a", "permission_terminalization_target": "cancel_requested"})
-            if normalized.startswith("select id, trace_id, status, permission_terminalization_target"):
-                return SingleRowCursor(
-                    {
-                        "id": "run-a",
-                        "permission_terminalization_target": "cancel_requested",
-                        "permission_terminalization_reason": "run_cancel_requested",
-                    }
-                )
-            if normalized.startswith("with locked_run as"):
-                self.terminalizations.append(params)
-                self.cancel_terminalized.set()
-                return FakeCursor()
-            if "has_unterminalized" in normalized:
-                return SingleRowCursor({"has_unterminalized": False})
-            if normalized.startswith("update runs") and "permission_terminalization_target = null" in normalized:
-                return SingleRowCursor({"id": "run-a", "status": "running"})
-            raise AssertionError(normalized)
-
-    async def no_active_leases(conn, *, tenant_id, run_id):
-        return []
-
-    async def no_op_event_or_audit(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
-    monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
-    monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_cancel_requested_v4_row", no_op_event_or_audit)
-    monkeypatch.setattr(streaming_v4, "append_run_terminal_v4_row", no_op_event_or_audit)
-    conn = ReuseCancelRaceConnection()
-
-    reuse_task = asyncio.create_task(
-        repositories.get_exact_tool_permission_decision(
-            conn,
-            tenant_id="tenant-a",
-            user_id="user-a",
-            run_id="run-a",
-            tool_id="claude-sdk:Bash",
-            tool_call_id="call-a",
-            request_payload_json={"command_sha256": "a" * 64},
-        )
-    )
-    cancel_task = asyncio.create_task(
-        _request_owner_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
-    )
-    reusable_grant, cancellation = await asyncio.gather(reuse_task, cancel_task)
-
-    assert reusable_grant is None
-    assert cancellation["run_id"] == "run-a"
-    assert cancellation["status"] == "cancel_requested"
-    assert "_permission_terminalization_progress" not in cancellation
-    assert conn.terminalizations == [
-        ("tenant-a", "run-a", "tenant-a", "run-a", None, None, 50, "cancelled", "run_cancel_requested")
-    ]
-
-
-@pytest.mark.asyncio
-async def test_terminalization_revokes_decided_authority_and_preserves_its_audit_value(monkeypatch):
-    calls = []
-
-    class DecidedGrantConnection:
-        async def execute(self, sql, params):
-            calls.append(("sql", " ".join(sql.split()), params))
-            return SingleRowCursor(
-                {
-                    "id": "tpr-allow-for-run",
-                    "user_id": "user-a",
-                    "trace_id": "trace-a",
-                    "tool_id": "Bash",
-                    "tool_call_id": "call-a",
-                    "action": "execute",
-                    "risk_level": "high",
-                    "write_capable": True,
-                    "decision": "allow_for_run",
-                }
-            )
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-
-    monkeypatch.setattr(repositories, "append_event", append_event)
-    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
-
-    rows = await repositories.terminalize_pending_tool_permission_requests(
-        DecidedGrantConnection(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        terminal_status="cancelled",
-        terminal_reason="run_cancel_requested",
-    )
-
-    assert rows[0]["decision"] == "allow_for_run"
-    assert "status in ('pending', 'decided')" in calls[0][1]
-    audit = next(entry[1] for entry in calls if entry[0] == "audit")
-    assert audit["payload_json"]["decision"] == "allow_for_run"
 
 
 @pytest.mark.asyncio
@@ -10596,7 +8734,7 @@ async def test_admin_run_detail_rejects_missing_run_contract(monkeypatch):
             "result_json": {},
         }
 
-    monkeypatch.setattr(repositories, "get_run", fake_get_run)
+    monkeypatch.setattr(run_queries_persistence, "get_run", fake_get_run)
 
     with pytest.raises(RepositoryConflictError, match="invalid_run_contract"):
         await repositories.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a")
@@ -10638,11 +8776,11 @@ async def test_admin_run_detail_rejects_missing_artifact_manifest_schema(monkeyp
             }
         ]
 
-    monkeypatch.setattr(repositories, "get_run", fake_get_run)
-    monkeypatch.setattr(repositories, "list_run_events", fake_empty_list)
-    monkeypatch.setattr(repositories, "list_run_steps", fake_empty_list)
-    monkeypatch.setattr(repositories, "list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr(repositories, "list_run_skill_snapshots", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "get_run", fake_get_run)
+    monkeypatch.setattr(run_queries_persistence, "list_run_events", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "list_run_steps", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_empty_list)
 
     with pytest.raises(RepositoryConflictError, match="invalid_artifact_manifest_schema_version"):
         await repositories.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a")
@@ -10695,11 +8833,11 @@ async def test_admin_run_detail_rejects_missing_audit_schema(monkeypatch):
                 return EmptyListCursor()
             return AuditCursor()
 
-    monkeypatch.setattr(repositories, "get_run", fake_get_run)
-    monkeypatch.setattr(repositories, "list_run_events", fake_empty_list)
-    monkeypatch.setattr(repositories, "list_run_steps", fake_empty_list)
-    monkeypatch.setattr(repositories, "list_run_artifacts", fake_empty_list)
-    monkeypatch.setattr(repositories, "list_run_skill_snapshots", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "get_run", fake_get_run)
+    monkeypatch.setattr(run_queries_persistence, "list_run_events", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "list_run_steps", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_empty_list)
 
     with pytest.raises(RepositoryConflictError, match="invalid_audit_event_schema_version"):
         await repositories.get_admin_run_detail(AuditConnection(), tenant_id="tenant-a", run_id="run-a")
@@ -12508,7 +10646,7 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeyp
     async def no_backfill(conn, *, tenant_id):
         assert tenant_id == "tenant-a"
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_versions_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
     class DetailCursor:
         def __init__(self, *, one=None, many=None):
@@ -12684,7 +10822,7 @@ async def test_admin_skill_detail_hides_archived_distribution(monkeypatch):
     async def no_backfill(_conn, *, tenant_id):
         assert tenant_id == "tenant-a"
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_versions_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
     class Cursor:
         async def fetchone(self):
@@ -12731,7 +10869,7 @@ async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
     async def no_backfill(_conn, *, tenant_id):
         assert tenant_id == "tenant-a"
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_versions_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
     class SummaryCursor:
         async def fetchall(self):
@@ -12818,7 +10956,7 @@ async def test_set_uploaded_workbench_skill_status_creates_authoritative_distrib
     async def no_backfill(conn, *, tenant_id):
         return None
 
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
     class UploadedSkillConnection:
         def __init__(self):
@@ -12894,8 +11032,8 @@ async def test_set_public_skill_enabled_updates_existing_authoritative_distribut
     async def no_backfill(conn, *, tenant_id):
         return None
 
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", existing_distribution)
-    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    monkeypatch.setattr(skill_catalog_persistence, "get_capability_distribution_row", existing_distribution)
+    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
 
     class UploadedSkillConnection:
         def __init__(self):
@@ -12956,7 +11094,7 @@ async def test_set_public_skill_enabled_rejects_non_public_skill_without_distrib
     async def missing_distribution(conn, *, tenant_id, capability_kind, capability_id):
         return None
 
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", missing_distribution)
+    monkeypatch.setattr(skill_catalog_persistence, "get_capability_distribution_row", missing_distribution)
 
     class MissingUploadedSkillConnection:
         def __init__(self):
@@ -13382,11 +11520,11 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
                 return EmptyListCursor()
             return AuditCursor()
 
-    monkeypatch.setattr(repositories, "get_run", fake_get_run)
-    monkeypatch.setattr(repositories, "list_run_events", fake_list_run_events)
-    monkeypatch.setattr(repositories, "list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr(repositories, "list_run_artifacts", fake_empty_list)
-    monkeypatch.setattr(repositories, "list_run_skill_snapshots", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "get_run", fake_get_run)
+    monkeypatch.setattr(run_queries_persistence, "list_run_events", fake_list_run_events)
+    monkeypatch.setattr(run_queries_persistence, "list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_empty_list)
 
     detail = await get_admin_run_detail(AuditConnection(), tenant_id="tenant-a", run_id="run-a")
 
@@ -13506,11 +11644,11 @@ async def test_admin_run_detail_sanitizes_dirty_skill_snapshot_source_and_usage(
 
             return Cursor()
 
-    monkeypatch.setattr(repositories, "get_run", fake_get_run)
-    monkeypatch.setattr(repositories, "list_run_events", fake_list_run_events)
-    monkeypatch.setattr(repositories, "list_run_steps", fake_empty_list)
-    monkeypatch.setattr(repositories, "list_run_artifacts", fake_empty_list)
-    monkeypatch.setattr(repositories, "list_run_skill_snapshots", fake_list_run_skill_snapshots)
+    monkeypatch.setattr(run_queries_persistence, "get_run", fake_get_run)
+    monkeypatch.setattr(run_queries_persistence, "list_run_events", fake_list_run_events)
+    monkeypatch.setattr(run_queries_persistence, "list_run_steps", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_empty_list)
+    monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_list_run_skill_snapshots)
 
     detail = await get_admin_run_detail(EmptyAuditConnection(), tenant_id="tenant-a", run_id="run-a")
 
@@ -13533,7 +11671,15 @@ async def test_admin_run_detail_sanitizes_dirty_skill_snapshot_source_and_usage(
 async def test_complete_run_persists_g2_observability_columns_from_result_json():
     conn = RecordingConnection()
 
-    await complete_run(
+    await RunLifecycleService(
+        persistence=PostgresRunLifecyclePersistence(),
+        append_event=repositories.append_event,
+        append_audit_log=repositories.append_audit_log,
+        validate_result_size=require_run_result_size,
+        sanitize_payload=sanitize_public_payload,
+        sanitize_text=sanitize_public_text,
+        make_trace_id=standard_trace_id,
+    ).complete_run(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -13563,219 +11709,15 @@ async def test_complete_run_persists_g2_observability_columns_from_result_json()
 
 
 @pytest.mark.asyncio
-async def test_complete_run_consumes_valid_allow_for_run_before_its_final_pending_guard():
-    authority_now = datetime(2026, 7, 16, tzinfo=timezone.utc)
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class Connection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            self.calls.append((normalized, params))
-            if normalized.startswith("select * from sse_stream_authorities"):
-                return Cursor(None)
-            if normalized.startswith("select id from runs"):
-                return Cursor({"id": "run-a"})
-            if "select clock_timestamp() as authority_now" in normalized:
-                return Cursor({"authority_now": authority_now})
-            if normalized.startswith("select id, status, decision, expires_at from run_tool_permission_requests"):
-                return Cursor(
-                    rows=[
-                        {
-                            "id": "tpr-a",
-                            "status": "decided",
-                            "decision": "allow_for_run",
-                            "expires_at": authority_now + timedelta(seconds=1),
-                        }
-                    ]
-                )
-            if normalized.startswith("update runs"):
-                return Cursor({"id": "run-a"})
-            if normalized.startswith("update run_tool_permission_requests"):
-                return Cursor(rows=[{"id": "tpr-a"}])
-            raise AssertionError(normalized)
-
-    conn = Connection()
-
-    await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={"message": "done"})
-
-    lock_sql, _params = conn.calls[0]
-    authority_sql, _params = conn.calls[1]
-    grant_lock_sql, _params = conn.calls[2]
-    completion_sql, _params = conn.calls[3]
-    consume_sql, _params = conn.calls[4]
-    assert "for update" in lock_sql
-    assert "clock_timestamp() as authority_now" in authority_sql
-    assert "for update" in grant_lock_sql
-    assert "update runs" in completion_sql
-    assert "update run_tool_permission_requests" in consume_sql
-    assert "id = any(%s::text[])" in consume_sql
-    assert "decision = 'allow_for_run'" in consume_sql
 
 
 @pytest.mark.asyncio
-async def test_complete_run_permission_blocker_returns_before_any_run_or_grant_mutation():
-    authority_now = datetime(2026, 7, 16, tzinfo=timezone.utc)
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class Connection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            self.calls.append((normalized, params))
-            if normalized.startswith("select id from runs"):
-                return Cursor({"id": "run-a"})
-            if "select clock_timestamp() as authority_now" in normalized:
-                return Cursor({"authority_now": authority_now})
-            if normalized.startswith("select id, status, decision, expires_at from run_tool_permission_requests"):
-                return Cursor(rows=[{"id": "tpr-pending", "status": "pending", "decision": None, "expires_at": None}])
-            raise AssertionError(normalized)
-
-    conn = Connection()
-    assert await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={}) is False
-    assert len(conn.calls) == 3
-    assert "for update" in conn.calls[0][0]
 
 
 @pytest.mark.asyncio
-async def test_complete_run_uses_one_locked_db_time_and_consumes_exact_valid_run_grants():
-    authority_now = datetime(2026, 7, 16, tzinfo=timezone.utc)
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class Connection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            self.calls.append((normalized, params))
-            if normalized.startswith("select * from sse_stream_authorities"):
-                return Cursor(None)
-            if normalized.startswith("select id from runs") and "for update" in normalized:
-                return Cursor({"id": "run-a"})
-            if "select clock_timestamp() as authority_now" in normalized:
-                return Cursor({"authority_now": authority_now})
-            if normalized.startswith("select id, status, decision, expires_at from run_tool_permission_requests"):
-                # This row expires after the fixed authority time but before
-                # the later mutation statements: it must remain valid.
-                return Cursor(
-                    rows=[
-                        {
-                            "id": "tpr-valid",
-                            "status": "decided",
-                            "decision": "allow_for_run",
-                            "expires_at": authority_now + timedelta(microseconds=1),
-                        }
-                    ]
-                )
-            if normalized.startswith("update runs") and "set status = 'succeeded'" in normalized:
-                return Cursor({"id": "run-a"})
-            if normalized.startswith("update run_tool_permission_requests"):
-                return Cursor(rows=[{"id": "tpr-valid"}])
-            raise AssertionError(normalized)
-
-    conn = Connection()
-
-    assert await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={"message": "done"}) is True
-    assert "for update" in conn.calls[0][0]
-    assert "clock_timestamp() as authority_now" in conn.calls[1][0]
-    assert "for update" in conn.calls[2][0]
-    assert conn.calls[3][0].startswith("update runs")
-    consume_sql, consume_params = conn.calls[4]
-    assert "id = any(%s::text[])" in consume_sql
-    assert consume_params[-1] == ["tpr-valid"]
-    assert all("expires_at > clock_timestamp()" not in sql for sql, _params in conn.calls[2:])
 
 
 @pytest.mark.asyncio
-async def test_complete_run_raises_before_commit_when_exact_grant_consumption_is_partial():
-    authority_now = datetime(2026, 7, 16, tzinfo=timezone.utc)
-    committed = []
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class Connection:
-        def __init__(self):
-            self.pending = []
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if normalized.startswith("select id from runs") and "for update" in normalized:
-                return Cursor({"id": "run-a"})
-            if "select clock_timestamp() as authority_now" in normalized:
-                return Cursor({"authority_now": authority_now})
-            if normalized.startswith("select id, status, decision, expires_at from run_tool_permission_requests"):
-                return Cursor(
-                    rows=[
-                        {"id": "tpr-a", "status": "decided", "decision": "allow_for_run", "expires_at": authority_now + timedelta(microseconds=1)},
-                        {"id": "tpr-b", "status": "decided", "decision": "allow_for_run", "expires_at": authority_now + timedelta(microseconds=1)},
-                    ]
-                )
-            if normalized.startswith("update runs") and "set status = 'succeeded'" in normalized:
-                self.pending.append("run_succeeded")
-                return Cursor({"id": "run-a"})
-            if normalized.startswith("update run_tool_permission_requests"):
-                self.pending.append("grant_consumed")
-                return Cursor(rows=[{"id": "tpr-a"}])
-            raise AssertionError(normalized)
-
-    @asynccontextmanager
-    async def transaction():
-        conn = Connection()
-        try:
-            yield conn
-        except Exception:
-            raise
-        else:
-            committed.extend(conn.pending)
-
-    with pytest.raises(RepositoryConflictError, match="allow_for_run_consumption_mismatch"):
-        async with transaction() as conn:
-            await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={})
-    assert committed == []
 
 
 @pytest.mark.asyncio

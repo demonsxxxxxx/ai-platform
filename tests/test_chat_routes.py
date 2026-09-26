@@ -12,6 +12,8 @@ from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
 
 from app import repositories as repository_module
+from app.agent_apps.infrastructure import principal_catalog_postgres as principal_catalog_persistence
+from app.runs.infrastructure import capability_admission_postgres as capability_admission_persistence
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
@@ -67,12 +69,24 @@ _TEST_V4_CAPABILITIES = SimpleNamespace(
     pending_admissions=_NoOpPendingAdmissions(),
     event_persistence=_NoOpTerminalEventPersistence(),
 )
+
+
+async def _default_enqueue_failure(*_args, **_kwargs):
+    return RunTerminalizationProgress(
+        completed=True,
+        status="failed",
+        did_transition=True,
+    )
+
+
+_TEST_RUN_LIFECYCLE = SimpleNamespace(mark_run_enqueue_failed=_default_enqueue_failure)
 _TEST_STREAM_REQUEST = SimpleNamespace(
     app=SimpleNamespace(
         state=SimpleNamespace(
             run_stream_runtime=SimpleNamespace(
                 worker_capabilities=_TEST_V4_CAPABILITIES,
-            )
+            ),
+            run_lifecycle=_TEST_RUN_LIFECYCLE,
         )
     )
 )
@@ -80,6 +94,7 @@ _TEST_STREAM_REQUEST = SimpleNamespace(
 
 async def _admit_chat_submission(*args, **kwargs):
     kwargs.setdefault("v4_capabilities", _TEST_V4_CAPABILITIES)
+    kwargs.setdefault("run_lifecycle", _TEST_RUN_LIFECYCLE)
     return await _route_admit_chat_submission(*args, **kwargs)
 
 
@@ -136,7 +151,7 @@ def chat_submission_client(monkeypatch):
     )
     monkeypatch.setattr(
         "app.main.build_run_stream_runtime",
-        lambda _transaction: SimpleNamespace(
+        lambda _transaction, _run_lifecycle: SimpleNamespace(
             worker_capabilities=_TEST_V4_CAPABILITIES,
             aclose=AsyncMock(),
         ),
@@ -1273,7 +1288,7 @@ async def test_retry_admission_preserves_existing_submission_admission(monkeypat
             "outcome_json": _pending_submission_row()["outcome_json"],
         }, False
 
-    async def admit(*, principal: AuthPrincipal, submission_id: str, v4_capabilities):
+    async def admit(*, principal: AuthPrincipal, submission_id: str, v4_capabilities, run_lifecycle):
         assert principal.user_id == "user-a"
         assert v4_capabilities is _TEST_V4_CAPABILITIES
         admitted.append(submission_id)
@@ -1584,7 +1599,7 @@ async def test_profile_postcommit_lost_ack_is_recoverable_and_duplicate_retry_do
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
     monkeypatch.setattr(repository_module, "append_event", append_event)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize)
-    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", forbidden_failure_transition)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
 
     first = await _admit_chat_submission(
         principal=principal(),
@@ -1648,7 +1663,7 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_only_fo
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
-    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", mark_enqueue_failed, raising=False)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
 
     with pytest.raises(HTTPException) as exc_info:
         await _admit_chat_submission(
@@ -1705,7 +1720,7 @@ async def test_retry_admission_keeps_unknown_enqueue_outcome_recoverable_without
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_exact_admission)
-    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", forbidden_failure_transition, raising=False)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", forbidden_failure_transition, raising=False)
 
     response = await _admit_chat_submission(
@@ -1750,7 +1765,7 @@ async def test_retry_admission_reconciles_concurrent_redis_success_without_termi
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
-    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", forbidden_failure_transition, raising=False)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", forbidden_failure_transition, raising=False)
 
     response = await _admit_chat_submission(
@@ -1838,7 +1853,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
-    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", mark_enqueue_failed, raising=False)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -4825,7 +4840,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr("app.routes.chat.repositories.get_chat_submission", get_submission)
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_run", get_run)
     monkeypatch.setattr("app.routes.chat.repositories.finalize_chat_submission", finalize_submission)
-    monkeypatch.setattr("app.routes.chat.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
@@ -5753,9 +5768,9 @@ async def test_chat_stream_implicit_rag_backing_mcp_failure_falls_back_to_genera
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", authorize)
-    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", resolve_agent_skill)
-    monkeypatch.setattr("app.routes.chat.repositories.get_capability_distribution_row", get_distribution)
-    monkeypatch.setattr("app.routes.chat.repositories.get_mcp_tool_registry_entry", get_tool)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", resolve_agent_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", get_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", get_tool)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
@@ -5814,9 +5829,9 @@ async def test_chat_stream_never_suggests_archived_default_skill_from_principal_
         return "audit"
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "list_lambchat_agents", fake_list_agents)
-    monkeypatch.setattr(repository_module, "list_capability_distribution_rows", fake_list_distributions)
-    monkeypatch.setattr(repository_module, "append_audit_log", fake_append_audit)
+    monkeypatch.setattr(principal_catalog_persistence, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(principal_catalog_persistence, "append_audit_log", fake_append_audit)
 
     response = await chat_stream(
         ChatStreamRequest(

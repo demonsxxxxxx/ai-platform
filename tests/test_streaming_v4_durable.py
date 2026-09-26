@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
@@ -17,7 +16,6 @@ from app.streaming.application.durable_v4 import (
 from app.streaming.application.worker_publication_v4 import (
     WorkerV4Capabilities,
     admit_v4_stream,
-    finalize_parent_and_publish,
 )
 
 from app.streaming.api import (
@@ -983,50 +981,6 @@ async def test_run_event_publishes_once_after_fact_loading_without_claims(failur
     else:
         assert await publish_run_event(capabilities, tenant_id="tenant-a", run_id="run-a") is (failure == "ok")
     assert calls == (["fact"] if failure in {"empty", "commit_failure"} else ["fact", "stream"])
-
-
-@pytest.mark.asyncio
-async def test_parent_finalization_publishes_child_and_distinct_parent(monkeypatch):
-    from app.streaming.application import worker_publication_v4
-
-    calls: list[object] = []
-
-    async def finalize(transaction_factory, payload, reconciled_parent):
-        calls.append(
-            ("finalize", transaction_factory, payload.run_id, reconciled_parent)
-        )
-        return {"parent_run_id": "run-parent"}
-
-    async def publish(_capabilities, *, tenant_id, run_id):
-        calls.append(("publish", tenant_id, run_id))
-        return True
-
-    monkeypatch.setattr(worker_publication_v4, "publish_run_event", publish)
-
-    @asynccontextmanager
-    async def transaction_factory():
-        yield object()
-
-    capabilities = WorkerV4Capabilities(
-        pending_admissions=object(),
-        event_persistence=object(),
-        publication_transport=object(),
-    )
-    payload = type("Payload", (), {"tenant_id": "tenant-a", "run_id": "run-child"})()
-
-    await finalize_parent_and_publish(
-        transaction_factory,
-        capabilities,
-        finalize,
-        payload,
-        "reconciled",
-    )
-
-    assert calls == [
-        ("finalize", transaction_factory, "run-child", "reconciled"),
-        ("publish", "tenant-a", "run-child"),
-        ("publish", "tenant-a", "run-parent"),
-    ]
 
 
 @pytest.mark.asyncio

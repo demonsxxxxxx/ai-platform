@@ -3058,7 +3058,6 @@ def test_runs_persistence_bridge_authority_is_exact() -> None:
         "target_module": "app.runs.infrastructure.postgres",
         "module_alias": "run_persistence",
         "symbols": [
-            "_stage_run_tool_permission_terminalization",
             "acquire_user_active_run_admission_lock",
             "count_active_runs_for_user",
             "enforce_user_active_run_admission",

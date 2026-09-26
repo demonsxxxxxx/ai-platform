@@ -27,6 +27,7 @@ from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
+from app.bootstrap.run_lifecycle import build_run_lifecycle_service
 from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
@@ -54,6 +55,7 @@ from app.routes.sandbox_runtime_cleanup import (
 )
 from app.runs.api import (
     RunAttemptLifecycleService,
+    RunLifecycleService,
     run_attempt_id_for_queue_attempt,
 )
 from app.sandbox.api import (
@@ -62,12 +64,7 @@ from app.sandbox.api import (
 )
 from app.schema_migrations import require_schema_current
 from app.settings import get_settings
-from app.tool_permission_lifecycle import (
-    cancel_run_with_v4,
-    drain_run_tool_permission_terminalization,
-    fail_run_with_v4,
-    reconcile_terminalized_permission_run,
-)
+from app.runs.api import cancel_run_with_v4, fail_run_with_v4, finish_run_terminalization
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
 from app.streaming.api import (
     WorkerV4Capabilities,
@@ -368,129 +365,12 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
     return rows
 
 
-async def progress_pending_tool_permission_terminalizations_for_worker(
-    settings: object | None = None,
-    *,
-    v4_capabilities: WorkerV4Capabilities,
-    attempt_lifecycle: RunAttemptLifecycleService,
-) -> list[dict[str, object]]:
-    """Use worker maintenance as the durable, bounded owner of staged permission drains."""
-
-    settings = settings or get_settings()
-    limit = max(1, min(int(getattr(settings, "tool_permission_terminalization_maintenance_limit", 50)), 50))
-    async with transaction() as conn:
-        candidates = await repositories.list_runs_requiring_tool_permission_terminalization(conn, limit=limit)
-
-    progress: list[dict[str, object]] = []
-    for candidate in candidates:
-        tenant_id = str(candidate.get("tenant_id") or "")
-        run_id = str(candidate.get("run_id") or "")
-        if not tenant_id or not run_id:
-            continue
-        async with transaction() as conn:
-            run = await repositories.get_run(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                for_update=True,
-            )
-            attempt = await attempt_lifecycle.get_latest(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                for_update=True,
-            )
-        outcome = await drain_run_tool_permission_terminalization(
-            tenant_id=tenant_id,
-            run_id=run_id,
-            capabilities=v4_capabilities,
-            transaction_factory=transaction,
-            attempt_lifecycle=attempt_lifecycle,
-            max_batches=4,
-            attempt_id=str((attempt or {}).get("id") or "") or None,
-            attempt_error_code=(
-                str((run or {}).get("permission_terminalization_error_code") or "")
-                or None
-            ),
-        )
-        if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
-            await reconcile_terminalized_permission_run(
-                tenant_id=tenant_id,
-                run_id=run_id,
-                progress=outcome,
-                transaction_factory=transaction,
-                attempt_lifecycle=attempt_lifecycle,
-            )
-        progress.append(
-            {
-                "tenant_id": tenant_id,
-                "run_id": run_id,
-                "completed": outcome.completed if outcome is not None else False,
-                "status": outcome.status if outcome is not None else None,
-                "did_transition": outcome.did_transition if outcome is not None else False,
-                "needs_reconcile": outcome.needs_reconcile if outcome is not None else False,
-            }
-        )
-    async with transaction() as conn:
-        recovery_candidates = await repositories.list_multi_agent_terminal_children_requiring_reconciliation(
-            conn,
-            limit=limit,
-        )
-    for candidate in recovery_candidates:
-        tenant_id = str(candidate.get("tenant_id") or "")
-        run_id = str(candidate.get("run_id") or "")
-        if not tenant_id or not run_id:
-            continue
-        await reconcile_terminalized_permission_run(
-            tenant_id=tenant_id,
-            run_id=run_id,
-            transaction_factory=transaction,
-            attempt_lifecycle=attempt_lifecycle,
-        )
-    async with transaction() as conn:
-        parent_recovery_candidates = await repositories.list_multi_agent_parent_runs_requiring_finalization(
-            conn,
-            limit=limit,
-        )
-    for candidate in parent_recovery_candidates:
-        tenant_id = str(candidate.get("tenant_id") or "")
-        parent_run_id = str(candidate.get("run_id") or "")
-        if not tenant_id or not parent_run_id:
-            continue
-        async with transaction() as conn:
-            finalized = await repositories.finalize_multi_agent_parent_run_if_ready(
-                conn,
-                tenant_id=tenant_id,
-                parent_run_id=parent_run_id,
-            )
-            if finalized is not None:
-                parent_run = await repositories.get_run(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=parent_run_id,
-                    for_update=True,
-                )
-                parent_status = str(finalized.get("status") or "")
-                await attempt_lifecycle.terminalize_latest(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=parent_run_id,
-                    status=parent_status,
-                    terminal_reason=f"multi_agent_parent_{parent_status}",
-                    error_code=(
-                        str((parent_run or {}).get("error_code") or "") or None
-                        if parent_status == "failed"
-                        else None
-                    ),
-                )
-    return progress
-
-
 async def reconcile_stale_runs_for_worker(
     settings: object | None = None,
     *,
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
+    lifecycle: RunLifecycleService,
 ) -> list[dict[str, object]]:
     """Recover a bounded batch while one atomic queue fence excludes new owners."""
 
@@ -501,7 +381,7 @@ async def reconcile_stale_runs_for_worker(
     scan_limit = int(settings.queue_metadata_fallback_scan_limit)
     fence_ttl_seconds = int(settings.stale_run_reconciliation_fence_ttl_seconds)
     async with transaction() as conn:
-        candidates = await repositories.list_stale_run_reconciliation_candidates(
+        candidates = await lifecycle.list_stale_run_reconciliation_candidates(
             conn,
             stale_after_seconds=stale_after_seconds,
             cancel_requested_after_seconds=cancel_requested_after_seconds,
@@ -589,35 +469,25 @@ async def reconcile_stale_runs_for_worker(
 
                 try:
                     await fence_guard.ensure_live()
-                    outcome = await drain_run_tool_permission_terminalization(
+                    outcome = await finish_run_terminalization(
+                        lifecycle=lifecycle,
                         tenant_id=tenant_id,
                         run_id=run_id,
-                        capabilities=v4_capabilities,
                         transaction_factory=fenced_transaction,
+                        capabilities=v4_capabilities,
                         attempt_lifecycle=attempt_lifecycle,
-                        max_batches=4,
                         attempt_id=attempt_id,
                         attempt_error_code=error_code,
                     )
                     await fence_guard.ensure_live()
-                    if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
-                        await fence_guard.ensure_live()
-                        await reconcile_terminalized_permission_run(
-                            tenant_id=tenant_id,
-                            run_id=run_id,
-                            progress=outcome,
-                            transaction_factory=fenced_transaction,
-                            attempt_lifecycle=attempt_lifecycle,
-                        )
-                        await fence_guard.ensure_live()
                 except ReconciliationFenceLost:
                     results.append(
                         {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
                     )
                     continue
                 except Exception:
-                    logger.exception("Stale run permission drain failed with fence retained", extra={"run_id": run_id})
-                    results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "drain_unknown", "did_transition": False})
+                    logger.exception("Stale run terminalization failed with fence retained", extra={"run_id": run_id})
+                    results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "terminalization_unknown", "did_transition": False})
                     continue
                 if outcome is not None and outcome.completed and outcome.is_terminal():
                     try:
@@ -697,16 +567,12 @@ async def run_worker_cleanup_maintenance(
     *,
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
+    lifecycle: RunLifecycleService,
 ) -> None:
     phases = {
         "sandbox_cleanup": cleanup_expired_sandbox_leases,
         "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
         "data_retention": lambda: run_data_retention_maintenance(settings),
-        "tool_permission_terminalization": lambda: progress_pending_tool_permission_terminalizations_for_worker(
-            settings,
-            v4_capabilities=v4_capabilities,
-            attempt_lifecycle=attempt_lifecycle,
-        ),
         "file_upload_session_cleanup": cleanup_expired_file_upload_sessions,
         "queue_reclaim": lambda: queue.reclaim_expired_leases(
             visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
@@ -715,6 +581,7 @@ async def run_worker_cleanup_maintenance(
             settings,
             v4_capabilities=v4_capabilities,
             attempt_lifecycle=attempt_lifecycle,
+            lifecycle=lifecycle,
         ),
     }
     await run_maintenance_phases(phases, logger=logger)
@@ -725,6 +592,7 @@ async def run_worker_maintenance(
     *,
     v4_capabilities: WorkerV4Capabilities | None = None,
     attempt_lifecycle: RunAttemptLifecycleService,
+    lifecycle: RunLifecycleService,
 ) -> None:
     settings = settings or get_settings()
     if v4_capabilities is None:
@@ -733,6 +601,7 @@ async def run_worker_maintenance(
         settings,
         v4_capabilities=v4_capabilities,
         attempt_lifecycle=attempt_lifecycle,
+        lifecycle=lifecycle,
     )
 
 
@@ -741,6 +610,7 @@ async def _maintenance_until_done(
     interval_seconds: float,
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
+    lifecycle: RunLifecycleService,
 ) -> None:
     await maintenance_until_done(
         settings,
@@ -749,6 +619,7 @@ async def _maintenance_until_done(
             current_settings,
             v4_capabilities=v4_capabilities,
             attempt_lifecycle=attempt_lifecycle,
+            lifecycle=lifecycle,
         ),
         logger=logger,
     )
@@ -763,6 +634,7 @@ async def _terminalize_escaped_process_exception(
     *,
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
+    lifecycle: RunLifecycleService,
     run_diagnostics: Any | None = None,
 ) -> WorkerOutcome:
     """Converge one valid claimed run after processing escapes its normal terminal path."""
@@ -877,7 +749,7 @@ async def _terminalize_escaped_process_exception(
                 },
             )
         cancel_requested = bool(locked_run.get("cancel_requested_at")) or str(
-            locked_run.get("permission_terminalization_target") or ""
+            locked_run.get("terminalization_target") or ""
         ) in {"cancel_requested", "cancelled"}
         if cancel_requested:
             await attempt_lifecycle.request_cancel(
@@ -888,6 +760,7 @@ async def _terminalize_escaped_process_exception(
             )
             progress = await cancel_run_with_v4(
                 conn,
+                lifecycle=lifecycle,
                 capabilities=v4_capabilities,
                 tenant_id=payload.tenant_id,
                 run_id=run_id,
@@ -896,6 +769,7 @@ async def _terminalize_escaped_process_exception(
         else:
             progress = await fail_run_with_v4(
                 conn,
+                lifecycle=lifecycle,
                 capabilities=v4_capabilities,
                 tenant_id=payload.tenant_id,
                 run_id=run_id,
@@ -903,42 +777,19 @@ async def _terminalize_escaped_process_exception(
                 error_message=error_message,
                 result_json={"message": "Worker processing failed unexpectedly."},
             )
-        if progress is not None and progress.is_terminal():
-            await attempt_lifecycle.terminalize(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=run_id,
-                attempt_id=validated_attempt_id,
-                status=str(progress.status),
-                terminal_reason=f"run_{progress.status}",
-                error_code=error_code if progress.status == "failed" else None,
-            )
+
 
     if progress is None or not progress.is_terminal():
-        progress = await drain_run_tool_permission_terminalization(
+        progress = await finish_run_terminalization(
+            lifecycle=lifecycle,
             tenant_id=payload.tenant_id,
             run_id=run_id,
-            capabilities=v4_capabilities,
             transaction_factory=transaction,
+            capabilities=v4_capabilities,
             attempt_lifecycle=attempt_lifecycle,
-            max_batches=4,
             attempt_id=validated_attempt_id,
             attempt_error_code=error_code,
         )
-    if progress is not None and progress.did_transition and progress.needs_reconcile:
-        try:
-            await reconcile_terminalized_permission_run(
-                tenant_id=payload.tenant_id,
-                run_id=run_id,
-                progress=progress,
-                transaction_factory=transaction,
-                attempt_lifecycle=attempt_lifecycle,
-            )
-        except Exception:
-            logger.exception(
-                "Worker process exception terminalized before child reconciliation completed",
-                extra={"run_id": run_id},
-            )
     if progress is not None and progress.is_terminal():
         await publish_run_event(
             v4_capabilities,
@@ -974,6 +825,7 @@ async def run_once(
     run_background_maintenance: bool = True,
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
+    lifecycle: RunLifecycleService,
 ) -> WorkerOutcome:
     configure_context_services()
     configure_mcp_runtime()
@@ -985,6 +837,7 @@ async def run_once(
             settings,
             v4_capabilities=v4_capabilities,
             attempt_lifecycle=attempt_lifecycle,
+            lifecycle=lifecycle,
         )
     message = await queue.lease_run(
         timeout_seconds=timeout_seconds,
@@ -1021,6 +874,7 @@ async def run_once(
                 _worker_maintenance_interval_seconds(settings),
                 v4_capabilities,
                 attempt_lifecycle,
+                lifecycle,
             )
         )
         if run_background_maintenance
@@ -1034,6 +888,7 @@ async def run_once(
                 "worker_id": resolved_worker_id,
                 "v4_capabilities": v4_capabilities,
                 "run_attempt_lifecycle": attempt_lifecycle,
+                "run_lifecycle": lifecycle,
             }
             if durable_queue_lease is not None:
                 process_kwargs["queue_lease"] = durable_queue_lease
@@ -1050,6 +905,7 @@ async def run_once(
                     exc,
                     v4_capabilities=v4_capabilities,
                     attempt_lifecycle=attempt_lifecycle,
+                    lifecycle=lifecycle,
                     run_diagnostics=build_run_diagnostics_service(),
                 )
             except Exception:
@@ -1129,11 +985,12 @@ async def run_forever(
     idle_sleep_seconds: float = 0.5,
     *,
     attempt_lifecycle: RunAttemptLifecycleService,
+    lifecycle: RunLifecycleService,
 ) -> None:
     configure_context_services()
     configure_mcp_runtime()
     await require_schema_current()
-    worker_runtime = build_worker_v4_runtime(transaction)
+    worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
     registry = AdapterRegistry()
     worker_id = default_worker_id()
     settings = get_settings()
@@ -1141,6 +998,7 @@ async def run_forever(
         settings,
         v4_capabilities=worker_runtime.capabilities,
         attempt_lifecycle=attempt_lifecycle,
+        lifecycle=lifecycle,
     )
     reconciler_stop = asyncio.Event()
     reconciler_task = asyncio.create_task(
@@ -1150,6 +1008,7 @@ async def run_forever(
             worker_id=worker_id,
             v4_capabilities=worker_runtime.capabilities,
             attempt_lifecycle=attempt_lifecycle,
+            lifecycle=lifecycle,
             run_diagnostics=build_run_diagnostics_service(),
         ),
         name="ai-platform-executor-terminal-reconciler",
@@ -1164,6 +1023,7 @@ async def run_forever(
             _worker_maintenance_interval_seconds(settings),
             worker_runtime.capabilities,
             attempt_lifecycle,
+            lifecycle,
         ),
         name="ai-platform-worker-cleanup-maintenance",
     )
@@ -1185,6 +1045,7 @@ async def run_forever(
                     run_background_maintenance=False,
                     v4_capabilities=worker_runtime.capabilities,
                     attempt_lifecycle=attempt_lifecycle,
+                    lifecycle=lifecycle,
                 )
             except Exception:
                 logger.exception("Worker iteration failed")
@@ -1211,6 +1072,7 @@ async def _run_worker_slot(
     idle_sleep_seconds: float,
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
+    lifecycle: RunLifecycleService,
 ) -> None:
     registry = AdapterRegistry()
     while True:
@@ -1223,6 +1085,7 @@ async def _run_worker_slot(
                 run_background_maintenance=False,
                 v4_capabilities=v4_capabilities,
                 attempt_lifecycle=attempt_lifecycle,
+                lifecycle=lifecycle,
             )
         except Exception:
             logger.exception("Worker slot iteration failed")
@@ -1239,12 +1102,14 @@ async def run_worker_pool(
     idle_sleep_seconds: float = 0.5,
 ) -> None:
     attempt_lifecycle = build_run_attempt_lifecycle_service()
+    lifecycle = build_run_lifecycle_service()
     resolved_worker_count = max(int(worker_count), 1)
     if resolved_worker_count == 1:
         await run_forever(
             poll_timeout_seconds=poll_timeout_seconds,
             idle_sleep_seconds=idle_sleep_seconds,
             attempt_lifecycle=attempt_lifecycle,
+            lifecycle=lifecycle,
         )
         return
 
@@ -1253,11 +1118,12 @@ async def run_worker_pool(
     await require_schema_current()
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
-    worker_runtime = build_worker_v4_runtime(transaction)
+    worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
     await run_worker_maintenance(
         settings,
         v4_capabilities=worker_runtime.capabilities,
         attempt_lifecycle=attempt_lifecycle,
+        lifecycle=lifecycle,
     )
     reconciler_stop = asyncio.Event()
     reconciler_task = asyncio.create_task(
@@ -1267,6 +1133,7 @@ async def run_worker_pool(
             worker_id=process_worker_id,
             v4_capabilities=worker_runtime.capabilities,
             attempt_lifecycle=attempt_lifecycle,
+            lifecycle=lifecycle,
             run_diagnostics=build_run_diagnostics_service(),
         ),
         name="ai-platform-executor-terminal-reconciler",
@@ -1277,6 +1144,7 @@ async def run_worker_pool(
             _worker_maintenance_interval_seconds(settings),
             worker_runtime.capabilities,
             attempt_lifecycle,
+            lifecycle,
         ),
         name="ai-platform-worker-cleanup-maintenance",
     )
@@ -1292,6 +1160,7 @@ async def run_worker_pool(
                 idle_sleep_seconds=idle_sleep_seconds,
                 v4_capabilities=worker_runtime.capabilities,
                 attempt_lifecycle=attempt_lifecycle,
+                lifecycle=lifecycle,
             ),
             name=f"ai-platform-worker-{index + 1}",
         )
@@ -1320,13 +1189,15 @@ async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
     configure_file_upload_services()
     configure_mcp_runtime()
     await require_schema_current()
-    worker_runtime = build_worker_v4_runtime(transaction)
+    lifecycle = build_run_lifecycle_service()
+    worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
     attempt_lifecycle = build_run_attempt_lifecycle_service()
     try:
         return await run_once(
             timeout_seconds=timeout_seconds,
             v4_capabilities=worker_runtime.capabilities,
             attempt_lifecycle=attempt_lifecycle,
+            lifecycle=lifecycle,
         )
     finally:
         await worker_runtime.aclose()

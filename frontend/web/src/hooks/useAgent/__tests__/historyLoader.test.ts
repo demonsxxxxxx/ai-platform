@@ -1279,35 +1279,88 @@ test("reconstructMessagesFromEvents deduplicates repeated public thinking event 
   assert.deepEqual([...processedEventIds], ["thinking-delta-once"]);
 });
 
-test("reconstructMessagesFromEvents replays a production outer permission event through the compatibility envelope", () => {
+test("retired permission history adds no cards or empty messages beside normal chat activity", () => {
   const messages = reconstructMessagesFromEvents(
     [
       {
-        id: "outer-permission:user",
+        id: "user-1",
         event_type: "user:message",
-        run_id: "run-outer-permission",
-        timestamp: "2026-07-15T00:00:00Z",
-        data: { content: "执行工具" },
+        run_id: "run-mixed",
+        timestamp: "2026-09-26T01:00:00.000Z",
+        data: { content: "查找资料", message_id: "user-1" },
       },
       {
-        id: "outer-permission:request",
-        sequence: 12,
-        event_type: "tool_permission_requested",
-        run_id: "run-outer-permission",
-        timestamp: "2026-07-15T00:00:01Z",
+        id: "approval-1",
+        sequence: 1,
+        event_type: "run_event",
+        run_id: "run-mixed",
+        timestamp: "2026-09-26T01:00:01.000Z",
         data: {
-          event_id: "outer-permission:request",
-          run_id: "run-outer-permission",
+          event_id: "approval-1",
+          run_id: "run-mixed",
           event_type: "tool_permission_requested",
-          tool_permission_card: {
-            permission_request_id: "permission-outer",
-            run_id: "run-outer-permission",
-            tool_id: "Bash",
-            tool_call_id: "call-outer",
-            risk_level: "high",
-            write_capable: true,
-            status: "pending",
+          payload: {
+            permission_request_id: "permission-1",
+            tool_id: "search",
+            tool_call_id: "call-1",
           },
+        },
+      },
+      {
+        id: "approval-legacy",
+        event_type: "approval_required",
+        run_id: "run-mixed",
+        timestamp: "2026-09-26T01:00:01.250Z",
+        data: { message: "需要确认" },
+      } as HistoryEvent,
+      {
+        id: "permission-card-legacy",
+        event_type: "tool_permission_card",
+        run_id: "run-mixed",
+        timestamp: "2026-09-26T01:00:01.375Z",
+        data: {
+          event_id: "permission-card-legacy",
+          tool_permission_card: { permission_request_id: "permission-legacy" },
+        },
+      } as HistoryEvent,
+      {
+        id: "tool-1",
+        sequence: 2,
+        event_type: "run_event",
+        run_id: "run-mixed",
+        timestamp: "2026-09-26T01:00:02.000Z",
+        data: {
+          event_id: "tool-1",
+          run_id: "run-mixed",
+          event_type: "public_tool_activity",
+          operation_id: "op-search-1",
+          category: "search",
+          display_name: "Search authorized sources",
+          status: "completed",
+        },
+      },
+      {
+        id: "legacy-child-1",
+        sequence: 2,
+        event_type: "run_event",
+        run_id: "run-mixed",
+        timestamp: "2026-09-26T01:00:01.500Z",
+        data: {
+          event_id: "legacy-child-1",
+          run_id: "run-mixed",
+          event_type: "subagent_started",
+          message: "legacy platform child",
+        },
+      },
+      {
+        id: "answer-1",
+        event_type: "message:chunk",
+        run_id: "run-mixed",
+        timestamp: "2026-09-26T01:00:03.000Z",
+        data: {
+          content: "找到三条资料。",
+          projection_kind: "assistant_delta",
+          event_id: "answer-1",
         },
       },
     ] satisfies HistoryEvent[],
@@ -1315,307 +1368,14 @@ test("reconstructMessagesFromEvents replays a production outer permission event 
     { activeSubagentStack: [] },
   );
 
-  const assistant = messages.find(
-    (message) => message.role === "assistant" && message.runId === "run-outer-permission",
-  );
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0]?.role, "user");
+  assert.equal(messages[1]?.content, "找到三条资料。");
+  assert.deepEqual(messages[1]?.parts?.map((part) => part.type), ["tool", "text"]);
   assert.equal(
-    assistant?.parts?.some(
-      (part) =>
-        part.type === "tool_permission" &&
-        part.permission_request_id === "permission-outer",
+    messages.some((message) =>
+      message.parts?.some((part) => String(part.type) === "tool_permission"),
     ),
-    true,
-  );
-});
-
-test("reconstructMessagesFromEvents replays tool permission request and decision cards", () => {
-  const processedEventIds = new Set<string>();
-  const messages = reconstructMessagesFromEvents(
-    [
-      {
-        id: "event-user",
-        event_type: "user:message",
-        run_id: "run-review",
-        timestamp: "2026-06-02T01:00:00.000Z",
-        data: {
-          content: "审核这个 Word",
-          message_id: "run-review:user",
-          attachments: [],
-        },
-      },
-      {
-        id: "event-permission-requested",
-        event_type: "run_event",
-        run_id: "run-review",
-        timestamp: "2026-06-02T01:00:01.000Z",
-        data: {
-          event_id: "evt-permission-requested",
-          run_id: "run-review",
-          event_type: "tool_permission_requested",
-          stage: "tool_policy",
-          message: "工具调用需要权限决策",
-          severity: "warning",
-          sequence: 8,
-          payload: {
-            permission_request_id: "tpr-a",
-            tool_id: "ragflow-knowledge-search",
-            tool_call_id: "call-a",
-            risk_level: "high",
-            write_capable: true,
-            request_payload: {
-              storage_key: "tenants/default/private/tool.json",
-            },
-          },
-        },
-      },
-      {
-        id: "event-permission-decided",
-        event_type: "run_event",
-        run_id: "run-review",
-        timestamp: "2026-06-02T01:00:02.000Z",
-        data: {
-          event_id: "evt-permission-decided",
-          run_id: "run-review",
-          event_type: "tool_permission_decided",
-          stage: "tool_policy",
-          message: "工具权限已决策",
-          sequence: 9,
-          payload: {
-            permission_request_id: "tpr-a",
-            tool_id: "ragflow-knowledge-search",
-            tool_call_id: "call-a",
-            decision: "deny",
-            decision_payload: {
-              storage_key: "tenants/default/private/decision.json",
-            },
-          },
-        },
-      },
-    ] satisfies HistoryEvent[],
-    processedEventIds,
-    { activeSubagentStack: [] },
-  );
-
-  assert.equal(messages.length, 2);
-  assert.equal(messages[1]?.role, "assistant");
-  assert.deepEqual(messages[1]?.parts?.map((part) => part.type), [
-    "tool_permission",
-  ]);
-  const part = messages[1]?.parts?.[0] as MessagePart & {
-    type: "tool_permission";
-    status: string;
-    decision: string;
-  };
-  assert.equal(part.type, "tool_permission");
-  assert.equal(part.status, "decided");
-  assert.equal(part.decision, "deny");
-  assert.deepEqual([...processedEventIds], [
-    "event-permission-requested",
-    "event-permission-decided",
-  ]);
-  assert.doesNotMatch(
-    JSON.stringify(messages[1]?.parts),
-    /request_payload|decision_payload|storage_key|tenants\/default/,
-  );
-});
-
-test("reconstructMessagesFromEvents replays public tool permission card projections", () => {
-  const processedEventIds = new Set<string>();
-  const messages = reconstructMessagesFromEvents(
-    [
-      {
-        id: "event-user",
-        event_type: "user:message",
-        run_id: "run-review",
-        timestamp: "2026-06-02T01:00:00.000Z",
-        data: {
-          content: "审核这个 Word",
-          message_id: "run-review:user",
-          attachments: [],
-        },
-      },
-      {
-        id: "event-permission-card",
-        event_type: "run_event",
-        run_id: "run-review",
-        timestamp: "2026-06-02T01:00:01.000Z",
-        data: {
-          event_id: "evt-permission-card",
-          run_id: "run-review",
-          event_type: "tool_permission_card",
-          stage: "tool_policy",
-          message: "工具调用需要权限决策",
-          severity: "warning",
-          sequence: 8,
-          payload: {
-            tool_permission_card: {
-              schema_version: "ai-platform.tool-permission-card.v1",
-              permission_request_id: "tpr-card",
-              run_id: "run-review",
-              tool_id: "ragflow-knowledge-search",
-              tool_call_id: "call-card",
-              risk_level: "high",
-              write_capable: true,
-              status: "pending",
-              decision_endpoint:
-                "/api/ai/runs/run-review/tool-permissions/tpr-card/decision",
-              request_payload: {
-                storage_key: "tenants/default/private/tool.json",
-              },
-              command_sha256: "a".repeat(64),
-            },
-          },
-        },
-      },
-      {
-        id: "event-permission-card-decided",
-        event_type: "run_event",
-        run_id: "run-review",
-        timestamp: "2026-06-02T01:00:02.000Z",
-        data: {
-          event_id: "evt-permission-card-decided",
-          run_id: "run-review",
-          event_type: "tool_permission_card",
-          stage: "tool_policy",
-          message: "工具权限已决策",
-          sequence: 9,
-          payload: {
-            tool_permission_card: {
-              schema_version: "ai-platform.tool-permission-card.v1",
-              permission_request_id: "tpr-card",
-              run_id: "run-review",
-              tool_id: "ragflow-knowledge-search",
-              tool_call_id: "call-card",
-              risk_level: "high",
-              write_capable: true,
-              status: "decided",
-              decision: "deny",
-              decision_payload: {
-                storage_key: "tenants/default/private/decision.json",
-              },
-              command_sha256: "b".repeat(64),
-            },
-          },
-        },
-      },
-    ] satisfies HistoryEvent[],
-    processedEventIds,
-    { activeSubagentStack: [] },
-  );
-
-  assert.equal(messages.length, 2);
-  assert.equal(messages[1]?.role, "assistant");
-  assert.deepEqual(messages[1]?.parts?.map((part) => part.type), [
-    "tool_permission",
-  ]);
-  const part = messages[1]?.parts?.[0] as MessagePart & {
-    type: "tool_permission";
-    status: string;
-    decision: string;
-  };
-  assert.equal(part.type, "tool_permission");
-  assert.equal(part.status, "decided");
-  assert.equal(part.decision, "deny");
-  assert.deepEqual([...processedEventIds], [
-    "event-permission-card",
-    "event-permission-card-decided",
-  ]);
-  assert.doesNotMatch(
-    JSON.stringify(messages[1]?.parts),
-    /request_payload|decision_payload|storage_key|command_sha256|tenants\/default/,
-  );
-});
-
-test("reconstructMessagesFromEvents replays top-level public tool permission card events", () => {
-  const processedEventIds = new Set<string>();
-  const messages = reconstructMessagesFromEvents(
-    [
-      {
-        id: "event-user",
-        event_type: "user:message",
-        run_id: "run-review",
-        timestamp: "2026-06-02T01:00:00.000Z",
-        data: {
-          content: "审核这个 Word",
-          message_id: "run-review:user",
-          attachments: [],
-        },
-      },
-      {
-        id: "event-permission-card",
-        event_type: "tool_permission_card",
-        run_id: "run-review",
-        timestamp: "2026-06-02T01:00:01.000Z",
-        data: {
-          event_id: "evt-permission-card",
-          content: "工具调用需要权限决策",
-          status: "tool_policy",
-          tool_permission_card: {
-            schema_version: "ai-platform.tool-permission-card.v1",
-            permission_request_id: "tpr-card",
-            run_id: "run-review",
-            tool_id: "ragflow-knowledge-search",
-            tool_call_id: "call-card",
-            risk_level: "high",
-            write_capable: true,
-            status: "pending",
-            request_payload: {
-              storage_key: "tenants/default/private/tool.json",
-            },
-            command_sha256: "a".repeat(64),
-          },
-        },
-      },
-      {
-        id: "event-permission-card-decided",
-        event_type: "tool_permission_card",
-        run_id: "run-review",
-        timestamp: "2026-06-02T01:00:02.000Z",
-        data: {
-          event_id: "evt-permission-card-decided",
-          content: "工具权限已决策",
-          status: "tool_policy",
-          tool_permission_card: {
-            schema_version: "ai-platform.tool-permission-card.v1",
-            permission_request_id: "tpr-card",
-            run_id: "run-review",
-            tool_id: "ragflow-knowledge-search",
-            tool_call_id: "call-card",
-            risk_level: "high",
-            write_capable: true,
-            status: "decided",
-            decision: "allow_once",
-            decision_payload: {
-              storage_key: "tenants/default/private/decision.json",
-            },
-            command_sha256: "b".repeat(64),
-          },
-        },
-      },
-    ] satisfies HistoryEvent[],
-    processedEventIds,
-    { activeSubagentStack: [] },
-  );
-
-  assert.equal(messages.length, 2);
-  assert.equal(messages[1]?.role, "assistant");
-  assert.deepEqual(messages[1]?.parts?.map((part) => part.type), [
-    "tool_permission",
-  ]);
-  const part = messages[1]?.parts?.[0] as MessagePart & {
-    type: "tool_permission";
-    status: string;
-    decision: string;
-  };
-  assert.equal(part.type, "tool_permission");
-  assert.equal(part.status, "decided");
-  assert.equal(part.decision, "allow_once");
-  assert.deepEqual([...processedEventIds], [
-    "event-permission-card",
-    "event-permission-card-decided",
-  ]);
-  assert.doesNotMatch(
-    JSON.stringify(messages[1]?.parts),
-    /request_payload|decision_payload|storage_key|command_sha256|tenants\/default/,
+    false,
   );
 });

@@ -17,7 +17,6 @@ from app.streaming.application.worker_publication_v4 import (
     append_callback_v4_rows,
     publish_callback_rows,
     append_run_terminal_v4_row,
-    finalize_parent_and_publish,
     persist_worker_event,
     publish_run_event,
 )
@@ -91,7 +90,6 @@ __all__ = [
     "project_public_envelope_v4",
     "project_public_v4",
     "publish_run_event",
-    "finalize_parent_and_publish",
     "persist_worker_event",
     "stream_end_event_id",
     "validate_internal_envelope_v4",

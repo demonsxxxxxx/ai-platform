@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 from typing import Any, Literal
-from uuid import uuid4
+from app.platform.tracing import standard_trace_id as standard_trace_id
 
 from app.platform.public_payload import (
     sanitize_public_payload,
@@ -161,16 +161,10 @@ STANDARD_EVENT_TYPES = frozenset(
         "mcp_tool_call_completed",
         "mcp_tool_call_started",
         "mcp_tool_denied",
-        "multi_agent_dispatch_enqueue_failed",
-        "multi_agent_dispatch_handoff",
-        "multi_agent_dispatch_parent_parked",
-        "multi_agent_dispatch_reconciled",
-        "multi_agent_parent_finalized",
         "queued",
         "run_cancelled",
         "run_completed",
         "run_created",
-        "run_multi_agent_child_created",
         "run_failed",
         "run_started",
         "run_succeeded",
@@ -186,11 +180,6 @@ STANDARD_EVENT_TYPES = frozenset(
         "tool_call_completed",
         "tool_call_started",
         "tool_denied",
-        "tool_permission_authorized",
-        "tool_permission_denied",
-        "tool_permission_decided",
-        "tool_permission_requested",
-        "tool_permission_terminalized",
         "worker_started",
     }
 )
@@ -236,13 +225,6 @@ class ContextSnapshot:
     included_file_ids: list[str] = field(default_factory=list)
     included_memory_record_ids: list[str] = field(default_factory=list)
     schema_version: str = CONTEXT_SNAPSHOT_SCHEMA_VERSION
-
-
-def standard_trace_id(seed: str | None = None) -> str:
-    if seed:
-        normalized = seed.replace("run_", "", 1).replace("-", "_")
-        return f"trace_{normalized}"
-    return f"trace_{uuid4().hex}"
 
 
 def standard_error_code(value: str | None) -> str:

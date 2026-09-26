@@ -10,7 +10,6 @@ import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
 import type { SessionSidebarSessionSource } from "../../panels/SessionSidebar";
 import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { useAgent } from "../../../hooks/useAgent";
-import { useApprovals } from "../../../hooks/useApprovals";
 import { useAuth } from "../../../hooks/useAuth";
 import {
   canSelectChatMcpTools,
@@ -434,14 +433,6 @@ export function ChatAppContent({
   } = useDragAndDrop();
 
   const {
-    approvals,
-    respondToApproval,
-    addApproval,
-    clearApprovals,
-    isLoading: approvalLoading,
-  } = useApprovals({ sessionId: null });
-
-  const {
     skills,
     isLoading: skillsLoading,
     listError: skillsListError,
@@ -497,19 +488,6 @@ export function ChatAppContent({
     reconnectSSE,
     runControlLifecycle,
   } = useAgent({
-    onApprovalRequired: (approval) => {
-      addApproval({
-        id: approval.id,
-        message: approval.message,
-        type: "form",
-        fields: approval.fields || [],
-        status: "pending",
-        session_id: sessionId,
-      });
-    },
-    onClearApprovals: () => {
-      clearApprovals();
-    },
     getDisabledSkills: () => sessionConfigRef.current.disabledSkills,
     // The legacy callback type says ``string[]``. The runtime deliberately
     // preserves ``undefined`` so an omitted selection can inherit from the
@@ -1454,9 +1432,6 @@ export function ChatAppContent({
             availableModels={filteredModels ?? []}
             currentModelId={currentModelId}
             onSelectModel={handleSelectModel}
-            approvals={approvals}
-            onRespondApproval={respondToApproval}
-            approvalLoading={approvalLoading}
             onSendMessage={handleSendMessage}
             canRetryPendingSubmission={canRetryPendingSubmission}
             onRetryPendingSubmission={retryPendingSubmission}

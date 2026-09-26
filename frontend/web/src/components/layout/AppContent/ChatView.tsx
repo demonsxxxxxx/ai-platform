@@ -36,7 +36,6 @@ import { WelcomePage } from "../../chat/WelcomePage";
 import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
 import { Virtuoso, type ListRange } from "react-virtuoso";
-import { ApprovalPanel } from "../../panels/ApprovalPanel";
 import {
   ChatSkeleton,
   ChatSkeletonMessagesOnly,
@@ -63,7 +62,6 @@ import {
 } from "./sessionState";
 import type {
   Message,
-  PendingApproval,
   ToolState,
   SkillResponse,
   PublicSkillResponse,
@@ -186,13 +184,6 @@ interface ChatViewProps {
   availableModels: ModelOption[];
   currentModelId: string;
   onSelectModel: (modelId: string, modelValue: string) => void;
-  approvals: PendingApproval[];
-  onRespondApproval: (
-    id: string,
-    response: Record<string, unknown>,
-    approved: boolean,
-  ) => void;
-  approvalLoading: boolean;
   onSendMessage: (
     content: string,
     options?: Record<string, boolean | string | number>,
@@ -260,9 +251,6 @@ export function ChatView({
   availableModels,
   currentModelId,
   onSelectModel,
-  approvals,
-  onRespondApproval,
-  approvalLoading,
   onSendMessage,
   canRetryPendingSubmission,
   onRetryPendingSubmission,
@@ -1136,12 +1124,6 @@ export function ChatView({
           />
         )}
       </main>
-
-      <ApprovalPanel
-        approvals={approvals}
-        onRespond={onRespondApproval}
-        isLoading={approvalLoading}
-      />
 
       <RevealPreviewHost
         preview={activePreview}
