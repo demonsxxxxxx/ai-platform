@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 
@@ -58,6 +60,22 @@ def _callback() -> ExecutorCallbackEvent:
     )
 
 
+@pytest.fixture
+def private_callback_capabilities():
+    async def fail_public_stream_access(*args, **kwargs):
+        raise AssertionError("private callback must not access the public stream")
+
+    return SimpleNamespace(
+        event_persistence=SimpleNamespace(
+            append_callback_rows=fail_public_stream_access,
+            load_latest_run_event=fail_public_stream_access,
+        ),
+        publication_transport=SimpleNamespace(
+            publish_callback_batch=fail_public_stream_access,
+        ),
+    )
+
+
 def test_callback_batch_ids_are_restart_namespaced_and_monotonic():
     first = _CallbackBatchIdFactory("executor-boot-a")
     second = _CallbackBatchIdFactory("executor-boot-b")
@@ -92,7 +110,7 @@ async def test_release_lookup_holds_a_row_lock_for_provider_stop_ordering():
 
 
 @pytest.mark.asyncio
-async def test_current_attempt_lookup_enforces_first_class_payload_consistency():
+async def test_current_attempt_lookup_enforces_attempt_and_owner_generation_consistency():
     calls = []
 
     class Cursor:
@@ -113,7 +131,10 @@ async def test_current_attempt_lookup_enforces_first_class_payload_consistency()
 
     normalized = " ".join(calls[0][0].split())
     assert "lease_payload_json ->> 'attempt_id' = %s" in normalized
-    assert "attempt_id is null or attempt_id = lease_payload_json ->> 'attempt_id'" in normalized
+    assert "sandbox_leases.attempt_id = sandbox_leases.lease_payload_json ->> 'attempt_id'" in normalized
+    assert "sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text" in normalized
+    assert "run_attempts.status in ('running', 'cancel_requested')" in normalized
+    assert "attempt_id is null" not in normalized
     assert calls[0][1] == ("tenant-a", "run-a", "attempt-a")
 
 
@@ -336,6 +357,7 @@ async def test_admin_orphan_cleanup_surfaces_audit_outage(monkeypatch):
 async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(
     monkeypatch,
     duplicate,
+    private_callback_capabilities,
 ):
     batches = []
 
@@ -365,22 +387,6 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(
     async def fail_append_event(*args, **kwargs):
         raise AssertionError("batched callback must not use per-event persistence")
 
-    class _Authority:
-        attempt_id = "attempt-a"
-        state = "confirmed"
-        tenant_scope = "tenant-a"
-        stream_incarnation = 1
-
-    class _Bridge:
-        async def append(self, envelope):
-            return "1-0"
-
-        async def aclose(self):
-            return None
-
-    async def get_authority(conn, *, tenant_id, run_id):
-        return _Authority()
-
     monkeypatch.setattr(runtime_callbacks, "transaction", _FakeTransaction)
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
     monkeypatch.setattr(
@@ -390,10 +396,10 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(
     )
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_event_batch)
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
-    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
-    monkeypatch.setattr(runtime_callbacks, "RedisStreamBridge", _Bridge)
 
-    response = await runtime_callbacks.record_executor_callback(_callback())
+    response = await runtime_callbacks.record_executor_callback(
+        _callback(), capabilities=private_callback_capabilities
+    )
 
     expected_response = {
         "accepted": True,
@@ -435,13 +441,24 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(
     }
     assert [event["event_type"] for event in batches[0]["events"]] == [
         "executor_callback",
-        "tool_call_delta",
+        "executor_private_event",
+        "executor_private_event",
         "executor_private_event",
     ]
+    private_payloads = [event["payload"] for event in batches[0]["events"][1:]]
+    assert [payload["source_event_type"] for payload in private_payloads] == [
+        "tool_call_delta",
+        "assistant_delta",
+        "execution_progress",
+    ]
+    assert all(payload["source_class"] == "rejected" for payload in private_payloads)
+    assert all(payload["visible_to_user"] is False for payload in private_payloads)
 
 
 @pytest.mark.asyncio
-async def test_executor_callback_rejects_disagreeing_first_class_attempt_binding(monkeypatch):
+async def test_executor_callback_rejects_disagreeing_first_class_attempt_binding(
+    monkeypatch, private_callback_capabilities
+):
     async def get_run_identity(conn, *, run_id, for_update=False):
         return {
             "tenant_id": "tenant-a",
@@ -471,7 +488,9 @@ async def test_executor_callback_rejects_disagreeing_first_class_attempt_binding
     monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fail_append)
 
     with pytest.raises(HTTPException) as exc_info:
-        await runtime_callbacks.record_executor_callback(_callback())
+        await runtime_callbacks.record_executor_callback(
+            _callback(), capabilities=private_callback_capabilities
+        )
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "sandbox_runtime_attempt_mismatch"

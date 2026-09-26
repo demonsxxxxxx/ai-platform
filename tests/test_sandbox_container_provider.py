@@ -5752,6 +5752,123 @@ async def test_docker_provider_cleans_up_when_executor_url_wait_is_cancelled(mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cancelled", "exception"])
+@pytest.mark.parametrize("native_required", [False, True])
+async def test_docker_callback_probe_interruption_cleans_created_resources(monkeypatch, tmp_path, failure, native_required):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    settings = governed_docker_settings(sandbox_workspace_root=str(tmp_path))
+    monkeypatch.setattr("app.runtime.sandbox.container_provider.get_settings", lambda: settings)
+    started = asyncio.Event()
+    unblock = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def interrupted_probe(*_args):
+        loop.call_soon_threadsafe(started.set)
+        if failure == "exception":
+            raise RuntimeError("callback probe unavailable")
+        unblock.wait(timeout=5)
+        return True
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        callback_reachability_probe=interrupted_probe,
+    )
+    def prepare_socket(selected_workspace, *, attempt_id):
+        path = provider._native_tool_socket_host_path(selected_workspace, attempt_id=attempt_id)
+        path.parent.mkdir(parents=True)
+        return path
+
+    monkeypatch.setattr(provider, "_prepare_native_tool_socket", prepare_socket)
+    runtime_request = request(tool_policy_subjects=[native_tool_subjects()[1]] if native_required else [])
+    selected_workspace = workspace()
+    task = asyncio.create_task(provider.create_or_reuse(runtime_request, selected_workspace))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        if failure == "cancelled":
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if failure == "cancelled" else RuntimeError):
+            await task
+    finally:
+        unblock.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    primary = fake.containers_by_name["executor-exec-run-a"]
+    assert primary.stopped is True
+    assert primary.removed is True
+    assert fake.created[-1]["network"] not in fake.networks_by_name
+    assert provider._leases == {}
+    if native_required:
+        assert fake.containers_by_name[native_tool_name()].removed is True
+        assert not provider._native_tool_socket_host_path(
+            selected_workspace, attempt_id=runtime_request.attempt_id,
+        ).parent.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_required", [False, True])
+async def test_docker_cleanup_from_persisted_lease_stops_owned_runtime_pair(monkeypatch, tmp_path, native_required):
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    settings = governed_docker_settings(sandbox_workspace_root=str(tmp_path))
+    monkeypatch.setattr("app.runtime.sandbox.container_provider.get_settings", lambda: settings)
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+    )
+
+    def prepare_socket(selected_workspace, *, attempt_id):
+        path = provider._native_tool_socket_host_path(selected_workspace, attempt_id=attempt_id)
+        path.parent.mkdir(parents=True)
+        return path
+
+    monkeypatch.setattr(provider, "_prepare_native_tool_socket", prepare_socket)
+    runtime_request = request(tool_policy_subjects=[native_tool_subjects()[1]] if native_required else [])
+    lease = await provider.create_or_reuse(runtime_request, workspace())
+    row = {
+        "id": "lease-a",
+        "tenant_id": lease.tenant_id,
+        "workspace_id": lease.workspace_id,
+        "user_id": lease.user_id,
+        "session_id": lease.session_id,
+        "run_id": lease.run_id,
+        "attempt_id": runtime_request.attempt_id,
+        "provider": "docker",
+        "sandbox_mode": lease.sandbox_mode,
+        "browser_enabled": lease.browser_enabled,
+        "runtime_container_id": lease.container_id,
+        "runtime_container_name": lease.container_name,
+        "runtime_executor_url": lease.executor_url,
+        "runtime_workspace_container_path": lease.workspace_container_path,
+        "runtime_handle_verified_at": datetime.now(timezone.utc),
+        "lease_payload_json": {
+            "attempt_id": runtime_request.attempt_id,
+            "labels": {
+                "ai-platform.attempt_id": runtime_request.attempt_id,
+                "ai-platform.native_tool_required": "true" if native_required else "false",
+            },
+        },
+    }
+    restored = container_lease_from_persisted_row(row)
+    assert restored is not None
+    restarted = DockerContainerProvider(docker_client_factory=lambda: fake)
+    result = await restarted.stop(restored, reason="expired")
+
+    assert result.status == "stopped"
+    assert fake.containers_by_name[lease.container_name].removed is True
+    assert fake.created[-1]["network"] not in fake.networks_by_name
+    if native_required:
+        assert fake.containers_by_name[native_tool_name()].removed is True
+        assert not provider._native_tool_socket_host_path(lease).parent.exists()
+
+
+@pytest.mark.asyncio
 async def test_docker_cached_reuse_cleans_up_when_executor_url_wait_is_cancelled(monkeypatch):
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 

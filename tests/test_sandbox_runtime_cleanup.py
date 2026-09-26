@@ -134,6 +134,53 @@ def expired_lease_row(**overrides):
     return row
 
 
+@pytest.mark.parametrize("first_class_attempt", [None, "attempt-a"])
+def test_docker_cleanup_restores_only_owned_resource_binding(first_class_attempt):
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+
+    row = expired_lease_row(
+        attempt_id=first_class_attempt,
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "container_id": "untrusted-container",
+            "workspace_host_path": "/untrusted/workspace",
+            "labels": {
+                "ai-platform.attempt_id": "attempt-a",
+                "ai-platform.native_tool_required": "true",
+                "ai-platform.tenant_id": "foreign-tenant",
+            },
+        },
+    )
+    lease = container_lease_from_persisted_row(row)
+    assert lease is not None
+    assert lease.labels == {
+        "ai-platform.attempt_id": "attempt-a", "ai-platform.native_tool_required": "true",
+    }
+    assert lease.container_id == row["runtime_container_id"]
+    assert lease.workspace_host_path == ""
+    assert lease.tenant_id == "tenant-a"
+
+
+@pytest.mark.parametrize(("attempt", "payload_attempt", "labels"), [
+    ("attempt-a", "attempt-b", {}),
+    ("attempt-a", "attempt-a", {"ai-platform.attempt_id": "attempt-b"}),
+    (None, None, {"ai-platform.attempt_id": "attempt-a"}),
+    (None, None, {"ai-platform.native_tool_required": "true"}),
+    ("", "attempt-a", {}),
+    ("../attempt-a", None, {}),
+    ([], None, {}),
+    ("attempt-a", "attempt-a", {"ai-platform.native_tool_required": True}),
+    ("attempt-a", "attempt-a", {"ai-platform.native_tool_required": {}}),
+])
+def test_docker_cleanup_rejects_inconsistent_resource_binding(attempt, payload_attempt, labels):
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+
+    assert container_lease_from_persisted_row(expired_lease_row(
+        attempt_id=attempt,
+        lease_payload_json={"attempt_id": payload_attempt, "labels": labels},
+    )) is None
+
+
 @pytest.mark.asyncio
 async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_release(monkeypatch):
     from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
@@ -164,7 +211,6 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
     )
 
     cleaned = await cleanup_expired_sandbox_runtime_leases(
-        object(),
         tenant_id="tenant-a",
         provider_factory=lambda provider_name: FakeProvider(),
     )
@@ -206,7 +252,6 @@ async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
     )
 
     cleaned = await cleanup_expired_sandbox_runtime_leases(
-        object(),
         tenant_id="tenant-a",
         provider_factory=lambda _provider_name: pytest.fail(
             "a terminal receipt with recovery work must remain available to reconciliation"
@@ -594,7 +639,6 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_and_c
     )
 
     cleaned = await cleanup_expired_sandbox_runtime_leases(
-        object(),
         tenant_id="tenant-a",
         provider_factory=lambda provider_name: FakeProvider(),
     )
@@ -678,7 +722,6 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
 
     with pytest.raises(SandboxRuntimeCleanupError):
         await cleanup_expired_sandbox_runtime_leases(
-            object(),
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: pytest.fail("provider must not receive an unverifiable lease"),
         )
@@ -775,7 +818,7 @@ async def test_internal_test_expired_lease_cleanup_stops_before_db_release(monke
     )
 
     cleaned = await cleanup_expired_sandbox_runtime_leases(
-        object(), tenant_id="tenant-a", provider_factory=lambda _provider: Provider()
+        tenant_id="tenant-a", provider_factory=lambda _provider: Provider()
     )
 
     assert cleaned == [row]
@@ -820,7 +863,6 @@ async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(mo
 
     with pytest.raises(SandboxRuntimeCleanupError):
         await cleanup_expired_sandbox_runtime_leases(
-            object(),
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: pytest.fail("provider must not receive an unbound lease"),
         )
@@ -1050,7 +1092,6 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
 
     if failure_mode in {"expired-authorized", "expired-authorized-after-rollout"}:
         cleaned = await cleanup_expired_sandbox_runtime_leases(
-            object(),
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: provider,
         )
@@ -1069,7 +1110,6 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
 
     with pytest.raises(SandboxRuntimeCleanupError) as exc_info:
         await cleanup_expired_sandbox_runtime_leases(
-            object(),
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: provider,
         )
@@ -1143,7 +1183,6 @@ async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leas
 
     with pytest.raises(SandboxRuntimeCleanupError):
         await cleanup_expired_sandbox_runtime_leases(
-            object(),
             tenant_id="tenant-a",
             provider_factory=lambda provider_name: FakeProvider(),
         )
@@ -1174,21 +1213,20 @@ async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leas
 
 
 @pytest.mark.asyncio
-async def test_cleanup_expired_sandbox_runtime_leases_partial_failure_uses_committed_release_transaction(monkeypatch):
+async def test_cleanup_expired_sandbox_runtime_leases_partial_failure_commits_under_selection_lock(monkeypatch):
     from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
 
     calls = []
-    outer_conn = object()
     committed_conn = object()
     stopped_row = expired_lease_row(id="lease-stopped", run_id="run-stopped", trace_id="trace-stopped")
     failed_row = expired_lease_row(id="lease-failed", run_id="run-failed", trace_id="trace-failed")
 
     async def fake_list_expired_active_sandbox_leases(conn, *, tenant_id=None, limit=100):
-        assert conn is outer_conn
+        assert conn is committed_conn
         return [stopped_row, failed_row]
 
     async def fake_release_stopped_sandbox_leases(conn, *, tenant_id, reason, lease_ids, trace_id=None):
-        calls.append(("release_conn", conn is committed_conn, conn is outer_conn, lease_ids))
+        calls.append(("release_conn", conn is committed_conn, lease_ids))
         return [stopped_row]
 
     @asynccontextmanager
@@ -1215,13 +1253,12 @@ async def test_cleanup_expired_sandbox_runtime_leases_partial_failure_uses_commi
 
     with pytest.raises(SandboxRuntimeCleanupError):
         await cleanup_expired_sandbox_runtime_leases(
-            outer_conn,
             tenant_id="tenant-a",
             provider_factory=lambda provider_name: FakeProvider(),
         )
 
     assert calls == [
         ("committed_transaction", "enter"),
-        ("release_conn", True, False, ["lease-stopped"]),
+        ("release_conn", True, ["lease-stopped"]),
         ("committed_transaction", "exit"),
     ]

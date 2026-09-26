@@ -74,6 +74,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_opensandbox_client_ca.py",
         "tests/test_sandbox_runtime.py",
         "tests/test_sandbox_runtime_cleanup.py",
+        "tests/test_sandbox_runtime_control_layer.py",
         "tests/test_sandbox_runtime_evidence_script.py",
         "tests/test_validation.py",
         "tests/test_contract.py",
@@ -85,6 +86,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_attempt_repository.py",
         "tests/test_legacy_context_checkpoint.py",
         "tests/test_worker_main.py",
+        "tests/test_sandbox_cleanup_postgres.py",
+        "tests/test_s0a_schema_postgres.py::test_expired_terminal_receipt_survives_cleanup_and_historical_release",
         "tests/test_worker_heartbeat_postgres_redis_integration.py",
         "tests/test_sse_runtime_cutover.py",
         "tests/test_streaming_redis.py",
@@ -107,6 +110,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "run-control-contracts": (
         "tests/test_admin_run_detail.py",
+        "tests/test_admin_runtime_routes.py",
         "tests/test_chat_selected_skill_routing.py",
         "tests/test_claude_agent_events.py",
         "tests/test_executor_reconciler.py",
@@ -279,7 +283,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     all_selectors = [
         selector for selectors in BACKEND_TEST_SHARDS.values() for selector in selectors
     ]
-    assert len(all_selectors) == len(set(all_selectors)) == 92
+    assert len(all_selectors) == len(set(all_selectors)) == 96
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"54329:5432"' in tests_job

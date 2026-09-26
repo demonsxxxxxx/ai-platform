@@ -103,6 +103,18 @@ generation, timestamps, and reconciliation ownership in one migration.
    identity, out-of-transaction provider effect, stale-receipt rejection and
    crash recovery. Until that replacement is activated, do not merely move
    `stop` out of the lock. See [runtime convergence](runtime-convergence.md).
+   Expired-runtime cleanup owns its selection, stop, release and failure-audit
+   transaction. Partial provider failure commits the successful releases and
+   failure audits on the connection holding the candidate locks before raising
+   the cleanup error. Callers invoke it before opening their listing or DB-only
+   cleanup transaction; a second connection must not compensate rows still
+   locked by the first. Cancellation or a database write/commit failure rolls
+   back that transaction and leaves the leases eligible for retry.
+   Restoring a Docker cleanup handle preserves the authoritative attempt binding
+   (with payload fallback for historical rows) and the native-tool requirement.
+   Conflicting attempt projections fail closed. Cleanup uses only verified
+   runtime handle fields and derived owned-resource identities, never a
+   payload-supplied container or host path.
 5. Tenant/run authorization is resolved before any provider call. Provider
    handles are never returned in public payloads.
 6. Provider-internal recovery state is observed and reconciled; it is never

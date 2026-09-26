@@ -566,6 +566,8 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
 ):
     """Exercise cleanup, recovery, and terminalization against the real schema."""
 
+    from app.context.application import provider_sessions
+    from app.context.infrastructure.provider_epochs import PostgresProviderEpochRepository
     from app.executor_reconciler import reconcile_pending_executor_terminals_once
     from app.platform.postgres import sandbox_leases as sandbox_lease_repository
     from app.runs.application import attempt_lifecycle
@@ -575,9 +577,10 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
         cleanup_failed_sandbox_executor_reconciliation_leases,
     )
 
+    lifecycle = attempt_lifecycle.RunAttemptLifecycleService(persistence=run_attempt_persistence)
     monkeypatch.setattr(
-        attempt_lifecycle, "_service",
-        attempt_lifecycle.RunAttemptLifecycleService(persistence=run_attempt_persistence),
+        provider_sessions, "_use_cases",
+        provider_sessions.ProviderSessionUseCases(PostgresProviderEpochRepository()),
     )
     dsn = _postgres_dsn()
     schema_name = f"terminal_receipt_{uuid.uuid4().hex}"
@@ -657,8 +660,13 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             ),
         )
 
+        @asynccontextmanager
+        async def cleanup_transaction():
+            async with conn.transaction():
+                yield conn
+
         cleaned = await cleanup_expired_sandbox_runtime_leases(
-            conn,
+            transaction_factory=cleanup_transaction,
             tenant_id="tenant-a",
             provider_factory=lambda _provider: pytest.fail(
                 "startup cleanup must not stop a durable terminal receipt"
@@ -795,6 +803,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
 
         assert await reconcile_pending_executor_terminals_once(
             worker_id="worker-a", v4_capabilities=_callback_capabilities(dsn, schema_name),
+            attempt_lifecycle=lifecycle,
         ) == 1
         run = await (
             await conn.execute(
