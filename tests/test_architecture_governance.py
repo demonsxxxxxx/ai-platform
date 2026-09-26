@@ -734,29 +734,55 @@ def test_definition_retirement_requires_exact_unbridged_authority_functions(
     assert caught.value.code == "invalid_policy"
 
 
-@pytest.mark.parametrize("rebind", [False, True])
+@pytest.mark.parametrize(
+    ("change", "passes"),
+    [("pending", True), ("delete", True), ("rebind", False), ("wrong_origin", False)],
+)
+@pytest.mark.parametrize("import_style", ["from", "mixed_from", "import"])
 def test_definition_retirement_imports_require_exact_origin_and_no_rebinding(
-    tmp_path: Path, rebind: bool
+    tmp_path: Path, change: str, passes: bool, import_style: str,
 ) -> None:
+    binding = "normalize_roles" if import_style == "from" else "retired_binding"
+    declaration = {"kind": "from_import", "module": "app.auth", "name": "normalize_roles", "asname": None}
+    original_import = "from app.auth import normalize_roles\n"
+    retained_import = ""
+    wrong_origin = "from app.models import normalize_roles\n"
+    if import_style == "mixed_from":
+        declaration["asname"] = binding
+        original_import = "from app.auth import normalize_roles as retired_binding, normalize_scope\n"
+        retained_import = "from app.auth import normalize_scope\n"
+        wrong_origin = "from app.models import normalize_roles as retired_binding\n"
+    elif import_style == "import":
+        declaration = {"kind": "import", "module": "json", "name": None, "asname": binding}
+        original_import = "import json as retired_binding, hashlib\n"
+        retained_import = "import hashlib\n"
+        wrong_origin = "import math as retired_binding\n"
     policy = _fixture_policy()
     entry = _definition_retirement()
-    entry["imports"] = [{"kind": "from_import", "module": "app.auth", "name": "normalize_roles", "asname": None}]
+    entry["imports"] = [declaration]
     policy["definition_retirements"] = [entry]
     repo, _ = _create_repo(tmp_path, policy_text=json.dumps(policy))
     _activate_context_memory_bridge(repo)
     source = (repo / "app/repositories.py").read_text(encoding="utf-8")
-    _write(repo, "app/repositories.py", source + "\nfrom app.auth import normalize_roles\ndef unused_approval():\n    return 1\n")
+    _write(repo, "app/repositories.py", source + "\n" + original_import + "def unused_approval():\n    return 1\n")
     authority = _commit(repo, "authorize exact function and import retirement")
-    rebound = "normalize_roles = None\n" if rebind else ""
-    _write(repo, "app/repositories.py", source + "\n" + rebound)
-    policy["definition_retirements"] = []
-    _write(repo, "architecture-policy.json", json.dumps(policy))
-    head = _commit(repo, "retire authorized bindings")
+    if change == "pending":
+        _write(repo, "README.md", "Declared import bindings remain unchanged.\n")
+    else:
+        replacement = retained_import
+        if change == "rebind":
+            replacement += f"{binding} = None\n"
+        elif change == "wrong_origin":
+            replacement += wrong_origin
+        _write(repo, "app/repositories.py", source + "\n" + replacement)
+        policy["definition_retirements"] = []
+        _write(repo, "architecture-policy.json", json.dumps(policy))
+    head = _commit(repo, "consume or retain authorized import bindings")
 
     evaluation = _evaluate(repo, authority, authority, head)
 
-    assert evaluation.status == ("violation" if rebind else "pass")
-    if rebind:
+    assert (evaluation.status == "pass") is passes
+    if not passes:
         assert "migration_bridge_source_logic" in _codes(evaluation)
 
 

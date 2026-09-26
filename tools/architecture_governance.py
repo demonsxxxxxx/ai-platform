@@ -3352,14 +3352,14 @@ def _retirement_contract_tree(
     path: str,
     removable_node_ids: set[int] | None = None,
     retained_bindings: set[str] | None = None,
+    retained_import_keys: set[tuple[str, str, str, str]] | None = None,
 ) -> ast.Module:
     """Normalize only authority-declared retired definitions and import bindings away."""
     retained_bindings = retained_bindings or set()
     retired_imports = {
         (item["kind"], item["module"], item["name"] or "", item["asname"] or "")
         for item in retirement.get("imports", [])
-        if (item["asname"] or item["name"] or item["module"].split(".")[0]) not in retained_bindings
-    }
+    } - (retained_import_keys or set())
     bridge_retirements = {
         (item["target_module"], item["symbol"])
         for item in retirement.get("bridge_symbols", [])
@@ -3490,6 +3490,12 @@ def _migration_bridge_findings(
         {},
     )
     head_bindings = set().union(*(_top_level_node_binding_names(node) for node in head_tree.body))
+    head_import_keys = {
+        _import_binding_key(node, alias)
+        for node in head_tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
     removable_base_node_ids.update(
         id(node)
         for node in (base_tree.body if base_tree is not None else [])
@@ -3687,7 +3693,10 @@ def _migration_bridge_findings(
             )
 
         base_contract_tree = (
-            _retirement_contract_tree(base_tree, retirement, policy, path, removable_base_node_ids, head_bindings)
+            _retirement_contract_tree(
+                base_tree, retirement, policy, path,
+                removable_base_node_ids, head_bindings, head_import_keys,
+            )
             if base_tree is not None
             else None
         )
