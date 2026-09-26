@@ -1,4 +1,5 @@
 """Real transaction/lock coverage for expired provider-resource cleanup."""
+import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -129,7 +130,7 @@ async def test_expiry_audit_failure_rolls_back_release_and_events(cleanup_databa
     async def fail_audit(*_args, **_kwargs):
         raise RuntimeError("audit persistence unavailable")
 
-    monkeypatch.setattr(cleanup.repositories, "append_audit_log", fail_audit)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "append_audit_log", fail_audit)
 
     class Provider:
         async def stop(self, lease, *, reason):
@@ -144,6 +145,8 @@ async def test_expiry_audit_failure_rolls_back_release_and_events(cleanup_databa
         )
     assert await lease_states(observer) == {"lease-1": "active", "lease-2": "active"}
     cursor = await observer.execute("select count(*) as n from run_events")
+    assert (await cursor.fetchone())["n"] == 0
+    cursor = await observer.execute("select count(*) as n from audit_logs")
     assert (await cursor.fetchone())["n"] == 0
 
 

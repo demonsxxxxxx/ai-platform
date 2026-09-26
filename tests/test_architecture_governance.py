@@ -86,7 +86,8 @@ def _retired_runs_legacy_api_cutover() -> dict[str, Any]:
 
 
 def _fixture_policy() -> dict[str, Any]:
-    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    policy = json.loads((REPO_ROOT / "tests/fixtures/architecture_migration_policy.json").read_text(encoding="utf-8"))
+    # Synthetic bridge scenarios are independent of the live retirement inventory.
     # General bridge fixtures retain the selector as an unrelated baseline node.
     # Its relocation and value validation have dedicated coverage below.
     for bridge in policy["migration_bridges"]:
@@ -2402,442 +2403,12 @@ def test_conversation_migration_bridge_authority_is_exact() -> None:
     ]
 
 
-def test_live_agent_catalog_persistence_bridge_is_exact_and_active() -> None:
-    bridge = _migration_bridge(
-        source_path="app/repositories.py",
-        target_module="app.agent_apps.infrastructure.catalog_postgres",
-    )
-
-    assert bridge == {
-        "source_path": "app/repositories.py",
-        "target_module": "app.agent_apps.infrastructure.catalog_postgres",
-        "module_alias": "agent_catalog_persistence",
-        "symbols": [
-            "get_agent",
-            "get_tenant_profile_validation_agent",
-            "list_lambchat_agents",
-        ],
-        "owner": "agent_apps",
-        "reason": (
-            "The frozen global repository may expose these existing tenant-scoped "
-            "Agent catalog read symbols only as exact identity aliases while their "
-            "PostgreSQL implementation moves to the Agent Apps catalog adapter."
-        ),
-        "removal_condition": (
-            "After the Agent catalog persistence move, migrate supported internal "
-            "callers to the Agent Apps boundary, inventory external imports, and "
-            "remove this bridge in an authority-only change before deleting the "
-            "repositories aliases."
-        ),
-    }
-
-    target_path = REPO_ROOT / "app/agent_apps/infrastructure/catalog_postgres.py"
-    source_tree = ast.parse(
-        (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
-    )
-
-    assert target_path.exists()
-    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
-    source_local_definitions = {
-        node.name
-        for node in source_tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    target_local_definitions = [
-        node.name
-        for node in target_tree.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name in bridge["symbols"]
-    ]
-
-    assert set(bridge["symbols"]).isdisjoint(source_local_definitions)
-    assert sorted(target_local_definitions) == bridge["symbols"]
-    assert [
-        (node.module, [(imported.name, imported.asname) for imported in node.names])
-        for node in target_tree.body
-        if isinstance(node, ast.ImportFrom)
-    ] == [
-        ("__future__", [("annotations", None)]),
-        ("typing", [("Any", None)]),
-        ("psycopg", [("AsyncConnection", None)]),
-    ]
-    assert not any(isinstance(node, ast.Import) for node in target_tree.body)
-    assert [
-        (imported.name, imported.asname)
-        for node in source_tree.body
-        if isinstance(node, ast.Import)
-        for imported in node.names
-        if imported.name == bridge["target_module"]
-    ] == [(bridge["target_module"], bridge["module_alias"])]
-
-    source_binding_counts = architecture_governance._top_level_local_binding_counts(
-        source_tree
-    )
-    assert {
-        symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]
-    } == {symbol: 1 for symbol in bridge["symbols"]}
-    source_aliases = [
-        (target.id, node.value.value.id, node.value.attr)
-        for node in source_tree.body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance((target := node.targets[0]), ast.Name)
-        and target.id in bridge["symbols"]
-        and isinstance(node.value, ast.Attribute)
-        and isinstance(node.value.value, ast.Name)
-    ]
-    assert sorted(source_aliases) == [
-        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
-    ]
-    target_binding_counts = architecture_governance._top_level_local_binding_counts(
-        target_tree
-    )
-    assert {
-        symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]
-    } == {symbol: 1 for symbol in bridge["symbols"]}
-
-    from app import repositories
-    from app.agent_apps.infrastructure import (
-        catalog_postgres as agent_catalog_persistence,
-    )
-
-    for symbol in bridge["symbols"]:
-        assert getattr(repositories, symbol) is getattr(agent_catalog_persistence, symbol)
-
-    probe = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys; "
-                "import app.agent_apps.infrastructure.catalog_postgres; "
-                "assert 'app.repositories' not in sys.modules"
-            ),
-        ],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert probe.returncode == 0, probe.stderr
 
 
-def test_live_identity_principal_persistence_bridge_is_exact_and_active() -> None:
-    bridge = _migration_bridge(
-        source_path="app/repositories.py",
-        target_module="app.identity.infrastructure.postgres",
-    )
-
-    assert bridge == {
-        "source_path": "app/repositories.py",
-        "target_module": "app.identity.infrastructure.postgres",
-        "module_alias": "identity_persistence",
-        "symbols": [
-            "ensure_submission_principal",
-            "ensure_user",
-            "get_user",
-            "tenant_exists",
-        ],
-        "owner": "identity",
-        "reason": (
-            "The frozen global repository may expose these existing tenant and "
-            "principal persistence symbols only as exact identity aliases while "
-            "their implementation moves to the Identity PostgreSQL adapter."
-        ),
-        "removal_condition": (
-            "After the Identity principal persistence move, migrate supported "
-            "internal callers to the Identity API, inventory external imports, "
-            "and remove this bridge in an authority-only change before deleting "
-            "the repositories aliases."
-        ),
-    }
-
-    target_path = REPO_ROOT / "app/identity/infrastructure/postgres.py"
-    source_tree = ast.parse((REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8"))
-
-    assert target_path.exists()
-    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
-    source_local_definitions = {
-        node.name
-        for node in source_tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    target_local_definitions = [
-        node.name
-        for node in target_tree.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name in bridge["symbols"]
-    ]
-
-    assert set(bridge["symbols"]).isdisjoint(source_local_definitions)
-    assert sorted(target_local_definitions) == bridge["symbols"]
-    assert [
-        (imported.name, imported.asname)
-        for node in source_tree.body
-        if isinstance(node, ast.Import)
-        for imported in node.names
-        if imported.name == bridge["target_module"]
-    ] == [(bridge["target_module"], bridge["module_alias"])]
-
-    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
-    assert {symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
-        symbol: 1 for symbol in bridge["symbols"]
-    }
-    source_aliases = [
-        (target.id, node.value.value.id, node.value.attr)
-        for node in source_tree.body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance((target := node.targets[0]), ast.Name)
-        and target.id in bridge["symbols"]
-        and isinstance(node.value, ast.Attribute)
-        and isinstance(node.value.value, ast.Name)
-    ]
-    assert sorted(source_aliases) == [
-        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
-    ]
-    target_binding_counts = architecture_governance._top_level_local_binding_counts(target_tree)
-    assert {symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
-        symbol: 1 for symbol in bridge["symbols"]
-    }
-
-    from app import repositories
-    from app.identity.infrastructure import postgres as identity_persistence
-
-    for symbol in bridge["symbols"]:
-        assert getattr(repositories, symbol) is getattr(identity_persistence, symbol)
-
-    probe = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys; "
-                "import app.identity.infrastructure.postgres; "
-                "assert 'app.repositories' not in sys.modules"
-            ),
-        ],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert probe.returncode == 0, probe.stderr
 
 
-def test_live_context_snapshot_persistence_bridge_is_exact_and_active() -> None:
-    bridge = _migration_bridge(
-        source_path="app/repositories.py",
-        target_module="app.context.infrastructure.snapshot_postgres",
-    )
-
-    assert bridge == {
-        "source_path": "app/repositories.py",
-        "target_module": "app.context.infrastructure.snapshot_postgres",
-        "module_alias": "context_snapshot_persistence",
-        "symbols": [
-            "CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT",
-            "_normalize_context_snapshot_member_ids",
-            "create_context_snapshot",
-            "get_bound_executor_context_snapshot",
-            "get_context_snapshot_for_worker",
-            "get_latest_authorized_executor_context_snapshot",
-            "list_context_share_snapshots_for_target_session",
-            "list_context_snapshots",
-            "update_run_context_snapshot_ref",
-        ],
-        "owner": "context",
-        "reason": (
-            "The frozen global repository may expose these existing immutable "
-            "Context snapshot persistence symbols only as exact identity aliases "
-            "while their implementation moves to the Context snapshot adapter."
-        ),
-        "removal_condition": (
-            "After the Context snapshot persistence move, migrate supported internal "
-            "callers to the Context API, inventory external imports, and remove this "
-            "bridge in an authority-only change before deleting the repositories "
-            "aliases."
-        ),
-    }
-
-    target_path = REPO_ROOT / "app/context/infrastructure/snapshot_postgres.py"
-    source_tree = ast.parse((REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8"))
-
-    assert target_path.exists()
-    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
-    source_local_definitions = {
-        node.name
-        for node in source_tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    target_local_definitions = [
-        node.name
-        for node in target_tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in bridge["symbols"]
-    ]
-
-    assert set(bridge["symbols"][1:]).isdisjoint(source_local_definitions)
-    assert sorted(target_local_definitions) == bridge["symbols"][1:]
-    assert [
-        (imported.name, imported.asname)
-        for node in source_tree.body
-        if isinstance(node, ast.Import)
-        for imported in node.names
-        if imported.name == bridge["target_module"]
-    ] == [(bridge["target_module"], bridge["module_alias"])]
-
-    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
-    assert {symbol: source_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
-        symbol: 1 for symbol in bridge["symbols"]
-    }
-    source_aliases = [
-        (target.id, node.value.value.id, node.value.attr)
-        for node in source_tree.body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance((target := node.targets[0]), ast.Name)
-        and target.id in bridge["symbols"]
-        and isinstance(node.value, ast.Attribute)
-        and isinstance(node.value.value, ast.Name)
-    ]
-    assert sorted(source_aliases) == [
-        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
-    ]
-    target_binding_counts = architecture_governance._top_level_local_binding_counts(target_tree)
-    assert {symbol: target_binding_counts.get(symbol, 0) for symbol in bridge["symbols"]} == {
-        symbol: 1 for symbol in bridge["symbols"]
-    }
-
-    batch_limit_assignments = [
-        node
-        for node in target_tree.body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == "CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT"
-    ]
-    assert len(batch_limit_assignments) == 1
-    assert ast.literal_eval(batch_limit_assignments[0].value) == 128
-
-    from app import repositories
-    from app.context.infrastructure import snapshot_postgres
-
-    for symbol in bridge["symbols"]:
-        assert getattr(repositories, symbol) is getattr(snapshot_postgres, symbol)
-
-    program = """
-import sys
-
-import app.context.infrastructure.snapshot_postgres
-
-assert "app.context.retrieval" not in sys.modules
-assert "app.repositories" not in sys.modules
-"""
-    subprocess.run(
-        [sys.executable, "-c", program],
-        cwd=REPO_ROOT,
-        check=True,
-    )
 
 
-def test_live_context_source_persistence_bridge_is_exact_and_active() -> None:
-    bridge = _migration_bridge(
-        source_path="app/repositories.py",
-        target_module="app.context.infrastructure.sources_postgres",
-    )
-
-    assert bridge == {
-        "source_path": "app/repositories.py",
-        "target_module": "app.context.infrastructure.sources_postgres",
-        "module_alias": "context_sources_persistence",
-        "symbols": [
-            "count_session_context_messages",
-            "get_scoped_context_artifact",
-            "get_scoped_context_file",
-            "list_authorized_context_file_rows",
-            "list_scoped_context_messages",
-            "list_session_context_artifacts",
-            "list_session_context_files",
-            "list_session_context_messages",
-            "session_has_legacy_run_history",
-        ],
-        "owner": "context",
-        "reason": (
-            "The frozen global repository may expose these existing immutable-"
-            "snapshot and prior-session Context source-read symbols only as exact "
-            "identity aliases while their PostgreSQL implementation moves to the "
-            "Context source adapter."
-        ),
-        "removal_condition": (
-            "After the Context source-read persistence move, migrate supported "
-            "internal callers to the Context API, inventory external imports, and "
-            "remove this bridge in an authority-only change before deleting the "
-            "repositories aliases."
-        ),
-    }
-
-    target_path = REPO_ROOT / "app/context/infrastructure/sources_postgres.py"
-    source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
-    source_tree = ast.parse(source)
-
-    assert target_path.exists()
-    target_tree = ast.parse(target_path.read_text(encoding="utf-8"))
-    source_async_functions = {
-        node.name for node in source_tree.body if isinstance(node, ast.AsyncFunctionDef)
-    }
-    target_async_functions = [
-        node.name for node in target_tree.body if isinstance(node, ast.AsyncFunctionDef)
-    ]
-
-    assert set(bridge["symbols"]).isdisjoint(source_async_functions)
-    assert sorted(target_async_functions) == bridge["symbols"]
-    target_imports = [
-        (imported.name, imported.asname)
-        for node in source_tree.body
-        if isinstance(node, ast.Import)
-        for imported in node.names
-        if imported.name == bridge["target_module"]
-    ]
-    assert target_imports == [(bridge["target_module"], bridge["module_alias"])]
-
-    source_binding_counts = architecture_governance._top_level_local_binding_counts(source_tree)
-    assert {symbol: source_binding_counts[symbol] for symbol in bridge["symbols"]} == {
-        symbol: 1 for symbol in bridge["symbols"]
-    }
-    source_aliases = [
-        (target.id, node.value.value.id, node.value.attr)
-        for node in source_tree.body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance((target := node.targets[0]), ast.Name)
-        and target.id in bridge["symbols"]
-        and isinstance(node.value, ast.Attribute)
-        and isinstance(node.value.value, ast.Name)
-    ]
-    assert sorted(source_aliases) == [
-        (symbol, bridge["module_alias"], symbol) for symbol in bridge["symbols"]
-    ]
-    for symbol in bridge["symbols"]:
-        assert target_async_functions.count(symbol) == 1
-
-    from app import repositories
-    from app.context.infrastructure import sources_postgres
-
-    for symbol in bridge["symbols"]:
-        assert getattr(repositories, symbol) is getattr(sources_postgres, symbol)
-
-    program = """
-import sys
-
-import app.context.infrastructure.sources_postgres
-
-assert "app.context.retrieval" not in sys.modules
-assert "app.repositories" not in sys.modules
-"""
-    subprocess.run(
-        [sys.executable, "-c", program],
-        cwd=REPO_ROOT,
-        check=True,
-    )
 
 
 def test_context_memory_persistence_bridge_authority_is_exact() -> None:
@@ -2917,80 +2488,8 @@ for name in context.__all__:
     )
 
 
-def test_live_context_memory_persistence_bridge_is_exact_and_active() -> None:
-    bridge = _migration_bridge(
-        source_path="app/repositories.py",
-        target_module="app.context.infrastructure.postgres",
-    )
-    target_path = REPO_ROOT / "app/context/infrastructure/postgres.py"
-    source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
-
-    assert target_path.exists()
-    assert f"import {bridge['target_module']} as {bridge['module_alias']}" in source
-    for symbol in bridge["symbols"]:
-        assert f"{symbol} = {bridge['module_alias']}.{symbol}" in source
-
-    from app import repositories
-    from app.context.infrastructure import postgres as context_memory_persistence
-
-    for symbol in bridge["symbols"]:
-        assert getattr(repositories, symbol) is getattr(
-            context_memory_persistence, symbol
-        )
 
 
-def test_live_memory_redaction_kernel_bridge_is_exact_and_active() -> None:
-    bridge = _migration_bridge(
-        source_path="app/memory_redaction.py",
-        target_module="app.kernel.memory_redaction",
-    )
-    source = (REPO_ROOT / bridge["source_path"]).read_text(encoding="utf-8")
-    target_path = REPO_ROOT / "app/kernel/memory_redaction.py"
-
-    assert bridge == {
-        "source_path": "app/memory_redaction.py",
-        "target_module": "app.kernel.memory_redaction",
-        "module_alias": "memory_redaction_kernel",
-        "symbols": [
-            "MEMORY_REDACTION_MODES",
-            "MEMORY_REDACTION_MODE_STANDARD",
-            "MEMORY_REDACTION_MODE_STRICT",
-            "is_sensitive_redaction_key",
-            "normalize_memory_redaction_mode",
-            "redact_memory_metadata",
-            "redact_memory_metadata_value",
-            "redact_memory_text",
-            "sanitizer_unstable_assignment_suffix_length",
-            "sanitizer_unstable_suffix_length",
-        ],
-        "owner": "kernel",
-        "reason": (
-            "The shared memory-redaction policy may move from its approved legacy "
-            "root into one framework-neutral Kernel module while the legacy import "
-            "surface remains exact identity aliases."
-        ),
-        "removal_condition": (
-            "After all supported callers import the Kernel owner directly, remove "
-            "this bridge before deleting the legacy facade."
-        ),
-    }
-    assert target_path.exists()
-    assert source == (
-        f"import {bridge['target_module']} as {bridge['module_alias']}\n\n"
-        + "\n".join(
-            f"{symbol} = {bridge['module_alias']}.{symbol}"
-            for symbol in bridge["symbols"]
-        )
-        + "\n"
-    )
-
-    from app import memory_redaction
-    from app.kernel import memory_redaction as kernel_memory_redaction
-
-    for symbol in bridge["symbols"]:
-        assert getattr(memory_redaction, symbol) is getattr(
-            kernel_memory_redaction, symbol
-        )
 
 
 def test_public_kernel_migration_bridge_requires_kernel_allowlist(
@@ -4518,6 +4017,188 @@ def test_cli_exit_codes_are_zero_two_and_three(
             ]
         ) == 3
     assert json.loads(stdout.getvalue())["error"]["code"] == "invalid_ref"
+
+
+def _identity_contraction_fixture(*, base_consumer: str, head_consumer: str):
+    canonical = "app.runs.domain.records"
+    facade = "app.compat.facade"
+    sources = {
+        ("base", "app/compat/facade.py"):
+            f"import {canonical} as records\nfetch = records.fetch\n",
+        ("head", "app/compat/facade.py"):
+            f"import {canonical} as records\nfetch = records.fetch\n",
+        ("base", "app/runs/domain/records.py"):
+            "def fetch(value):\n    return value\n",
+        ("head", "app/runs/domain/records.py"):
+            "def fetch(value):\n    return value\n",
+        ("head", "app/runs/domain/other.py"):
+            "def remove(value):\n    return value\n",
+    }
+
+    class Objects:
+        def text(self, revision, path, *, required=False):
+            return sources.get((revision, path))
+
+    return architecture_governance._identity_import_contraction_edges(
+        path="app/skills/application/publish.py",
+        base_tree=ast.parse(base_consumer),
+        head_tree=ast.parse(head_consumer),
+        git=Objects(),
+        base="base",
+        head="head",
+        base_modules={facade, canonical},
+        head_modules={facade, canonical, "app.runs.domain.other"},
+    )
+
+
+def test_identity_contraction_allows_used_symbol_through_direct_split_import():
+    edges = _identity_contraction_fixture(
+        base_consumer=(
+            "import app.compat.facade as legacy\n"
+            "def use(value):\n    return legacy.fetch(value)\n"
+        ),
+        head_consumer=(
+            "from app.runs.domain.records import fetch as get\n"
+            "def use(value):\n    return get(value) + 1\n"
+        ),
+    )
+
+    assert {edge.target for edge in edges} == {"app.runs.domain.records"}
+
+
+def test_identity_contraction_allows_canonical_module_alias_after_business_edit():
+    edges = _identity_contraction_fixture(
+        base_consumer=(
+            "import app.compat.facade as legacy\n"
+            "def use(value):\n    return legacy.fetch(value)\n"
+        ),
+        head_consumer=(
+            "import app.runs.domain.records as records\n"
+            "def use(value):\n    return records.fetch(value) + 1\n"
+        ),
+    )
+
+    assert {edge.target for edge in edges} == {"app.runs.domain.records"}
+
+
+@pytest.mark.parametrize(
+    "head_consumer",
+    [
+        "from app.runs.domain.records import fetch, remove\n"
+        "def use(value):\n    return fetch(value), remove(value)\n",
+        "from app.runs.domain.other import remove as get\n"
+        "def use(value):\n    return get(value)\n",
+        "import app.runs.domain.records as get\n"
+        "def use(value):\n    return getattr(get, 'fetch')(value)\n",
+        "import app.runs.domain.records as get\n"
+        "def use():\n    return consume(get)\n",
+        "from app.runs.domain.records import fetch as get\n"
+        "def use(get):\n    return get(1)\n",
+        "from app.runs.domain.records import fetch as get\n"
+        "get = object()\n"
+        "def use(value):\n    return get(value)\n",
+    ],
+)
+def test_identity_contraction_rejects_new_symbols_dynamic_use_shadow_and_rebind(
+    head_consumer: str,
+):
+    edges = _identity_contraction_fixture(
+        base_consumer=(
+            "import app.compat.facade as legacy\n"
+            "def use(value):\n    return legacy.fetch(value)\n"
+        ),
+        head_consumer=head_consumer,
+    )
+
+    assert edges == set()
+
+
+def test_identity_contraction_candidate_facade_cannot_authorize_its_own_export():
+    edges = _identity_contraction_fixture(
+        base_consumer=(
+            "import app.compat.facade as legacy\n"
+            "def use(value):\n    return legacy.fetch(value)\n"
+        ),
+        head_consumer=(
+            "from app.compat.facade import remove\n"
+            "def use(value):\n    return remove(value)\n"
+        ),
+    )
+
+    assert edges == set()
+
+
+@pytest.mark.parametrize("module_import", [False, True])
+def test_identity_contraction_resolves_function_local_imports(module_import):
+    original = (
+        "from app.compat.facade import fetch\n    return fetch(value)"
+        if not module_import else
+        "import app.compat.facade as source\n    return source.fetch(value)"
+    )
+    edges = _identity_contraction_fixture(
+        base_consumer=f"def use(value):\n    {original}\n",
+        head_consumer="def use(value):\n    from app.runs.domain.records import fetch\n    return fetch(value)\n",
+    )
+    assert {edge.target for edge in edges} == {"app.runs.domain.records"}
+
+
+@pytest.mark.parametrize("access", ["source = legacy()\n    return source.fetch(value)", "return legacy().fetch(value)"])
+def test_identity_contraction_resolves_static_module_return_helper(access):
+    edges = _identity_contraction_fixture(
+        base_consumer=(
+            "def legacy():\n    import app.compat.facade as source\n    return source\n"
+            f"def use(value):\n    {access}\n"
+        ),
+        head_consumer="def use(value):\n    from app.runs.domain.records import fetch\n    return fetch(value)\n",
+    )
+    assert {edge.target for edge in edges} == {"app.runs.domain.records"}
+
+
+@pytest.mark.parametrize("prefix", ["@replace_helper\n", "async "])
+def test_identity_contraction_does_not_trust_transformed_module_helpers(prefix):
+    edges = _identity_contraction_fixture(
+        base_consumer=(
+            prefix + "def legacy():\n    import app.compat.facade as source\n    return source\n"
+            "def use(value):\n    return legacy().fetch(value)\n"
+        ),
+        head_consumer="def use(value):\n    from app.runs.domain.records import fetch\n    return fetch(value)\n",
+    )
+    assert not edges
+
+
+def test_identity_contraction_resolves_package_reexport():
+    sources = {
+        ("base", "app/facade/__init__.py"): "from app.runs.domain.records import fetch\n",
+        ("base", "app/runs/domain/records.py"): "def fetch(): pass\n",
+    }
+    class Objects:
+        def text(self, revision, path, *, required=False):
+            return sources.get((revision, path))
+    assert architecture_governance._identity_import_module_symbol_origin(
+        Objects(), "base", "app.facade", "fetch",
+        {"app.facade", "app.runs.domain.records"}, candidate=False,
+    ) == ("app.runs.domain.records", "fetch")
+
+
+@pytest.mark.parametrize("extra_logic", [False, True])
+def test_identity_normalized_body_distinguishes_import_expansion_from_new_logic(extra_logic):
+    sources = {
+        "app/facade.py": "from app.runs.domain.records import fetch\n",
+        "app/runs/domain/records.py": "def fetch(value): return value\n",
+    }
+    class Objects:
+        def text(self, revision, path, *, required=False):
+            return sources.get(path)
+    git = Objects()
+    modules = {"app.facade", "app.runs.domain.records"}
+    old = ast.parse("import app.facade as old\ndef use(value): return old.fetch(value)\n")
+    new = ast.parse(
+        "from app.runs.domain.records import (\n    fetch as current,\n)\n"
+        "def use(value): return current(value)" + (" + 1\n" if extra_logic else "\n")
+    )
+    normalize = architecture_governance._identity_normalized_body
+    assert (normalize(old, git=git, revision="base", known_modules=modules, candidate=False)
+            == normalize(new, git=git, revision="head", known_modules=modules, candidate=True)) is not extra_logic
 
 
 def _relocation_fixture(*, source: str, target: str, facade: str | None = None):
