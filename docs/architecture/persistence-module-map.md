@@ -53,9 +53,10 @@ An implementation test must patch dependencies in the adapter that reads them.
 A route test must patch the route's actual collaborator. The former compatibility
 aliases no longer forward patches to canonical adapter globals.
 
-Run event construction, size validation, ledger receipts, and cursor reads live
-in `app.streaming.infrastructure.run_events_postgres`; the durable ledger remains
-`app.streaming.postgres`. Active runtime lease queries live in
+Run event construction and size validation live in
+`app.streaming.infrastructure.run_events_postgres`; durable ledger receipts and cursor
+reads live in `app.streaming.infrastructure.event_ledger_postgres`. Cursor and public
+projection rules live in `app.streaming.domain.run_events`. Active runtime lease queries live in
 `app.sandbox.infrastructure.leases_postgres`.
 
 Persistence tests are grouped by the same domain responsibilities under `tests/`.

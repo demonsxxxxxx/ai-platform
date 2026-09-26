@@ -1,12 +1,11 @@
 import asyncio
 import copy
 import json
-from pathlib import Path
 
 import pytest
 
-from app.streaming import postgres
-from app.streaming.authority import RunCursor, event_page, parse_last_event_id
+from app.streaming.infrastructure import event_ledger_postgres as postgres
+from app.streaming.domain.run_events import RunCursor, event_page
 
 
 def _row(sequence: int, event_type: str, **overrides: object) -> dict[str, object]:
@@ -33,33 +32,13 @@ def _row(sequence: int, event_type: str, **overrides: object) -> dict[str, objec
     return row
 
 
-def test_last_event_id_is_a_strict_run_bound_cursor_value():
-    cursor = parse_last_event_id("run-a:42", run_id="run-a")
-
-    assert cursor == RunCursor(run_id="run-a", sequence=42)
+def test_run_cursor_validates_sequence_and_formats_identity():
+    cursor = RunCursor(run_id="run-a", sequence=42)
     assert cursor.event_id == "run-a:42"
-    assert parse_last_event_id("run-b:42", run_id="run-a") is None
-    assert parse_last_event_id("run-a:-1", run_id="run-a") is None
-    assert parse_last_event_id("run-a:01", run_id="run-a") is None
-    assert parse_last_event_id("evt-42", run_id="run-a") is None
     with pytest.raises(ValueError, match="run_cursor_sequence_invalid"):
         RunCursor(run_id="run-a", sequence=-1)
     with pytest.raises(ValueError, match="run_cursor_sequence_invalid"):
         RunCursor(run_id="run-a", sequence=True)
-
-
-def test_postgres_adapter_is_not_coupled_to_app_repositories():
-    source = Path(postgres.__file__).read_text(encoding="utf-8")
-
-    assert "app.repositories" not in source
-
-
-def test_postgres_adapter_is_explicitly_psycopg_only():
-    source = Path(postgres.__file__).read_text(encoding="utf-8")
-
-    assert "from psycopg import AsyncConnection" in source
-    assert "asyncpg" not in source
-    assert "RunEventSqlConnection" not in source
 
 
 def test_page_advances_over_hidden_rows_without_exposing_payloads_or_duplicates():

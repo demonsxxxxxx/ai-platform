@@ -11,8 +11,8 @@ from app.platform.postgres.limits import (
     ensure_json_size,
     ensure_text_size,
 )
-from app.streaming import postgres as _ledger
-from app.streaming.authority import RunCursor
+from app.streaming.infrastructure import event_ledger_postgres as _ledger
+from app.streaming.domain.run_events import RunCursor
 from psycopg import AsyncConnection
 
 

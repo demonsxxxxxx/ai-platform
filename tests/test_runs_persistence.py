@@ -9,7 +9,7 @@ import app.sandbox.infrastructure.leases_postgres as _repo_owner_app_sandbox_inf
 import app.streaming.infrastructure.run_events_postgres as _repo_owner_app_streaming_infrastructure_run_events_postgres
 import app.runs.infrastructure.creation_postgres as run_creation_persistence
 import app.sandbox.infrastructure.leases_postgres as sandbox_leases_persistence
-from app.streaming import postgres as event_ledger
+from app.streaming.infrastructure import event_ledger_postgres as event_ledger
 from app.conversations.infrastructure import postgres as conversation_persistence
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.platform.tracing import standard_trace_id

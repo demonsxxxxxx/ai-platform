@@ -7,8 +7,8 @@ import pytest
 
 from app import schema_migrations
 from app.platform.postgres.errors import RepositoryConflictError
-from app.streaming import postgres as ledger
-from app.streaming.authority import RunCursor
+from app.streaming.infrastructure import event_ledger_postgres as ledger
+from app.streaming.domain.run_events import RunCursor
 
 
 class _Cursor:

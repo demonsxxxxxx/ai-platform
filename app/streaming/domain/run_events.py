@@ -67,25 +67,6 @@ class EventPage:
     terminal: TerminalControl | None
 
 
-def parse_last_event_id(value: str | None, *, run_id: str) -> RunCursor | None:
-    """Parse only the exact durable SSE identity ``<run_id>:<sequence>``."""
-
-    if not isinstance(value, str) or not isinstance(run_id, str) or not run_id:
-        return None
-    prefix, separator, raw_sequence = value.rpartition(":")
-    if (
-        separator != ":"
-        or prefix != run_id
-        or not raw_sequence.isdecimal()
-        or (len(raw_sequence) > 1 and raw_sequence.startswith("0"))
-    ):
-        return None
-    try:
-        return RunCursor(run_id=run_id, sequence=int(raw_sequence))
-    except ValueError:
-        return None
-
-
 def _row_sequence(row: Mapping[str, object]) -> int | None:
     value = row.get("sequence")
     if isinstance(value, bool):

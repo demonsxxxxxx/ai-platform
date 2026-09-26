@@ -15,7 +15,7 @@ from typing import Any
 from redis.exceptions import ResponseError
 
 from app.runs.api import CHAT_PUBLIC_PROJECTION_VERSION, public_terminal_projection
-from app.streaming import postgres
+from app.streaming.infrastructure import event_ledger_postgres as postgres
 from app.streaming.application.callback_events_v4 import (
     V4CallbackItem,
     callback_item_to_v4,

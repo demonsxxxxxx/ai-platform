@@ -185,8 +185,8 @@ async def test_real_legacy_retirement_preserves_business_facts_answers_and_suppr
             assert await (await conn.execute("select * from run_event_batches")).fetchall() == receipts
             assert await (await conn.execute("select * from run_event_terminal_drains")).fetchall() == drains
             assert await (await conn.execute("select id, tenant_id, run_id, status from run_attempts")).fetchall() == attempts
-            from app.streaming.authority import RunCursor
-            from app.streaming.postgres import read_event_rows
+            from app.streaming.domain.run_events import RunCursor
+            from app.streaming.infrastructure.event_ledger_postgres import read_event_rows
             from app.streaming.api import project_persisted_message_delta_v4
 
             history = await read_event_rows(conn, tenant_id=tenant, cursor=RunCursor(run, 0), limit=10)

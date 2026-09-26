@@ -22,7 +22,7 @@ from app.control_plane_contracts import (
     standard_error_code,
     standard_trace_id,
 )
-from app.streaming.authority import RunCursor
+from app.streaming.domain.run_events import RunCursor
 
 
 class RunEventLedgerConflictError(ValueError):
