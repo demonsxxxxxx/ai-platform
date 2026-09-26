@@ -99,7 +99,7 @@ expose concrete infrastructure adapters.
 | `agent_apps` | immutable Agent Profile revisions, publication, visibility/ACL, Agent App admission definition | conversation history, Skill release, executor behavior |
 | `skills` | Skill catalog, version/release lifecycle, distribution, governed material identity | Harness chat, SDK execution loop, arbitrary uploaded data |
 | `conversations` | conversation/session ownership, messages, history, builder-test purpose, conversation projections | run state machine, executor dispatch, profile publication |
-| `runs` | run identity, admission result, attempt/generation, retry/resume/copy/cancel policy, tool-permission facts | queue transport, Harness-private events, conversation ownership |
+| `runs` | run identity, admission result, attempt/generation, retry/resume/copy/cancel policy, terminalization facts | queue transport, Harness-private events, conversation ownership |
 | `context` | immutable context snapshots, memory selection, authorized context continuity | file byte storage, model loop |
 | `files` | upload authorization, file record and binding lifecycle, authorized byte access | generated artifact truth, parser-specific Skill policy |
 | `artifacts` | generated artifact record, lineage, lifecycle, authenticated download projection | temporary sandbox paths, model text claims |
@@ -515,6 +515,30 @@ then independently editing two implementations is forbidden. Dual write is
 forbidden unless a persistence ADR specifies reconciliation, idempotency,
 cutover, and rollback.
 
+On activation of a declared migration bridge, an unchanged definition may carry
+its existing static import bindings into the owning adapter. References to
+formerly local definitions may follow their declared, active bridges. The
+checker compares definition ASTs and binding origins against the trusted base;
+new dependencies, renamed bindings, dynamic loading, and reverse imports of the
+source facade receive no relocation allowance. These inherited dependencies
+remain migration debt, including any cross-domain adapter calls. They are not
+evidence that the target already satisfies the final API/port architecture.
+Later dependency additions use the ordinary per-file rules.
+
+An authority-side `definition_retirements` entry may authorize removal of exact,
+locally owned top-level functions or single-target constant name aliases from a
+migration bridge source after their consumers have been retired. A constant name
+alias has one uppercase `Name` target and a direct `Name` value; computed values,
+multiple targets, and other assignment forms are not eligible. The declaration
+must match the trusted authority exactly and permits deleting the whole binding
+only, not changing its value, adding replacement logic, or rebinding it.
+Unchanged pending bindings and every undeclared source node retain their existing
+contract. Its optional import inventory names the exact import kind, module,
+name, and alias; its optional bridge-symbol inventory names an existing identity
+alias and its locally owned target definition. Remove consumed entries and
+retired bridge symbols in the implementation change so the next authority has
+no stale grant.
+
 The replay corpus MUST be committed as deterministic focused contract or
 integration tests with fixed clocks/identities where those affect output. The
 PR records the exact base/head, test paths, command, result, and which observable
@@ -535,7 +559,7 @@ ledger. It names the target owner for future bounded migrations.
 | `app/agent_apps/**`, Agent Profile routes | `agent_apps` |
 | `app/skills/**`, Skill marketplace/distribution/release code | `skills` |
 | Chat/session routes, `app/agent_conversation_repository.py`, message/session persistence | `conversations` |
-| Run routes, retry/resume/copy/cancel, tool-permission and run lifecycle persistence | `runs` |
+| Run routes, retry/resume/copy/cancel and run lifecycle persistence | `runs` |
 | Queue consumers, `app/worker.py`, `app/worker_main.py`, model/executor selection | `execution` plus `bootstrap.worker` |
 | `app/executors/**` and Harness SDK translation | `execution.infrastructure.harness` |
 | `app/context/**`, memory selection and context continuity | `context` |
@@ -586,9 +610,10 @@ both canonical transitions MUST compose without widening either authority. A
 bridge grants import compatibility only; it does not make the legacy module a
 persistence owner or a public cross-domain API.
 Each authority entry MUST also state its observable removal condition. Bridge
-retirement is two bounded changes: first remove the authority entry after its
-condition is proven while keeping the aliases stable; then remove the aliases
-under the next authority. Candidate policy edits never authorize either step.
+retirement is two bounded changes: first declare the exact binding retirement
+after its condition is proven while keeping source stable; then delete the
+binding and consume the declaration under that authority. Candidate policy
+edits never authorize either step.
 
 A legacy public-API cutover is a different, one-shot authority. It MAY let one
 frozen legacy source delete an exact set of locally defined symbols and replace

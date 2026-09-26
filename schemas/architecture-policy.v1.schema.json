@@ -21,6 +21,7 @@
     "frozen_hot_files",
     "compatibility_facades",
     "migration_bridges",
+    "definition_retirements",
     "legacy_api_cutovers",
     "production_registries",
     "governed_symbols",
@@ -108,6 +109,13 @@
       "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/migrationBridge"
+      }
+    },
+    "definition_retirements": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/definitionRetirement"
       }
     },
     "legacy_api_cutovers": {
@@ -290,6 +298,64 @@
         "removal_condition": {
           "$ref": "#/$defs/nonEmptyString"
         }
+      }
+    },
+    "definitionRetirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_path", "symbols", "owner", "reason", "removal_condition"],
+      "properties": {
+        "source_path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "symbols": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$"
+          }
+        },
+        "imports": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/retiredImportBinding" }
+        },
+        "bridge_symbols": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/retiredBridgeSymbol" }
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "removal_condition": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "retiredImportBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "module", "name", "asname"],
+      "properties": {
+        "kind": { "enum": ["import", "from_import"] },
+        "module": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
+        "name": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "asname": { "type": ["string", "null"], "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+      }
+    },
+    "retiredBridgeSymbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_module", "symbol"],
+      "properties": {
+        "target_module": { "type": "string", "pattern": "^app(?:\\.[a-z][a-z0-9_]*)+$" },
+        "symbol": { "type": "string", "pattern": "^_?[A-Za-z][A-Za-z0-9_]*$" }
       }
     },
     "legacyApiCutover": {
