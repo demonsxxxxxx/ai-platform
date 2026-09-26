@@ -515,6 +515,22 @@ then independently editing two implementations is forbidden. Dual write is
 forbidden unless a persistence ADR specifies reconciliation, idempotency,
 cutover, and rollback.
 
+On activation of a declared migration bridge, an unchanged definition may carry
+its existing static import bindings into the owning adapter. References to
+formerly local definitions may follow their declared, active bridges. The
+checker compares definition ASTs and binding origins against the trusted base;
+new dependencies, renamed bindings, dynamic loading, and reverse imports of the
+source facade receive no relocation allowance. These inherited dependencies
+remain migration debt, including any cross-domain adapter calls. They are not
+evidence that the target already satisfies the final API/port architecture.
+Later dependency additions use the ordinary per-file rules.
+
+An authority-side `definition_retirements` entry may authorize removal of exact,
+locally owned functions from a migration bridge source after their consumers
+have been retired. It permits whole-function deletion only; remaining source
+definitions and imports retain their existing contract. Remove the consumed
+entry in the implementation change so the next authority has no stale grant.
+
 The replay corpus MUST be committed as deterministic focused contract or
 integration tests with fixed clocks/identities where those affect output. The
 PR records the exact base/head, test paths, command, result, and which observable

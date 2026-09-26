@@ -87,7 +87,12 @@ def _retired_runs_legacy_api_cutover() -> dict[str, Any]:
 
 def _fixture_policy() -> dict[str, Any]:
     policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    # General bridge fixtures retain the selector as an unrelated baseline node.
+    # Its relocation and value validation have dedicated coverage below.
+    for bridge in policy["migration_bridges"]:
+        bridge["symbols"] = [name for name in bridge["symbols"] if name != "DEFAULT_RUN_EXECUTOR_TYPES"]
     policy["legacy_api_cutovers"] = [_retired_runs_legacy_api_cutover()]
+    policy["definition_retirements"] = []
     return policy
 
 
@@ -581,6 +586,78 @@ def test_authority_can_retire_the_last_legacy_api_cutover(tmp_path: Path) -> Non
     evaluation = _evaluate(repo, authority, authority, authority)
 
     assert evaluation.status == "pass"
+
+
+def _definition_retirement() -> dict[str, Any]:
+    return {
+        "source_path": "app/repositories.py",
+        "symbols": ["unused_approval"],
+        "owner": "runs",
+        "reason": "The approval producer and its callers have been retired.",
+        "removal_condition": "Remove this entry with the declared function.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("authorized", "replacement", "passes"),
+    [
+        (True, "", True),
+        (True, "def unused_approval():\n    return 1\n", True),
+        (False, "", False),
+        (True, "unused_approval = None\n", False),
+        (True, "def unused_approval():\n    return 2\n", False),
+        (True, "def new_logic():\n    return 1\n", False),
+    ],
+)
+def test_definition_retirement_only_allows_authorized_whole_function_deletion(
+    tmp_path: Path, authorized: bool, replacement: str, passes: bool
+) -> None:
+    policy = _fixture_policy()
+    if authorized:
+        policy["definition_retirements"] = [_definition_retirement()]
+    repo, _ = _create_repo(tmp_path, policy_text=json.dumps(policy))
+    _activate_context_memory_bridge(repo)
+    source = (repo / "app/repositories.py").read_text(encoding="utf-8")
+    _write(repo, "app/repositories.py", source + "def unused_approval():\n    return 1\n")
+    authority = _commit(repo, "authorize exact function retirement")
+    _write(repo, "app/repositories.py", source + replacement)
+    # A candidate cannot authorize its own deletion; consumed grants leave the policy.
+    policy["definition_retirements"] = [] if authorized else [_definition_retirement()]
+    _write(repo, "architecture-policy.json", json.dumps(policy))
+    head = _commit(repo, "retire unused approval")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    assert (evaluation.status == "pass") is passes
+    if not passes:
+        assert "migration_bridge_source_logic" in _codes(evaluation)
+    elif not replacement:
+        assert _evaluate(repo, head, head, head).status == "pass"
+
+
+@pytest.mark.parametrize("invalid", ["missing", "bridged", "constant", "duplicate", "source"])
+def test_definition_retirement_requires_exact_unbridged_authority_functions(
+    tmp_path: Path, invalid: str
+) -> None:
+    policy = _fixture_policy()
+    entry = _definition_retirement()
+    if invalid == "bridged":
+        entry["symbols"] = [_migration_bridge(
+            source_path="app/repositories.py", target_module="app.context.infrastructure.postgres"
+        )["symbols"][0]]
+    elif invalid == "constant":
+        entry["symbols"] = ["DEFAULT_RUN_EXECUTOR_TYPES"]
+    elif invalid == "duplicate":
+        entry["symbols"] *= 2
+    elif invalid == "source":
+        entry["source_path"] = "app/worker.py"
+    policy["definition_retirements"] = [entry]
+    repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
+
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        _evaluate(repo, authority, authority, authority)
+
+    assert caught.value.code == "invalid_policy"
 
 
 def test_live_authority_has_retired_legacy_api_cutovers() -> None:
@@ -3071,24 +3148,16 @@ def test_authority_rejects_reused_bridge_alias_within_one_source(
 ) -> None:
     policy = _fixture_policy()
     bridges = [
-        entry
-        for entry in policy["migration_bridges"]
-        if entry["source_path"] == "app/repositories.py"
+        next(
+            entry for entry in policy["migration_bridges"]
+            if entry["source_path"] == "app/repositories.py"
+            and entry["target_module"] == target
+        )
+        for target in (
+            "app.agent_apps.infrastructure.catalog_postgres",
+            "app.context.infrastructure.postgres",
+        )
     ]
-    assert {bridge["target_module"] for bridge in bridges} == {
-        "app.agent_apps.infrastructure.catalog_postgres",
-        "app.agent_apps.infrastructure.postgres",
-        "app.context.infrastructure.postgres",
-        "app.context.infrastructure.snapshot_postgres",
-        "app.context.infrastructure.sources_postgres",
-        "app.conversations.infrastructure.postgres",
-        "app.identity.infrastructure.postgres",
-        "app.mcp.infrastructure.registry_postgres",
-        "app.platform.postgres.errors",
-        "app.runs.infrastructure.postgres",
-        "app.skills.infrastructure.legacy_workbench",
-        "app.skills.infrastructure.postgres",
-    }
     bridges[1]["module_alias"] = bridges[0]["module_alias"]
     repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
 
@@ -3103,24 +3172,16 @@ def test_authority_rejects_reused_bridge_symbol_within_one_source(
 ) -> None:
     policy = _fixture_policy()
     bridges = [
-        entry
-        for entry in policy["migration_bridges"]
-        if entry["source_path"] == "app/repositories.py"
+        next(
+            entry for entry in policy["migration_bridges"]
+            if entry["source_path"] == "app/repositories.py"
+            and entry["target_module"] == target
+        )
+        for target in (
+            "app.agent_apps.infrastructure.catalog_postgres",
+            "app.context.infrastructure.postgres",
+        )
     ]
-    assert {bridge["target_module"] for bridge in bridges} == {
-        "app.agent_apps.infrastructure.catalog_postgres",
-        "app.agent_apps.infrastructure.postgres",
-        "app.context.infrastructure.postgres",
-        "app.context.infrastructure.snapshot_postgres",
-        "app.context.infrastructure.sources_postgres",
-        "app.conversations.infrastructure.postgres",
-        "app.identity.infrastructure.postgres",
-        "app.mcp.infrastructure.registry_postgres",
-        "app.platform.postgres.errors",
-        "app.runs.infrastructure.postgres",
-        "app.skills.infrastructure.legacy_workbench",
-        "app.skills.infrastructure.postgres",
-    }
     duplicate_symbol = bridges[0]["symbols"][0]
     bridges[1]["symbols"] = sorted([*bridges[1]["symbols"], duplicate_symbol])
     repo, authority = _create_repo(tmp_path, policy_text=json.dumps(policy))
@@ -4262,3 +4323,112 @@ def test_cli_exit_codes_are_zero_two_and_three(
             ]
         ) == 3
     assert json.loads(stdout.getvalue())["error"]["code"] == "invalid_ref"
+
+
+def _relocation_fixture(*, source: str, target: str, facade: str | None = None):
+    bridge = {
+        "source_path": "app/repositories.py",
+        "target_module": "app.identity.infrastructure.records_postgres",
+        "module_alias": "records",
+        "symbols": ["read_record"],
+    }
+    facade = facade or (
+        "import app.identity.infrastructure.records_postgres as records\n"
+        "read_record = records.read_record\n"
+    )
+
+    class Objects:
+        def text(self, ref, path, *, required=False):
+            if path == "app/repositories.py":
+                return source if ref == "base" else facade
+            return None
+
+    return architecture_governance._relocated_dependency_edges(
+        {"migration_bridges": [bridge]},
+        path="app/identity/infrastructure/records_postgres.py",
+        head_tree=ast.parse(target), git=Objects(), base="base", head="head",
+        known_modules={"app.auth", "app.identity.infrastructure.records_postgres"},
+    )
+
+
+def test_relocation_carries_the_same_static_dependency_with_unchanged_function():
+    source = (
+        "from app.auth import normalize_roles\n"
+        "def read_record(value):\n    return normalize_roles(value)\n"
+    )
+    edges = _relocation_fixture(source=source, target=source)
+    assert {edge.target for edge in edges} == {"app.auth.normalize_roles"}
+
+
+@pytest.mark.parametrize("target", [
+    "from app.auth import normalize_roles\ndef read_record(value):\n    return normalize_roles([])\n",
+    "from app.auth import normalize_roles as changed\ndef read_record(value):\n    return changed(value)\n",
+    "from app.auth import normalize_roles\ndef read_record(value):\n    return value\n",
+])
+def test_relocation_does_not_grant_dependencies_to_changed_or_unused_definitions(target):
+    source = "from app.auth import normalize_roles\ndef read_record(value):\n    return normalize_roles(value)\n"
+    assert _relocation_fixture(source=source, target=target) == set()
+
+
+def test_relocation_does_not_hide_a_new_binding_in_a_preserved_import():
+    source = "from app.auth import normalize_roles\ndef read_record(value):\n    return normalize_roles(value)\n"
+    target = source.replace("import normalize_roles", "import normalize_roles, authorize_other")
+    edges = _relocation_fixture(source=source, target=target)
+    assert {edge.target for edge in edges} == {"app.auth.normalize_roles"}
+
+
+def test_relocation_requires_the_declared_source_bridge_to_activate():
+    source = "from app.auth import normalize_roles\ndef read_record(value):\n    return normalize_roles(value)\n"
+    assert _relocation_fixture(source=source, target=source, facade=source) == set()
+
+
+@pytest.mark.parametrize("rebind", [
+    "normalize_roles = local_normalize\n",
+    "def normalize_roles(value):\n    return value\n",
+    "del normalize_roles\n",
+    "if use_local:\n    normalize_roles = local_normalize\n",
+])
+def test_relocation_does_not_inherit_a_rebound_import(rebind):
+    imported = "from app.auth import normalize_roles\n"
+    function = "def read_record(value):\n    return normalize_roles(value)\n"
+    assert _relocation_fixture(
+        source=imported + rebind + function,
+        target=imported + function,
+    ) == set()
+
+
+def test_relocation_does_not_treat_a_local_reference_as_an_import_dependency():
+    source = (
+        "from app.auth import normalize_roles\n"
+        "def read_record(normalize_roles):\n    return normalize_roles\n"
+    )
+    assert _relocation_fixture(source=source, target=source) == set()
+
+
+def test_registry_selector_follows_only_its_declared_identity_bridge():
+    bridge = {
+        "source_path": "app/repositories.py",
+        "target_module": "app.skills.infrastructure.resolution_postgres",
+        "module_alias": "resolution", "symbols": ["DEFAULT_RUN_EXECUTOR_TYPES"],
+    }
+    registry = {"allowed_keys": ["claude-agent-worker"], "selector_owners": [
+        {"path": "app/repositories.py", "symbol": "DEFAULT_RUN_EXECUTOR_TYPES"},
+    ]}
+
+    class Objects:
+        value = '{"claude-agent-worker"}'
+        def text(self, ref, path, *, required=False):
+            if path == "app/repositories.py":
+                return (
+                    "import app.skills.infrastructure.resolution_postgres as resolution\n"
+                    "DEFAULT_RUN_EXECUTOR_TYPES = resolution.DEFAULT_RUN_EXECUTOR_TYPES\n"
+                )
+            return f"DEFAULT_RUN_EXECUTOR_TYPES = {self.value}\n"
+
+    objects = Objects()
+    policy = {"migration_bridges": [bridge]}
+    check = architecture_governance._registry_selector_findings
+    assert check(registry, objects, "head", policy=policy) == []
+    assert check(registry, objects, "head", policy={"migration_bridges": []})
+    objects.value = '{"fake"}'
+    assert check(registry, objects, "head", policy=policy)
