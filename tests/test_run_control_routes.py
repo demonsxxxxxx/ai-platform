@@ -1164,11 +1164,6 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     async def fake_inherit_run_model(conn, **kwargs):
         calls["inherit"].append((conn, kwargs))
 
-    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
-        assert skill_id == "general-chat"
-        assert input_payload["copied_from_run_id"] == "run-failed"
-        assert release_policy_version == ""
-        return [{"skill_id": skill_id, "content_hash": "hash-a"}]
 
     async def fake_record_initial_context_snapshot(conn, **kwargs):
         assert kwargs["source"] == "retry_run"
@@ -1201,7 +1196,6 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     )
     monkeypatch.setattr('app.runs.infrastructure.replay_postgres.retry_run_as_new_task', fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
-    monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
     monkeypatch.setattr(
         'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
@@ -2047,11 +2041,6 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     async def fake_inherit_run_model(conn, **kwargs):
         calls["inherit"].append((conn, kwargs))
 
-    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
-        assert skill_id == "general-chat"
-        assert input_payload["resume"]["completed_step_outputs"] == {"code": "code output"}
-        assert release_policy_version == ""
-        return [{"skill_id": skill_id, "content_hash": "hash-a"}]
 
     async def fake_update_run_input_execution_snapshot(conn, **kwargs):
         calls["execution_snapshot"].append(kwargs)
@@ -2099,7 +2088,6 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     )
     monkeypatch.setattr('app.runs.infrastructure.replay_postgres.resume_run_as_new_task', fake_resume_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
-    monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr(
         'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
         fake_update_run_input_execution_snapshot,
