@@ -1882,9 +1882,9 @@ async def test_lease_run_scans_next_window_when_tail_candidates_are_saturated(mo
 
 
 @pytest.mark.asyncio
-async def test_lease_run_does_not_scan_beyond_fairness_horizon(monkeypatch):
-    allowed_outside_horizon = queue_payload(
-        run_id="run-outside-horizon",
+async def test_lease_run_scans_past_quota_blocked_prefix(monkeypatch):
+    allowed_after_blocked = queue_payload(
+        run_id="run-after-blocked",
         tenant_id="tenant-b",
         user_id="user-b",
     ).model_dump_json()
@@ -1894,7 +1894,7 @@ async def test_lease_run_does_not_scan_beyond_fairness_horizon(monkeypatch):
     ]
     active = queue_payload(run_id="run-active", tenant_id="tenant-a", user_id="user-active").model_dump_json()
     fake = FakeRedis(
-        queued=[allowed_outside_horizon, *blocked_items],
+        queued=[*blocked_items, allowed_after_blocked],
         processing=[active],
     )
 
@@ -1912,22 +1912,51 @@ async def test_lease_run_does_not_scan_beyond_fairness_horizon(monkeypatch):
         lease_scan_limit=1,
     )
 
-    assert message is None
-    assert allowed_outside_horizon in fake.queued
-    assert allowed_outside_horizon not in fake.processing
+    assert message is not None
+    assert message.payload["run_id"] == "run-after-blocked"
+    assert allowed_after_blocked not in fake.queued
+    assert allowed_after_blocked in fake.processing
     assert fake.lrange_calls == [
-        (queue.QUEUE_KEY, 4, 4),
-        (queue.QUEUE_KEY, 3, 3),
-        (queue.QUEUE_KEY, 2, 2),
+        (queue.QUEUE_KEY, 0, 0),
         (queue.QUEUE_KEY, 1, 1),
+        (queue.QUEUE_KEY, 2, 2),
+        (queue.QUEUE_KEY, 3, 3),
+        (queue.QUEUE_KEY, 4, 4),
     ]
+
+
+@pytest.mark.asyncio
+async def test_lease_run_oldest_eligible_is_not_overtaken_by_new_arrivals(monkeypatch):
+    old = queue_payload(run_id="run-old", tenant_id="tenant-a", user_id="user-a").model_dump_json()
+    new = queue_payload(run_id="run-new", tenant_id="tenant-b", user_id="user-b").model_dump_json()
+    active = queue_payload(run_id="run-active", tenant_id="tenant-a", user_id="user-c").model_dump_json()
+    fake = FakeRedis(queued=[old, new], processing=[active])
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    first = await queue.lease_run(
+        worker_id="worker-a", tenant_processing_limit=1, lease_scan_limit=1
+    )
+    assert first is not None and first.payload["run_id"] == "run-new"
+    fake.processing.remove(active)
+    fake.queued.append(queue_payload(
+        run_id="run-newer", tenant_id="tenant-b", user_id="user-d"
+    ).model_dump_json())
+
+    second = await queue.lease_run(
+        worker_id="worker-b", tenant_processing_limit=1, lease_scan_limit=1
+    )
+    assert second is not None and second.payload["run_id"] == "run-old"
 
 
 @pytest.mark.asyncio
 async def test_lease_run_dead_letters_invalid_payload_during_bounded_scan(monkeypatch):
     invalid = '{"run_id": "../bad"}'
     allowed = queue_payload(run_id="run-allowed", tenant_id="tenant-b", user_id="user-b").model_dump_json()
-    fake = FakeRedis(queued=[allowed, invalid])
+    fake = FakeRedis(queued=[invalid, allowed])
 
     async def get_redis():
         return fake
@@ -1956,7 +1985,7 @@ async def test_lease_run_continues_after_invalid_payload_shrinks_scan_window(mon
     older = queue_payload(run_id="run-older", tenant_id="tenant-c", user_id="user-c").model_dump_json()
     allowed = queue_payload(run_id="run-allowed", tenant_id="tenant-b", user_id="user-b").model_dump_json()
     invalid = '{"run_id": "../bad"}'
-    fake = FakeRedis(queued=[older, allowed, invalid])
+    fake = FakeRedis(queued=[invalid, allowed, older])
 
     async def get_redis():
         return fake

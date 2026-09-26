@@ -135,6 +135,18 @@ available global capacity. An internal mapping to `stream_open` is allowed.
 A stale frame cannot dismiss the current Run's queue state. Terminal, error,
 cancellation, session replacement and setup failure retain idempotent cleanup.
 
+For a committed direct Run, unkeyed Chat Run or Copy child, a lost Redis enqueue
+reply is
+resolved by exact message readback. If readback is unavailable, the API returns
+`accepted_pending_enqueue` with the committed Run ID and leaves the Run intact
+for status and reconciliation. An explicit pre-write queue rejection is
+terminalized. Copy performs its committed-child Profile check before Redis I/O
+and closes that transaction before enqueue. The direct Run response accepts
+`accepted_pending_enqueue` in addition to its normal `queued` status. Unkeyed
+Chat and Copy have no
+client-supplied operation identity; a caller that loses the HTTP response must
+use session/Run history to locate the child before repeating the request.
+
 Queue metrics, scheduling limits and Redis facts remain supported. Do not
 reintroduce the retired browser `queue_update` fallback. A disconnected browser
 does not determine the Run's execution state.

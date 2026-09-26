@@ -245,7 +245,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert sent[0][1].run_id == "run-a"
     assert sent[0][1].prompt == "hello"
     assert sent[0][1].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
-    assert sent[0][1].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
+    assert sent[0][1].callback_token_id == "cbt:run-a:qat_test-runtime-attempt:g1"
     assert sent[0][1].callback_token == "secret-token"
     assert sent[0][1].callback_base_url == "http://platform.test"
     assert sent[0][1].permission_mode == "default"
@@ -1150,7 +1150,7 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(
     )
     assert sent[0].config["context_retrieval_scope"]["user_id"] == "user-a"
     assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
-    assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
+    assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt:g1"
 
 
 @pytest.mark.asyncio
@@ -1448,6 +1448,8 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
                 "evidence_class": "runtime_lease_projection",
                 "security_profile": "governed",
                 "attempt_id": "qat_test-runtime-attempt",
+                "owner_generation": 1,
+                "callback_token_id": "cbt:run-a:qat_test-runtime-attempt:g1",
                 "container_id": "exec-run-a",
                 "container_name": "executor-exec-run-a",
                 "executor_url": "http://executor.test",
@@ -2576,8 +2578,8 @@ async def test_runtime_default_callback_token_is_hmac_scoped_to_token_id(tmp_pat
 
     await runtime.submit(request(callback_token_id="cbt_run-a"))
 
-    assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
-    assert sent[0].callback_token == derived_callback_token("settings-token", "cbt:run-a:qat_test-runtime-attempt")
+    assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt:g1"
+    assert sent[0].callback_token == derived_callback_token("settings-token", "cbt:run-a:qat_test-runtime-attempt:g1")
     assert sent[0].callback_token != "settings-token"
 
 
@@ -2614,8 +2616,8 @@ async def test_runtime_ignores_untrusted_callback_input_and_uses_trusted_platfor
 
     assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
     assert sent[0].callback_base_url == "http://platform.test"
-    assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt"
-    assert sent[0].callback_token == "derived-for-cbt:run-a:qat_test-runtime-attempt"
+    assert sent[0].callback_token_id == "cbt:run-a:qat_test-runtime-attempt:g1"
+    assert sent[0].callback_token == "derived-for-cbt:run-a:qat_test-runtime-attempt:g1"
 
 
 @pytest.mark.asyncio

@@ -69,6 +69,7 @@ from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_for_binding,
+    executor_callback_url as _sandbox_callback_url,
 )
 from app.runtime.sandbox.container_provider import (
     DockerContainerProvider,
@@ -295,10 +296,6 @@ def _sandbox_workspace(settings: object, payload: RunPayload) -> Path:
         / payload.attempt_id
         / "workspace"
     )
-
-
-def _sandbox_callback_url(settings: object) -> str:
-    return f"{str(settings.sandbox_callback_base_url).rstrip('/')}/api/ai/runtime/callbacks/executor"
 
 
 def _pinned_snapshot_root(workspace: Path) -> Path:
@@ -1296,6 +1293,7 @@ class ClaudeAgentWorkerAdapter:
             queue_wait_ms=_payload_queue_wait_ms(payload),
             trace_id=payload.trace_id or standard_trace_id(payload.run_id),
             callback_url=_sandbox_callback_url(settings),
+            owner_generation=payload.owner_generation,
             callback_token_id=callback_token_id_for_binding(
                 CallbackTokenBinding(run_id=payload.run_id, attempt_id=payload.attempt_id)
             ),

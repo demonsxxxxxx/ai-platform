@@ -272,6 +272,7 @@ class SandboxRuntimeRequest(BaseModel):
     session_id: str
     run_id: str
     attempt_id: str
+    owner_generation: int = Field(default=1, ge=1)
     agent_id: str
     skill_ids: list[str] = Field(default_factory=list)
     public_skill_metadata: dict[str, dict[str, str]] = Field(default_factory=dict)

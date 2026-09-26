@@ -117,7 +117,8 @@ a parallel execution state machine:
 
 - the Run row owns lifecycle and truthful terminal state;
 - the current Attempt and active sandbox runtime lease fence executor callbacks;
-- callback tokens bind tenant/Run/Attempt and cannot authorize another Run;
+- callback tokens bind Run/Attempt/owner generation; the active tenant-scoped
+  Sandbox lease and current Attempt must match that generation before receipt;
 - queue and Worker leases fence the active dispatcher;
 - repository terminal transitions, not executor callbacks, own terminal facts.
 

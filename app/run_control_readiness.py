@@ -1,5 +1,5 @@
 from app.auth import AuthPrincipal, is_ai_admin
-from app.runs.api import run_retry_block_reason
+from app.runs.api import run_retry_block_reason, run_unconfirmed_execution_block_reason
 from app.run_projection import (
     normalize_run_status,
     normalize_step_status,
@@ -94,6 +94,8 @@ def run_control_readiness_snapshot(
 
     if status in RUN_CONTROL_ACTIVE_STATUSES:
         resume_reason = "active_run"
+    elif run_unconfirmed_execution_block_reason(run.get("error_code")):
+        resume_reason = "execution_outcome_unconfirmed"
     elif checkpoint_candidates:
         resume_reason = "checkpoint_outputs_available"
     else:

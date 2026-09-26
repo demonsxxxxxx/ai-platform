@@ -24,6 +24,7 @@ from app.run_admission_terminalization import terminalize_enqueue_failure_with_v
 from app.runs.infrastructure.postgres import load_current_terminal_event_fact
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import runtime_callbacks
+from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 from app.tool_permission_lifecycle import (
     cancel_run_with_v4,
@@ -53,6 +54,7 @@ from app.streaming.infrastructure.worker_v4 import (
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
 REDIS_URL_ENV = "AI_PLATFORM_SSE_REDIS_TEST_URL"
+_CURRENT_OWNER_GENERATION = 4
 _MESSAGE_EVENT_TYPES = frozenset(
     {
         "message.started",
@@ -111,7 +113,9 @@ def _answer_callback(run, attempt, batch_id):
     adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt, sanitizer=sanitize_public_text, payload_sanitizer=sanitize_public_payload)
     return ExecutorCallbackEvent(
         session_id=f"s_{run[2:]}", run_id=run, attempt_id=attempt,
-        callback_token_id=f"cbt:{run}:{attempt}", batch_id=batch_id,
+        callback_token_id=callback_token_id_for_binding(CallbackTokenBinding(
+            run_id=run, attempt_id=attempt, owner_generation=_CURRENT_OWNER_GENERATION,
+        )), batch_id=batch_id,
         status="running", progress=20, new_message=None, state_patch={},
         events=[AgentEvent(**event.as_agent_event_fields()) for event in adapter.accept_answer_text("answer")],
     )
@@ -137,13 +141,7 @@ def _production_cancellation_use_case(conn):
         )
 
 
-async def _clear_seeded_stream_authority_for_cancellation(
-    conn, *, tenant_id: str, run_id: str, attempt_id: str
-) -> None:
-    await conn.execute(
-        "delete from sse_stream_authorities where tenant_id = %s and run_id = %s",
-        (tenant_id, run_id),
-    )
+async def _execution_spec_json_for_run(conn, *, tenant_id: str, run_id: str) -> str:
     run_cursor = await conn.execute(
         """
         select workspace_id, user_id, session_id, agent_id, skill_id, execution_kind
@@ -153,7 +151,7 @@ async def _clear_seeded_stream_authority_for_cancellation(
     )
     run_values = await run_cursor.fetchone()
     assert run_values is not None
-    spec_json = json.dumps(
+    return json.dumps(
         {
             "schema_version": "ai-platform.execution-spec.v1",
             "tenant_id": tenant_id,
@@ -163,6 +161,16 @@ async def _clear_seeded_stream_authority_for_cancellation(
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+async def _clear_seeded_stream_authority_for_cancellation(
+    conn, *, tenant_id: str, run_id: str, attempt_id: str
+) -> None:
+    await conn.execute(
+        "delete from sse_stream_authorities where tenant_id = %s and run_id = %s",
+        (tenant_id, run_id),
+    )
+    spec_json = await _execution_spec_json_for_run(conn, tenant_id=tenant_id, run_id=run_id)
     await conn.execute(
         """
         update runs
@@ -246,7 +254,9 @@ async def _index_connection(dsn: str, schema_name: str):
     )
 
 
-async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, str, str]:
+async def _seed_run(
+    conn: psycopg.AsyncConnection, suffix: str, *, with_current_attempt: bool = False
+) -> tuple[str, str, str]:
     tenant = f"t_{suffix}"
     workspace = f"w_{suffix}"
     user = f"u_{suffix}"
@@ -277,18 +287,50 @@ async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, st
         (session, tenant, workspace, user, agent, session),
     )
     await conn.execute(
-        "insert into runs(id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id, status) values (%s, %s, %s, %s, %s, %s, %s, 'running')",
-        (run, tenant, workspace, session, user, agent, skill),
+        "insert into runs(id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id, status) values (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (run, tenant, workspace, session, user, agent, skill, "queued" if with_current_attempt else "running"),
     )
+    lease_payload = {"attempt_id": attempt}
+    if with_current_attempt:
+        spec_json = await _execution_spec_json_for_run(conn, tenant_id=tenant, run_id=run)
+        await conn.execute(
+            """
+            insert into run_attempts(
+              id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+              queue_attempt_id, execution_spec_schema_version, execution_spec_json,
+              execution_spec_canonical_json, execution_spec_sha256
+            ) values (%s, %s, %s, 1, 'created', 'queue_worker', 'worker-callback',
+                      %s, 'ai-platform.execution-spec.v1', %s::jsonb, %s, %s)
+            """,
+            (attempt, tenant, run, f"queue_{attempt}", spec_json, spec_json,
+             hashlib.sha256(spec_json.encode("utf-8")).hexdigest()),
+        )
+        for status in ("queued", "claimed", "running"):
+            await conn.execute(
+                """
+                update run_attempts
+                set status = %s, owner_generation = owner_generation + 1,
+                    queue_message_id = case when status = 'created' then 'message-callback'
+                                            else queue_message_id end
+                where tenant_id = %s and id = %s
+                """,
+                (status, tenant, attempt),
+            )
+        lease_payload.update({
+            "owner_generation": _CURRENT_OWNER_GENERATION,
+            "callback_token_id": callback_token_id_for_binding(CallbackTokenBinding(
+                run_id=run, attempt_id=attempt, owner_generation=_CURRENT_OWNER_GENERATION,
+            )),
+        })
     await conn.execute(
         """
         insert into sandbox_leases(
           id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
           trace_id, sandbox_mode, provider, status, expires_at, lease_payload_json
         ) values ('lease', %s, %s, %s, %s, %s, %s, %s, 'chat', 'fake', 'active',
-                  now() + interval '15 minutes', jsonb_build_object('attempt_id', %s::text))
+                  now() + interval '15 minutes', %s::jsonb)
         """,
-        (tenant, workspace, user, session, run, attempt, f"trace_{run}", attempt),
+        (tenant, workspace, user, session, run, attempt, f"trace_{run}", json.dumps(lease_payload)),
     )
     tenant_scope = f"scope_{suffix}"
     open_event_id = f"evt4_open_{suffix}"
@@ -330,7 +372,7 @@ async def _seed_run(conn: psycopg.AsyncConnection, suffix: str) -> tuple[str, st
 
 
 @asynccontextmanager
-async def _schema():
+async def _schema(*, with_current_attempt: bool = False):
     configure_context_services()
     dsn = _dsn()
     schema_name = f"streaming_v4_evidence_{uuid.uuid4().hex}"
@@ -350,7 +392,9 @@ async def _schema():
         )
         async with factory() as conn:
             async with conn.transaction():
-                ids = await _seed_run(conn, uuid.uuid4().hex[:12])
+                ids = await _seed_run(
+                    conn, uuid.uuid4().hex[:12], with_current_attempt=with_current_attempt
+                )
         yield dsn, schema_name, ids
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
@@ -667,14 +711,7 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
     from app.execution.api import ClaudeSdkAgentEventAdapter
     from app.runtime.kernel_contracts import AgentEvent
 
-    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
-        async with _connection_factory(dsn, schema_name) as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    "update sandbox_leases set lease_payload_json = jsonb_build_object('attempt_id', %s::text) where id = 'lease'",
-                    (attempt,),
-                )
-
+    async with _schema(with_current_attempt=True) as (dsn, schema_name, (tenant, run, attempt)):
         adapter = ClaudeSdkAgentEventAdapter(
             run_id=run,
             attempt_id=attempt,
@@ -685,7 +722,9 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
             session_id=f"s_{run[2:]}",
             run_id=run,
             attempt_id=attempt,
-            callback_token_id=f"cbt:{run}:{attempt}",
+            callback_token_id=callback_token_id_for_binding(CallbackTokenBinding(
+                run_id=run, attempt_id=attempt, owner_generation=_CURRENT_OWNER_GENERATION,
+            )),
             batch_id="batch-handler-rollback",
             status="running",
             progress=20,
@@ -728,7 +767,7 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
 
 @pytest.mark.asyncio
 async def test_real_callback_handler_duplicate_reuses_facts_and_stream_receipt(monkeypatch):
-    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+    async with _schema(with_current_attempt=True) as (dsn, schema_name, (tenant, run, attempt)):
         client, key, bridge = await _redis_stream(tenant, run)
         try:
             callback = _answer_callback(run, attempt, "batch-handler-duplicate")
@@ -760,7 +799,7 @@ async def test_real_callback_handler_duplicate_reuses_facts_and_stream_receipt(m
 async def test_real_callback_handler_commits_facts_before_redis_outage_and_retries(monkeypatch):
     from fastapi import HTTPException
 
-    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+    async with _schema(with_current_attempt=True) as (dsn, schema_name, (tenant, run, attempt)):
         observed = []
         class FailingRedis:
             async def eval(self, *args):
@@ -796,7 +835,7 @@ async def test_real_callback_handler_commits_facts_before_redis_outage_and_retri
 async def test_run_event_cannot_overtake_a_committed_callback_before_redis_append(monkeypatch, status):
     import asyncio
 
-    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+    async with _schema(with_current_attempt=True) as (dsn, schema_name, (tenant, run, attempt)):
         client, key, bridge = await _redis_stream(tenant, run)
         committed, release = asyncio.Event(), asyncio.Event()
         publish_callback = runtime_callbacks.publish_callback_rows

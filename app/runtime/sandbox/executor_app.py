@@ -44,6 +44,8 @@ from app.public_execution import (
     public_execution_phase_progress_payload,
 )
 from app.required_tool_contract import (
+    MCP_EXECUTION_OUTCOME_UNKNOWN,
+    MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
     MCP_EXECUTION_UNCERTAIN_ERROR_CODES,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
@@ -2793,6 +2795,7 @@ def create_executor_app(
         artifact_upload_latency_ms = 0
         runner_events_open = {"value": True}
         capability_callback_failed = {"value": False}
+        mcp_invocation_states: dict[str, str] = {}
         stream_delivery_failure: dict[str, str | None] = {"error_code": None}
         public_execution_projector = PublicExecutionV2Projector()
         public_execution_phase_publisher = PublicExecutionPhasePublisher()
@@ -3030,6 +3033,22 @@ def create_executor_app(
                 return await dispatch_callback_event(event)
             if isinstance(event, _PrivateExecutionFact):
                 agent_event = event.public_event
+                fact = event.fact
+                capability = (
+                    agent_event.payload.get("capability")
+                    if agent_event is not None and isinstance(agent_event.payload, dict)
+                    else None
+                )
+                if (
+                    isinstance(capability, dict)
+                    and capability.get("kind") == "mcp"
+                    and isinstance(fact, dict)
+                    and fact.get("tool_name") == "MCP"
+                    and fact.get("lifecycle") in {"started", "completed", "failed"}
+                    and isinstance(fact.get("invocation_id"), str)
+                    and fact["invocation_id"]
+                ):
+                    mcp_invocation_states[fact["invocation_id"]] = str(fact["lifecycle"])
                 agent_events = event.public_events(public_execution_projector)
                 if not agent_events:
                     return False
@@ -3295,15 +3314,27 @@ def create_executor_app(
             failed = True
         runner_events_open["value"] = False
         positive_deadline_exceeded = timed_out and max_seconds is not None and max_seconds > 0
+        mcp_deadline_error = (
+            MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE
+            if mcp_invocation_states
+            and all(state == "completed" for state in mcp_invocation_states.values())
+            else MCP_EXECUTION_OUTCOME_UNKNOWN
+            if mcp_invocation_states
+            else None
+        )
         error_code = (
-            "executor_deadline_exceeded"
+            mcp_deadline_error
+            if timed_out and mcp_deadline_error is not None
+            else "executor_deadline_exceeded"
             if positive_deadline_exceeded
             else "executor_health_timeout"
             if timed_out
             else str(runner_result.get("error_code") or "")
         )
         error_message = (
-            "Executor deadline exceeded"
+            "MCP execution outcome requires reconciliation before retry"
+            if timed_out and mcp_deadline_error is not None
+            else "Executor deadline exceeded"
             if positive_deadline_exceeded
             else "Executor health timeout"
             if timed_out

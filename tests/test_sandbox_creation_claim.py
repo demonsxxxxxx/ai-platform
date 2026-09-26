@@ -741,7 +741,8 @@ async def test_two_independent_runtimes_claim_before_zero_inventory_create(
     outcomes = await asyncio.gather(*(runtime.submit(_runtime_request()) for runtime in runtimes), return_exceptions=True)
 
     assert sum(provider.create_count for provider in providers) == 1
-    assert sum(provider.stop_count for provider in providers) == 1
-    assert sorted((provider.create_count, provider.stop_count) for provider in providers) == [(0, 0), (1, 1)]
+    # An accepted asynchronous handoff keeps the winner's runtime alive.
+    assert sum(provider.stop_count for provider in providers) == 0
+    assert sorted((provider.create_count, provider.stop_count) for provider in providers) == [(0, 0), (1, 0)]
     assert sum(isinstance(outcome, ContainerStartFailedError) for outcome in outcomes) == 1
     assert sum(getattr(outcome, "status", None) == "accepted" for outcome in outcomes) == 1

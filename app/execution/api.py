@@ -44,6 +44,11 @@ from app.execution.application.worker_failure_diagnostics import (
     normalized_runtime_diagnostics_payload,
     predispatch_failure_result,
 )
+from app.execution.application.worker_runtime_sandbox_lease import (
+    WorkerRuntimeSandboxLease as WorkerRuntimeSandboxLease,
+    create_worker_runtime_sandbox_lease as create_worker_runtime_sandbox_lease,
+    release_worker_runtime_sandbox_lease as release_worker_runtime_sandbox_lease,
+)
 from app.execution.application.claude_agent_events import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
@@ -151,4 +156,7 @@ __all__ = [
     "WorkerAttemptLifecyclePorts",
     "WorkerExecutorReconciliation",
     "WorkerQueueLease",
+    "WorkerRuntimeSandboxLease",
+    "create_worker_runtime_sandbox_lease",
+    "release_worker_runtime_sandbox_lease",
 ]

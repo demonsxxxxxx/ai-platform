@@ -4100,6 +4100,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
         "evidence_class": "sdk_only_lifecycle_placeholder",
         "executor_type": "fake",
         "attempt_id": "qat-test-attempt",
+        "owner_generation": 4,
         "worker_id": "worker-a",
     }
     assert create_call["lease_payload_json"].get("probe") != "foundation_runtime"
@@ -4126,7 +4127,7 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
 
     class CapturingSuccessfulExecutor(SuccessfulExecutorStub):
         async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter_attempt", payload.attempt_id))
+            calls.append(("adapter_attempt", payload.attempt_id, payload.owner_generation))
             return await super().submit_run(payload, event_sink=event_sink)
 
     locked_run = locked_run_from_payload(
@@ -4223,7 +4224,7 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
     assert start_call["queue_attempt_id"] == "qat-test-attempt"
     assert start_call["worker_id"] == "worker-a"
     assert start_call["execution_spec"].to_mapping()["run_id"] == "run-a"
-    assert ("adapter_attempt", "rat-run-a") in calls
+    assert ("adapter_attempt", "rat-run-a", 4) in calls
     terminal_call = next(item[1] for item in calls if item[0] == "terminal")
     assert terminal_call == {
         "tenant_id": "tenant-a",

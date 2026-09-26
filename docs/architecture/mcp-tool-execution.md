@@ -53,7 +53,11 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
    denial. After admission, a missing terminal hook is
    `mcp_execution_outcome_unknown`; a completed hook whose durable callback or
    public receipt is incomplete is `mcp_execution_succeeded_receipt_incomplete`.
-   Both require reconciliation and are not retryable.
+   Both require reconciliation and are not retryable. SDK error messages,
+   provider-session failures, exceptions, timeouts and the outer Executor
+   deadline preserve that uncertainty after an observed MCP invocation.
+   Retry and resume reject either error code at the locked Runs control
+   boundary and in the public readiness/manifest projections.
 4. Support Streamable HTTP and legacy SSE explicitly in discovery and execution.
    Preserve endpoint validation, DNS pinning, same-origin SSE message endpoints,
    redirect rejection, reserved-header protection, and bounded responses.
@@ -141,8 +145,10 @@ and absence of secrets in public events. That stage remains unclaimed until run.
   selected-surface and actual SDK assertions; retain policy and receipt tests.
 - Replace generic completion-evidence mismatch after an admitted MCP call with
   explicit succeeded-but-receipt-incomplete or outcome-unknown errors. Retry
-  readiness and retry creation reject both; pre-admission mismatches remain
-  compatible and no parallel retry path remains.
+  and resume readiness and child creation reject both; pre-admission mismatches
+  remain compatible and no parallel retry path remains. The installed CLI MCP
+  regression now runs in the Sandbox CI shard; its selected catalog also
+  includes the platform-owned `attach_file` tool.
 - Update the owning MCP section in `docs/frontend/skills-marketplace-public-api.md`
   and link this execution contract there. Inventory affected selectors and
   configuration references with targeted searches before completion.

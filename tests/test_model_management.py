@@ -866,6 +866,7 @@ async def test_run_connection_lookup_requires_active_status_and_exact_model_valu
     assert "sandbox_leases.run_id = runs.id" in sql
     assert "sandbox_leases.tenant_id = runs.tenant_id" in sql
     assert "sandbox_leases.attempt_id = %s" in sql
+    assert "sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text" in sql
     assert "sandbox_leases.status = 'active'" in sql
     assert "sandbox_leases.released_at is null" in sql
     assert "sandbox_leases.expires_at > now()" in sql

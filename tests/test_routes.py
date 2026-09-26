@@ -18,6 +18,7 @@ from app.capability_distribution import CapabilityAuthorizationDenial
 from app.file_preview_contracts import XlsxPreviewResponse
 from app.files.api import ProfileDriveFileImportRequest
 from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
+from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
 from app.repositories import RepositoryConflictError
 from app.runs.api import RunTerminalizationProgress
 from app.routes import lambchat_compat as lambchat_module
@@ -4440,8 +4441,9 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
 
 
 @pytest.mark.asyncio
-async def test_create_run_commits_enqueue_failure_compensation_in_a_second_transaction(monkeypatch):
-    """A direct create must persist its failure state after the creation commit."""
+@pytest.mark.parametrize("enqueue_mode", ["rejected", "reply_lost_readback", "unknown"])
+async def test_create_run_reconciles_enqueue_after_creation_commit(monkeypatch, enqueue_mode):
+    """Only a definitive pre-write rejection terminalizes the committed Run."""
 
     committed: list[list[tuple[str, str]]] = []
     enqueue_attempts: list[str] = []
@@ -4481,7 +4483,17 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
 
     async def fail_enqueue(payload):
         enqueue_attempts.append(str(payload["run_id"]))
+        if enqueue_mode == "rejected":
+            raise QueueAdmissionRejected("queue_payload_invalid")
         raise RuntimeError("queue unavailable")
+
+    async def read_admission(payload):
+        assert payload["run_id"] == enqueue_attempts[0]
+        return (
+            QueueAdmissionMetadata(0, 0, "committed-message")
+            if enqueue_mode == "reply_lost_readback"
+            else None
+        )
 
     async def mark_enqueue_failed(conn, **kwargs):
         conn.pending.append(("run_failed", str(kwargs["run_id"])))
@@ -4528,10 +4540,23 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
     monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.runs.repositories.append_event", noop)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission)
     monkeypatch.setattr("app.routes.runs.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await create_run(
+    if enqueue_mode == "rejected":
+        with pytest.raises(HTTPException) as exc_info:
+            await create_run(
+                CreateRunRequest(
+                    workspace_id="default",
+                    agent_id="qa-word-review",
+                    capability_id="document_review",
+                ),
+                http_request=request,
+                principal=principal(),
+            )
+        assert exc_info.value.status_code == 503
+    else:
+        response = await create_run(
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
@@ -4540,17 +4565,20 @@ async def test_create_run_commits_enqueue_failure_compensation_in_a_second_trans
             http_request=request,
             principal=principal(),
         )
+        assert response.status == (
+            "queued" if enqueue_mode == "reply_lost_readback" else "accepted_pending_enqueue"
+        )
 
-    assert exc_info.value.status_code == 503
-    assert len(committed) == 2
+    assert len(committed) == (2 if enqueue_mode == "rejected" else 1)
     assert committed[0][0][0] == "run_created"
     assert committed[0][1] == ("model_bound", committed[0][0][1])
     assert enqueue_attempts == [committed[0][0][1]]
-    assert committed[1] == [
-        ("authority", committed[0][0][1]),
-        ("run_failed", committed[0][0][1]),
-        ("terminal_row", committed[0][0][1]),
-    ]
+    if enqueue_mode == "rejected":
+        assert committed[1] == [
+            ("authority", committed[0][0][1]),
+            ("run_failed", committed[0][0][1]),
+            ("terminal_row", committed[0][0][1]),
+        ]
 
     committed.clear()
     enqueue_attempts.clear()

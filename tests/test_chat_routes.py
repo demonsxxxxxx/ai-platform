@@ -2494,7 +2494,10 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
         "v": 1,
     }
 @pytest.mark.asyncio
-async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(monkeypatch):
+@pytest.mark.parametrize("enqueue_mode", ["normal", "reply_lost_readback", "unknown"])
+async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(
+    monkeypatch, enqueue_mode
+):
     calls = []
 
     async def fake_resolve_chat_model_selection(_conn, *, selection):
@@ -2570,7 +2573,18 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
                 payload["skill_manifests"],
             )
         )
+        if enqueue_mode != "normal":
+            raise TimeoutError("synthetic Redis reply lost after enqueue")
         return 3
+
+    async def fake_read_queue_admission(payload):
+        assert enqueue_mode != "normal"
+        assert payload["run_id"] == "run_3"
+        return (
+            QueueAdmissionMetadata(3, 3, "committed-message")
+            if enqueue_mode == "reply_lost_readback"
+            else None
+        )
 
     async def fake_record_context(conn, **kwargs):
         calls.append(("context", kwargs["source"], kwargs["message_ids"], kwargs["file_ids"], kwargs["input_payload"], kwargs.get("include_session_history")))
@@ -2616,6 +2630,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.read_queue_admission", fake_read_queue_admission)
     monkeypatch.setattr("app.routes.chat.get_queue_insight", fake_get_queue_insight)
 
     response = await chat_stream(
@@ -2631,6 +2646,11 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 
     assert response.run_id == "run_3"
     assert response.session_id == "ses_3"
+    if enqueue_mode == "unknown":
+        assert response.status == "accepted_pending_enqueue"
+        assert response.queue_position is None
+        assert not any(item[0:2] == ("event", "queued") for item in calls)
+        return
     assert response.queue_position == 3
     assert response.queue_insight == {
         "tenant_id": "tenant-a",

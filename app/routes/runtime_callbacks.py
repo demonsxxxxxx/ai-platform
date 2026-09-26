@@ -28,8 +28,7 @@ from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_ro
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
 from app.runtime.sandbox.callback_tokens import (
-    CallbackTokenBinding,
-    callback_token_id_matches_binding,
+    callback_token_id_matches_attempt,
     callback_token_matches,
 )
 from app.runtime.sandbox.container_provider import create_container_provider
@@ -145,6 +144,7 @@ async def record_executor_callback(
             conn,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
+            callback_token_id=callback.callback_token_id,
             session_id=callback.session_id,
         )
         tenant_id = str(run_identity["tenant_id"])
@@ -401,6 +401,7 @@ async def record_executor_callback(
             tenant_id=tenant_id,
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
+            callback_token_id=callback.callback_token_id,
         )
     if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
         try:
@@ -480,6 +481,7 @@ async def provider_session_callback(
                 conn,
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
+                callback_token_id=callback.callback_token_id,
             )
             result = await context_api.execute_provider_session_callback(
                 conn,
@@ -519,6 +521,7 @@ async def _require_current_runtime_attempt(
     tenant_id: str,
     run_id: str,
     attempt_id: str,
+    callback_token_id: str,
 ) -> dict[str, Any]:
     leases = await repositories.list_current_sandbox_runtime_leases_for_attempt(
         conn,
@@ -536,6 +539,9 @@ async def _require_current_runtime_attempt(
         persisted_attempt_id and payload_attempt_id and persisted_attempt_id != payload_attempt_id
     ):
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_mismatch")
+    persisted_token_id = str(payload.get("callback_token_id") or "") if isinstance(payload, dict) else ""
+    if persisted_token_id and persisted_token_id != callback_token_id:
+        raise HTTPException(status_code=409, detail="sandbox_runtime_owner_generation_stale")
     return lease
 
 
@@ -544,6 +550,7 @@ async def _lock_current_runtime_attempt_then_run(
     *,
     run_id: str,
     attempt_id: str,
+    callback_token_id: str,
     session_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     run_hint = await repositories.get_run_identity(conn, run_id=run_id, for_update=False)
@@ -554,12 +561,6 @@ async def _lock_current_runtime_attempt_then_run(
     if str(run_hint.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="run_already_terminal")
     tenant_id = str(run_hint.get("tenant_id") or "")
-    lease = await _require_current_runtime_attempt(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        attempt_id=attempt_id,
-    )
     locked_run = await repositories.get_run_identity(conn, run_id=run_id, for_update=True)
     if locked_run is None or str(locked_run.get("tenant_id") or "") != tenant_id:
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
@@ -567,6 +568,13 @@ async def _lock_current_runtime_attempt_then_run(
         raise HTTPException(status_code=409, detail="callback_session_mismatch")
     if str(locked_run.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="run_already_terminal")
+    lease = await _require_current_runtime_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        callback_token_id=callback_token_id,
+    )
     return locked_run, lease
 
 
@@ -583,8 +591,9 @@ def _require_valid_callback_token(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="callback_token_not_configured",
         )
-    binding = CallbackTokenBinding(run_id=run_id, attempt_id=attempt_id)
-    if not callback_token_id_matches_binding(callback_token_id, binding):
+    if not callback_token_id_matches_attempt(
+        callback_token_id, run_id=run_id, attempt_id=attempt_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_callback_token",
@@ -640,6 +649,7 @@ async def _profile_drive_file_response(
             conn,
             run_id=request.run_id,
             attempt_id=request.attempt_id,
+            callback_token_id=request.callback_token_id,
             session_id=request.session_id,
         )
         lease_payload = lease.get("lease_payload_json") if isinstance(lease, dict) else None
@@ -679,6 +689,7 @@ async def _profile_drive_file_response(
                 tenant_id=tenant_id,
                 run_id=request.run_id,
                 attempt_id=request.attempt_id,
+                callback_token_id=request.callback_token_id,
             )
             await repositories.append_event(
                 conn,
@@ -738,6 +749,7 @@ async def executor_context_retrieval_callback(
             conn,
             run_id=request.run_id,
             attempt_id=request.attempt_id,
+            callback_token_id=request.callback_token_id,
             session_id=request.session_id,
         )
         tenant_id = str(run_identity.get("tenant_id") or "")
@@ -807,6 +819,7 @@ async def executor_context_retrieval_callback(
             tenant_id=tenant_id,
             run_id=request.run_id,
             attempt_id=request.attempt_id,
+            callback_token_id=request.callback_token_id,
         )
     return {"result": result}
 

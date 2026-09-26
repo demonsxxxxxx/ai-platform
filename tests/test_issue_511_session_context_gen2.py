@@ -310,13 +310,13 @@ async def test_run_enqueue_compensation_uses_the_durable_failed_transition(monke
         (resume_run, "resume_run_as_new_task", "run-resume-source"),
     ],
 )
-async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
+async def test_copied_run_ambiguous_enqueue_preserves_committed_child(
     monkeypatch,
     route,
     repository_method,
     source_run_id,
 ):
-    """Copy compensates, while idempotent retry/resume retain their committed child."""
+    """All routes retain the child when an external queue write is unconfirmed."""
 
     committed: list[list[tuple[str, str]]] = []
 
@@ -361,6 +361,9 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
 
     async def fail_enqueue(_payload):
         raise RuntimeError("queue unavailable")
+
+    async def no_queue_admission(_payload):
+        return None
 
     async def mark_enqueue_failed(conn, **kwargs):
         conn.pending.append(("run_failed", str(kwargs["run_id"])))
@@ -412,24 +415,21 @@ async def test_copied_run_enqueue_failures_commit_compensation_after_creation(
     monkeypatch.setattr(f"app.routes.runs.repositories.{repository_method}", create_copied_run)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepared_queue_payload)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
+    monkeypatch.setattr("app.routes.runs.read_queue_admission", no_queue_admission)
     monkeypatch.setattr("app.routes.runs.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await route(source_run_id, request=request, principal=_principal())
-
-    assert exc_info.value.status_code == 503
-    assert committed == (
-        [
-            [("run_created", "run-enqueue-failure")],
-            [
-                ("authority", "run-enqueue-failure"),
-                ("run_failed", "run-enqueue-failure"),
-                ("terminal_row", "run-enqueue-failure"),
-            ],
-        ]
-        if repository_method == "copy_run_as_new_task"
-        else [[("run_created", "run-enqueue-failure")]]
-    )
+    if repository_method == "copy_run_as_new_task":
+        result = await route(source_run_id, request=request, principal=_principal())
+        assert result.run_id == "run-enqueue-failure"
+        assert result.session_id == "session-a"
+        assert result.status == "accepted_pending_enqueue"
+        assert committed == [[("run_created", "run-enqueue-failure")], []]
+    else:
+        with pytest.raises(HTTPException) as exc_info:
+            await route(source_run_id, request=request, principal=_principal())
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "queue_admission_unconfirmed"
+        assert committed == [[("run_created", "run-enqueue-failure")]]
 
 
 @pytest.mark.asyncio

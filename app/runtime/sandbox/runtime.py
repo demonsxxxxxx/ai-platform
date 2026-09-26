@@ -301,6 +301,12 @@ class SandboxRuntime:
             "evidence_class": "runtime_lease_projection",
             "security_profile": lease_security_profile,
             "attempt_id": request.attempt_id,
+            "owner_generation": request.owner_generation,
+            "callback_token_id": self._lease_callback_token_id(
+                lease,
+                attempt_id=request.attempt_id,
+                owner_generation=request.owner_generation,
+            ),
             "container_id": runtime_container_id,
             "container_name": runtime_container_name,
             "executor_url": runtime_executor_url,
@@ -414,9 +420,15 @@ class SandboxRuntime:
     def _trusted_callback_target(self, provider_name: str):
         return executor_callback_target(self.settings, provider_name)
 
-    def _lease_callback_token_id(self, lease: ContainerLease, *, attempt_id: str) -> str:
+    def _lease_callback_token_id(
+        self, lease: ContainerLease, *, attempt_id: str, owner_generation: int
+    ) -> str:
         return callback_token_id_for_binding(
-            CallbackTokenBinding(run_id=lease.run_id, attempt_id=attempt_id)
+            CallbackTokenBinding(
+                run_id=lease.run_id,
+                attempt_id=attempt_id,
+                owner_generation=owner_generation,
+            )
         )
 
     @staticmethod
@@ -819,7 +831,11 @@ class SandboxRuntime:
                 # The executor treats this as server-owned configuration, never as user input.
                 task_config["system_prompt"] = request.system_prompt
 
-            callback_token_id = self._lease_callback_token_id(lease, attempt_id=request.attempt_id)
+            callback_token_id = self._lease_callback_token_id(
+                lease,
+                attempt_id=request.attempt_id,
+                owner_generation=request.owner_generation,
+            )
             task_request = ExecutorTaskRequest(
                 tenant_id=request.tenant_id,
                 workspace_id=request.workspace_id,

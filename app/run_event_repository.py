@@ -254,17 +254,23 @@ async def list_current_sandbox_runtime_leases_for_attempt(
 
     cursor = await conn.execute(
         """
-        select *
+        select sandbox_leases.*
         from sandbox_leases
-        where tenant_id = %s
-          and run_id = %s
-          and lease_payload_json ->> 'attempt_id' = %s
-          and (attempt_id is null or attempt_id = lease_payload_json ->> 'attempt_id')
-          and status = 'active'
-          and expires_at is not null
-          and expires_at > clock_timestamp()
-        order by created_at asc
-        for update
+        join run_attempts
+          on run_attempts.tenant_id = sandbox_leases.tenant_id
+         and run_attempts.run_id = sandbox_leases.run_id
+         and run_attempts.id = sandbox_leases.attempt_id
+        where sandbox_leases.tenant_id = %s
+          and sandbox_leases.run_id = %s
+          and sandbox_leases.lease_payload_json ->> 'attempt_id' = %s
+          and sandbox_leases.attempt_id = sandbox_leases.lease_payload_json ->> 'attempt_id'
+          and sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text
+          and run_attempts.status in ('running', 'cancel_requested')
+          and sandbox_leases.status = 'active'
+          and sandbox_leases.expires_at is not null
+          and sandbox_leases.expires_at > clock_timestamp()
+        order by sandbox_leases.created_at asc
+        for update of sandbox_leases, run_attempts
         """,
         (tenant_id, run_id, attempt_id),
     )

@@ -531,7 +531,7 @@ class CreateRunRequest(BaseModel):
 class CreateRunResponse(BaseModel):
     run_id: str
     session_id: str
-    status: Literal["queued"]
+    status: Literal["queued", "accepted_pending_enqueue"]
 
 
 class RunControlResponse(BaseModel):

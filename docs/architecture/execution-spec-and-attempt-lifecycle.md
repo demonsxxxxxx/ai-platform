@@ -204,11 +204,23 @@ than five seconds ahead of the PostgreSQL clock, so operators must remediate tha
 state before installing the monotonic guard. Stale-run recovery moves the exact
 open attempt into reconciler-owned `expired` or `cancel_requested` before terminal
 drain, and permission, executor, and multi-agent maintenance writers mirror the
-exact terminal attempt in the same transaction. Callback and Redis reclaim paths
-still lack end-to-end expected `owner_generation` fencing and recoverable
-cross-store effects. The heartbeat path has real PostgreSQL/Redis
+exact terminal attempt in the same transaction. New Sandbox leases carry the
+bound Attempt's `owner_generation` and a generation-specific callback token ID.
+Callback receipt and model-proxy connection reads require the lease generation
+to equal the current Attempt generation; previous-generation callbacks cannot
+write through a newly owned Attempt. Leases created before this field was
+recorded fail this check, so an upgrade must drain active legacy leases or let
+their reconciliation settle before treating callback continuity as available.
+Redis reclaim still lacks end-to-end expected `owner_generation` fencing and
+recoverable cross-store effects. The heartbeat path has real PostgreSQL/Redis
 rollback-and-convergence coverage; production Sandbox acceptance and rollback
 evidence remain required before the migration can be called complete.
+
+Queue leasing now scans candidates in oldest-first order across successive
+`queue_lease_scan_limit` batches, skipping quota-blocked entries until it finds
+the oldest eligible Run. This removes the fixed tail horizon that could starve
+an older eligible Run while arrivals continued. A dispatch with a long blocked
+prefix can read the full queued list; capacity testing must include that case.
 
 Redis reclaim must create a new durable ordinal attempt before a new worker can
 execute. It never overwrites the old attempt identity. Retry, resume, and copy

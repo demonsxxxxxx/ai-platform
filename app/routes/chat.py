@@ -27,6 +27,7 @@ from app.capability_distribution import (
 )
 from app.chat_session_projection import session_response
 from app.conversations.api import (
+    attempt_chat_queue_admission,
     resolve_chat_submission,
     submission_resolution_projection,
 )
@@ -81,6 +82,7 @@ from app.queue import (
     enqueue_run,
     enqueue_run_with_metadata,
     get_queue_insight,
+    is_definitive_chat_queue_rejection as _is_definitive_chat_queue_rejection,
     read_queue_admission,
 )
 from app.queue_payload_validation import queue_payload_invalid_detail
@@ -930,29 +932,13 @@ async def _attempt_chat_queue_admission(
     *,
     check_existing: bool,
 ) -> tuple[QueueAdmissionMetadata | None, Exception | None]:
-    """Perform one deterministic enqueue and boundedly reconcile an ambiguous write."""
-
-    try:
-        if check_existing:
-            existing = await read_queue_admission(queue_payload)
-            if existing is not None:
-                return existing, None
-        return await _enqueue_chat_run(queue_payload), None
-    except Exception as exc:  # noqa: BLE001 - preserve an unknown external queue outcome
-        if not isinstance(exc, QueueAdmissionRejected):
-            try:
-                existing = await read_queue_admission(queue_payload)
-            except Exception:  # noqa: BLE001 - bounded best-effort reconciliation only
-                existing = None
-            if existing is not None:
-                return existing, None
-        return None, exc
-
-
-def _is_definitive_chat_queue_rejection(error: Exception) -> bool:
-    """Return true only for a locally invalid immutable queue payload."""
-
-    return isinstance(error, QueueAdmissionRejected) and str(error) == "queue_payload_invalid"
+    return await attempt_chat_queue_admission(
+        queue_payload,
+        check_existing=check_existing,
+        enqueue=_enqueue_chat_run,
+        read=read_queue_admission,
+        rejection_type=QueueAdmissionRejected,
+    )
 
 
 async def _persist_chat_queue_success(
@@ -2469,19 +2455,33 @@ async def chat_stream(
             status="accepted_pending_enqueue",
             submission_id=submission_id,
         )
-    try:
-        queue_admission = await _enqueue_chat_run(queue_payload)
-    except Exception as exc:
-        async with transaction() as conn:
-            await terminalize_enqueue_failure_with_v4(
-                http_request.app.state.run_stream_runtime.worker_capabilities, conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                run_id=run_id,
-                trace_id=standard_trace_id(run_id),
-                diagnostic_error=exc,
-            )
-        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+    queue_admission, enqueue_error = await _attempt_chat_queue_admission(
+        queue_payload,
+        check_existing=False,
+    )
+    if queue_admission is None:
+        if enqueue_error is not None and (
+            _is_definitive_chat_queue_rejection(enqueue_error)
+            or isinstance(enqueue_error, QueueAdmissionRejected)
+            and str(enqueue_error) == "run_reconciliation_in_progress"
+        ):
+            async with transaction() as conn:
+                await terminalize_enqueue_failure_with_v4(
+                    http_request.app.state.run_stream_runtime.worker_capabilities, conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    run_id=run_id,
+                    trace_id=standard_trace_id(run_id),
+                    diagnostic_error=enqueue_error,
+                )
+            raise HTTPException(status_code=503, detail="queue_enqueue_failed") from enqueue_error
+        # Preserve the Run identity while Redis admission is unknown.
+        return ChatStreamResponse(
+            session_id=session_id,
+            run_id=run_id,
+            status="accepted_pending_enqueue",
+            intent_decision=_intent_response(decision_payload, principal),
+        )
     queue_position = int(queue_admission.queue_position)
     async with transaction() as conn:
         await repositories.append_event(
