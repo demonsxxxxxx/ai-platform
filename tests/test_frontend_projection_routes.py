@@ -1,3 +1,4 @@
+import app.persistence.artifacts as _owner_persistence_artifacts
 from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
@@ -50,8 +51,8 @@ def install_projection_route_fakes(monkeypatch, *, artifacts=None, sessions=None
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(frontend_projections, "transaction", fake_transaction)
     monkeypatch.setattr(
-        frontend_projections.repositories,
-        "list_revealed_artifacts",
+        _owner_persistence_artifacts,
+        'list_revealed_artifacts',
         fake_list_revealed_artifacts,
         raising=False,
     )
@@ -61,8 +62,8 @@ def install_projection_route_fakes(monkeypatch, *, artifacts=None, sessions=None
         fake_list_revealed_session_artifacts,
     )
     monkeypatch.setattr(
-        frontend_projections.repositories,
-        "list_revealed_artifact_sessions",
+        _owner_persistence_artifacts,
+        'list_revealed_artifact_sessions',
         fake_list_revealed_sessions,
         raising=False,
     )

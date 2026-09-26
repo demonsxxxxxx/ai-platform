@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
-from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
+from app.identity.infrastructure import audit_postgres as identity_audit
 from app.models import (
     AdminSkillDetailResponse,
     AdminSkillPromoteRequest,
@@ -14,15 +14,19 @@ from app.models import (
     AdminSkillVersionStatusRequest,
     PublicSkillImportPreviewResponse,
 )
+from app.platform.postgres import errors as platform_errors
 from app.skills.api import (
-    AdminSkillListResponse,
     INTERNAL_DEPENDENCY_SKILL_IDS,
+    AdminSkillListResponse,
     list_uploaded_skill_display_version_rows,
     lock_skill_for_version_upload,
     next_uploaded_skill_display_version,
     resolve_uploaded_skill_display_versions,
 )
 from app.skills.dependencies import skill_dependency_policy
+from app.skills.infrastructure import catalog_postgres as skills_catalog
+from app.skills.infrastructure import postgres as skills_postgres
+from app.skills.infrastructure import versions_postgres as skills_versions
 from app.skills.lifecycle import (
     SKILL_VERSION_DEPRECATED,
     SKILL_VERSION_DISABLED,
@@ -223,7 +227,7 @@ async def _mark_skill_version_released(
     skill_id: str,
     version: str,
 ) -> None:
-    await repositories.update_skill_version_status(
+    await skills_versions.update_skill_version_status(
         conn,
         skill_id=skill_id,
         version=version,
@@ -240,12 +244,12 @@ async def _mark_superseded_skill_version_deprecated(
 ) -> str | None:
     if not version or version == target_version:
         return None
-    previous = await repositories.get_skill_version(conn, skill_id=skill_id, version=version)
+    previous = await skills_postgres.get_skill_version(conn, skill_id=skill_id, version=version)
     if previous is None:
         return None
     if normalize_skill_version_status(previous.get("status")) == SKILL_VERSION_DISABLED:
         return None
-    await repositories.update_skill_version_status(
+    await skills_versions.update_skill_version_status(
         conn,
         skill_id=skill_id,
         version=version,
@@ -260,7 +264,7 @@ async def admin_list_skills(
 ) -> AdminSkillListResponse:
     _require_admin(principal)
     async with transaction() as conn:
-        items = await repositories.list_admin_skill_summaries(
+        items = await skills_versions.list_admin_skill_summaries(
             conn,
             tenant_id=principal.tenant_id,
         )
@@ -300,7 +304,7 @@ async def admin_skill_detail(
     skill_id = _safe_skill_id(skill_id)
 
     async with transaction() as conn:
-        detail = await repositories.get_admin_skill_detail(
+        detail = await skills_versions.get_admin_skill_detail(
             conn,
             tenant_id=principal.tenant_id,
             skill_id=skill_id,
@@ -310,7 +314,7 @@ async def admin_skill_detail(
             and isinstance(detail.get("skill"), dict)
             and detail["skill"].get("lifecycle_status") == "active"
         ):
-            available_skill_ids = set(await repositories.list_skill_ids(conn))
+            available_skill_ids = set(await skills_catalog.list_skill_ids(conn))
         else:
             detail = None
     if detail is None:
@@ -349,7 +353,7 @@ async def admin_upload_skill_package(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     async with transaction() as conn:
-        skill = await repositories.get_skill(conn, skill_id=skill_id)
+        skill = await skills_catalog.get_skill(conn, skill_id=skill_id)
         is_new_skill = skill is None
         if skill is not None:
             if not can_upload_existing_skill:
@@ -360,7 +364,7 @@ async def admin_upload_skill_package(
 
         if is_new_skill:
             try:
-                await repositories.create_skill_catalog(
+                await skills_versions.create_skill_catalog(
                     conn,
                     skill_id=skill_id,
                     name=skill_id,
@@ -371,7 +375,7 @@ async def admin_upload_skill_package(
                     executor_type="claude-agent-worker",
                     status="active",
                 )
-            except repositories.RepositoryConflictError as exc:
+            except platform_errors.RepositoryConflictError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         await lock_skill_for_version_upload(conn, skill_id=skill_id)
@@ -382,14 +386,14 @@ async def admin_upload_skill_package(
         display_versions = resolve_uploaded_skill_display_versions(display_rows)
         existing = None
         if not is_new_skill:
-            existing = await repositories.get_skill_version(
+            existing = await skills_postgres.get_skill_version(
                 conn,
                 skill_id=skill_id,
                 version=parsed.content_hash,
             )
         if existing is not None:
             _require_reusable_uploaded_skill_version(skill_id, existing)
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -458,7 +462,7 @@ async def admin_upload_skill_package(
             "created_at": None,
         }
         if is_new_skill:
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -475,7 +479,7 @@ async def admin_upload_skill_package(
                     "executor_type": "claude-agent-worker",
                 },
             )
-        inserted_version = await repositories.upsert_skill_version(
+        inserted_version = await skills_versions.upsert_skill_version(
             conn,
             skill_id=skill_id,
             version=parsed.content_hash,
@@ -488,7 +492,7 @@ async def admin_upload_skill_package(
         )
         if inserted_version is False:
             raise HTTPException(status_code=409, detail="skill_version_already_exists")
-        await repositories.append_audit_log(
+        await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -523,7 +527,7 @@ async def admin_preview_skill_package(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     async with transaction() as conn:
-        global_skill_ids = set(await repositories.list_skill_ids(conn))
+        global_skill_ids = set(await skills_catalog.list_skill_ids(conn))
     return PublicSkillImportPreviewResponse(
         skill_count=1,
         skills=[
@@ -551,13 +555,13 @@ async def admin_skill_version_diff(
     to_version = _safe_version(to_version, "to_version")
     try:
         async with transaction() as conn:
-            diff = await repositories.diff_skill_versions(
+            diff = await skills_versions.diff_skill_versions(
                 conn,
                 skill_id=skill_id,
                 from_version=from_version,
                 to_version=to_version,
             )
-    except repositories.RepositoryNotFoundError as exc:
+    except platform_errors.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return AdminSkillVersionDiffResponse.model_validate(diff)
 
@@ -574,7 +578,7 @@ async def admin_update_skill_version_status(
     version = _safe_version(version, "version")
 
     async with transaction() as conn:
-        current = await repositories.get_skill_version(conn, skill_id=skill_id, version=version)
+        current = await skills_postgres.get_skill_version(conn, skill_id=skill_id, version=version)
         if current is None:
             raise HTTPException(status_code=404, detail="skill_version_not_found")
         current_status = normalize_skill_version_status(current.get("status"))
@@ -592,7 +596,7 @@ async def admin_update_skill_version_status(
             if review.get("status") != "passed" or review.get("blockers"):
                 raise HTTPException(status_code=409, detail="skill_release_review_not_verified")
         if request.status in {SKILL_VERSION_DISABLED, SKILL_VERSION_DEPRECATED}:
-            policy = await repositories.get_skill_release_policy(
+            policy = await skills_versions.get_skill_release_policy(
                 conn,
                 tenant_id=principal.tenant_id,
                 skill_id=skill_id,
@@ -600,15 +604,15 @@ async def admin_update_skill_version_status(
             if _release_policy_protects_version(policy, version):
                 raise HTTPException(status_code=409, detail="skill_version_has_active_release_policy")
         try:
-            updated = await repositories.update_skill_version_status(
+            updated = await skills_versions.update_skill_version_status(
                 conn,
                 skill_id=skill_id,
                 version=version,
                 status=request.status,
             )
-        except repositories.RepositoryNotFoundError as exc:
+        except platform_errors.RepositoryNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        await repositories.append_audit_log(
+        await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -637,13 +641,13 @@ async def admin_promote_skill_version(
     _require_admin(principal)
     skill_id = _safe_skill_id(skill_id)
     async with transaction() as conn:
-        version = await repositories.get_skill_version(conn, skill_id=skill_id, version=request.version)
+        version = await skills_postgres.get_skill_version(conn, skill_id=skill_id, version=request.version)
         if version is None:
             raise HTTPException(status_code=404, detail="skill_version_not_found")
         _require_releasable_skill_version(version)
         _require_materializable_skill_version(skill_id, version)
         release_review = _require_reviewed_skill_version_release(version)
-        policy = await repositories.get_skill_release_policy(
+        policy = await skills_versions.get_skill_release_policy(
             conn,
             tenant_id=principal.tenant_id,
             skill_id=skill_id,
@@ -652,12 +656,12 @@ async def admin_promote_skill_version(
         should_deprecate_previous = request.rollout_percent == 100
         previous_version = policy["current_version"] if policy else None
         if policy is None:
-            skill = await repositories.get_skill(conn, skill_id=skill_id)
+            skill = await skills_catalog.get_skill(conn, skill_id=skill_id)
             if skill is None:
                 raise HTTPException(status_code=404, detail="skill_not_found")
             previous_version = str(skill.get("version") or "") or None
             if request.rollout_percent < 100 and previous_version:
-                previous = version if previous_version == request.version else await repositories.get_skill_version(
+                previous = version if previous_version == request.version else await skills_postgres.get_skill_version(
                     conn,
                     skill_id=skill_id,
                     version=previous_version,
@@ -667,7 +671,7 @@ async def admin_promote_skill_version(
                 _require_releasable_skill_version(previous)
                 _require_materializable_skill_version(skill_id, previous)
         elif request.rollout_percent < 100 and previous_version:
-            previous = version if previous_version == request.version else await repositories.get_skill_version(
+            previous = version if previous_version == request.version else await skills_postgres.get_skill_version(
                 conn,
                 skill_id=skill_id,
                 version=str(previous_version),
@@ -676,7 +680,7 @@ async def admin_promote_skill_version(
                 raise HTTPException(status_code=409, detail="skill_version_not_materializable")
             _require_releasable_skill_version(previous)
             _require_materializable_skill_version(skill_id, previous)
-        await repositories.set_skill_release_policy(
+        await skills_versions.set_skill_release_policy(
             conn,
             tenant_id=principal.tenant_id,
             skill_id=skill_id,
@@ -694,13 +698,13 @@ async def admin_promote_skill_version(
         source = version.get("source") if isinstance(version.get("source"), dict) else {}
         if source.get("kind") == "uploaded":
             try:
-                await repositories.set_uploaded_workbench_skill_status(
+                await skills_catalog.set_uploaded_workbench_skill_status(
                     conn,
                     tenant_id=principal.tenant_id,
                     skill_id=skill_id,
                     status="active",
                 )
-            except repositories.RepositoryConflictError as exc:
+            except platform_errors.RepositoryConflictError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         deprecated_version = None
         if should_deprecate_previous:
@@ -710,7 +714,7 @@ async def admin_promote_skill_version(
                 version=previous_version,
                 target_version=request.version,
             )
-        await repositories.append_audit_log(
+        await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -751,13 +755,13 @@ async def admin_rollback_skill_version(
     _require_admin(principal)
     skill_id = _safe_skill_id(skill_id)
     async with transaction() as conn:
-        version = await repositories.get_skill_version(conn, skill_id=skill_id, version=request.version)
+        version = await skills_postgres.get_skill_version(conn, skill_id=skill_id, version=request.version)
         if version is None:
             raise HTTPException(status_code=404, detail="skill_version_not_found")
         _require_rollback_target_skill_version(version)
         _require_rollback_materializable_skill_version(skill_id, version)
         release_review = _build_skill_version_admin_review(version)
-        policy = await repositories.get_skill_release_policy(
+        policy = await skills_versions.get_skill_release_policy(
             conn,
             tenant_id=principal.tenant_id,
             skill_id=skill_id,
@@ -777,7 +781,7 @@ async def admin_rollback_skill_version(
             previous_version = None
         if request.version == policy_current_version and policy_previous_version:
             raise HTTPException(status_code=409, detail="rollback_target_not_previous_version")
-        await repositories.set_skill_release_policy(
+        await skills_versions.set_skill_release_policy(
             conn,
             tenant_id=principal.tenant_id,
             skill_id=skill_id,
@@ -798,7 +802,7 @@ async def admin_rollback_skill_version(
             version=previous_version,
             target_version=request.version,
         )
-        await repositories.append_audit_log(
+        await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

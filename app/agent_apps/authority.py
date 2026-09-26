@@ -11,7 +11,21 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
-from app import repositories
+from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog_postgres
+from app.conversations.infrastructure import postgres as conversations_postgres
+from app.conversations.infrastructure import session_queries_postgres as conversations_session_queries_postgres
+from app.identity.infrastructure import audit_postgres as identity_audit_postgres
+from app.identity.infrastructure import postgres as identity_postgres
+from app.platform.postgres import errors as platform_errors
+from app.platform.postgres import values as platform_values
+from app.runs.infrastructure import capability_admission_postgres as runs_capability_admission_postgres
+from app.runs.infrastructure import creation_postgres as runs_creation_postgres
+from app.runs.infrastructure import replay_postgres as runs_replay_postgres
+from app.skills.infrastructure import postgres as skills_postgres
+from app.skills.infrastructure import resolution_postgres as skills_resolution_postgres
+from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots_postgres
+from app.skills import release_policy as skills_release_policy
+
 from app.agent_apps.api import (
     AGENT_PROFILE_AVATAR_REFS,
     AgentProfileAdminProjection,
@@ -129,7 +143,7 @@ def _effective_mcp_tool_ids(
     effective: list[str] = []
     normalized_input = {"mcp_tool_ids": list(configured)}
     for skill in skills:
-        for tool_id in repositories.run_mcp_tool_ids_for_skill(skill, normalized_input):
+        for tool_id in runs_capability_admission_postgres.run_mcp_tool_ids_for_skill(skill, normalized_input):
             if tool_id not in effective:
                 effective.append(tool_id)
     return configured, tuple(effective)
@@ -219,19 +233,19 @@ async def _authorize_current_profile_skill(
     is_admin: bool,
     permissions: list[str] | None,
 ) -> dict[str, Any]:
-    skill = await repositories.resolve_selected_skill(
+    skill = await skills_resolution_postgres.resolve_selected_skill(
         conn,
         tenant_id=tenant_id,
         agent_id=agent_id,
         skill_id=skill_id,
     )
-    expected_version = repositories.resolve_rollout_skill_decision(
+    expected_version = skills_release_policy.resolve_rollout_skill_decision(
         skill,
         tenant_id=tenant_id,
         skill_id=skill_id,
         rollout_key=rollout_key,
     ).selected_version
-    return await repositories.authorize_selected_run_capabilities(
+    return await runs_capability_admission_postgres.authorize_selected_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=agent_id,
@@ -480,13 +494,13 @@ class AgentProfileAuthority:
         """Provision an unseen principal and reject a conflicting tenant identity."""
 
         try:
-            await repositories.ensure_submission_principal(
+            await identity_postgres.ensure_submission_principal(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 display_name=principal.display_name or principal.user_id,
             )
-        except repositories.RepositoryAuthorizationError as exc:
+        except platform_errors.RepositoryAuthorizationError as exc:
             raise HTTPException(status_code=403, detail="principal_not_authorized") from exc
 
     async def _validate_definition(
@@ -537,9 +551,9 @@ class AgentProfileAuthority:
                         status_code=403,
                         detail="agent_profile_capability_not_available",
                     )
-        except repositories.RepositoryConflictError as exc:
+        except platform_errors.RepositoryConflictError as exc:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
-        except repositories.RepositoryAuthorizationError as exc:
+        except platform_errors.RepositoryAuthorizationError as exc:
             raise HTTPException(status_code=403, detail="agent_profile_capability_not_available") from exc
         return skills
 
@@ -558,7 +572,7 @@ class AgentProfileAuthority:
             raise HTTPException(status_code=409, detail="agent_profile_create_revision_invalid")
         if agent_id is not None and definition.expected_draft_revision < 1:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
-        resolved_agent_id = agent_id or repositories.new_id("agt")
+        resolved_agent_id = agent_id or platform_values.new_id("agt")
         await self._ensure_principal_user(conn, principal=principal)
         await agent_profile_repository.acquire_agent_profile_lifecycle_lock(
             conn,
@@ -619,7 +633,7 @@ class AgentProfileAuthority:
                 aggregate.get("published_revision") if aggregate is not None else None
             ),
         }
-        audit_id = await repositories.append_audit_log(
+        audit_id = await identity_audit_postgres.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -695,7 +709,7 @@ class AgentProfileAuthority:
             content_hash=str(row["content_hash"]),
         )
         row = {**row, "published_revision": int(row["revision"])}
-        audit_id = await repositories.append_audit_log(
+        audit_id = await identity_audit_postgres.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -792,7 +806,7 @@ class AgentProfileAuthority:
             agent_id=agent_id,
             revision=int(row["revision"]),
         )
-        audit_id = await repositories.append_audit_log(
+        audit_id = await identity_audit_postgres.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -839,7 +853,7 @@ class AgentProfileAuthority:
             tenant_id=principal.tenant_id,
             agent_id=agent_id,
         )
-        return await repositories.append_audit_log(
+        return await identity_audit_postgres.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -894,7 +908,7 @@ class AgentProfileAuthority:
                 raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
         await self._validate_profile_department_authorities(definition)
         if validation_agent_id is None:
-            validation_agent_id = await repositories.get_tenant_profile_validation_agent(
+            validation_agent_id = await agent_apps_catalog_postgres.get_tenant_profile_validation_agent(
                 conn,
                 tenant_id=principal.tenant_id,
             )
@@ -906,7 +920,7 @@ class AgentProfileAuthority:
             agent_id=validation_agent_id,
             definition=definition,
         )
-        return await repositories.append_audit_log(
+        return await identity_audit_postgres.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1231,17 +1245,17 @@ class AgentProfileAuthority:
     ) -> None:
         """Reauthorize one persisted profile run before copy, retry, or resume side effects."""
 
-        run = await repositories.get_authorized_run(
+        run = await runs_creation_postgres.get_authorized_run(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             run_id=run_id,
         )
         if run is None:
-            raise repositories.RepositoryNotFoundError("run_not_found")
+            raise platform_errors.RepositoryNotFoundError("run_not_found")
         input_json = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
-        snapshot = repositories.copied_run_execution_snapshot(input_json)
-        revision, content_hash = repositories.admitted_agent_profile_pins_for_copy(run, snapshot)
+        snapshot = runs_replay_postgres.copied_run_execution_snapshot(input_json)
+        revision, content_hash = runs_replay_postgres.admitted_agent_profile_pins_for_copy(run, snapshot)
         if revision is None:
             return
         admission = await self.resolve_bound_for_submission(
@@ -1254,12 +1268,12 @@ class AgentProfileAuthority:
         profile_snapshot = snapshot.get("agent_profile")
         execution_input = snapshot.get("input") if isinstance(snapshot.get("input"), dict) else {}
         try:
-            execution_mcp_tool_ids = tuple(repositories.extract_run_mcp_tool_ids(execution_input))
+            execution_mcp_tool_ids = tuple(runs_capability_admission_postgres.extract_run_mcp_tool_ids(execution_input))
         except (
-            repositories.RepositoryAuthorizationError,
-            repositories.RepositoryConflictError,
+            platform_errors.RepositoryAuthorizationError,
+            platform_errors.RepositoryConflictError,
         ) as exc:
-            raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
+            raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
         expected_profile_snapshot = dict(admission.private_execution_input)
         snapshot_skill_version = str(snapshot.get("skill_version") or "")
         authority_skill_id = str(admission.skill.get("skill_id") or "")
@@ -1271,7 +1285,7 @@ class AgentProfileAuthority:
         governed_mcp_tool_ids: tuple[str, ...] | None = None
         if governed_profile_snapshot:
             try:
-                skill_manifests = await repositories.materialize_run_skill_manifests(
+                skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=run_id,
@@ -1281,8 +1295,8 @@ class AgentProfileAuthority:
                         else []
                     ),
                 )
-            except repositories.RepositoryConflictError as exc:
-                raise repositories.RepositoryConflictError(
+            except platform_errors.RepositoryConflictError as exc:
+                raise platform_errors.RepositoryConflictError(
                     "agent_profile_snapshot_invalid"
                 ) from exc
             if isinstance(profile_snapshot, dict) and (
@@ -1333,14 +1347,14 @@ class AgentProfileAuthority:
                 else {}
             )
             try:
-                repositories.require_replay_source_identity(
+                runs_capability_admission_postgres.require_replay_source_identity(
                     pinned_version=snapshot_skill_version,
                     pinned_executor_type=str(snapshot.get("executor_type") or ""),
                     release_decision=release_decision if isinstance(release_decision, dict) else {},
                     skill_manifests=skill_manifests,
                 )
                 governed_mcp_tool_ids = tuple(
-                    await repositories.validate_replay_skill_manifests(
+                    await skills_postgres.validate_replay_skill_manifests(
                         conn,
                         skill_id=authority_skill_id,
                         pinned_version=snapshot_skill_version,
@@ -1355,10 +1369,10 @@ class AgentProfileAuthority:
                     )
                 )
             except (
-                repositories.RepositoryAuthorizationError,
-                repositories.RepositoryConflictError,
+                platform_errors.RepositoryAuthorizationError,
+                platform_errors.RepositoryConflictError,
             ) as exc:
-                raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
+                raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
             skill_version_matches = (
                 bool(snapshot_skill_version)
                 and snapshot_skill_version == manifest_skill_version == release_skill_version
@@ -1380,7 +1394,7 @@ class AgentProfileAuthority:
             != str(admission.skill.get("executor_type") or "")
             or execution_mcp_tool_ids != admission.mcp_tool_ids
         ):
-            raise repositories.RepositoryConflictError("agent_profile_snapshot_invalid")
+            raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid")
 
     async def create_conversation(
         self,
@@ -1402,11 +1416,11 @@ class AgentProfileAuthority:
             self._require_admin(principal)
         if operation_id is not None and (purpose != "conversation" or session_id is not None):
             raise HTTPException(status_code=400, detail="agent_conversation_operation_invalid")
-        await repositories.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
+        await conversations_session_queries_postgres.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
         await self._ensure_principal_user(conn, principal=principal)
         if operation_id is not None:
             session_id = f"ses_agent_{operation_id.hex}"
-            existing = await repositories.get_authorized_session_projection(
+            existing = await conversations_postgres.get_authorized_session_projection(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1425,7 +1439,7 @@ class AgentProfileAuthority:
                     or response.purpose != purpose
                     or response.title != expected_title
                 ):
-                    raise repositories.RepositoryConflictError("agent_conversation_operation_conflict")
+                    raise platform_errors.RepositoryConflictError("agent_conversation_operation_conflict")
                 return response
         admission = await self.resolve_for_admission(conn, principal=principal, selection=selection)
         resolved_title = title or admission.public_identity.name
@@ -1444,13 +1458,13 @@ class AgentProfileAuthority:
         if purpose != "conversation":
             create_session_kwargs["purpose"] = purpose
         created = True
-        created_session = await repositories.create_session(conn, **create_session_kwargs)
+        created_session = await conversations_postgres.create_session(conn, **create_session_kwargs)
         if session_id is not None:
             session_id, created = created_session
         else:
             session_id = created_session
         if created:
-            await repositories.append_audit_log(
+            await identity_audit_postgres.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,

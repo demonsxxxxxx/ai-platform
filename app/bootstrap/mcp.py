@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app import repositories
+from app.identity.infrastructure import capability_distributions_postgres as identity_capability_distributions_postgres
+from app.mcp.infrastructure import chat_access_postgres as mcp_chat_access_postgres
+from app.mcp import repository as mcp_repository
+
 from app.capability_distribution import (
     CapabilityDistributionSubject,
     resolve_capability_access,
@@ -79,13 +82,13 @@ class _McpRuntimeServices:
 
     async def _get_tool(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None:
         if kwargs.get("tool_id") == mcp_postgres.TRUSTED_BUILTIN_MCP_TOOL_ID:
-            return await repositories.get_mcp_tool_registry_entry(conn, **kwargs)
+            return await mcp_repository.get_mcp_tool_registry_entry(conn, **kwargs)
         return await mcp_postgres.get_mcp_tool_registry_entry(conn, **kwargs)
 
     async def _authorize_tools(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
         tenant_id = kwargs["tenant_id"]
         tool_ids = kwargs["tool_ids"]
-        context = repositories._chat_mcp_access_context(
+        context = mcp_chat_access_postgres._chat_mcp_access_context(
             tenant_id=tenant_id,
             principal_department_id=kwargs["principal_department_id"],
             principal_roles=kwargs["principal_roles"],
@@ -93,7 +96,7 @@ class _McpRuntimeServices:
             permissions=kwargs["permissions"],
         )
         if len(tool_ids) != len(set(tool_ids)):
-            raise repositories._capability_not_authorized(
+            raise identity_capability_distributions_postgres._capability_not_authorized(
                 context=context,
                 capability_kind="mcp_tool",
                 capability_id="mcp_tool",
@@ -102,13 +105,13 @@ class _McpRuntimeServices:
         for tool_id in tool_ids:
             tool = await self._get_tool(conn, tenant_id=tenant_id, tool_id=tool_id)
             if tool is None or not mcp_postgres.mcp_runtime_metadata_usable(tool):
-                raise repositories._capability_not_authorized(
+                raise identity_capability_distributions_postgres._capability_not_authorized(
                     context=context,
                     capability_kind="mcp_tool",
                     capability_id=tool_id,
                 )
             server_id = str(tool.get("server_id") or "")
-            distribution = await repositories.get_capability_distribution_row(
+            distribution = await identity_capability_distributions_postgres.get_capability_distribution_row(
                 conn,
                 tenant_id=tenant_id,
                 capability_kind="mcp_server",
@@ -148,7 +151,7 @@ class _McpRuntimeServices:
                 }
             )
             if not decision.usable or not policy.allowed:
-                raise repositories._capability_not_authorized(
+                raise identity_capability_distributions_postgres._capability_not_authorized(
                     context=context,
                     capability_kind="mcp_tool",
                     capability_id=tool_id,

@@ -6,7 +6,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from app.persistence_limits import (
+from app.platform.postgres.limits import (
     RUN_EVENT_MESSAGE_MAX_BYTES,
     RUN_EVENT_PAYLOAD_MAX_BYTES,
     ensure_json_size,

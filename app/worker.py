@@ -6,7 +6,19 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app import repositories
+from app.artifacts.infrastructure import records_postgres as artifacts_records_postgres
+from app.conversations.infrastructure import postgres as conversations_postgres
+from app.identity.infrastructure import audit_postgres as identity_audit_postgres
+from app.identity.infrastructure import capability_distributions_postgres as identity_capability_distributions_postgres
+from app.platform.postgres import errors as platform_errors
+from app.platform.postgres import values as platform_values
+from app.runs.infrastructure import capability_admission_postgres as runs_capability_admission_postgres
+from app.runs.infrastructure import postgres as runs_postgres
+from app.skills.infrastructure import postgres as skills_postgres
+from app.skills.infrastructure import resolution_postgres as skills_resolution_postgres
+from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots_postgres
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events_postgres
+
 from app.bootstrap.worker_attempt_lifecycle import (
     build_worker_attempt_lifecycle_ports,
 )
@@ -77,7 +89,7 @@ from app.executors.base import (
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.mcp import api as mcp_api
-from app.persistence_limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
+from app.platform.postgres.limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
 from app.persistence.artifacts import promote_provisional_artifact_cleanup, reserve_provisional_artifact_cleanup
 from app.principal_authority import (
     CURRENT_PRINCIPAL_DENIAL_REASON,
@@ -377,7 +389,7 @@ async def append_user_event(
         event_kwargs["total_token_count"] = total_token_count
     if estimated_cost_minor is not None:
         event_kwargs["estimated_cost_minor"] = estimated_cost_minor
-    await repositories.append_event(
+    await streaming_run_events_postgres.append_event(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
@@ -593,7 +605,7 @@ def _source_json_from_skill_manifest(
     *,
     release_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return repositories.run_skill_snapshot_source_json(item, release_decision=release_decision)
+    return skills_postgres.run_skill_snapshot_source_json(item, release_decision=release_decision)
 
 
 def _without_skill_snapshot_files(value: Any) -> Any:
@@ -696,10 +708,10 @@ def _agent_profile_snapshot_matches_authority(
     ):
         return False
     try:
-        queued_mcp_tool_ids = tuple(repositories.extract_run_mcp_tool_ids(payload.input))
+        queued_mcp_tool_ids = tuple(runs_capability_admission_postgres.extract_run_mcp_tool_ids(payload.input))
     except (
-        repositories.RepositoryAuthorizationError,
-        repositories.RepositoryConflictError,
+        platform_errors.RepositoryAuthorizationError,
+        platform_errors.RepositoryConflictError,
     ):
         return False
     if queued_mcp_tool_ids != authority_mcp_tool_ids:
@@ -791,7 +803,7 @@ def _mcp_tool_lifecycle_status(tool: dict[str, Any]) -> str:
 _builtin_capability_subjects = _partial(
     builtin_capability_subjects,
     canonical_manifest=effective_skill_execution_profile,
-    canonical_identities=repositories.canonical_builtin_tool_identities,
+    canonical_identities=skills_postgres.canonical_builtin_tool_identities,
 )
 
 
@@ -901,13 +913,13 @@ async def _reauthorize_mcp_capabilities(
                 payload, principal, tuple(decisions), denial
             )
         try:
-            server_distribution = await repositories.get_capability_distribution_row(
+            server_distribution = await identity_capability_distributions_postgres.get_capability_distribution_row(
                 conn,
                 tenant_id=run_identity["tenant_id"],
                 capability_kind="mcp_server",
                 capability_id=server_id,
             )
-        except repositories.RepositoryConflictError:
+        except platform_errors.RepositoryConflictError:
             denial = _worker_capability_record(
                 "mcp_tool",
                 tool_id,
@@ -1078,8 +1090,8 @@ async def _reauthorize_worker_capabilities(
 
     if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
         try:
-            requested_tool_ids = repositories.extract_run_mcp_tool_ids(payload.input)
-        except repositories.RepositoryAuthorizationError:
+            requested_tool_ids = runs_capability_admission_postgres.extract_run_mcp_tool_ids(payload.input)
+        except platform_errors.RepositoryAuthorizationError:
             denial = _worker_capability_record(
                 "mcp_tool",
                 "mcp_tool_ids",
@@ -1129,14 +1141,14 @@ async def _reauthorize_worker_capabilities(
         )
 
     try:
-        await repositories.validate_run_skill_snapshots_for_dispatch(
+        await skills_run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch(
             conn,
             tenant_id=run_identity["tenant_id"],
             run_id=run_identity["run_id"],
             skill_manifests=payload.skill_manifests,
             release_decision=payload.release_decision,
         )
-    except repositories.RepositoryConflictError:
+    except platform_errors.RepositoryConflictError:
         denial = _worker_capability_record(
             "skill",
             run_identity["skill_id"],
@@ -1149,7 +1161,7 @@ async def _reauthorize_worker_capabilities(
             if isinstance(payload.agent_profile, dict)
             else None
         )
-        pinned_mcp_tool_ids = await repositories.validate_replay_skill_manifests(
+        pinned_mcp_tool_ids = await skills_postgres.validate_replay_skill_manifests(
             conn,
             skill_id=run_identity["skill_id"],
             pinned_version=str(payload.skill_version or ""),
@@ -1157,7 +1169,7 @@ async def _reauthorize_worker_capabilities(
             skill_manifests=payload.skill_manifests,
             skill_set=profile_skill_set if isinstance(profile_skill_set, list) else None,
         )
-    except (repositories.RepositoryAuthorizationError, repositories.RepositoryConflictError):
+    except (platform_errors.RepositoryAuthorizationError, platform_errors.RepositoryConflictError):
         denial = _worker_capability_record(
             "skill",
             run_identity["skill_id"],
@@ -1168,23 +1180,23 @@ async def _reauthorize_worker_capabilities(
     skill: dict[str, Any] = {}
     skill_lifecycle_status = "disabled"
     try:
-        skill = await repositories.resolve_selected_skill(
+        skill = await skills_resolution_postgres.resolve_selected_skill(
             conn,
             tenant_id=run_identity["tenant_id"],
             agent_id=run_identity["agent_id"],
             skill_id=run_identity["skill_id"],
         )
         skill_lifecycle_status = str(skill.get("skill_status") or "disabled")
-    except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError):
+    except (platform_errors.RepositoryNotFoundError, platform_errors.RepositoryConflictError):
         pass
     try:
-        skill_distribution = await repositories.get_capability_distribution_row(
+        skill_distribution = await identity_capability_distributions_postgres.get_capability_distribution_row(
             conn,
             tenant_id=run_identity["tenant_id"],
             capability_kind="skill",
             capability_id=run_identity["skill_id"],
         )
-    except repositories.RepositoryConflictError:
+    except platform_errors.RepositoryConflictError:
         denial = _worker_capability_record(
             "skill",
             run_identity["skill_id"],
@@ -1224,7 +1236,7 @@ async def _reauthorize_worker_capabilities(
                 pinned_manifests=payload.skill_manifests,
                 skill_set=profile_skill_set if isinstance(profile_skill_set, list) else None,
             )
-        except (AuthorizedSkillCatalogError, repositories.RepositoryConflictError):
+        except (AuthorizedSkillCatalogError, platform_errors.RepositoryConflictError):
             denial = _worker_capability_record(
                 "skill",
                 run_identity["skill_id"],
@@ -1251,11 +1263,11 @@ async def _reauthorize_worker_capabilities(
         )
 
     try:
-        requested_tool_ids = repositories.run_mcp_tool_ids_for_skill(skill, payload.input)
+        requested_tool_ids = runs_capability_admission_postgres.run_mcp_tool_ids_for_skill(skill, payload.input)
         for tool_id in pinned_mcp_tool_ids or []:
             if tool_id not in requested_tool_ids:
                 requested_tool_ids.append(tool_id)
-    except repositories.RepositoryAuthorizationError:
+    except platform_errors.RepositoryAuthorizationError:
         denial = _worker_capability_record(
             "mcp_tool",
             "mcp_tool_ids",
@@ -1374,7 +1386,7 @@ async def _append_worker_admin_bypass_audits(
     audits: tuple[_WorkerAdminBypassAudit, ...],
 ) -> None:
     for audit in audits:
-        await repositories.append_audit_log(
+        await identity_audit_postgres.append_audit_log(
             conn,
             tenant_id=audit.tenant_id,
             user_id=audit.user_id,
@@ -1394,7 +1406,7 @@ async def _append_worker_tool_policy_audits(
     trace_id: str,
 ) -> None:
     for audit in authorization.tool_policy_audits:
-        await repositories.append_audit_log(
+        await identity_audit_postgres.append_audit_log(
             conn,
             tenant_id=run_identity["tenant_id"],
             user_id=run_identity["user_id"],
@@ -1425,7 +1437,7 @@ async def _append_worker_capability_denial_evidence(
     policy: str,
     error_message: str,
 ) -> None:
-    await repositories.append_event(
+    await streaming_run_events_postgres.append_event(
         conn,
         tenant_id=run_identity["tenant_id"],
         run_id=run_identity["run_id"],
@@ -1441,7 +1453,7 @@ async def _append_worker_capability_denial_evidence(
             "severity": "error",
         },
     )
-    await repositories.append_audit_log(
+    await identity_audit_postgres.append_audit_log(
         conn,
         tenant_id=run_identity["tenant_id"],
         user_id=run_identity["user_id"],
@@ -1488,7 +1500,7 @@ async def _fail_worker_pre_dispatch_error(
             ),
             payload,
         )
-    await repositories.append_event(
+    await streaming_run_events_postgres.append_event(
         conn,
         tenant_id=run_identity["tenant_id"],
         run_id=run_identity["run_id"],
@@ -1739,12 +1751,12 @@ async def process_run_payload(
         current_principal = await _resolve_current_principal_before_dispatch(
             payload,
             transaction_factory=transaction_factory,
-            run_loader=repositories.get_run,
+            run_loader=runs_postgres.get_run,
             principal_resolver=resolve_current_principal,
         )
         async with transaction_factory() as conn:
             locked = (
-                await repositories.get_run(
+                await runs_postgres.get_run(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
@@ -1782,7 +1794,7 @@ async def process_run_payload(
                     attempt_id=attempt_id,
                 )
             if not locked:
-                existing_run = await repositories.get_run(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
+                existing_run = await runs_postgres.get_run(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
                 if existing_run is None:
                     return WorkerOutcome(
                         "skipped",
@@ -1820,7 +1832,7 @@ async def process_run_payload(
                             payload,
                         )
                         return terminal_after_transaction.outcome
-                    await repositories.append_event(
+                    await streaming_run_events_postgres.append_event(
                         conn,
                         tenant_id=payload.tenant_id,
                         run_id=payload.run_id,
@@ -1834,7 +1846,7 @@ async def process_run_payload(
                         payload,
                     )
                     return terminal_after_transaction.outcome
-                await repositories.append_event(
+                await streaming_run_events_postgres.append_event(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
@@ -1935,13 +1947,13 @@ async def process_run_payload(
                     return terminal_after_transaction.outcome
             payload = locked_payload
             try:
-                materialized_skill_manifests = await repositories.materialize_run_skill_manifests(
+                materialized_skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
                     conn,
                     tenant_id=run_identity["tenant_id"],
                     run_id=run_identity["run_id"],
                     skill_manifest_refs=payload.skill_manifests,
                 )
-            except repositories.RepositoryConflictError:
+            except platform_errors.RepositoryConflictError:
                 terminal_after_transaction = await _fail_locked_run_snapshot(
                     conn,
                     payload=payload,
@@ -2036,7 +2048,7 @@ async def process_run_payload(
                         payload,
                     )
                     return terminal_after_transaction.outcome
-                await repositories.append_event(
+                await streaming_run_events_postgres.append_event(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
@@ -2121,7 +2133,7 @@ async def process_run_payload(
             bound_attempt = await attempt_lifecycle.bind_execution_spec(conn, execution_spec)
             if reconciliation is None:
                 if bound_attempt is None:
-                    raise repositories.RepositoryConflictError("run_attempt_binding_missing")
+                    raise platform_errors.RepositoryConflictError("run_attempt_binding_missing")
                 run_payload = replace(
                     run_payload,
                     owner_generation=int(bound_attempt["owner_generation"]),
@@ -2362,7 +2374,7 @@ async def process_run_payload(
                         "Run already reached a terminal state",
                     )
                 else:
-                    await repositories.append_event(
+                    await streaming_run_events_postgres.append_event(
                         conn,
                         tenant_id=payload.tenant_id,
                         run_id=payload.run_id,
@@ -2384,7 +2396,7 @@ async def process_run_payload(
     terminal_event_kwargs = {"trace_id": trace_id, **event_observability_kwargs} if event_observability_kwargs else {}
 
     artifact_records = build_artifact_records(
-        result.artifacts, reconciliation is not None, repositories.new_id, _artifact_download_url
+        result.artifacts, reconciliation is not None, platform_values.new_id, _artifact_download_url
     )
     skill_snapshot = _skill_snapshot_from_result(result)
     agent_capability_state = (
@@ -2437,7 +2449,7 @@ async def process_run_payload(
     assistant_message_metadata: dict[str, Any] = {}
     try:
         async with transaction_factory() as conn:
-            locked_run = await repositories.get_run(
+            locked_run = await runs_postgres.get_run(
                 conn,
                 tenant_id=payload.tenant_id,
                 run_id=payload.run_id,
@@ -2565,7 +2577,7 @@ async def process_run_payload(
                     manifest=_sanitize_artifact_manifest(artifact["manifest_json"]),
                 )
                 lineage = artifact_lineage_contract(manifest_json, source_run_id=payload.run_id)
-                await repositories.create_artifact(
+                await artifacts_records_postgres.create_artifact(
                     conn,
                     artifact_id=artifact["id"],
                     tenant_id=payload.tenant_id,
@@ -2604,7 +2616,7 @@ async def process_run_payload(
                 skill_id = str(item.get("skill_id") or "").strip()
                 if not skill_id:
                     continue
-                await repositories.upsert_run_skill_snapshot(
+                await skills_run_snapshots_postgres.upsert_run_skill_snapshot(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
@@ -2623,7 +2635,7 @@ async def process_run_payload(
                 )
             if result.status == "succeeded":
                 await persist_assistant_with_provider_coverage(
-                    conn, append_message=repositories.append_message,
+                    conn, append_message=conversations_postgres.append_message,
                     tenant_id=payload.tenant_id, session_id=payload.session_id,
                     run_id=payload.run_id, attempt_id=attempt_id,
                     executor_type=payload.executor_type,
@@ -2695,7 +2707,7 @@ async def process_run_payload(
                         },
                         **terminal_event_kwargs,
                     )
-                    await repositories.append_event(
+                    await streaming_run_events_postgres.append_event(
                         conn,
                         tenant_id=payload.tenant_id,
                         run_id=payload.run_id,

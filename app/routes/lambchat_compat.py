@@ -12,11 +12,16 @@ from typing import Any, Protocol
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
-from app import repositories, session_actions
+from app import session_actions
+from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import (
     EVENT_ENVELOPE_SCHEMA_VERSION,
     standard_trace_id,
+)
+from app.conversations.infrastructure import postgres as conversations_postgres
+from app.conversations.infrastructure import (
+    session_queries_postgres as conversations_session_queries,
 )
 from app.db import transaction
 from app.execution.api import list_public_models
@@ -41,7 +46,6 @@ from app.routes.runs import (
     event_visible_to_principal,
     run_event_response,
 )
-from app.runs import api as runs_api
 from app.run_projection import (
     CHAT_ASSISTANT_DELTA_SOURCE,
     CHAT_PUBLIC_PROJECTION_VERSION,
@@ -50,6 +54,8 @@ from app.run_projection import (
     public_chat_terminal_projection,
     public_terminal_detail,
 )
+from app.runs import api as runs_api
+from app.runs.infrastructure import creation_postgres as runs_creation
 from app.settings import get_settings
 from app.streaming.api import (
     V4ProjectionError,
@@ -60,6 +66,7 @@ from app.streaming.api import (
     validate_public_application_payload_v4,
 )
 from app.streaming.authority import RunCursor, event_page
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.streaming.redis import (
     SSE_AUTHORITY_LEASE_SECONDS,
     SseAuthorityConflictError,
@@ -182,7 +189,7 @@ async def _await_sse_admission(
         try:
             async with asyncio.timeout(remaining):
                 async with transaction() as conn:
-                    initial_run = await repositories.get_authorized_run(
+                    initial_run = await runs_creation.get_authorized_run(
                         conn,
                         tenant_id=principal.tenant_id,
                         user_id=principal.user_id,
@@ -1621,7 +1628,7 @@ async def sessions(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        rows = await repositories.list_authorized_sessions(
+        rows = await conversations_postgres.list_authorized_sessions(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1641,7 +1648,7 @@ async def get_session(
     session_id: str, principal: AuthPrincipal = Depends(require_principal)
 ) -> dict[str, object]:
     async with transaction() as conn:
-        row = await repositories.get_authorized_lambchat_session(
+        row = await conversations_postgres.get_authorized_lambchat_session(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1724,7 +1731,7 @@ async def session_runs(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        session = await repositories.get_authorized_lambchat_session(
+        session = await conversations_postgres.get_authorized_lambchat_session(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1732,7 +1739,7 @@ async def session_runs(
         )
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
-        rows = await repositories.list_authorized_session_runs(
+        rows = await conversations_session_queries.list_authorized_session_runs(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1787,7 +1794,7 @@ async def session_events(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        session = await repositories.get_authorized_lambchat_session(
+        session = await conversations_postgres.get_authorized_lambchat_session(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1796,7 +1803,7 @@ async def session_events(
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
         if run_id is not None:
-            target = await repositories.get_authorized_run(
+            target = await runs_creation.get_authorized_run(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1809,7 +1816,7 @@ async def session_events(
         else:
             # Display ordering is deterministic, but only a generation-bearing
             # row may be reported as the session's current authority.
-            target_runs = await repositories.list_authorized_session_runs(
+            target_runs = await conversations_session_queries.list_authorized_session_runs(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1827,7 +1834,7 @@ async def session_events(
             current_run_id = str(current["id"]) if current is not None else None
         target_run_ids = [str(run["id"]) for run in target_runs]
         authorized_user_messages = (
-            await repositories.list_authorized_user_messages_for_runs(
+            await conversations_postgres.list_authorized_user_messages_for_runs(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1844,10 +1851,10 @@ async def session_events(
                 user_messages_by_run[message_run_id].append(message)
         events = []
         for run in reversed(target_runs):
-            run_events = await repositories.list_run_events(
+            run_events = await streaming_run_events.list_run_events(
                 conn, tenant_id=principal.tenant_id, run_id=run["id"]
             )
-            artifacts = await repositories.list_run_artifacts(
+            artifacts = await artifacts_records.list_run_artifacts(
                 conn,
                 tenant_id=principal.tenant_id,
                 run_id=run["id"],
@@ -1880,7 +1887,7 @@ async def generate_title(
 ) -> dict[str, str]:
     title = (message or "").strip().replace("\n", " ")[:32] or "新会话"
     async with transaction() as conn:
-        projection = await repositories.get_authorized_session_projection(
+        projection = await conversations_postgres.get_authorized_session_projection(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1914,7 +1921,7 @@ async def chat_status(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        session = await repositories.get_authorized_lambchat_session(
+        session = await conversations_postgres.get_authorized_lambchat_session(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1926,7 +1933,7 @@ async def chat_status(
             # An explicit id is a precise, principal-scoped lookup: it must
             # not inherit the list endpoint's recency limit or another
             # session's state.
-            target = await repositories.get_authorized_run(
+            target = await runs_creation.get_authorized_run(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1937,7 +1944,7 @@ async def chat_status(
         else:
             # Legacy rows remain visible through the history route, but cannot
             # become an implicit current-status authority.
-            rows = await repositories.list_authorized_session_runs(
+            rows = await conversations_session_queries.list_authorized_session_runs(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -2132,7 +2139,7 @@ async def chat_session_stream(
                 return True
             try:
                 async with transaction() as conn:
-                    run = await repositories.get_authorized_run(
+                    run = await runs_creation.get_authorized_run(
                         conn,
                         tenant_id=principal.tenant_id,
                         user_id=principal.user_id,

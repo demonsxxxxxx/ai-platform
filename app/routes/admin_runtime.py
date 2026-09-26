@@ -2,24 +2,26 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capacity_baseline import build_capacity_baseline
-from app.error_taxonomy import summarize_error_categories
-from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.db import get_pool_status, transaction
+from app.error_taxonomy import summarize_error_categories
 from app.execution_boundary import REAL_SANDBOX_PROVIDERS, is_accepted_runtime_lease
+from app.identity.infrastructure import audit_postgres as identity_audit
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.queue import get_queue_insight, get_queue_status
-from app.runtime.sandbox.container_provider import (
-    DockerPermissionDeniedError,
-    DockerUnavailableError,
-    create_container_provider,
-)
 from app.routes.sandbox_leases import lease_response
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     cleanup_expired_sandbox_leases,
     cleanup_expired_sandbox_runtime_leases,
 )
+from app.runs.infrastructure import admin_queries_postgres as runs_admin_queries
+from app.runtime.sandbox.container_provider import (
+    DockerPermissionDeniedError,
+    DockerUnavailableError,
+    create_container_provider,
+)
+from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.settings import get_settings
 
 router = APIRouter()
@@ -462,7 +464,7 @@ async def _record_admin_orphan_cleanup_failure(
 ) -> None:
     try:
         async with transaction() as conn:
-            await repositories.append_audit_log(
+            await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -596,9 +598,9 @@ async def admin_runtime_containers(
             raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
     async with transaction() as conn:
         await cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
-        leases = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
+        leases = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
         lease_history = (
-            await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
+            await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
             if include_lease_history
             else []
         )
@@ -654,8 +656,8 @@ async def admin_runtime_overview(
     async with transaction() as conn:
         if include_maintenance_cleanup:
             await cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
-        leases = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
-        lease_history = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
+        leases = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
+        lease_history = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
 
     visible_leases = [
         lease
@@ -674,15 +676,15 @@ async def admin_runtime_overview(
     containers = _accepted_runtime_containers(containers, visible_leases)
 
     async with transaction() as conn:
-        run_summary = await repositories.get_admin_runtime_run_summary(conn, tenant_id=principal.tenant_id, limit=10)
-        observability_summary = await repositories.get_admin_runtime_observability_summary(conn, tenant_id=principal.tenant_id)
+        run_summary = await runs_admin_queries.get_admin_runtime_run_summary(conn, tenant_id=principal.tenant_id, limit=10)
+        observability_summary = await runs_admin_queries.get_admin_runtime_observability_summary(conn, tenant_id=principal.tenant_id)
         executor_reconciliation_summary = await sandbox_lease_repository.get_sandbox_executor_reconciliation_summary(
             conn,
             tenant_id=principal.tenant_id,
             slo_seconds=_EXECUTOR_RECONCILIATION_SLO_SECONDS,
         )
         observability_summary["executor_reconciliation"] = executor_reconciliation_summary
-        admission_summary = await repositories.get_admin_runtime_admission_summary(
+        admission_summary = await runs_admin_queries.get_admin_runtime_admission_summary(
             conn,
             tenant_id=principal.tenant_id,
             limit=int(get_settings().max_active_runs_per_user),

@@ -2,7 +2,9 @@
 
 from typing import Any
 
-from app import repositories
+from app.conversations.infrastructure import postgres as conversations_postgres
+from app.identity.infrastructure import postgres as identity_postgres
+
 from app.auth import AuthPrincipal, is_ai_admin
 
 
@@ -36,7 +38,7 @@ async def _authorized_session(
     session_id: str,
     allow_deleted: bool = False,
 ) -> dict[str, Any]:
-    row = await repositories.get_session_for_action(
+    row = await conversations_postgres.get_session_for_action(
         conn,
         tenant_id=principal.tenant_id,
         session_id=session_id,
@@ -65,7 +67,7 @@ async def initialize_session_title(
     row = await _authorized_session(conn, principal=principal, session_id=session_id)
     if row.get("title_source") != "initial":
         return _session_payload(row)
-    updated = await repositories.update_session_title(
+    updated = await conversations_postgres.update_session_title(
         conn,
         tenant_id=principal.tenant_id,
         session_id=session_id,
@@ -89,7 +91,7 @@ async def rename_session(
     if not normalized_title or len(normalized_title) > 200:
         raise SessionActionValidationError("invalid_session_title")
     await _authorized_session(conn, principal=principal, session_id=session_id)
-    updated = await repositories.update_session_title(
+    updated = await conversations_postgres.update_session_title(
         conn,
         tenant_id=principal.tenant_id,
         session_id=session_id,
@@ -117,7 +119,7 @@ async def delete_session(
     )
     if row.get("status") == "deleted":
         return {"session": _session_payload(row), "already_deleted": True}
-    updated = await repositories.mark_session_deleted(
+    updated = await conversations_postgres.mark_session_deleted(
         conn,
         tenant_id=principal.tenant_id,
         session_id=session_id,
@@ -137,7 +139,7 @@ async def fork_session_message(
     """Fork the authorized source-session prefix ending at one source message."""
 
     source = await _authorized_session(conn, principal=principal, session_id=session_id)
-    messages = await repositories.list_session_messages_for_fork(
+    messages = await conversations_postgres.list_session_messages_for_fork(
         conn,
         tenant_id=principal.tenant_id,
         session_id=session_id,
@@ -148,13 +150,13 @@ async def fork_session_message(
     if selected_index is None:
         raise SessionActionNotFoundError("session_not_found")
 
-    await repositories.ensure_user(
+    await identity_postgres.ensure_user(
         conn,
         tenant_id=principal.tenant_id,
         user_id=principal.user_id,
         display_name=principal.display_name,
     )
-    fork_id = await repositories.create_session(
+    fork_id = await conversations_postgres.create_session(
         conn,
         tenant_id=principal.tenant_id,
         workspace_id=source["workspace_id"],
@@ -164,7 +166,7 @@ async def fork_session_message(
         title_source="user",
     )
     for message in messages[: selected_index + 1]:
-        await repositories.append_message(
+        await conversations_postgres.append_message(
             conn,
             tenant_id=principal.tenant_id,
             session_id=fork_id,

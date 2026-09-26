@@ -13,7 +13,11 @@ from typing import Any
 import uuid
 
 from app import queue
-from app import repositories
+from app.context.infrastructure import postgres as context_postgres
+from app.identity.infrastructure import audit_postgres as identity_audit_postgres
+from app.runs.infrastructure import postgres as runs_postgres
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events_postgres
+
 from app.files.api import (
     delete_expired_file_upload_session,
     expire_file_upload_sessions,
@@ -332,7 +336,7 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
         return []
 
     async with transaction() as conn:
-        rows = await repositories.cleanup_expired_memory_records_across_scopes(
+        rows = await context_postgres.cleanup_expired_memory_records_across_scopes(
             conn,
             limit=limit,
         )
@@ -341,7 +345,7 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
             scope = (str(row["tenant_id"]), str(row["workspace_id"]))
             rows_by_scope.setdefault(scope, []).append(row)
         for (tenant_id, workspace_id), scope_rows in rows_by_scope.items():
-            await repositories.append_audit_log(
+            await identity_audit_postgres.append_audit_log(
                 conn,
                 tenant_id=tenant_id,
                 user_id=None,
@@ -436,8 +440,8 @@ async def reconcile_stale_runs_for_worker(
                             terminal_status=terminal_status,
                             error_code=error_code,
                             error_message=error_message,
-                            append_event=repositories.append_event,
-                            append_audit_log=repositories.append_audit_log,
+                            append_event=streaming_run_events_postgres.append_event,
+                            append_audit_log=identity_audit_postgres.append_audit_log,
                         )
                         if staged is not None:
                             attempt = await attempt_lifecycle.prepare_stale_reconciliation(
@@ -663,7 +667,7 @@ async def _terminalize_escaped_process_exception(
     if not (await queue.verify_lease_ownership(message, worker_id=worker_id)).succeeded:
         return _queue_ownership_lost_outcome(run_id)
     async with transaction() as conn:
-        locked_run = await repositories.get_run(
+        locked_run = await runs_postgres.get_run(
             conn,
             tenant_id=payload.tenant_id,
             run_id=run_id,

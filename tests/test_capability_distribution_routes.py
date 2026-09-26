@@ -1,3 +1,4 @@
+import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
 from contextlib import asynccontextmanager
 import importlib
 import importlib.util
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.department_directory import DepartmentDirectoryError, normalize_department_directory
 from app.main import create_app
 from app.models import DepartmentDirectoryResponse
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
 
@@ -74,14 +75,15 @@ def configure_admin_route(monkeypatch):
         )
 
     monkeypatch.setattr(route_module, "transaction", fake_transaction)
-    monkeypatch.setattr(route_module.repositories, "ensure_user", fake_ensure_user)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', fake_ensure_user)
     monkeypatch.setattr(route_module, "fetch_department_directory", fake_department_directory)
     return route_module
 
 
 def patch_repository(monkeypatch, route_module, name, replacement):
     if route_module is not None:
-        monkeypatch.setattr(route_module.repositories, name, replacement, raising=False)
+        targets = {'append_audit_log': 'app.identity.infrastructure.audit_postgres.append_audit_log', 'archive_capability_distribution_row': 'app.identity.infrastructure.capability_distributions_postgres.archive_capability_distribution_row', 'get_capability_distribution_row': 'app.identity.infrastructure.capability_distributions_postgres.get_capability_distribution_row', 'get_skill': 'app.skills.infrastructure.catalog_postgres.get_skill', 'list_capability_distribution_rows': 'app.identity.infrastructure.capability_distributions_postgres.list_capability_distribution_rows', 'list_mcp_server_registry_names': 'app.mcp.infrastructure.registry_postgres.list_mcp_server_registry_names', 'toggle_capability_distribution_row': 'app.identity.infrastructure.capability_distributions_postgres.toggle_capability_distribution_row', 'upsert_capability_distribution_row': 'app.identity.infrastructure.capability_distributions_postgres.upsert_capability_distribution_row'}
+        monkeypatch.setattr(targets[name], replacement)
 
 
 def patch_mcp_api(monkeypatch, route_module, name, replacement):

@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 import time
 
-from app import repositories
+from app.identity.infrastructure import audit_postgres as identity_audit_postgres
+from app.persistence import artifacts as persistence_artifacts
+from app.persistence import object_deletions as persistence_object_deletions
+from app.persistence import retention as persistence_retention
+
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
 from app.settings import get_settings
@@ -117,11 +121,11 @@ async def run_data_retention_maintenance(
     memory_limit = int(getattr(settings, "memory_physical_purge_limit", 50))
     grace_days = int(getattr(settings, "memory_physical_purge_grace_days", 7))
     async with transaction() as conn:
-        queued = await repositories.queue_expired_artifacts_for_deletion(
+        queued = await persistence_artifacts.queue_expired_artifacts_for_deletion(
             conn,
             limit=artifact_selection_limit,
         )
-        purged_memory = await repositories.purge_deleted_memory_records(
+        purged_memory = await persistence_retention.purge_deleted_memory_records(
             conn,
             grace_days=grace_days,
             limit=memory_limit,
@@ -136,7 +140,7 @@ async def run_data_retention_maintenance(
                 str(item["tenant_id"]), {"queued": 0, "purged": 0}
             )["purged"] += 1
         for tenant_id, counts in tenant_counts.items():
-            await repositories.append_audit_log(
+            await identity_audit_postgres.append_audit_log(
                 conn,
                 tenant_id=tenant_id,
                 user_id=None,
@@ -152,7 +156,7 @@ async def run_data_retention_maintenance(
             )
 
     async with transaction() as conn:
-        claimed = await repositories.claim_object_deletions(
+        claimed = await persistence_object_deletions.claim_object_deletions(
             conn,
             limit=object_delete_batch_limit,
             max_attempts=object_delete_max_attempts,
@@ -169,7 +173,7 @@ async def run_data_retention_maintenance(
             )
         except Exception as exc:
             async with transaction() as conn:
-                await repositories.fail_object_deletion(
+                await persistence_object_deletions.fail_object_deletion(
                     conn,
                     outbox_id=str(item["id"]),
                     tenant_id=str(item["tenant_id"]),
@@ -182,14 +186,14 @@ async def run_data_retention_maintenance(
             failed_objects += 1
             continue
         async with transaction() as conn:
-            completed = await repositories.complete_object_deletion(
+            completed = await persistence_object_deletions.complete_object_deletion(
                 conn,
                 outbox_id=str(item["id"]),
                 tenant_id=str(item["tenant_id"]),
                 lease_generation=int(item["lease_generation"]),
             )
             if not completed:
-                await repositories.fail_object_deletion(
+                await persistence_object_deletions.fail_object_deletion(
                     conn,
                     outbox_id=str(item["id"]),
                     tenant_id=str(item["tenant_id"]),

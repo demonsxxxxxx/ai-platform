@@ -1,3 +1,4 @@
+import app.context.infrastructure.snapshot_postgres as _owner_context_infrastructure_snapshot_postgres
 import importlib.util
 import json
 from contextlib import asynccontextmanager
@@ -190,7 +191,7 @@ def test_observed_worker_run_accepts_zero_artifacts_when_message_context_is_pres
         }
 
     monkeypatch.setattr(generator, "transaction", fake_transaction)
-    monkeypatch.setattr(generator.repositories, "get_context_snapshot_for_worker", fake_snapshot_loader)
+    monkeypatch.setattr(_owner_context_infrastructure_snapshot_postgres, 'get_context_snapshot_for_worker', fake_snapshot_loader)
 
     evidence = generator.asyncio.run(generator.build_live_run_evidence(run_id="run-live"))
     evidence_path = tmp_path / "executor-context-pack-runtime.json"
@@ -253,7 +254,7 @@ def test_live_run_rejects_missing_worker_dispatch_events(monkeypatch):
         return {"id": "ctx-live", "payload_json": {}}
 
     monkeypatch.setattr(generator, "transaction", fake_transaction)
-    monkeypatch.setattr(generator.repositories, "get_context_snapshot_for_worker", fake_snapshot_loader)
+    monkeypatch.setattr(_owner_context_infrastructure_snapshot_postgres, 'get_context_snapshot_for_worker', fake_snapshot_loader)
 
     try:
         generator.asyncio.run(generator.build_live_run_evidence(run_id="run-live"))

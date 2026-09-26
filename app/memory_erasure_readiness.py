@@ -14,7 +14,7 @@ _EVIDENCE_MARKERS = [
         "markers": [
             '@router.delete("/memory/records/{record_id}")',
             "session_id = _safe_query_id(session_id, \"session_id\") if session_id else None",
-            "row = await repositories.delete_memory_record(",
+            "row = await context_postgres.delete_memory_record(",
             'action="memory.record.deleted"',
             "return {\"memory_record\": _memory_delete_response(row)}",
         ],
@@ -24,7 +24,7 @@ _EVIDENCE_MARKERS = [
         "path": "app/routes/context.py",
         "markers": [
             '@router.delete("/admin/memory/records/{record_id}")',
-            "row = await repositories.admin_delete_memory_record(",
+            "row = await context_postgres.admin_delete_memory_record(",
             'action="admin.memory.record.deleted"',
             "return {\"memory_record\": _memory_delete_response(row)}",
         ],
@@ -34,7 +34,7 @@ _EVIDENCE_MARKERS = [
         "path": "app/routes/context.py",
         "markers": [
             '@router.post("/admin/memory/retention/cleanup")',
-            "rows = await repositories.cleanup_expired_memory_records(",
+            "rows = await context_postgres.cleanup_expired_memory_records(",
             'action="admin.memory.retention.cleanup"',
             '"deleted_count": len(rows)',
             '"memory_record_ids": [str(row.get("id")) for row in rows]',
@@ -45,7 +45,7 @@ _EVIDENCE_MARKERS = [
         "path": "app/worker_main.py",
         "markers": [
             "async def cleanup_expired_memory_records_for_worker(",
-            "rows = await repositories.cleanup_expired_memory_records_across_scopes(",
+            "rows = await context_postgres.cleanup_expired_memory_records_across_scopes(",
             'action="worker.memory.retention.cleanup"',
             '"deleted_count": len(scope_rows)',
             '"memory_record_ids": [str(row.get("id")) for row in scope_rows]',
@@ -71,7 +71,7 @@ _EVIDENCE_MARKERS = [
             'raise HTTPException(status_code=400, detail="memory_session_id_required")',
             'if not bool(policy.get("memory_enabled", True)):',
             'return {"memory_records": []}',
-            "rows = await repositories.list_memory_records(",
+            "rows = await context_postgres.list_memory_records(",
         ],
     },
     {
@@ -80,13 +80,13 @@ _EVIDENCE_MARKERS = [
         "markers": [
             "def _memory_operator_response(row: dict[str, Any]) -> dict[str, Any]:",
             '@router.get("/admin/memory/records")',
-            "rows = await repositories.list_admin_memory_records(",
+            "rows = await context_postgres.list_admin_memory_records(",
             '"memory_records": [_memory_operator_response(row) for row in rows]',
         ],
     },
     {
         "name": "repository_soft_delete_without_content_returning",
-        "path": "tests/test_repositories.py",
+        "path": "tests/test_context_postgres.py",
         "markers": [
             "test_delete_memory_record_soft_deletes_with_user_workspace_session_scope",
             "test_admin_delete_memory_record_soft_deletes_with_tenant_workspace_scope",
@@ -96,7 +96,7 @@ _EVIDENCE_MARKERS = [
     },
     {
         "name": "repository_export_erasure_tests",
-        "path": "tests/test_repositories.py",
+        "path": "tests/test_context_postgres.py",
         "markers": [
             "test_list_memory_records_exports_only_active_unexpired_session_memory",
             "test_list_admin_memory_records_operator_export_does_not_select_content_or_metadata",

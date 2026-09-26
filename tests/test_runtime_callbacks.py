@@ -1,3 +1,6 @@
+import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
+import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 import hashlib
 import hmac
 from datetime import datetime, timedelta, timezone
@@ -7,7 +10,6 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app import repositories
 from app.auth import AuthPrincipal
 from app.main import create_app as create_production_app
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
@@ -119,8 +121,8 @@ def patch_active_attempt(
         return [lease]
 
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         list_current_leases,
     )
 
@@ -153,9 +155,9 @@ def test_parallel_same_run_attempts_each_use_their_exact_lease_and_token(monkeyp
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "list_current_sandbox_runtime_leases_for_attempt", exact_lease)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", append_event)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, 'list_current_sandbox_runtime_leases_for_attempt', exact_lease)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event)
     client = TestClient(create_app())
 
     first = client.post(
@@ -204,7 +206,7 @@ async def test_current_runtime_lease_query_locks_only_the_exact_attempt():
             observed.append((query, parameters))
             return Cursor()
 
-    rows = await repositories.list_current_sandbox_runtime_leases_for_attempt(
+    rows = await _owner_sandbox_infrastructure_leases_postgres.list_current_sandbox_runtime_leases_for_attempt(
         Connection(),
         tenant_id="tenant-a",
         run_id="run-a",
@@ -243,10 +245,10 @@ async def test_runtime_callback_locks_run_before_exact_attempt(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         list_current_leases,
     )
 
@@ -286,13 +288,13 @@ def test_executor_callback_rejects_duplicate_exact_attempt_leases(monkeypatch):
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         duplicate_leases,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fail_append_event)
 
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
@@ -459,8 +461,8 @@ async def test_callback_rejects_previous_generation_token_for_current_lease(monk
         }]
 
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         current_lease,
     )
     with pytest.raises(HTTPException) as caught:
@@ -496,13 +498,13 @@ def test_executor_callback_rejects_stale_attempt_before_event_action(monkeypatch
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         list_current_leases,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fail_append_event)
 
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
@@ -537,13 +539,13 @@ def test_executor_callback_rejects_released_attempt_before_event_action(monkeypa
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         no_current_leases,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fail_append_event)
 
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
@@ -658,7 +660,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     )
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
     monkeypatch.setattr(
         runtime_callbacks,
         "container_lease_from_persisted_row",
@@ -669,7 +671,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
         "create_container_provider",
         lambda _name: pytest.fail("terminal callback must not create a provider"),
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_terminal",
@@ -778,15 +780,15 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(
-        runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity
+        _owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity
     )
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         fake_list_current_leases,
     )
     monkeypatch.setattr(
-        runtime_callbacks.repositories, "append_event", fake_append_event
+        _owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event
     )
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
@@ -881,8 +883,8 @@ def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeyp
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_terminal",
@@ -926,8 +928,8 @@ def test_executor_callback_rejects_session_mismatch(monkeypatch):
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fail_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -962,8 +964,8 @@ def test_executor_callback_rejects_late_callback_for_terminal_run(monkeypatch):
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fail_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -999,8 +1001,8 @@ def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatc
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     patch_active_attempt(monkeypatch, runtime_callbacks)
     client = TestClient(create_app())
 
@@ -1069,8 +1071,8 @@ def test_executor_callback_typed_admin_only_event_stays_hidden(monkeypatch):
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     patch_active_attempt(monkeypatch, runtime_callbacks)
     client = TestClient(create_app())
 
@@ -1125,8 +1127,8 @@ def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypa
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     patch_active_attempt(monkeypatch, runtime_callbacks)
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
@@ -1278,13 +1280,13 @@ def test_executor_callback_rejects_arbitrary_v2_lifecycles_without_public_persis
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "get_run_identity",
+        _owner_runs_infrastructure_postgres,
+        'get_run_identity',
         fake_get_run_identity,
     )
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "append_event",
+        _owner_streaming_infrastructure_run_events_postgres,
+        'append_event',
         fake_append_event,
     )
     patch_active_attempt(monkeypatch, runtime_callbacks)
@@ -1357,8 +1359,8 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
         return authority
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fake_append_batch)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event_batch', fake_append_batch)
     monkeypatch.setattr(
         streaming_v4,
         "append_callback_v4_rows",
@@ -1433,8 +1435,8 @@ def test_executor_callback_rejects_empty_or_non_string_assistant_delta(monkeypat
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append_event)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     patch_active_attempt(monkeypatch, runtime_callbacks)
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/executor",
@@ -1495,9 +1497,9 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "list_current_sandbox_runtime_leases_for_attempt", exact_lease)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, 'list_current_sandbox_runtime_leases_for_attempt', exact_lease)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append)
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_heartbeat",
@@ -1562,13 +1564,13 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         exact_lease,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append)
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_heartbeat",
@@ -1638,13 +1640,13 @@ def test_opensandbox_callback_renews_after_heartbeat_in_same_transaction(monkeyp
 
     persisted_lease = SimpleNamespace(provider="opensandbox")
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         exact_lease,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append)
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_heartbeat",
@@ -1723,13 +1725,13 @@ def test_opensandbox_callback_renewal_failure_rolls_back_and_hides_provider_erro
     from app.routes import runtime_callbacks
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         exact_lease,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fake_append)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append)
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_heartbeat",
@@ -1855,8 +1857,8 @@ def test_executor_callback_publishes_real_adapter_lifecycle_and_platform_progres
         return authority
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event_batch', append_batch)
     monkeypatch.setattr(
         streaming_v4,
         "append_callback_v4_rows",
@@ -2100,13 +2102,13 @@ async def test_record_executor_callback_rolls_back_receipt_and_v4_rows_after_fin
         return SimpleNamespace(attempt_id="attempt-a", state="confirmed")
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         list_current_leases,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_batch)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event_batch', append_batch)
     monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
 
     capabilities = SimpleNamespace(
@@ -2193,13 +2195,13 @@ async def test_record_executor_callback_enforces_v4_batch_authority_attempt_and_
         raise AssertionError("fenced callbacks must not append receipt or public rows")
 
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         list_current_leases,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", unexpected_append)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event_batch', unexpected_append)
     monkeypatch.setattr(runtime_callbacks, "get_stream_authority", get_authority)
 
     capabilities = SimpleNamespace(

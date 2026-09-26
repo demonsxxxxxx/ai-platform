@@ -5,37 +5,43 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
-from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.control_plane_contracts import sanitize_public_text
 from app.db import transaction
+from app.identity.infrastructure import audit_postgres as identity_audit
 from app.models import RunControlResponse
+from app.platform.postgres import errors as platform_errors
+from app.platform.postgres import values as platform_values
 from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
-from app.runs.api import (
-    AdminRunDetailResponse,
-    AdminRunListResponse,
-    AdminRunDiagnosticsResponse,
-    ADMIN_TRAJECTORY_CONTRACT_VERSION,
-    ADMIN_DIAGNOSTIC_EXPORT_SCHEMA_VERSION,
-    AdminDiagnosticExportTooLarge,
-    RunCancellationUseCase,
-    RunDiagnosticsService,
-    build_admin_worker_execution,
-    project_admin_trajectory_page,
-    build_admin_diagnostic_export,
-)
 from app.routes.sandbox_runtime_cleanup import (
     SandboxRuntimeCleanupError,
     release_stopped_sandbox_leases_for_cancel,
     stop_sandbox_leases,
 )
+from app.runs.api import (
+    ADMIN_DIAGNOSTIC_EXPORT_SCHEMA_VERSION,
+    ADMIN_TRAJECTORY_CONTRACT_VERSION,
+    AdminDiagnosticExportTooLarge,
+    AdminRunDetailResponse,
+    AdminRunDiagnosticsResponse,
+    AdminRunListResponse,
+    RunCancellationUseCase,
+    RunDiagnosticsService,
+    build_admin_diagnostic_export,
+    build_admin_worker_execution,
+    project_admin_trajectory_page,
+)
+from app.runs.infrastructure import admin_queries_postgres as runs_admin_queries
+from app.runs.infrastructure import postgres as runs_postgres
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.streaming.api import (
     V4_METADATA_KEY,
     V4PublicationTransportUnavailable,
     admit_v4_stream,
     publish_run_event,
 )
-from app.control_plane_contracts import sanitize_public_text
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -153,7 +159,7 @@ async def admin_run_list(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     async with transaction() as conn:
-        rows = await repositories.list_admin_runs(
+        rows = await runs_admin_queries.list_admin_runs(
             conn,
             tenant_id=principal.tenant_id,
             user_id=user_id,
@@ -251,7 +257,7 @@ async def admin_run_cancel(
                         leases=exc.stopped_leases,
                         trace_id=result.get("trace_id"),
                     )
-                await repositories.record_sandbox_runtime_cleanup_outcome(
+                await sandbox_leases.record_sandbox_runtime_cleanup_outcome(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=str(result["run_id"]),
@@ -277,7 +283,7 @@ async def admin_run_cancel(
                     leases=stopped_sandbox_leases,
                     trace_id=result.get("trace_id"),
                 )
-                await repositories.record_sandbox_runtime_cleanup_outcome(
+                await sandbox_leases.record_sandbox_runtime_cleanup_outcome(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=str(result["run_id"]),
@@ -310,7 +316,7 @@ async def admin_run_detail(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         async with transaction() as conn:
-            detail = await repositories.get_admin_run_detail(conn, tenant_id=principal.tenant_id, run_id=run_id)
+            detail = await runs_admin_queries.get_admin_run_detail(conn, tenant_id=principal.tenant_id, run_id=run_id)
             metadata = (
                 await _require_run_diagnostics_service(request).read_admin_monitor_metadata(
                     conn,
@@ -320,7 +326,7 @@ async def admin_run_detail(
                 if detail is not None
                 else {}
             )
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="run_not_found")
@@ -378,10 +384,10 @@ async def admin_run_trajectory(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     async with transaction() as conn:
-        run = await repositories.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id)
+        run = await runs_postgres.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        source_rows = await repositories.list_run_events(
+        source_rows = await streaming_run_events.list_run_events(
             conn,
             tenant_id=principal.tenant_id,
             run_id=run_id,
@@ -438,7 +444,7 @@ async def _record_diagnostic_export_audit(
     size_bytes: int | None,
 ) -> None:
     async with transaction() as conn:
-        await repositories.append_audit_log(
+        await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -481,7 +487,7 @@ async def admin_run_diagnostic_export(
     if diagnostics is None:
         raise HTTPException(status_code=404, detail="run_not_found")
 
-    export_id = repositories.new_id("rdiagexp")
+    export_id = platform_values.new_id("rdiagexp")
     generated_at = datetime.now(timezone.utc)
     try:
         package = build_admin_diagnostic_export(

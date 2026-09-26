@@ -1,3 +1,4 @@
+import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
@@ -611,7 +612,7 @@ def default_sandbox_cleanup(monkeypatch):
         get_latest=get_latest_run_attempt,
         terminalize_latest=terminalize_latest_run_attempt,
     )
-    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
+    monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr(
         "app.worker_main.build_worker_v4_runtime",
         lambda _transaction, _lifecycle: _TestWorkerV4Runtime(),
@@ -1965,7 +1966,7 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
-    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
+    monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr("app.worker_main.fail_run_with_v4", fail_run)
     monkeypatch.setattr("app.worker_main.cancel_run_with_v4", cancel_run)
     monkeypatch.setattr(
@@ -2097,7 +2098,7 @@ async def test_run_once_does_not_terminalize_escaped_exception_for_mismatched_lo
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
-    monkeypatch.setattr("app.worker_main.repositories.get_run", get_run)
+    monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr("app.worker_main.fail_run_with_v4", fail_run)
     monkeypatch.setattr("app.worker_main.cancel_run_with_v4", cancel_run)
     monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
@@ -2216,7 +2217,7 @@ async def test_escaped_terminalization_rejects_missing_durable_attempt(monkeypat
     )
     monkeypatch.setattr(worker_main, "transaction", Transaction)
     monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
-    monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run', get_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "assert_worker_current", missing_attempt)
     monkeypatch.setattr(worker_main, "fail_run_with_v4", forbidden)
     monkeypatch.setattr(worker_main, "cancel_run_with_v4", forbidden)
@@ -2297,7 +2298,7 @@ async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transact
     )
     monkeypatch.setattr(worker_main, "transaction", Transaction)
     monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
-    monkeypatch.setattr(worker_main.repositories, "get_run", get_run)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run', get_run)
     monkeypatch.setattr(worker_main, "fail_run_with_v4", fail_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_LIFECYCLE,
@@ -2865,13 +2866,13 @@ async def test_run_once_cleans_expired_memory_records_across_tenant_workspaces(m
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
     monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
-    monkeypatch.setattr("app.worker_main.repositories.cleanup_expired_memory_records", cleanup_expired_memory_records)
+    monkeypatch.setattr("app.context.infrastructure.postgres.cleanup_expired_memory_records", cleanup_expired_memory_records)
     monkeypatch.setattr(
-        "app.worker_main.repositories.cleanup_expired_memory_records_across_scopes",
+        "app.context.infrastructure.postgres.cleanup_expired_memory_records_across_scopes",
         cleanup_expired_memory_records_across_scopes,
         raising=False,
     )
-    monkeypatch.setattr("app.worker_main.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
 
@@ -2962,10 +2963,10 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
     monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
     monkeypatch.setattr(
-        "app.worker_main.repositories.cleanup_expired_memory_records_across_scopes",
+        "app.context.infrastructure.postgres.cleanup_expired_memory_records_across_scopes",
         cleanup_expired_memory_records_across_scopes,
     )
-    monkeypatch.setattr("app.worker_main.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
 
@@ -3032,10 +3033,10 @@ async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(mo
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
     monkeypatch.setattr(
-        "app.worker_main.repositories.cleanup_expired_memory_records_across_scopes",
+        "app.context.infrastructure.postgres.cleanup_expired_memory_records_across_scopes",
         cleanup_expired_memory_records_across_scopes,
     )
-    monkeypatch.setattr("app.worker_main.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
 
@@ -3085,10 +3086,10 @@ async def test_run_once_skips_memory_cleanup_until_interval_elapsed(monkeypatch)
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
     monkeypatch.setattr(
-        "app.worker_main.repositories.cleanup_expired_memory_records_across_scopes",
+        "app.context.infrastructure.postgres.cleanup_expired_memory_records_across_scopes",
         cleanup_expired_memory_records_across_scopes,
     )
-    monkeypatch.setattr("app.worker_main.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
 
@@ -3141,7 +3142,7 @@ async def test_run_once_skips_memory_cleanup_when_disabled(monkeypatch):
     monkeypatch.setattr("app.worker_main._next_memory_cleanup_at", 0.0, raising=False)
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
-    monkeypatch.setattr("app.worker_main.repositories.cleanup_expired_memory_records", cleanup_expired_memory_records)
+    monkeypatch.setattr("app.context.infrastructure.postgres.cleanup_expired_memory_records", cleanup_expired_memory_records)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
 

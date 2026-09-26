@@ -12,14 +12,6 @@ TRUSTED_BUILTIN_MCP_SERVER_ID = "ragflow"
 TRUSTED_BUILTIN_MCP_REMOTE_NAME = "ragflow_search"
 
 
-def _repositories():
-    """Resolve the legacy facade lazily so its compatibility re-exports stay acyclic."""
-
-    from app import repositories
-
-    return repositories
-
-
 def mcp_tool_tenant_authority_sql() -> str:
     """Restrict legacy ``mcp_tools`` consumers to the code-owned RAGFlow tool."""
 
@@ -63,6 +55,8 @@ async def list_workbench_mcp_tools(
 ) -> list[dict[str, Any]]:
     """List only the retained code-owned builtin from local MCP tables."""
 
+    from app.mcp.infrastructure.tool_policies_postgres import _tool_policy_projection
+
     cursor = await conn.execute(
         """
         select
@@ -90,7 +84,7 @@ async def list_workbench_mcp_tools(
     return [
         {**policy, "allowed_for_user": bool(policy["visible_to_user"])}
         for policy in (
-            _repositories()._tool_policy_projection(dict(row), tenant_id=tenant_id)
+            _tool_policy_projection(dict(row), tenant_id=tenant_id)
             for row in await cursor.fetchall()
         )
     ]
@@ -103,6 +97,8 @@ async def get_mcp_tool_registry_entry(
     tool_id: str,
 ) -> dict[str, Any] | None:
     """Resolve dynamic references through their parent Server; retain one builtin."""
+
+    from app.mcp.infrastructure.tool_policies_postgres import _tool_policy_projection
 
     if tool_id != TRUSTED_BUILTIN_MCP_TOOL_ID:
         try:
@@ -172,7 +168,7 @@ async def get_mcp_tool_registry_entry(
     if row is None:
         return None
     record = dict(row)
-    entry = _repositories()._tool_policy_projection(record, tenant_id=tenant_id)
+    entry = _tool_policy_projection(record, tenant_id=tenant_id)
     entry["server_status"] = str(record.get("server_status") or "disabled")
     entry["transport_type"] = str(record.get("transport_type") or "")
     entry["endpoint"] = str(record.get("endpoint") or "")
@@ -198,7 +194,14 @@ async def authorize_selected_chat_mcp_tools(
 ) -> list[dict[str, Any]]:
     """Authorize a complete canonical Chat MCP selection or fail closed."""
 
-    repositories = _repositories()
+    from app.identity.infrastructure.capability_distributions_postgres import (
+        _capability_not_authorized,
+    )
+    from app.mcp.infrastructure.chat_access_postgres import (
+        _authorize_chat_mcp_tool_entry,
+        _chat_mcp_access_context,
+    )
+
     if len(tool_ids) != len(set(tool_ids)):
         duplicate_id = next(
             (
@@ -208,19 +211,19 @@ async def authorize_selected_chat_mcp_tools(
             ),
             "mcp_tool",
         )
-        context = repositories._chat_mcp_access_context(
+        context = _chat_mcp_access_context(
             tenant_id=tenant_id,
             principal_department_id=principal_department_id,
             principal_roles=principal_roles,
             is_admin=is_admin,
             permissions=permissions,
         )
-        raise repositories._capability_not_authorized(
+        raise _capability_not_authorized(
             context=context,
             capability_kind="mcp_tool",
             capability_id=duplicate_id,
         )
-    context = repositories._chat_mcp_access_context(
+    context = _chat_mcp_access_context(
         tenant_id=tenant_id,
         principal_department_id=principal_department_id,
         principal_roles=principal_roles,
@@ -229,19 +232,19 @@ async def authorize_selected_chat_mcp_tools(
     )
     authorized: list[dict[str, Any]] = []
     for tool_id in tool_ids:
-        tool = await repositories.get_mcp_tool_registry_entry(
+        tool = await get_mcp_tool_registry_entry(
             conn,
             tenant_id=tenant_id,
             tool_id=tool_id,
         )
         if tool is None or str(tool.get("tool_id") or "").strip() != tool_id:
-            raise repositories._capability_not_authorized(
+            raise _capability_not_authorized(
                 context=context,
                 capability_kind="mcp_tool",
                 capability_id=tool_id,
             )
         authorized.append(
-            await repositories._authorize_chat_mcp_tool_entry(
+            await _authorize_chat_mcp_tool_entry(
                 conn,
                 context=context,
                 tenant_id=tenant_id,
@@ -262,8 +265,14 @@ async def list_authorized_chat_mcp_tools(
 ) -> list[dict[str, Any]]:
     """Return only retained builtin entries accepted by Chat admission."""
 
-    repositories = _repositories()
-    context = repositories._chat_mcp_access_context(
+    from app.mcp.infrastructure.chat_access_postgres import (
+        _authorize_chat_mcp_tool_entry,
+        _chat_mcp_access_context,
+        list_chat_mcp_tool_catalog_entries,
+    )
+    from app.platform.postgres.errors import RepositoryAuthorizationError
+
+    context = _chat_mcp_access_context(
         tenant_id=tenant_id,
         principal_department_id=principal_department_id,
         principal_roles=principal_roles,
@@ -271,19 +280,19 @@ async def list_authorized_chat_mcp_tools(
         permissions=permissions,
     )
     authorized: list[dict[str, Any]] = []
-    for tool in await repositories.list_chat_mcp_tool_catalog_entries(
+    for tool in await list_chat_mcp_tool_catalog_entries(
         conn,
         tenant_id=tenant_id,
     ):
         try:
             authorized.append(
-                await repositories._authorize_chat_mcp_tool_entry(
+                await _authorize_chat_mcp_tool_entry(
                     conn,
                     context=context,
                     tenant_id=tenant_id,
                     tool=tool,
                 )
             )
-        except repositories.RepositoryAuthorizationError:
+        except RepositoryAuthorizationError:
             continue
     return authorized

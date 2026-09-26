@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.routes.context import (
     MEMORY_PREVIEW_URL_DECODE_DEPTH,
     _memory_delete_response,
@@ -161,9 +161,9 @@ def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.routes.context.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -230,9 +230,9 @@ def test_create_context_snapshot_maps_member_failure_without_creating_event(monk
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.routes.context.repositories.append_event", fail_append_event)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fail_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -258,8 +258,8 @@ def test_manual_executor_context_snapshot_is_rejected_before_snapshot_write(monk
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fail_create)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fail_create)
     client = TestClient(create_app())
 
     response = client.post(
@@ -301,8 +301,8 @@ def test_context_snapshot_response_omits_raw_material_ids_from_public_projection
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
@@ -377,8 +377,8 @@ def test_context_snapshot_response_projects_context_manifest_without_inline_priv
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
@@ -449,8 +449,8 @@ def test_context_snapshot_response_preserves_stored_safe_summary_metadata(monkey
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
@@ -503,8 +503,8 @@ def test_context_snapshot_response_preserves_safe_top_level_legacy_source(monkey
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
@@ -554,9 +554,9 @@ def test_create_context_snapshot_rejects_forged_public_provenance_and_forbidden_
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.routes.context.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -656,9 +656,9 @@ def test_create_context_snapshot_redacts_payload_before_persisting(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.routes.context.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -776,17 +776,17 @@ def test_create_share_context_snapshot_binds_source_run_and_target_session(monke
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_authorized_context_target_session",
+        "app.conversations.infrastructure.session_queries_postgres.get_authorized_context_target_session",
         fake_get_authorized_context_target_session,
     )
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_bound_executor_context_snapshot",
+        "app.context.infrastructure.snapshot_postgres.get_bound_executor_context_snapshot",
         fake_get_bound_executor_context_snapshot,
     )
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.routes.context.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -900,17 +900,17 @@ def test_create_share_context_snapshot_maps_member_failure_without_creating_even
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_authorized_context_target_session",
+        "app.conversations.infrastructure.session_queries_postgres.get_authorized_context_target_session",
         fake_get_authorized_context_target_session,
     )
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_bound_executor_context_snapshot",
+        "app.context.infrastructure.snapshot_postgres.get_bound_executor_context_snapshot",
         fake_get_bound_executor_context_snapshot,
     )
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.routes.context.repositories.append_event", fail_append_event)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fail_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -943,13 +943,13 @@ def test_create_share_context_snapshot_rejects_wrong_target_session_before_writi
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_authorized_context_target_session",
+        "app.conversations.infrastructure.session_queries_postgres.get_authorized_context_target_session",
         fake_get_authorized_context_target_session,
     )
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fail_create_context_snapshot)
-    monkeypatch.setattr("app.routes.context.repositories.append_event", fail_append_event)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fail_create_context_snapshot)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fail_append_event)
     client = TestClient(create_app())
 
     response = client.post(
@@ -981,12 +981,12 @@ def test_create_share_context_snapshot_rejects_wrong_source_run_before_target_lo
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_authorized_context_target_session",
+        "app.conversations.infrastructure.session_queries_postgres.get_authorized_context_target_session",
         fail_get_authorized_context_target_session,
     )
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fail_create_context_snapshot)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fail_create_context_snapshot)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1020,16 +1020,16 @@ def test_create_share_context_snapshot_rejects_missing_source_context_snapshot(m
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_authorized_context_target_session",
+        "app.conversations.infrastructure.session_queries_postgres.get_authorized_context_target_session",
         fake_get_authorized_context_target_session,
     )
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_bound_executor_context_snapshot",
+        "app.context.infrastructure.snapshot_postgres.get_bound_executor_context_snapshot",
         fake_get_bound_executor_context_snapshot,
     )
-    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fail_create_context_snapshot)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.create_context_snapshot", fail_create_context_snapshot)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1097,9 +1097,9 @@ def test_list_target_session_share_context_snapshots_uses_authorized_target_bind
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
     monkeypatch.setattr(
-        "app.routes.context.repositories.list_context_share_snapshots_for_target_session",
+        "app.context.infrastructure.snapshot_postgres.list_context_share_snapshots_for_target_session",
         fake_list_context_share_snapshots_for_target_session,
     )
     client = TestClient(create_app())
@@ -1130,9 +1130,9 @@ def test_list_target_session_share_context_snapshots_rejects_wrong_session(monke
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
     monkeypatch.setattr(
-        "app.routes.context.repositories.list_context_share_snapshots_for_target_session",
+        "app.context.infrastructure.snapshot_postgres.list_context_share_snapshots_for_target_session",
         fail_list_context_share_snapshots_for_target_session,
     )
     client = TestClient(create_app())
@@ -1180,8 +1180,8 @@ def test_list_context_snapshots_redacts_legacy_dirty_payload_and_summary(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
@@ -1253,8 +1253,8 @@ def test_list_context_snapshots_regenerates_dirty_legacy_provenance(monkeypatch)
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
@@ -1307,8 +1307,8 @@ def test_list_context_snapshots_replaces_malformed_legacy_provenance(monkeypatch
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
@@ -1363,10 +1363,10 @@ def test_create_memory_record_requires_session_id_before_writing(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fake_create_memory_record)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.create_memory_record", fake_create_memory_record)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1447,11 +1447,11 @@ def test_create_memory_record_response_redacts_legacy_secret_like_content_and_me
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fake_create_memory_record)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.create_memory_record", fake_create_memory_record)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1544,11 +1544,11 @@ def test_create_memory_record_applies_effective_policy_retention_days(monkeypatc
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fake_create_memory_record)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.create_memory_record", fake_create_memory_record)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     response = client.post(
@@ -1617,12 +1617,12 @@ def test_create_memory_record_denies_write_when_memory_policy_disabled_and_audit
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fail_create_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.create_memory_record", fail_create_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1696,12 +1696,12 @@ def test_create_memory_record_maps_public_agent_id_before_session_policy_and_aud
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fail_create_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.create_memory_record", fail_create_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1773,11 +1773,11 @@ def test_create_memory_record_maps_public_agent_id_for_success_response(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fake_create_memory_record)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.create_memory_record", fake_create_memory_record)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1839,12 +1839,12 @@ def test_create_memory_record_omitted_agent_id_projects_session_agent_in_denied_
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fail_create_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.create_memory_record", fail_create_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1905,12 +1905,12 @@ def test_create_memory_record_uses_session_agent_for_policy_when_agent_id_is_omi
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.create_memory_record", fail_create_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.create_memory_record", fail_create_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1946,10 +1946,10 @@ def test_create_memory_record_rejects_agent_session_mismatch(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fail_policy)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fail_policy)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1997,9 +1997,9 @@ def test_delete_memory_record_soft_deletes_and_writes_audit(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fake_delete_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.delete_memory_record", fake_delete_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.delete(
@@ -2054,9 +2054,9 @@ def test_delete_memory_record_maps_public_agent_id_before_session_delete_and_aud
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fake_delete_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.delete_memory_record", fake_delete_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.delete(
@@ -2087,9 +2087,9 @@ def test_delete_memory_record_rejects_agent_session_mismatch_before_delete_or_au
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fail_delete_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fail_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.delete_memory_record", fail_delete_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_append_audit_log)
     client = TestClient(create_app())
 
     response = client.delete(
@@ -2108,7 +2108,7 @@ def test_delete_memory_record_requires_session_scope(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fail_delete_memory_record)
+    monkeypatch.setattr("app.context.infrastructure.postgres.delete_memory_record", fail_delete_memory_record)
     client = TestClient(create_app())
 
     response = client.delete("/api/ai/memory/records/mem-a?workspace_id=workspace-a", headers=headers())
@@ -2123,7 +2123,7 @@ def test_list_memory_records_rejects_unsafe_query_ids_with_422(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.list_memory_records", fail_list_memory_records)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_memory_records", fail_list_memory_records)
     client = TestClient(create_app())
 
     bad_workspace = client.get(
@@ -2153,7 +2153,7 @@ def test_delete_memory_record_rejects_unsafe_ids_with_422(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fail_delete_memory_record)
+    monkeypatch.setattr("app.context.infrastructure.postgres.delete_memory_record", fail_delete_memory_record)
     client = TestClient(create_app())
 
     bad_record = client.delete(
@@ -2189,7 +2189,7 @@ def test_list_memory_records_requires_session_scope(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.list_memory_records", fail_list_memory_records)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_memory_records", fail_list_memory_records)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/memory/records?workspace_id=workspace-a", headers=headers())
@@ -2222,9 +2222,9 @@ def test_list_memory_records_returns_empty_when_memory_policy_disabled(monkeypat
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.list_memory_records", fail_list_memory_records)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_memory_records", fail_list_memory_records)
     client = TestClient(create_app())
 
     response = client.get(
@@ -2265,9 +2265,9 @@ def test_list_memory_records_maps_public_agent_id_before_session_policy(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.list_memory_records", fail_list_memory_records)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_memory_records", fail_list_memory_records)
     client = TestClient(create_app())
 
     response = client.get(
@@ -2327,9 +2327,9 @@ def test_list_memory_records_maps_public_agent_id_for_non_empty_response(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.list_memory_records", fake_list_memory_records)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_memory_records", fake_list_memory_records)
     client = TestClient(create_app())
 
     response = client.get(
@@ -2373,9 +2373,9 @@ def test_list_memory_records_uses_session_agent_for_policy_when_agent_id_is_omit
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.list_memory_records", fail_list_memory_records)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_memory_records", fail_list_memory_records)
     client = TestClient(create_app())
 
     response = client.get(
@@ -2433,9 +2433,9 @@ def test_list_memory_records_redacts_legacy_secret_like_content_and_metadata(mon
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.routes.context.repositories.list_memory_records", fake_list_memory_records)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_memory_records", fake_list_memory_records)
     client = TestClient(create_app())
 
     response = client.get(
@@ -2465,8 +2465,8 @@ def test_list_memory_records_rejects_agent_session_mismatch(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fail_policy)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fail_policy)
     client = TestClient(create_app())
 
     response = client.get(
@@ -2499,8 +2499,8 @@ def test_admin_delete_memory_record_response_does_not_expose_content_or_metadata
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.admin_delete_memory_record", fake_admin_delete_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.context.infrastructure.postgres.admin_delete_memory_record", fake_admin_delete_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.delete(
@@ -2523,7 +2523,7 @@ def test_developer_role_cannot_admin_delete_memory_record(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.admin_delete_memory_record", fail_admin_delete_memory_record)
+    monkeypatch.setattr("app.context.infrastructure.postgres.admin_delete_memory_record", fail_admin_delete_memory_record)
     client = TestClient(create_app())
     developer_headers = admin_headers()
     developer_headers["X-AI-Roles"] = "developer"
@@ -2549,9 +2549,9 @@ def test_delete_memory_record_already_deleted_returns_404_without_audit(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fake_delete_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fail_audit)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.delete_memory_record", fake_delete_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_audit)
     client = TestClient(create_app())
 
     response = client.delete(
@@ -2590,9 +2590,9 @@ def test_delete_memory_record_redacts_secret_like_reason_from_audit(monkeypatch)
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fake_delete_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.delete_memory_record", fake_delete_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.delete(
@@ -2626,9 +2626,9 @@ def test_delete_memory_record_returns_404_for_foreign_or_missing_record(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.get_authorized_session", fake_get_authorized_session)
-    monkeypatch.setattr("app.routes.context.repositories.delete_memory_record", fake_delete_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fail_audit)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.context.infrastructure.postgres.delete_memory_record", fake_delete_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_audit)
     client = TestClient(create_app())
 
     response = client.delete(
@@ -2665,8 +2665,8 @@ def test_admin_delete_memory_record_soft_deletes_same_tenant_record_and_writes_a
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.admin_delete_memory_record", fake_admin_delete_memory_record)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.context.infrastructure.postgres.admin_delete_memory_record", fake_admin_delete_memory_record)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.delete(
@@ -2730,9 +2730,9 @@ def test_admin_cleanup_expired_memory_records_soft_deletes_and_audits_without_co
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.cleanup_expired_memory_records", fake_cleanup_expired_memory_records)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.context.infrastructure.postgres.cleanup_expired_memory_records", fake_cleanup_expired_memory_records)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2778,7 +2778,7 @@ def test_admin_cleanup_expired_memory_records_rejects_non_memory_admin(monkeypat
         raise AssertionError("non memory admin must not cleanup expired memory records")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.cleanup_expired_memory_records", fail_cleanup_expired_memory_records)
+    monkeypatch.setattr("app.context.infrastructure.postgres.cleanup_expired_memory_records", fail_cleanup_expired_memory_records)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2796,7 +2796,7 @@ def test_admin_cleanup_expired_memory_records_rejects_invalid_limit(monkeypatch)
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.cleanup_expired_memory_records", fail_cleanup_expired_memory_records)
+    monkeypatch.setattr("app.context.infrastructure.postgres.cleanup_expired_memory_records", fail_cleanup_expired_memory_records)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     response = client.post(
@@ -2822,9 +2822,9 @@ def test_admin_cleanup_expired_memory_records_returns_404_for_missing_workspace(
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.cleanup_expired_memory_records", fail_cleanup_expired_memory_records)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fail_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.context.infrastructure.postgres.cleanup_expired_memory_records", fail_cleanup_expired_memory_records)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_append_audit_log)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     response = client.post(
@@ -2866,8 +2866,8 @@ def test_admin_list_memory_records_returns_operational_projection_without_conten
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.list_admin_memory_records", fake_list_admin_memory_records, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_admin_memory_records", fake_list_admin_memory_records, raising=False)
     client = TestClient(create_app())
 
     response = client.get(
@@ -2915,7 +2915,7 @@ def test_admin_list_memory_records_rejects_non_memory_admin(monkeypatch):
         raise AssertionError("non memory admin must not reach admin memory projection")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.list_admin_memory_records", fail_list_admin_memory_records, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_admin_memory_records", fail_list_admin_memory_records, raising=False)
     client = TestClient(create_app())
 
     response = client.get(
@@ -2932,7 +2932,7 @@ def test_admin_list_memory_records_rejects_unsafe_query_ids_with_422(monkeypatch
         raise AssertionError("unsafe query ids must fail before repository access")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.list_admin_memory_records", fail_list_admin_memory_records, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_admin_memory_records", fail_list_admin_memory_records, raising=False)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     bad_user = client.get(
@@ -2979,8 +2979,8 @@ def test_admin_list_memory_policies_returns_operational_projection(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.list_admin_memory_policies", fake_list_admin_memory_policies, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_admin_memory_policies", fake_list_admin_memory_policies, raising=False)
     client = TestClient(create_app())
 
     response = client.get(
@@ -3028,7 +3028,7 @@ def test_admin_list_memory_policies_rejects_non_memory_admin(monkeypatch):
         raise AssertionError("non-admin must not reach policy inventory repository")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.list_admin_memory_policies", fail_list_admin_memory_policies, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_admin_memory_policies", fail_list_admin_memory_policies, raising=False)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/memory/policies?workspace_id=workspace-a", headers=headers())
@@ -3042,7 +3042,7 @@ def test_admin_list_memory_policies_rejects_unsafe_query_ids_with_422(monkeypatc
         raise AssertionError("unsafe query ids must fail before policy inventory access")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.list_admin_memory_policies", fail_list_admin_memory_policies, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_admin_memory_policies", fail_list_admin_memory_policies, raising=False)
     client = TestClient(create_app())
 
     bad_workspace = client.get("/api/ai/admin/memory/policies?workspace_id=../bad", headers=admin_headers())
@@ -3069,8 +3069,8 @@ def test_admin_list_memory_policies_returns_404_for_missing_or_foreign_workspace
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.list_admin_memory_policies", fail_list_admin_memory_policies, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_admin_memory_policies", fail_list_admin_memory_policies, raising=False)
     client = TestClient(create_app())
 
     response = client.get(
@@ -3098,9 +3098,9 @@ def test_admin_list_memory_policies_returns_404_for_missing_or_foreign_agent(mon
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.list_admin_memory_policies", fail_list_admin_memory_policies, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.agent_apps.infrastructure.catalog_postgres.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.list_admin_memory_policies", fail_list_admin_memory_policies, raising=False)
     client = TestClient(create_app())
 
     response = client.get(
@@ -3150,10 +3150,10 @@ def test_update_memory_policy_allows_user_self_opt_out_and_audits(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fake_set_memory_policy, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fake_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3207,7 +3207,7 @@ def test_update_memory_policy_rejects_long_term_enable_for_user(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fail_set_memory_policy, raising=False)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3234,8 +3234,8 @@ def test_update_memory_policy_rejects_unsafe_body_ids_with_422(monkeypatch):
         raise AssertionError("unsafe body ids must fail before repository write")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fail_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fail_ensure_workspace)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fail_set_memory_policy, raising=False)
     client = TestClient(create_app())
 
     bad_workspace = client.put(
@@ -3271,7 +3271,7 @@ def test_update_memory_policy_rejects_invalid_redaction_mode_before_write(monkey
         raise AssertionError("invalid redaction mode must fail before repository write")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fail_set_memory_policy, raising=False)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3302,8 +3302,8 @@ def test_update_memory_policy_returns_404_for_missing_or_foreign_workspace(monke
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fail_set_memory_policy, raising=False)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3341,10 +3341,10 @@ def test_update_memory_policy_returns_404_for_missing_or_foreign_agent(monkeypat
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.agent_apps.infrastructure.catalog_postgres.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fail_set_memory_policy, raising=False)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3397,9 +3397,9 @@ def test_get_memory_policy_maps_public_agent_id_before_lookup(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.agent_apps.infrastructure.catalog_postgres.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fake_get_effective_memory_policy)
     client = TestClient(create_app())
 
     response = client.get(
@@ -3439,8 +3439,8 @@ def test_get_memory_policy_returns_404_for_missing_or_foreign_workspace(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fail_get_effective_memory_policy)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fail_get_effective_memory_policy)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/memory/policy?workspace_id=foreign-workspace", headers=headers())
@@ -3455,7 +3455,7 @@ def test_get_memory_policy_rejects_unsafe_query_ids_with_422(monkeypatch):
         raise AssertionError("unsafe memory policy query ids must fail before repository access")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.get_effective_memory_policy", fail_get_effective_memory_policy)
+    monkeypatch.setattr("app.context.infrastructure.postgres.get_effective_memory_policy", fail_get_effective_memory_policy)
     client = TestClient(create_app())
 
     bad_workspace = client.get("/api/ai/memory/policy?workspace_id=../bad", headers=headers())
@@ -3505,11 +3505,11 @@ def test_update_memory_policy_maps_public_agent_id_before_writing(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_user", fake_ensure_user)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fake_set_memory_policy, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.agent_apps.infrastructure.catalog_postgres.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fake_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3578,11 +3578,11 @@ def test_admin_set_memory_policy_maps_public_agent_id_before_writing(monkeypatch
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.get_user", fake_get_user, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fake_set_memory_policy, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.get_user", fake_get_user, raising=False)
+    monkeypatch.setattr("app.agent_apps.infrastructure.catalog_postgres.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fake_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3618,7 +3618,7 @@ def test_admin_set_memory_policy_rejects_long_term_enable_until_governance_compl
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fail_set_memory_policy, raising=False)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3643,7 +3643,7 @@ def test_admin_set_memory_policy_rejects_invalid_redaction_mode_before_write(mon
         raise AssertionError("invalid redaction mode must fail before admin repository write")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fail_set_memory_policy, raising=False)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3674,9 +3674,9 @@ def test_admin_set_memory_policy_returns_404_for_missing_target_user(monkeypatch
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.get_user", fake_get_user, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.get_user", fake_get_user, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fail_set_memory_policy, raising=False)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3709,10 +3709,10 @@ def test_admin_set_memory_policy_returns_404_for_missing_or_foreign_agent(monkey
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.get_user", fake_get_user, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fail_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.get_user", fake_get_user, raising=False)
+    monkeypatch.setattr("app.agent_apps.infrastructure.catalog_postgres.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fail_set_memory_policy, raising=False)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3770,11 +3770,11 @@ def test_admin_set_memory_policy_updates_policy_and_writes_audit(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.get_user", fake_get_user, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.set_memory_policy", fake_set_memory_policy, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.postgres.get_user", fake_get_user, raising=False)
+    monkeypatch.setattr("app.agent_apps.infrastructure.catalog_postgres.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.context.infrastructure.postgres.set_memory_policy", fake_set_memory_policy, raising=False)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.put(
@@ -3859,9 +3859,9 @@ def test_admin_preview_memory_redaction_returns_safe_projection_and_writes_audit
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.agent_apps.infrastructure.catalog_postgres.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -3965,8 +3965,8 @@ def test_admin_preview_memory_redaction_standard_mode_still_blocks_provider_secr
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4005,8 +4005,8 @@ def test_admin_preview_memory_redaction_redacts_camel_case_private_markers_from_
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4046,8 +4046,8 @@ def test_admin_preview_memory_redaction_redacts_object_storage_values_from_proje
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4090,8 +4090,8 @@ def test_admin_preview_memory_redaction_redacts_relative_skill_storage_keys_from
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4135,8 +4135,8 @@ def test_admin_preview_memory_redaction_redacts_url_encoded_storage_values_from_
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4180,8 +4180,8 @@ def test_admin_preview_memory_redaction_redacts_deep_url_encoded_storage_values_
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4222,8 +4222,8 @@ def test_admin_preview_memory_redaction_redacts_url_encoded_internal_ids_from_pr
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4268,8 +4268,8 @@ def test_admin_preview_memory_redaction_redacts_url_encoded_secret_like_values_f
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4312,8 +4312,8 @@ def test_admin_preview_memory_redaction_redacts_form_encoded_secret_like_values_
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4355,8 +4355,8 @@ def test_admin_preview_memory_redaction_fails_closed_when_url_decode_budget_exha
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4393,8 +4393,8 @@ def test_admin_preview_memory_redaction_rejects_url_encoded_private_metadata_key
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4436,8 +4436,8 @@ def test_admin_preview_memory_redaction_redacts_internal_agent_and_skill_ids_fro
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4484,8 +4484,8 @@ def test_admin_preview_memory_redaction_redacts_metadata_text_projection(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4550,7 +4550,7 @@ def test_admin_preview_memory_redaction_denies_ordinary_user_before_side_effects
         raise AssertionError("ordinary users must not write redaction preview audit")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fail_append_audit_log)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4572,7 +4572,7 @@ def test_admin_preview_memory_redaction_rejects_invalid_mode_before_audit(monkey
         raise AssertionError("invalid redaction preview mode must fail before audit")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.context.repositories.append_audit_log", fail_append_audit_log)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_append_audit_log)
     client = TestClient(create_app())
 
     response = client.post(
@@ -4619,10 +4619,10 @@ def test_admin_list_memory_policies_returns_same_tenant_public_projection(monkey
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.context.repositories.ensure_workspace", fake_ensure_workspace)
-    monkeypatch.setattr("app.routes.context.repositories.get_agent", fake_get_agent, raising=False)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.agent_apps.infrastructure.catalog_postgres.get_agent", fake_get_agent, raising=False)
     monkeypatch.setattr(
-        "app.routes.context.repositories.list_admin_memory_policies",
+        "app.context.infrastructure.postgres.list_admin_memory_policies",
         fake_list_admin_memory_policies,
         raising=False,
     )

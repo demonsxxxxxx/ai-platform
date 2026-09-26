@@ -102,7 +102,7 @@ async def test_worker_missing_physical_snapshot_never_rebuilds_context(monkeypat
         calls.append(kwargs)
         return None
 
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", missing_snapshot)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker", missing_snapshot)
 
     context_ref = await _materialize_scoped_worker_snapshot(object(), payload)
 
@@ -178,11 +178,11 @@ async def test_worker_materializes_complete_snapshot_authorized_conversation(mon
         return rows
 
     monkeypatch.setattr(
-        "app.worker.repositories.get_context_snapshot_for_worker",
+        "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker",
         get_snapshot,
     )
     monkeypatch.setattr(
-        "app.worker.repositories.list_scoped_context_messages",
+        "app.context.infrastructure.sources_postgres.list_scoped_context_messages",
         list_messages,
     )
 
@@ -242,11 +242,11 @@ async def test_worker_rejects_incomplete_snapshot_message_materialization(monkey
         ]
 
     monkeypatch.setattr(
-        "app.worker.repositories.get_context_snapshot_for_worker",
+        "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker",
         get_snapshot,
     )
     monkeypatch.setattr(
-        "app.worker.repositories.list_scoped_context_messages",
+        "app.context.infrastructure.sources_postgres.list_scoped_context_messages",
         list_messages,
     )
 
@@ -406,22 +406,22 @@ async def test_copied_run_ambiguous_enqueue_preserves_committed_child(
         allow_reauthorization,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.acquire_run_control_operation_lock",
+        "app.runs.infrastructure.control_operations_postgres.acquire_run_control_operation_lock",
         acquire_operation_lock,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.get_run_control_operation",
+        "app.runs.infrastructure.control_operations_postgres.get_run_control_operation",
         no_existing_operation,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.get_authorized_run",
+        "app.runs.infrastructure.creation_postgres.get_authorized_run",
         retryable_source,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.record_run_control_operation",
+        "app.runs.infrastructure.control_operations_postgres.record_run_control_operation",
         record_operation,
     )
-    monkeypatch.setattr(f"app.routes.runs.repositories.{repository_method}", create_copied_run)
+    monkeypatch.setattr(f"app.runs.infrastructure.replay_postgres.{repository_method}", create_copied_run)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepared_queue_payload)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", no_queue_admission)
@@ -450,8 +450,8 @@ async def test_legacy_only_session_has_no_implicit_current_status(monkeypatch):
         return [{"id": "run-legacy", "status": "running", "session_generation": None}]
 
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", _fake_transaction)
-    monkeypatch.setattr("app.routes.lambchat_compat.repositories.get_authorized_lambchat_session", get_session)
-    monkeypatch.setattr("app.routes.lambchat_compat.repositories.list_authorized_session_runs", list_runs)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.get_authorized_lambchat_session", get_session)
+    monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs", list_runs)
 
     response = await lambchat_compat.chat_status("session-a", principal=_principal())
 

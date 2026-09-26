@@ -1,5 +1,5 @@
-from dataclasses import replace
 import logging
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -24,8 +24,15 @@ from app.auth_sessions import (
     principal_snapshot,
 )
 from app.db import transaction
+from app.identity.infrastructure.audit_postgres import append_audit_log
+from app.identity.infrastructure.postgres import ensure_user
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
-from app.models import AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
+from app.models import (
+    AuthContextBootstrapRequest,
+    LoginRequest,
+    OAuthCallbackRequest,
+    PrincipalResponse,
+)
 from app.principal_authority import (
     CompanyLoginJwtUnavailable,
     PrincipalAuthorityDenied,
@@ -34,7 +41,6 @@ from app.principal_authority import (
     resolve_company_login_jwt,
     resolve_login_principal,
 )
-from app.repositories import append_audit_log, ensure_user
 from app.settings import get_settings
 from app.validation import assert_safe_id
 

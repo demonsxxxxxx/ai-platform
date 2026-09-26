@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.conversations.infrastructure import postgres as conversation_persistence
-from app.persistence import RepositoryNotFoundError
+from app.platform.postgres.errors import RepositoryNotFoundError
 
 
 class Cursor:

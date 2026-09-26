@@ -1,8 +1,12 @@
+import app.runs.infrastructure.capability_admission_postgres as _owner_runs_infrastructure_capability_admission_postgres
+import app.runs.infrastructure.creation_postgres as _owner_runs_infrastructure_creation_postgres
+import app.runs.infrastructure.replay_postgres as _owner_runs_infrastructure_replay_postgres
+import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 import base64
 
 import pytest
 
-from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.models import ChatStreamRequest, CreateRunRequest
 from app.routes import runs as runs_module
@@ -116,11 +120,11 @@ async def test_replay_queue_preparation_preserves_prior_file_through_child_snaps
     async def update_input(_conn, **kwargs):
         calls["execution_snapshot"] = kwargs["execution_snapshot"]
 
-    monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", allow)
-    monkeypatch.setattr(repository_module, "materialize_run_skill_manifests", materialize)
-    monkeypatch.setattr(repository_module, "update_run_auth_snapshot", allow)
-    monkeypatch.setattr(repository_module, "append_event", allow)
-    monkeypatch.setattr(repository_module, "update_run_input_execution_snapshot", update_input)
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_replay_run_capabilities', allow)
+    monkeypatch.setattr(_owner_skills_infrastructure_run_snapshots_postgres, 'materialize_run_skill_manifests', materialize)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'update_run_auth_snapshot', allow)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', allow)
+    monkeypatch.setattr(_owner_runs_infrastructure_replay_postgres, 'update_run_input_execution_snapshot', update_input)
     monkeypatch.setattr(runs_module, "record_initial_context_snapshot", record_context)
 
     queue_payload = await runs_module.prepare_copied_run_for_queue(

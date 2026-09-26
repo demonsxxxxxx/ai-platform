@@ -213,7 +213,7 @@ _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
         "non_expansion_invariants",
     ],
     "source_functions": [
-        "app.repositories.get_context_snapshot_for_worker",
+        "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker",
         "app.context_builder.executor_context_pack_from_snapshot",
         "app.executors.claude_agent_sdk_runner._context_pack_prompt_section",
         "app.executors.claude.prompts.build_skill_prompt",

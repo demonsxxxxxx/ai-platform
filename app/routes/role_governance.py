@@ -5,7 +5,6 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ValidationError
 
-from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessContext,
@@ -13,9 +12,18 @@ from app.capability_distribution import (
     capability_distribution_audit_payload,
     resolve_capability_access,
 )
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
+from app.control_plane_contracts import (
+    sanitize_public_payload,
+    sanitize_public_text,
+    standard_trace_id,
+)
 from app.db import transaction
-from app.memory_redaction import is_sensitive_redaction_key
+from app.identity.infrastructure import audit_postgres as identity_audit
+from app.identity.infrastructure import (
+    capability_distributions_postgres as identity_capability_distributions,
+)
+from app.identity.infrastructure import postgres as identity_postgres
+from app.kernel.memory_redaction import is_sensitive_redaction_key
 from app.models import (
     RoleGovernanceAuditItemResponse,
     RoleGovernanceDecisionRequest,
@@ -32,6 +40,7 @@ from app.models import (
     WorkbenchGovernanceResponse,
     WorkbenchOperationResponse,
 )
+from app.skills.infrastructure import catalog_postgres as skills_catalog
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -196,14 +205,14 @@ async def _scope_projection(principal: AuthPrincipal, workspace_id: str) -> Role
         permissions=principal.permissions,
     )
     async with transaction() as conn:
-        distributions = await repositories.list_capability_distribution_rows(
+        distributions = await identity_capability_distributions.list_capability_distribution_rows(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind="skill",
             include_disabled=True,
         )
         catalog_statuses = {
-            skill_id: str((await repositories.get_skill(conn, skill_id=skill_id) or {}).get("status") or "disabled")
+            skill_id: str((await skills_catalog.get_skill(conn, skill_id=skill_id) or {}).get("status") or "disabled")
             for skill_id in {str(row.get("capability_id") or "") for row in distributions}
             if skill_id
         }
@@ -223,7 +232,7 @@ async def _scope_projection(principal: AuthPrincipal, workspace_id: str) -> Role
             )
             if decision.visible:
                 if decision.admin_bypass:
-                    await repositories.append_audit_log(
+                    await identity_audit.append_audit_log(
                         conn,
                         tenant_id=principal.tenant_id,
                         user_id=principal.user_id,
@@ -374,9 +383,9 @@ async def _append_role_governance_audit(
     payload_json: dict[str, Any],
 ) -> str:
     async with transaction() as conn:
-        if not await repositories.tenant_exists(conn, tenant_id=principal.tenant_id):
+        if not await identity_postgres.tenant_exists(conn, tenant_id=principal.tenant_id):
             raise HTTPException(status_code=403, detail="tenant_not_authorized")
-        return await repositories.append_audit_log(
+        return await identity_audit.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -397,7 +406,7 @@ async def role_governance_overview(
     _require_permission(principal, "role:read")
     safe_workspace_id = _safe_id(workspace_id, "workspace_id")
     async with transaction() as conn:
-        audit_rows = await repositories.list_role_governance_audit_history(
+        audit_rows = await identity_audit.list_role_governance_audit_history(
             conn,
             tenant_id=principal.tenant_id,
             user_id=None if _can_manage(principal) else principal.user_id,

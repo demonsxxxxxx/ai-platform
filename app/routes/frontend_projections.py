@@ -6,9 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app import repositories
-from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
+from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
@@ -142,7 +141,7 @@ async def _revealed_items(
     favorites_only: bool = False,
 ) -> list[RevealedFileItemResponse]:
     async with transaction() as conn:
-        rows = await repositories.list_revealed_artifacts(
+        rows = await artifact_persistence.list_revealed_artifacts(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -290,7 +289,7 @@ async def list_revealed_file_sessions(
     _require_permission(principal, ARTIFACT_READ)
     safe_project_id = _safe_optional_id(project_id, "project_id")
     async with transaction() as conn:
-        rows = await repositories.list_revealed_artifact_sessions(
+        rows = await artifact_persistence.list_revealed_artifact_sessions(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

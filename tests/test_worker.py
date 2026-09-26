@@ -1,3 +1,7 @@
+import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
+import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
+import app.runs.infrastructure.capability_admission_postgres as _owner_runs_infrastructure_capability_admission_postgres
+import app.skills.infrastructure.postgres as _owner_skills_infrastructure_postgres
 import asyncio
 import hashlib
 import json
@@ -15,7 +19,12 @@ import app.execution.application.worker_attempt_lifecycle as worker_attempt_life
 import app.runs.application.model_snapshot as run_model_snapshot_module
 import app.worker as worker_module
 from app.runs.infrastructure import lifecycle_postgres as run_lifecycle_postgres
-from app import repositories as repository_module
+import app.mcp.infrastructure.tool_policies_postgres as _repo_app_mcp_infrastructure_tool_policies_postgres
+import app.platform.postgres.errors as _repo_app_platform_postgres_errors
+import app.runs.infrastructure.capability_admission_postgres as _repo_app_runs_infrastructure_capability_admission_postgres
+import app.skills.infrastructure.postgres as _repo_app_skills_infrastructure_postgres
+import app.skills.infrastructure.run_snapshots_postgres as _repo_app_skills_infrastructure_run_snapshots_postgres
+import app.streaming.infrastructure.run_events_postgres as _repo_app_streaming_infrastructure_run_events_postgres
 from app.auth import AuthPrincipal, is_ai_admin
 from app.control_plane_contracts import standard_trace_id
 from app.execution.api import (
@@ -44,10 +53,7 @@ from app.platform.sandbox.errors import (
     ContainerStartFailedError,
     ExecutorHealthTimeoutError,
 )
-from app.repositories import (
-    RepositoryConflictError,
-    RepositoryNotFoundError,
-)
+from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.required_tool_contract import (
     RequiredCapabilityDeclaration,
     RequiredCapabilityEvidence,
@@ -78,8 +84,8 @@ _CURRENT_QUEUE_PAYLOAD = None
 _TEST_ATTEMPT_PERSISTENCE = None
 _TEST_RUN_ATTEMPT_LIFECYCLE = None
 _TEST_RUN_LIFECYCLE = None
-_ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
-_ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
+_ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = _repo_app_mcp_infrastructure_tool_policies_postgres.ensure_mcp_tool_active
+_ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = _repo_app_skills_infrastructure_run_snapshots_postgres.materialize_run_skill_manifests
 
 
 @pytest.fixture(autouse=True)
@@ -188,7 +194,7 @@ class _FakeWorkerV4Persistence:
                 merged = {"visible_to_user": True, "severity": "info"}
                 if payload:
                     merged.update(payload)
-                await repository_module.append_event(
+                await _repo_app_streaming_infrastructure_run_events_postgres.append_event(
                     conn,
                     tenant_id=run_payload.tenant_id,
                     run_id=run_payload.run_id,
@@ -1056,7 +1062,7 @@ def default_cancel_not_requested(monkeypatch):
                 "value": queue_payload.get("model_value"),
             },
             mcp_tool_ids=tuple(
-                repository_module.extract_run_mcp_tool_ids(queue_payload.get("input") or {})
+                _repo_app_runs_infrastructure_capability_admission_postgres.extract_run_mcp_tool_ids(queue_payload.get("input") or {})
             ),
         )
 
@@ -1085,7 +1091,7 @@ def default_cancel_not_requested(monkeypatch):
         return await _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS(conn, **kwargs)
 
     monkeypatch.setattr(
-        "app.worker.repositories.materialize_run_skill_manifests",
+        'app.skills.infrastructure.run_snapshots_postgres.materialize_run_skill_manifests',
         materialize_test_skill_manifests,
     )
 
@@ -1105,14 +1111,14 @@ def default_cancel_not_requested(monkeypatch):
         locked_run["status"] = "queued"
         return locked_run
 
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run, raising=False)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run, raising=False)
 
     locked_run_for_model_snapshot: dict[str, object] = {}
 
     async def load_test_model(conn, **kwargs):
         locked_run = locked_run_for_model_snapshot.get("value")
         if not isinstance(locked_run, dict):
-            locked_run = await worker_module.repositories.get_run(
+            locked_run = await _owner_runs_infrastructure_postgres.get_run(
                 conn,
                 tenant_id=kwargs["tenant_id"],
                 run_id=kwargs["run_id"],
@@ -1231,7 +1237,7 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact, raising=False)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact, raising=False)
     monkeypatch.setattr(
         _TEST_RUN_LIFECYCLE,
         "classify_success_commit_block",
@@ -1243,7 +1249,7 @@ def default_cancel_not_requested(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "app.worker.repositories.validate_run_skill_snapshots_for_dispatch",
+        'app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch',
         validate_run_skill_snapshots_for_dispatch,
         raising=False,
     )
@@ -1267,7 +1273,7 @@ def default_cancel_not_requested(monkeypatch):
         return tool_ids
 
     monkeypatch.setattr(
-        "app.worker.repositories.validate_replay_skill_manifests",
+        'app.skills.infrastructure.postgres.validate_replay_skill_manifests',
         validate_replay_skill_manifests,
         raising=False,
     )
@@ -1299,7 +1305,7 @@ def default_cancel_not_requested(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "app.worker.repositories.get_context_snapshot_for_worker",
+        'app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker',
         get_context_snapshot_for_worker,
         raising=False,
     )
@@ -1318,7 +1324,7 @@ def default_cancel_not_requested(monkeypatch):
         ]
 
     monkeypatch.setattr(
-        "app.worker.repositories.list_scoped_context_messages",
+        'app.context.infrastructure.sources_postgres.list_scoped_context_messages',
         list_scoped_context_messages,
         raising=False,
     )
@@ -1370,10 +1376,10 @@ def default_cancel_not_requested(monkeypatch):
     async def get_mcp_tool_registry_entry(conn, *, tenant_id, tool_id):
         if (
             tool_id == "ragflow-knowledge-search"
-            and repository_module.ensure_mcp_tool_active is not _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE
+            and _repo_app_mcp_infrastructure_tool_policies_postgres.ensure_mcp_tool_active is not _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE
         ):
             try:
-                policy = await repository_module.ensure_mcp_tool_active(
+                policy = await _repo_app_mcp_infrastructure_tool_policies_postgres.ensure_mcp_tool_active(
                     conn,
                     tenant_id=tenant_id,
                     tool_id=tool_id,
@@ -1422,10 +1428,10 @@ def default_cancel_not_requested(monkeypatch):
     async def append_audit_log(conn, **kwargs):
         return "audit-default"
 
-    monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
-    monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_agent_skill, raising=False)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', resolve_agent_skill, raising=False)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_selected_skill', resolve_agent_skill, raising=False)
     monkeypatch.setattr(
-        "app.worker.repositories.get_capability_distribution_row",
+        'app.identity.infrastructure.capability_distributions_postgres.get_capability_distribution_row',
         get_capability_distribution_row,
         raising=False,
     )
@@ -1438,7 +1444,7 @@ def default_cancel_not_requested(monkeypatch):
         "app.worker.mcp_api.mcp_runtime_metadata_usable",
         mcp_postgres.mcp_runtime_metadata_usable,
     )
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log, raising=False)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', append_audit_log, raising=False)
 
     class _DefaultCatalogSnapshot:
         def __init__(self, skill_id, materialized_skill_ids):
@@ -1527,8 +1533,8 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
         return sentinel
 
     monkeypatch.setattr(
-        worker_module.repositories,
-        "validate_run_skill_snapshots_for_dispatch",
+        _owner_skills_infrastructure_run_snapshots_postgres,
+        'validate_run_skill_snapshots_for_dispatch',
         forbid_skill_snapshot,
     )
     monkeypatch.setattr(
@@ -2031,9 +2037,9 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         raise AssertionError("reconciliation must use the claim-owning transaction factory")
 
     monkeypatch.setattr("app.worker.transaction", unexpected_transaction)
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(
         "app.worker.reauthorize_bound_profile_for_worker_dispatch",
@@ -2186,15 +2192,15 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         return kwargs["artifact_id"]
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(
         "app.worker.promote_provisional_artifact_cleanup",
         promote_artifact_cleanup,
     )
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_run_attempt", get_run_attempt)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
@@ -2357,7 +2363,7 @@ def test_agent_profile_snapshot_rejects_authority_skill_version_mismatch():
             "skill_id": "qa-file-reviewer",
             "skill_version": "different-version",
         },
-        mcp_tool_ids=tuple(repository_module.extract_run_mcp_tool_ids(payload.input)),
+        mcp_tool_ids=tuple(_owner_runs_infrastructure_capability_admission_postgres.extract_run_mcp_tool_ids(payload.input)),
     )
 
     assert worker_module._agent_profile_snapshot_matches_authority(payload, admission) is False
@@ -2720,8 +2726,8 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
         "app.worker.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize,
@@ -2851,9 +2857,9 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
         "app.worker.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize,
@@ -2961,10 +2967,10 @@ async def test_worker_rechecks_queued_state_after_current_principal_http(monkeyp
         return "event-a"
 
     monkeypatch.setattr("app.worker.transaction", recording_transaction)
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr("app.worker.resolve_current_principal", resolve_current_principal)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(base_payload())
 
@@ -3061,10 +3067,10 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
         "app.bootstrap.worker_attempt_lifecycle.build_run_diagnostics_service",
         lambda: RecordingDiagnosticsService(),
@@ -3254,8 +3260,8 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
 
     outcome = await process_run_payload(raw, AdapterRegistry({"fake": AcceptedAdapter()}))
@@ -3328,9 +3334,9 @@ async def test_worker_enforces_declared_required_artifact_types(
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -3432,10 +3438,10 @@ async def test_worker_enforces_capability_artifact_contract_without_executor_req
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.list_run_steps", list_run_steps)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', list_run_steps)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -3498,12 +3504,12 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "classify_success_commit_block", classify_success_commit_block)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
@@ -3565,10 +3571,10 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "classify_success_commit_block", classify_success_commit_block)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
@@ -3616,10 +3622,10 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(executor_type="capture"),
@@ -3702,16 +3708,16 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(
-        "app.worker.repositories.get_context_snapshot_for_worker",
+        'app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker',
         get_context_snapshot_for_worker,
     )
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -3825,8 +3831,8 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
         return "evt-run-attempt"
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
         _TEST_RUN_LIFECYCLE,
         "mark_run_running",
@@ -3996,7 +4002,7 @@ async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_trans
         calls.append(("terminal", kwargs))
         return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
 
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
         "assert_worker_run_attempt_current",
@@ -4056,7 +4062,7 @@ async def test_worker_cancel_observes_an_already_cancelled_run_without_refencing
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("terminal Run must not re-fence its immutable attempt")
 
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
         "assert_worker_run_attempt_current",
@@ -4158,11 +4164,11 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
@@ -4218,7 +4224,7 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
@@ -4261,7 +4267,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
@@ -4330,7 +4336,7 @@ async def test_worker_moves_http_failure_diagnostics_before_terminal_result(
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
@@ -4396,7 +4402,7 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
@@ -4453,7 +4459,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
@@ -4493,7 +4499,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -4557,7 +4563,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -4675,10 +4681,10 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
@@ -4737,7 +4743,7 @@ async def test_worker_prefers_cancelled_when_executor_raises_after_cancel_reques
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
 
@@ -4783,7 +4789,7 @@ async def test_worker_does_not_append_cancel_terminal_event_when_cancel_update_i
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
@@ -4865,10 +4871,10 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
@@ -4938,11 +4944,11 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
 
     monkeypatch.setattr("app.worker.transaction", recording_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -4967,7 +4973,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
 async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
     captured = {}
     full_manifest = primary_manifest("qa-file-reviewer", "hash-primary")
-    manifest_ref = repository_module.skill_manifest_refs([full_manifest])[0]
+    manifest_ref = _owner_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs([full_manifest])[0]
 
     class MaterializationCursor:
         async def fetchall(self):
@@ -5015,9 +5021,9 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", materialization_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -5060,7 +5066,7 @@ async def test_worker_requires_new_conversation_before_attempt_binding(monkeypat
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(
         "app.worker.materialize_queued_worker_context_snapshot",
         missing_native_context,
@@ -5111,8 +5117,8 @@ async def test_worker_fails_missing_physical_context_snapshot_before_adapter(mon
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", missing_snapshot)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', missing_snapshot)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
@@ -5203,10 +5209,10 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
 
     outcome = await process_run_payload(
@@ -5330,11 +5336,11 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -5419,10 +5425,10 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -5512,10 +5518,10 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -5597,10 +5603,10 @@ async def test_worker_preserves_safe_top_level_legacy_context_source(monkeypatch
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -5713,10 +5719,10 @@ async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkey
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker", agent_id="general-agent", skill_id="general-chat"),
@@ -5826,10 +5832,10 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker", agent_id="general-agent", skill_id="general-chat"),
@@ -5891,8 +5897,8 @@ async def test_worker_fails_invalid_physical_context_binding_before_adapter(monk
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
@@ -5945,7 +5951,7 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
@@ -5997,7 +6003,7 @@ async def test_worker_rejects_missing_db_identity_fields_before_context_or_execu
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
@@ -6055,8 +6061,8 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
@@ -6193,10 +6199,10 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
         "app.worker._load_run_model_snapshot",
         run_model_snapshot_module.load_run_model_snapshot,
     )
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -6252,7 +6258,7 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
@@ -6333,10 +6339,10 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(
         base_payload(
@@ -6358,7 +6364,7 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
             "skill_id": "qa-file-reviewer",
             "skill_version": "hash-a",
             "content_hash": "hash-a",
-            "source_json": repository_module.run_skill_snapshot_source_json(
+            "source_json": _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
                 {
                     **primary_manifest("qa-file-reviewer", "hash-a"),
                     "dependency_ids": ["minimax-docx"],
@@ -6405,7 +6411,7 @@ async def test_worker_terminal_snapshots_keep_each_admitted_skill_release_decisi
         },
     ]
     expected_sources = {
-        manifest["skill_id"]: repository_module.run_skill_snapshot_source_json(manifest)
+        manifest["skill_id"]: _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(manifest)
         for manifest in admitted_manifests
     }
     snapshots = []
@@ -6452,11 +6458,11 @@ async def test_worker_terminal_snapshots_keep_each_admitted_skill_release_decisi
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
-        "app.worker.repositories.upsert_run_skill_snapshot",
+        'app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot',
         upsert_run_skill_snapshot,
     )
 
@@ -6506,7 +6512,7 @@ async def test_worker_persists_reviewed_uploaded_skill_with_complete_governance_
         "staged": False,
         "used": False,
     }
-    expected_source = repository_module.run_skill_snapshot_source_json(
+    expected_source = _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         locked_manifest,
         release_decision=release_decision(version),
     )
@@ -6550,9 +6556,9 @@ async def test_worker_persists_reviewed_uploaded_skill_with_complete_governance_
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(
         base_payload(
@@ -6622,10 +6628,10 @@ async def test_worker_drops_executor_returned_snapshot_governance_without_payloa
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(
         base_payload(skill_manifests=[primary_manifest("qa-file-reviewer", "hash-a")]),
@@ -6635,12 +6641,12 @@ async def test_worker_drops_executor_returned_snapshot_governance_without_payloa
     assert outcome.status == "succeeded"
     assert snapshots[0]["skill_version"] == "hash-a"
     assert snapshots[0]["content_hash"] == "hash-a"
-    assert snapshots[0]["source_json"] == repository_module.run_skill_snapshot_source_json(
+    assert snapshots[0]["source_json"] == _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         primary_manifest("qa-file-reviewer", "hash-a"),
         release_decision=release_decision("hash-a"),
     )
     serialized = json.dumps(snapshots[0]["source_json"], ensure_ascii=False)
-    assert snapshots[0]["source_json"]["snapshot_governance"] == repository_module.run_skill_snapshot_source_json(
+    assert snapshots[0]["source_json"]["snapshot_governance"] == _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         primary_manifest("qa-file-reviewer", "hash-a"),
         release_decision=release_decision("hash-a"),
     )["snapshot_governance"]
@@ -6698,10 +6704,10 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(
         base_payload(
@@ -6718,7 +6724,7 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
     assert outcome.status == "succeeded"
     assert snapshots[0]["skill_version"] == "hash-a"
     assert snapshots[0]["content_hash"] == "hash-a"
-    assert snapshots[0]["source_json"] == repository_module.run_skill_snapshot_source_json(
+    assert snapshots[0]["source_json"] == _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         {
             **primary_manifest("qa-file-reviewer", "hash-a"),
             "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-a"},
@@ -6786,10 +6792,10 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(
         base_payload(skill_manifests=[primary_manifest("qa-file-reviewer", "hash-a")]),
@@ -6895,10 +6901,10 @@ async def test_worker_persists_platform_controlled_runner_as_actually_used(monke
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(
         base_payload(
@@ -7005,9 +7011,9 @@ async def test_optional_agent_skill_claim_cannot_bypass_required_artifact_contra
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     selected_adapter = NonHookAgentAdapter()
     if source == "platform_controlled_runner":
@@ -7082,9 +7088,9 @@ async def test_optional_agent_skill_claim_does_not_complete_platform_terminal_co
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -7160,10 +7166,10 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": UntrustedSkillAdapter()}))
 
@@ -7223,9 +7229,9 @@ async def test_worker_persists_g2_executor_contract_latency_and_token_placeholde
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
         "app.worker.time.monotonic",
         lambda: next(monotonic_values, 10.25),
@@ -7300,9 +7306,9 @@ async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
         "app.worker.time.monotonic",
         lambda: next(monotonic_values, 20.5),
@@ -7374,10 +7380,10 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ArtifactAdapter()}))
 
@@ -7424,7 +7430,7 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
@@ -7479,7 +7485,7 @@ async def test_worker_persists_context_file_diagnostic_only_in_hidden_event(
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     caplog.set_level("ERROR", logger="app.worker")
 
@@ -7577,7 +7583,7 @@ async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
@@ -7658,7 +7664,7 @@ async def test_worker_preserves_canonical_sdk_failure_diagnostics_without_raw_er
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SdkFailureAdapter()}))
@@ -7696,11 +7702,11 @@ async def test_worker_records_non_secret_runtime_evidence(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.new_id", lambda prefix: "art_runtime_evidence")
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.platform.postgres.values.new_id', lambda prefix: "art_runtime_evidence")
 
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
@@ -7757,8 +7763,8 @@ async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypa
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
@@ -7804,7 +7810,7 @@ async def test_worker_honors_cancel_before_executor_start(monkeypatch):
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
 
@@ -7840,7 +7846,7 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
 
@@ -7896,9 +7902,9 @@ async def test_worker_stops_running_executor_after_cancel_requested_on_event_bou
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": StreamingAdapter()}))
 
@@ -7949,9 +7955,9 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
 
@@ -8061,9 +8067,9 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(
-        "app.worker.repositories.get_context_snapshot_for_worker",
+        'app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker',
         get_context_snapshot_for_worker,
     )
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
@@ -8145,7 +8151,7 @@ async def test_worker_records_unknown_executor_as_failed(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(base_payload(executor_type="missing"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
@@ -8172,7 +8178,7 @@ async def test_worker_honors_explicit_empty_registry(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
@@ -8217,11 +8223,11 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent", executor_type="fake"),
@@ -8254,9 +8260,9 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(
         base_payload(executor_type="missing"),
@@ -8296,7 +8302,7 @@ async def test_worker_routes_retired_runtime211_through_unknown_executor_guard(m
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(
         base_payload(executor_type="runtime211"),
@@ -8339,9 +8345,9 @@ async def test_worker_skips_direct_runtime211_payload_for_terminal_run(monkeypat
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.get_run", get_run)
+    monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(
         base_payload(executor_type="runtime211"),
@@ -8385,9 +8391,9 @@ async def test_worker_passes_user_id_to_executor_payload(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
         base_payload(
@@ -8455,12 +8461,12 @@ async def test_worker_keeps_artifacts_out_of_success_message_text(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
     generated_ids = iter(["art_reviewed"])
-    monkeypatch.setattr("app.worker.repositories.new_id", lambda prefix: next(generated_ids))
+    monkeypatch.setattr('app.platform.postgres.values.new_id', lambda prefix: next(generated_ids))
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": LocalPathAdapter()}))
 
@@ -8527,11 +8533,11 @@ async def test_worker_sanitizes_artifact_manifest_paths_before_persisting(monkey
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.new_id", lambda prefix: "art-a")
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.platform.postgres.values.new_id', lambda prefix: "art-a")
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": PathManifestAdapter()}))
 
@@ -8588,11 +8594,11 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.new_id", lambda prefix: "art-a")
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.platform.postgres.values.new_id', lambda prefix: "art-a")
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ArtifactAdapter()}))
 
@@ -8648,10 +8654,10 @@ async def test_worker_rejects_direct_assistant_delta_ingress(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     payload = base_payload(skill_id="general-chat", executor_type="claude-agent-worker")
     outcome = await process_run_payload(payload, registry=Registry(), worker_id="worker-stream")
@@ -8693,9 +8699,9 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": MessageAdapter()}))
 
@@ -8734,9 +8740,9 @@ async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
+    monkeypatch.setattr('app.mcp.infrastructure.tool_policies_postgres.ensure_mcp_tool_active', ensure_mcp_tool_active, raising=False)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(
         base_payload(skill_id="ragflow-knowledge-search", executor_type="claude-agent-worker"),
@@ -8980,10 +8986,10 @@ def _install_task6_worker_fakes(
         raising=False,
     )
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
-    monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_agent_skill, raising=False)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', resolve_agent_skill, raising=False)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_selected_skill', resolve_agent_skill, raising=False)
     monkeypatch.setattr(
-        "app.worker.repositories.get_capability_distribution_row",
+        'app.identity.infrastructure.capability_distributions_postgres.get_capability_distribution_row',
         get_capability_distribution_row,
         raising=False,
     )
@@ -8992,13 +8998,13 @@ def _install_task6_worker_fakes(
         get_mcp_tool_registry_entry,
         raising=False,
     )
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', append_audit_log)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
+    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
     monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: JwtStore())
@@ -9226,7 +9232,7 @@ async def test_worker_immutable_skill_snapshot_mismatch_blocks_before_stage_or_a
         raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
 
     monkeypatch.setattr(
-        "app.worker.repositories.validate_run_skill_snapshots_for_dispatch",
+        'app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch',
         mismatch,
         raising=False,
     )
@@ -9257,7 +9263,7 @@ async def test_worker_immutable_skill_snapshot_mismatch_blocks_before_stage_or_a
 async def test_worker_rejects_unlocked_builtin_identity_queue_projection_before_adapter(monkeypatch, projection):
     raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch)
     locked_manifest = state["locked_run"]["input_json"]["skill_manifests"][0]
-    expected_source = repository_module.run_skill_snapshot_source_json(
+    expected_source = _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         locked_manifest,
         release_decision=state["locked_run"]["input_json"]["release_decision"],
     )
@@ -9267,7 +9273,7 @@ async def test_worker_rejects_unlocked_builtin_identity_queue_projection_before_
         locked_manifest["builtin_tool_identities"] = projection
 
     async def validate_snapshot(_conn, *, skill_manifests, release_decision, **_kwargs):
-        actual_source = repository_module.run_skill_snapshot_source_json(
+        actual_source = _repo_app_skills_infrastructure_postgres.run_skill_snapshot_source_json(
             skill_manifests[0],
             release_decision=release_decision,
         )
@@ -9275,7 +9281,7 @@ async def test_worker_rejects_unlocked_builtin_identity_queue_projection_before_
             raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
 
     monkeypatch.setattr(
-        "app.worker.repositories.validate_run_skill_snapshots_for_dispatch",
+        'app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch',
         validate_snapshot,
     )
 
@@ -9291,10 +9297,10 @@ async def test_worker_revoked_historical_pin_blocks_before_stage_or_adapter(monk
     raw, registry, _, calls = _install_task6_worker_fakes(monkeypatch)
 
     async def revoked(*args, **kwargs):
-        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+        raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
 
     monkeypatch.setattr(
-        "app.worker.repositories.validate_replay_skill_manifests",
+        'app.skills.infrastructure.postgres.validate_replay_skill_manifests',
         revoked,
         raising=False,
     )

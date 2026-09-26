@@ -1,3 +1,4 @@
+import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
 from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
@@ -60,7 +61,7 @@ def install_workbench_route_fakes(monkeypatch) -> list[tuple[str, dict[str, obje
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(workbench_projections, "transaction", fake_transaction)
-    monkeypatch.setattr(workbench_projections.repositories, "append_audit_log", fake_audit)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', fake_audit)
     return calls
 
 

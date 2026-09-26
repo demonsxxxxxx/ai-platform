@@ -59,6 +59,24 @@ def _capability_distribution_projection(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _require_mcp_server_for_distribution(
+    conn: AsyncConnection, *, tenant_id: str, capability_id: str
+) -> None:
+    """Keep MCP distribution writes scoped to an existing, non-deleted server."""
+
+    cursor = await conn.execute(
+        """
+        select 1 as present
+        from mcp_servers
+        where tenant_id = %s and name = %s and status <> 'deleted'
+        for update
+        """,
+        (tenant_id, capability_id),
+    )
+    if await cursor.fetchone() is None:
+        raise RepositoryNotFoundError("mcp_server_not_found")
+
+
 def is_capability_distribution_archived(row: dict[str, Any] | None) -> bool:
     """Return whether a tenant capability binding has been archived."""
 
@@ -479,32 +497,9 @@ async def upsert_capability_distribution_row(
         )
     projected = _capability_distribution_projection(dict(row))
     if capability_kind == "mcp_server":
-        distribution_enabled = projected["status"] == "active"
-        catalog_cursor = await conn.execute(
-            """
-            update mcp_servers
-            set catalog_generation = catalog_generation + 1,
-                catalog_status = case
-                  when %s::boolean and status = 'active' then 'refresh_required'
-                  else 'disabled'
-                end,
-                catalog_unavailable_reason = case
-                  when %s::boolean and status = 'active' then 'refresh_required'
-                  else 'disabled'
-                end,
-                catalog_discovered_count = 0,
-                catalog_selectable_count = 0,
-                catalog_sync_lease_expires_at = null,
-                updated_at = now()
-            where tenant_id = %s
-              and name = %s
-              and status <> 'deleted'
-            returning name
-            """,
-            (distribution_enabled, distribution_enabled, tenant_id, capability_id),
+        await _require_mcp_server_for_distribution(
+            conn, tenant_id=tenant_id, capability_id=capability_id
         )
-        if await catalog_cursor.fetchone() is None:
-            raise RepositoryNotFoundError("mcp_server_not_found")
     return projected
 
 
@@ -631,32 +626,9 @@ async def toggle_capability_distribution_row(
         )
     projected = _capability_distribution_projection(dict(row))
     if capability_kind == "mcp_server":
-        distribution_enabled = projected["status"] == "active"
-        catalog_cursor = await conn.execute(
-            """
-            update mcp_servers
-            set catalog_generation = catalog_generation + 1,
-                catalog_status = case
-                  when %s::boolean and status = 'active' then 'refresh_required'
-                  else 'disabled'
-                end,
-                catalog_unavailable_reason = case
-                  when %s::boolean and status = 'active' then 'refresh_required'
-                  else 'disabled'
-                end,
-                catalog_discovered_count = 0,
-                catalog_selectable_count = 0,
-                catalog_sync_lease_expires_at = null,
-                updated_at = now()
-            where tenant_id = %s
-              and name = %s
-              and status <> 'deleted'
-            returning name
-            """,
-            (distribution_enabled, distribution_enabled, tenant_id, capability_id),
+        await _require_mcp_server_for_distribution(
+            conn, tenant_id=tenant_id, capability_id=capability_id
         )
-        if await catalog_cursor.fetchone() is None:
-            raise RepositoryNotFoundError("mcp_server_not_found")
     return projected
 
 

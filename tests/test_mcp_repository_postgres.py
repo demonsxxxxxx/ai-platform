@@ -8,6 +8,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app.mcp.infrastructure import postgres as mcp_repository
+from app.mcp.infrastructure import registry_postgres
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_MCP_CATALOG_TEST_DSN"
@@ -59,10 +60,10 @@ async def test_postgres_keeps_only_server_credentials_and_lightweight_tool_refs(
         await conn.execute(
             """
             insert into tenant_capability_distributions(
-              tenant_id, capability_kind, capability_id, status,
+              id, tenant_id, capability_kind, capability_id, status,
               visible_to_user, scope_mode, updated_by
             ) values (
-              'tenant-mcp', 'mcp_server', 'gateway', 'active',
+              'distribution-mcp', 'tenant-mcp', 'mcp_server', 'gateway', 'active',
               true, 'allowlist', 'user-mcp'
             )
             """
@@ -70,10 +71,10 @@ async def test_postgres_keeps_only_server_credentials_and_lightweight_tool_refs(
         await conn.execute(
             """
             insert into mcp_server_credentials(
-              id, tenant_id, server_name, credential_fingerprint,
+              tenant_id, server_name, credential_fingerprint,
               credential_envelope, updated_by
             ) values (
-              'credential-mcp', 'tenant-mcp', 'gateway', 'fingerprint',
+              'tenant-mcp', 'gateway', 'fingerprint',
               'sealed-envelope', 'user-mcp'
             )
             """
@@ -101,6 +102,116 @@ async def test_postgres_keeps_only_server_credentials_and_lightweight_tool_refs(
         assert tool["tool_id"] == "gateway::pmm.query_projects"
         assert tool["endpoint"] == ""
         assert catalog_table["relation"] is None
+    finally:
+        try:
+            await conn.execute("set search_path to public")
+            await conn.execute(
+                sql.SQL("drop schema {} cascade").format(sql.Identifier(schema_name))
+            )
+        finally:
+            await conn.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registry", [mcp_repository, registry_postgres])
+async def test_postgres_mcp_server_registry_crud_uses_current_schema(registry):
+    dsn = _postgres_dsn()
+    schema_name = f"mcp_registry_crud_{uuid.uuid4().hex}"
+    schema_source = Path("app/schema.sql").read_text(encoding="utf-8")
+    conn = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        await conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await conn.execute(
+            sql.SQL("set search_path to {}").format(sql.Identifier(schema_name))
+        )
+        await conn.execute(schema_source)
+        await conn.execute(
+            "insert into tenants(id, name) values (%s, %s)",
+            ("tenant-mcp-crud", "MCP Registry CRUD Test"),
+        )
+
+        created = await registry.upsert_mcp_server_registry(
+            conn,
+            tenant_id="tenant-mcp-crud",
+            name="crud-gateway",
+            transport="streamable_http",
+            enabled=True,
+            is_system=False,
+            endpoint_redacted="",
+            allowed_roles=["Reviewer"],
+            role_quotas={"Reviewer": 3},
+            department_ids=["QA"],
+            credential_state="configured",
+            credential_metadata={"auth_type": "bearer"},
+            credential_fingerprint="fingerprint-v1",
+            updated_by="user-mcp",
+        )
+        assert created["name"] == "crud-gateway"
+        assert created["status"] == "active"
+        assert created["allowed_roles"] == ["Reviewer"]
+        assert created["role_quotas"] == {"Reviewer": 3}
+        assert "catalog_status" not in created
+
+        updated = await registry.upsert_mcp_server_registry(
+            conn,
+            tenant_id="tenant-mcp-crud",
+            name="crud-gateway",
+            transport="sse",
+            enabled=True,
+            is_system=False,
+            endpoint_redacted="",
+            allowed_roles=["Admin"],
+            role_quotas={"Admin": 5},
+            department_ids=["Platform"],
+            credential_state="configured",
+            credential_metadata={"auth_type": "oauth"},
+            credential_fingerprint="fingerprint-v2",
+            updated_by="user-mcp",
+        )
+        assert updated["transport"] == "sse"
+        assert updated["allowed_roles"] == ["Admin"]
+        assert updated["department_ids"] == ["Platform"]
+        listed = await registry.list_mcp_server_registry(
+            conn,
+            tenant_id="tenant-mcp-crud",
+            department_id="Platform",
+        )
+        assert [row["name"] for row in listed] == ["crud-gateway"]
+        assert listed[0]["role_quotas"] == {"Admin": 5}
+
+        disabled = await registry.toggle_mcp_server_registry(
+            conn,
+            tenant_id="tenant-mcp-crud",
+            name="crud-gateway",
+            enabled=False,
+            updated_by="user-mcp",
+        )
+        assert disabled["status"] == "disabled"
+        assert await registry.list_mcp_server_registry(
+            conn,
+            tenant_id="tenant-mcp-crud",
+            department_id="Platform",
+            include_disabled=False,
+        ) == []
+        assert [
+            row["name"]
+            for row in await registry.list_mcp_server_registry(
+                conn,
+                tenant_id="tenant-mcp-crud",
+                department_id="Platform",
+            )
+        ] == ["crud-gateway"]
+        deleted = await registry.delete_mcp_server_registry(
+            conn, tenant_id="tenant-mcp-crud", name="crud-gateway", updated_by="user-mcp"
+        )
+        assert deleted["status"] == "deleted"
+        assert await registry.list_mcp_server_registry(
+            conn, tenant_id="tenant-mcp-crud", department_id="Platform"
+        ) == []
     finally:
         try:
             await conn.execute("set search_path to public")

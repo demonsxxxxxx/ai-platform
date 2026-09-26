@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.control_plane_contracts import normalize_thinking_effort
 from app.mcp.api import assert_mcp_tool_reference
-from app.persistence_limits import RUN_RESULT_MAX_BYTES, ensure_json_size
+from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.runtime.kernel_contracts import AgentEvent
 from app.sandbox.api import AssistantAnswerReceipt
 from app.validation import (

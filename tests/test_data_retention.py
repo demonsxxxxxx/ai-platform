@@ -1,3 +1,7 @@
+import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
+import app.persistence.artifacts as _owner_persistence_artifacts
+import app.persistence.object_deletions as _owner_persistence_object_deletions
+import app.persistence.retention as _owner_persistence_retention
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -78,16 +82,16 @@ async def test_retention_maintenance_receipts_successful_object_delete(monkeypat
 
     monkeypatch.setattr(data_retention, "transaction", fake_transaction)
     monkeypatch.setattr(
-        data_retention.repositories, "queue_expired_artifacts_for_deletion", queue
+        _owner_persistence_artifacts, 'queue_expired_artifacts_for_deletion', queue
     )
     monkeypatch.setattr(
-        data_retention.repositories, "purge_deleted_memory_records", purge
+        _owner_persistence_retention, 'purge_deleted_memory_records', purge
     )
-    monkeypatch.setattr(data_retention.repositories, "claim_object_deletions", claim)
+    monkeypatch.setattr(_owner_persistence_object_deletions, 'claim_object_deletions', claim)
     monkeypatch.setattr(
-        data_retention.repositories, "complete_object_deletion", complete
+        _owner_persistence_object_deletions, 'complete_object_deletion', complete
     )
-    monkeypatch.setattr(data_retention.repositories, "append_audit_log", audit)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', audit)
 
     result = await data_retention.run_data_retention_maintenance(
         settings(), now=10, storage=storage
@@ -133,13 +137,13 @@ async def test_retention_failure_records_only_safe_error_code(monkeypatch):
 
     monkeypatch.setattr(data_retention, "transaction", fake_transaction)
     monkeypatch.setattr(
-        data_retention.repositories, "queue_expired_artifacts_for_deletion", empty
+        _owner_persistence_artifacts, 'queue_expired_artifacts_for_deletion', empty
     )
     monkeypatch.setattr(
-        data_retention.repositories, "purge_deleted_memory_records", empty
+        _owner_persistence_retention, 'purge_deleted_memory_records', empty
     )
-    monkeypatch.setattr(data_retention.repositories, "claim_object_deletions", claim)
-    monkeypatch.setattr(data_retention.repositories, "fail_object_deletion", fail)
+    monkeypatch.setattr(_owner_persistence_object_deletions, 'claim_object_deletions', claim)
+    monkeypatch.setattr(_owner_persistence_object_deletions, 'fail_object_deletion', fail)
 
     result = await data_retention.run_data_retention_maintenance(
         settings(), now=10, storage=RecordingStorage(fail=True)
@@ -205,15 +209,15 @@ async def test_permanent_failure_does_not_starve_later_object(monkeypatch):
 
     monkeypatch.setattr(data_retention, "transaction", fake_transaction)
     monkeypatch.setattr(
-        data_retention.repositories, "queue_expired_artifacts_for_deletion", empty
+        _owner_persistence_artifacts, 'queue_expired_artifacts_for_deletion', empty
     )
     monkeypatch.setattr(
-        data_retention.repositories, "purge_deleted_memory_records", empty
+        _owner_persistence_retention, 'purge_deleted_memory_records', empty
     )
-    monkeypatch.setattr(data_retention.repositories, "claim_object_deletions", claim)
-    monkeypatch.setattr(data_retention.repositories, "fail_object_deletion", fail)
+    monkeypatch.setattr(_owner_persistence_object_deletions, 'claim_object_deletions', claim)
+    monkeypatch.setattr(_owner_persistence_object_deletions, 'fail_object_deletion', fail)
     monkeypatch.setattr(
-        data_retention.repositories, "complete_object_deletion", complete
+        _owner_persistence_object_deletions, 'complete_object_deletion', complete
     )
 
     result = await data_retention.run_data_retention_maintenance(
@@ -256,16 +260,16 @@ async def test_receipt_conflict_is_retried_under_the_same_claim_generation(monke
 
     monkeypatch.setattr(data_retention, "transaction", fake_transaction)
     monkeypatch.setattr(
-        data_retention.repositories, "queue_expired_artifacts_for_deletion", empty
+        _owner_persistence_artifacts, 'queue_expired_artifacts_for_deletion', empty
     )
     monkeypatch.setattr(
-        data_retention.repositories, "purge_deleted_memory_records", empty
+        _owner_persistence_retention, 'purge_deleted_memory_records', empty
     )
-    monkeypatch.setattr(data_retention.repositories, "claim_object_deletions", claim)
+    monkeypatch.setattr(_owner_persistence_object_deletions, 'claim_object_deletions', claim)
     monkeypatch.setattr(
-        data_retention.repositories, "complete_object_deletion", complete
+        _owner_persistence_object_deletions, 'complete_object_deletion', complete
     )
-    monkeypatch.setattr(data_retention.repositories, "fail_object_deletion", fail)
+    monkeypatch.setattr(_owner_persistence_object_deletions, 'fail_object_deletion', fail)
 
     result = await data_retention.run_data_retention_maintenance(
         settings(),

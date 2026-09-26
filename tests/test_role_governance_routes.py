@@ -1,3 +1,7 @@
+import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
+import app.identity.infrastructure.capability_distributions_postgres as _owner_identity_infrastructure_capability_distributions_postgres
+import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
+import app.skills.infrastructure.catalog_postgres as _owner_skills_infrastructure_catalog_postgres
 from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
@@ -114,11 +118,11 @@ def install_role_governance_route_fakes(
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(role_governance, "transaction", fake_transaction)
-    monkeypatch.setattr(role_governance.repositories, "tenant_exists", fake_tenant_exists)
-    monkeypatch.setattr(role_governance.repositories, "list_capability_distribution_rows", fake_list_distributions)
-    monkeypatch.setattr(role_governance.repositories, "get_skill", fake_get_skill)
-    monkeypatch.setattr(role_governance.repositories, "append_audit_log", fake_audit)
-    monkeypatch.setattr(role_governance.repositories, "list_role_governance_audit_history", fake_audit_history)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'tenant_exists', fake_tenant_exists)
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', fake_list_distributions)
+    monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'get_skill', fake_get_skill)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', fake_audit)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'list_role_governance_audit_history', fake_audit_history)
     return calls
 
 

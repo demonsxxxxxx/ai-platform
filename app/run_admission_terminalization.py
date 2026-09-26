@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from psycopg import AsyncConnection
 
-from app import repositories
+from app.persistence import chat_submissions as persistence_chat_submissions
+
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.runs.api import (
     RunDiagnosticsService,
@@ -103,7 +104,7 @@ async def reject_chat_submission_for_retired_platform_multi_agent(
     )
     if not rejected:
         return False
-    await repositories.finalize_chat_submission(
+    await persistence_chat_submissions.finalize_chat_submission(
         conn,
         tenant_id=tenant_id,
         user_id=user_id,

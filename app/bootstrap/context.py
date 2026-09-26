@@ -1,6 +1,10 @@
 """Compose Context application use cases with PostgreSQL adapters."""
 
-from app import repositories
+from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
+from app.context.infrastructure import sources_postgres as context_sources_postgres
+
+from app.context.file_continuity import materialize_run_context_files
+
 from app.context.api import (
     ProviderSessionContinuityError,
     materialize_worker_context_snapshot,
@@ -28,11 +32,25 @@ async def materialize_queued_worker_context_snapshot(
     try:
         context = await materialize_worker_context_snapshot(
             conn, identity=identity, context_snapshot_id=str(payload.context_snapshot_id or ""),
-            snapshot_loader=repositories.get_context_snapshot_for_worker,
-            message_loader=repositories.list_scoped_context_messages,
-            history_page_loader=repositories.list_session_context_messages,
+            snapshot_loader=context_snapshot_postgres.get_context_snapshot_for_worker,
+            message_loader=context_sources_postgres.list_scoped_context_messages,
+            history_page_loader=context_sources_postgres.list_session_context_messages,
             context_projector=context_projector,
         )
     except ProviderSessionContinuityError as exc:
         return None, exc.code
     return context, None
+
+
+async def materialize_worker_context_files(
+    *, transaction_factory, storage, storage_io, storage_size_limit_error,
+    workspace, tenant_id, workspace_id, user_id, session_id, run_id, file_ids,
+):
+    """Bind the scoped file reader at the worker composition boundary."""
+    return await materialize_run_context_files(
+        repository=context_sources_postgres,
+        transaction_factory=transaction_factory, storage=storage, storage_io=storage_io,
+        storage_size_limit_error=storage_size_limit_error, workspace=workspace,
+        tenant_id=tenant_id, workspace_id=workspace_id, user_id=user_id,
+        session_id=session_id, run_id=run_id, file_ids=file_ids,
+    )

@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from app import repositories
+from app.context.infrastructure import postgres as context_postgres
+from app.context.infrastructure import sources_postgres as context_sources_postgres
+
 from app.context.file_content import (
     ContextFileContentError,
     validate_context_file_for_stage,
@@ -152,7 +154,7 @@ class RepositoryContextRetrievalRepository:
         limit: int,
         offset: int,
     ) -> list[dict[str, Any]]:
-        rows = await repositories.list_scoped_context_messages(
+        rows = await context_sources_postgres.list_scoped_context_messages(
             self._conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -174,7 +176,7 @@ class RepositoryContextRetrievalRepository:
         run_id: str,
         file_id: str,
     ) -> dict[str, Any] | None:
-        row = await repositories.get_scoped_context_file(
+        row = await context_sources_postgres.get_scoped_context_file(
             self._conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -195,7 +197,7 @@ class RepositoryContextRetrievalRepository:
         run_id: str,
         artifact_id: str,
     ) -> dict[str, Any] | None:
-        row = await repositories.get_scoped_context_artifact(
+        row = await context_sources_postgres.get_scoped_context_artifact(
             self._conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -217,7 +219,7 @@ class RepositoryContextRetrievalRepository:
         query: str,
         limit: int,
     ) -> list[dict[str, Any]]:
-        rows = await repositories.list_scoped_context_memory_records(
+        rows = await context_postgres.list_scoped_context_memory_records(
             self._conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -260,22 +262,22 @@ class TransactionalContextRetrievalRepository:
 
     async def list_messages(self, **kwargs: Any) -> list[dict[str, Any]]:
         async with self._transaction_factory() as conn:
-            rows = await repositories.list_scoped_context_messages(conn, **kwargs)
+            rows = await context_sources_postgres.list_scoped_context_messages(conn, **kwargs)
         return [dict(row) for row in rows]
 
     async def get_file(self, **kwargs: Any) -> dict[str, Any] | None:
         async with self._transaction_factory() as conn:
-            row = await repositories.get_scoped_context_file(conn, **kwargs)
+            row = await context_sources_postgres.get_scoped_context_file(conn, **kwargs)
         return dict(row) if row is not None else None
 
     async def get_artifact(self, **kwargs: Any) -> dict[str, Any] | None:
         async with self._transaction_factory() as conn:
-            row = await repositories.get_scoped_context_artifact(conn, **kwargs)
+            row = await context_sources_postgres.get_scoped_context_artifact(conn, **kwargs)
         return dict(row) if row is not None else None
 
     async def list_memory_records(self, **kwargs: Any) -> list[dict[str, Any]]:
         async with self._transaction_factory() as conn:
-            rows = await repositories.list_scoped_context_memory_records(conn, **kwargs)
+            rows = await context_postgres.list_scoped_context_memory_records(conn, **kwargs)
         return [dict(row) for row in rows]
 
     def read_storage_bytes(

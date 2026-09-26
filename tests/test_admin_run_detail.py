@@ -216,7 +216,7 @@ def test_admin_run_list_returns_tenant_scoped_summaries(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.list_admin_runs", fake_list_admin_runs, raising=False)
+    monkeypatch.setattr("app.runs.infrastructure.admin_queries_postgres.list_admin_runs", fake_list_admin_runs, raising=False)
     monkeypatch.setattr("app.routes.admin_runs.get_run_queue_position", fake_get_run_queue_position, raising=False)
     monkeypatch.setattr("app.routes.admin_runs.get_queue_insight", fake_get_queue_insight, raising=False)
     _install_admin_monitor_metadata(
@@ -275,7 +275,7 @@ def test_admin_run_list_sanitizes_secret_like_error_fields(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.list_admin_runs", fake_list_admin_runs, raising=False)
+    monkeypatch.setattr("app.runs.infrastructure.admin_queries_postgres.list_admin_runs", fake_list_admin_runs, raising=False)
     _install_admin_monitor_metadata(
         monkeypatch,
         {
@@ -444,7 +444,7 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.get_admin_run_detail", fake_get_admin_run_detail)
+    monkeypatch.setattr("app.runs.infrastructure.admin_queries_postgres.get_admin_run_detail", fake_get_admin_run_detail)
     monkeypatch.setattr("app.routes.admin_runs.get_run_queue_position", fake_get_run_queue_position, raising=False)
     monkeypatch.setattr("app.routes.admin_runs.get_queue_insight", fake_get_queue_insight, raising=False)
     _install_admin_monitor_metadata(
@@ -559,11 +559,11 @@ def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch)
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.get_admin_run_detail",
+        "app.runs.infrastructure.admin_queries_postgres.get_admin_run_detail",
         fake_get_admin_run_detail,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.get_run",
+        "app.runs.infrastructure.postgres.get_run",
         forbidden_get_run,
     )
     app = create_app()
@@ -632,7 +632,7 @@ def test_admin_run_detail_includes_live_queue_context_for_queued_run(monkeypatch
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.get_admin_run_detail", fake_get_admin_run_detail)
+    monkeypatch.setattr("app.runs.infrastructure.admin_queries_postgres.get_admin_run_detail", fake_get_admin_run_detail)
     monkeypatch.setattr("app.routes.admin_runs.get_run_queue_position", fake_get_run_queue_position, raising=False)
     monkeypatch.setattr("app.routes.admin_runs.get_queue_insight", fake_get_queue_insight, raising=False)
     _install_admin_monitor_metadata(monkeypatch, {})

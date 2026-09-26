@@ -1,9 +1,12 @@
+import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
+import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
+import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from app import repositories
 from app.auth import AuthPrincipal
 from app.models import SandboxLeaseReleaseRequest
 from app.routes import admin_runtime, runtime_callbacks, sandbox_leases
@@ -96,7 +99,7 @@ async def test_release_lookup_holds_a_row_lock_for_provider_stop_ordering():
             calls.append((statement, parameters))
             return _SingleRowCursor({"id": "lease-a", "status": "active"})
 
-    row = await repositories.get_sandbox_lease(
+    row = await _owner_sandbox_infrastructure_leases_postgres.get_sandbox_lease(
         Connection(),
         tenant_id="tenant-a",
         user_id="user-a",
@@ -122,7 +125,7 @@ async def test_current_attempt_lookup_enforces_attempt_and_owner_generation_cons
             calls.append((statement, parameters))
             return Cursor()
 
-    await repositories.list_current_sandbox_runtime_leases_for_attempt(
+    await _owner_sandbox_infrastructure_leases_postgres.list_current_sandbox_runtime_leases_for_attempt(
         Connection(),
         tenant_id="tenant-a",
         run_id="run-a",
@@ -252,11 +255,11 @@ async def test_explicit_release_binds_failure_to_lease_and_surfaces_audit_outage
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(sandbox_leases, "transaction", _FakeTransaction)
-    monkeypatch.setattr(sandbox_leases.repositories, "get_sandbox_lease", get_lease)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, 'get_sandbox_lease', get_lease)
     monkeypatch.setattr(sandbox_leases, "stop_sandbox_leases", fail_stop)
     monkeypatch.setattr(
-        sandbox_leases.repositories,
-        "record_sandbox_runtime_cleanup_outcome",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'record_sandbox_runtime_cleanup_outcome',
         fail_audit,
     )
 
@@ -298,7 +301,7 @@ async def test_admin_orphan_cleanup_failure_writes_tenant_audit(monkeypatch):
         return "audit-a"
 
     monkeypatch.setattr(admin_runtime, "transaction", _FakeTransaction)
-    monkeypatch.setattr(admin_runtime.repositories, "append_audit_log", append_audit_log)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', append_audit_log)
 
     with pytest.raises(HTTPException) as exc_info:
         await admin_runtime._cleanup_provider_orphans(FailedProvider(), principal)
@@ -343,7 +346,7 @@ async def test_admin_orphan_cleanup_surfaces_audit_outage(monkeypatch):
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(admin_runtime, "transaction", _FakeTransaction)
-    monkeypatch.setattr(admin_runtime.repositories, "append_audit_log", fail_audit)
+    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', fail_audit)
 
     with pytest.raises(HTTPException) as exc_info:
         await admin_runtime._cleanup_provider_orphans(FailedProvider(), principal)
@@ -388,14 +391,14 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(
         raise AssertionError("batched callback must not use per-event persistence")
 
     monkeypatch.setattr(runtime_callbacks, "transaction", _FakeTransaction)
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         exact_lease,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", append_event_batch)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append_event)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event_batch', append_event_batch)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fail_append_event)
 
     response = await runtime_callbacks.record_executor_callback(
         _callback(), capabilities=private_callback_capabilities
@@ -478,14 +481,14 @@ async def test_executor_callback_rejects_disagreeing_first_class_attempt_binding
         raise AssertionError("inconsistent attempt binding must not append events")
 
     monkeypatch.setattr(runtime_callbacks, "transaction", _FakeTransaction)
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         inconsistent_lease,
     )
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event", fail_append)
-    monkeypatch.setattr(runtime_callbacks.repositories, "append_event_batch", fail_append)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fail_append)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event_batch', fail_append)
 
     with pytest.raises(HTTPException) as exc_info:
         await runtime_callbacks.record_executor_callback(

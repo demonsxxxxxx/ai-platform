@@ -1,7 +1,7 @@
+import app.platform.postgres.errors as _owner_platform_postgres_errors
 import pytest
 from datetime import datetime
 
-from app import repositories
 from app.context_builder import (
     executor_context_pack_from_snapshot,
     ensure_public_context_provenance,
@@ -17,13 +17,7 @@ def fake_provider_lineage_port_for_context_builder(monkeypatch):
     async def fake_claim(_conn, *, scope, run_id):
         assert scope.session_id and run_id
 
-    async def fake_checkpoint(_conn, *, scope, run_id, checkpoint_id=None):
-        assert scope["session_id"] and run_id and checkpoint_id is None
-        return None
-
     monkeypatch.setattr("app.context_builder.claim_provider_lineage", fake_claim)
-    monkeypatch.setattr("app.context_builder.load_ready_checkpoint", fake_checkpoint)
-
 
 
 @pytest.mark.asyncio
@@ -53,10 +47,10 @@ async def test_record_initial_context_snapshot_persists_context_manifest_for_exe
         calls.append(("event", kwargs))
         return "evt-manifest"
 
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_get_effective_memory_policy)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create_context_snapshot)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     context_ref = await record_initial_context_snapshot(
         object(),
@@ -577,10 +571,10 @@ async def test_record_initial_context_snapshot_records_effective_memory_policy_w
         calls.append(("event", kwargs))
         return "evt-policy"
 
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_get_effective_memory_policy)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create_context_snapshot)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     context_ref = await record_initial_context_snapshot(
         object(),
@@ -715,13 +709,13 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
         calls.append(("event", kwargs))
         return "evt-followup"
 
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.context_builder.repositories.get_scoped_context_file", fake_get_scoped_context_file)
-    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_get_effective_memory_policy)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.get_scoped_context_file', fake_get_scoped_context_file)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create_context_snapshot)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     context_ref = await record_initial_context_snapshot(
         object(),
@@ -797,11 +791,11 @@ async def test_context_builder_preserves_only_authorized_retrieval_file_basename
     async def ignore(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr("app.context_builder.repositories.list_authorized_context_file_rows", authorized_files)
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", policy)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", create)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", ignore)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", ignore)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_authorized_context_file_rows', authorized_files)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', policy)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', create)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', ignore)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', ignore)
 
     context_ref = await record_initial_context_snapshot(
         Connection(), tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a",
@@ -899,15 +893,15 @@ async def test_record_initial_context_snapshot_keeps_messages_without_implicit_s
         return {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "session_id": "session-a",
                 "agent_id": "general-agent", "session_generation": 2}
 
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_current_run)
-    monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", fake_count_messages)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", fake_list_messages)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", fake_list_artifacts)
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_memory_policy)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", ignore)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", ignore)
-    monkeypatch.setattr("app.context_builder.repositories.session_has_legacy_run_history", no_legacy)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_current_run)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.count_session_context_messages', fake_count_messages)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_messages', fake_list_messages)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_artifacts', fake_list_artifacts)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_memory_policy)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', ignore)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', ignore)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.session_has_legacy_run_history', no_legacy)
 
     await record_initial_context_snapshot(
         object(),
@@ -979,16 +973,16 @@ async def test_record_initial_context_snapshot_preserves_more_than_eight_current
     async def current_run(*_args, **_kwargs):
         return {"workspace_id": "workspace-a", "session_id": "session-a", "agent_id": "document-review", "session_generation": 2}
 
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", current_run)
-    monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", no_history)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", empty)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", historical_files)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", empty)
-    monkeypatch.setattr("app.context_builder.repositories.session_has_legacy_run_history", no_legacy)
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", memory_policy)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", create_snapshot)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", ignore)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", ignore)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', current_run)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.count_session_context_messages', no_history)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_messages', empty)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_files', historical_files)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_artifacts', empty)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.session_has_legacy_run_history', no_legacy)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', memory_policy)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', create_snapshot)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', ignore)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', ignore)
 
     await record_initial_context_snapshot(
         object(),
@@ -1044,16 +1038,16 @@ async def test_session_history_snapshot_authorizes_candidate_tail_without_manife
     async def current_run(*_args, **_kwargs):
         return {"workspace_id": "workspace-a", "session_id": "session-a", "agent_id": "general-agent", "session_generation": 2}
 
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", current_run)
-    monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", fake_count_messages)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", fake_list_messages)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", fake_empty)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", fake_empty)
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_policy)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_empty)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_empty)
-    monkeypatch.setattr("app.context_builder.repositories.session_has_legacy_run_history", fake_empty)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', current_run)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.count_session_context_messages', fake_count_messages)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_messages', fake_list_messages)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_files', fake_empty)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_artifacts', fake_empty)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_policy)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', fake_empty)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_empty)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.session_has_legacy_run_history', fake_empty)
 
     await record_initial_context_snapshot(
         object(), tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a",
@@ -1108,16 +1102,16 @@ async def test_context_builder_counts_history_before_fetching_authorized_candida
     async def current_run(*_args, **_kwargs):
         return {"workspace_id": "workspace-a", "session_id": "session-a", "agent_id": "general-agent", "session_generation": 14}
 
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", current_run)
-    monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", count_messages)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", list_messages)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", empty)
-    monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", empty)
-    monkeypatch.setattr("app.context_builder.repositories.session_has_legacy_run_history", no_legacy)
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", policy)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", create)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", empty)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", empty)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', current_run)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.count_session_context_messages', count_messages)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_messages', list_messages)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_files', empty)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_artifacts', empty)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.session_has_legacy_run_history', no_legacy)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', policy)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', create)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', empty)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', empty)
 
     await record_initial_context_snapshot(
         object(), tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a",
@@ -1189,13 +1183,13 @@ async def test_record_initial_context_snapshot_does_not_invent_artifact_version_
         calls.append(("event", kwargs))
         return "evt-followup"
 
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.context_builder.repositories.get_scoped_context_file", fake_get_scoped_context_file)
-    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_get_effective_memory_policy)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.get_scoped_context_file', fake_get_scoped_context_file)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create_context_snapshot)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     context_ref = await record_initial_context_snapshot(
         object(),
@@ -1257,12 +1251,12 @@ async def test_record_initial_context_snapshot_skips_source_artifacts_without_sa
         calls.append(("event", kwargs))
         return "evt-followup"
 
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_get_effective_memory_policy)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create_context_snapshot)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     context_ref = await record_initial_context_snapshot(
         object(),
@@ -1332,12 +1326,12 @@ async def test_record_initial_context_snapshot_requires_source_artifacts_same_wo
         calls.append(("event", kwargs))
         return "evt-followup"
 
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_get_effective_memory_policy)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create_context_snapshot)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     context_ref = await record_initial_context_snapshot(
         object(),
@@ -1383,11 +1377,11 @@ async def test_record_initial_context_snapshot_rejects_source_file_missing_from_
     async def fail_source_artifacts(*args, **kwargs):
         raise AssertionError("source artifacts must not be read after file authorization fails")
 
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.context_builder.repositories.get_scoped_context_file", missing_source_file)
-    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fail_source_artifacts)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.context.infrastructure.sources_postgres.get_scoped_context_file', missing_source_file)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fail_source_artifacts)
 
-    with pytest.raises(repositories.RepositoryConflictError, match="context_file_unavailable"):
+    with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError, match="context_file_unavailable"):
         await record_initial_context_snapshot(
             object(),
             tenant_id="tenant-a",
@@ -1447,12 +1441,12 @@ async def test_record_initial_context_snapshot_requires_source_artifacts_same_te
         calls.append(("event", kwargs))
         return "evt-followup"
 
-    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
-    monkeypatch.setattr("app.context_builder.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.context_builder.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
-    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
-    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_get_effective_memory_policy)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create_context_snapshot)
+    monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.update_run_context_snapshot_ref', fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     context_ref = await record_initial_context_snapshot(
         object(),

@@ -6,34 +6,16 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import UUID4
 
-from app import repositories
-from app.mcp.api import authorize_selected_chat_mcp_tools
 from app.agent_apps.api import AgentProfileAuthority
+from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
+from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capabilities import get_capability
-from app.context_builder import record_initial_context_snapshot
+from app.context import file_continuity as context_file_continuity
 from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
+from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
+from app.context_builder import record_initial_context_snapshot
 from app.context_manifest import public_context_manifest_projection
-from app.db import transaction
-from app.execution.api import resolve_chat_model_selection
-from app.models import (
-    CreateRunRequest,
-    CreateRunResponse,
-    QueueRunPayload,
-    RunControlMutationResponse,
-    RunControlOperationResponse,
-    RunControlResponse,
-    RunResponse,
-)
-from app.runs.api import (
-    bind_run_model,
-    inherit_run_model,
-    public_run_outcome,
-    run_retry_block_reason,
-    run_unconfirmed_execution_block_reason,
-)
-from app.product_events import initial_run_event_specs
-from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import (
     HARNESS_CHAT_EXECUTOR_TYPE,
     HASH_LIKE_VALUE_PATTERN,
@@ -45,6 +27,29 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
+from app.conversations.infrastructure import postgres as conversations_postgres
+from app.db import transaction
+from app.execution.api import resolve_chat_model_selection
+from app.files.infrastructure import run_bindings_postgres as files_run_bindings
+from app.identity.infrastructure import audit_postgres as identity_audit
+from app.identity.infrastructure import postgres as identity_postgres
+from app.mcp.api import authorize_selected_chat_mcp_tools
+from app.models import (
+    CreateRunRequest,
+    CreateRunResponse,
+    QueueRunPayload,
+    RunControlMutationResponse,
+    RunControlOperationResponse,
+    RunControlResponse,
+    RunResponse,
+)
+from app.platform.postgres import errors as platform_errors
+from app.platform.postgres import values as platform_values
+from app.platform.postgres.errors import (
+    RepositoryConflictError,
+    RepositoryNotFoundError,
+)
+from app.product_events import initial_run_event_specs
 from app.projection_redaction import (
     capability_id_from_skill,
     internal_agent_id_for_request,
@@ -63,14 +68,28 @@ from app.queue import (
     read_queue_admission,
     remove_queued_run,
 )
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.queue_payload_validation import queue_payload_invalid_detail
+from app.routes.sandbox_runtime_cleanup import (
+    SandboxRuntimeCleanupError,
+    release_stopped_sandbox_leases_for_cancel,
+    stop_sandbox_leases,
+)
+from app.run_admission_policy import (
+    PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+    contains_persisted_platform_multi_agent_control,
+    contains_platform_multi_agent_control,
+)
+from app.run_admission_terminalization import (
+    terminalize_enqueue_failure_with_v4,
+)
+from app.run_control_readiness import run_control_readiness_snapshot
 from app.run_projection import (
     artifact_card,
     executor_result_schema_version,
     normalize_run_status,
     progress_for_status,
-    public_text_or_fallback,
     public_terminal_projection,
+    public_text_or_fallback,
     run_contract_version,
     run_event_response,
     run_step_response,
@@ -84,30 +103,32 @@ from app.run_provenance import (
     run_provenance_snapshot,
     safe_provenance_graph_id,
 )
-from app.run_admission_policy import (
-    PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
-    contains_persisted_platform_multi_agent_control,
-    contains_platform_multi_agent_control,
+from app.runs.api import (
+    RunCancellationUseCase,
+    RunDiagnosticsService,
+    bind_run_model,
+    inherit_run_model,
+    public_run_outcome,
+    run_retry_block_reason,
+    run_unconfirmed_execution_block_reason,
 )
-from app.run_admission_terminalization import (
-    terminalize_enqueue_failure_with_v4,
+from app.runs.infrastructure import (
+    capability_admission_postgres as runs_capability_admission,
 )
-from app.run_control_readiness import run_control_readiness_snapshot
-from app.runs.api import RunCancellationUseCase, RunDiagnosticsService
-from app.streaming.api import (
-    V4PublicationTransportUnavailable,
-    WorkerV4Capabilities,
-    admit_v4_stream,
-    publish_run_event,
+from app.runs.infrastructure import (
+    control_operations_postgres as runs_control_operations,
 )
-from app.routes.sandbox_runtime_cleanup import (
-    SandboxRuntimeCleanupError,
-    release_stopped_sandbox_leases_for_cancel,
-    stop_sandbox_leases,
-)
+from app.runs.infrastructure import creation_postgres as runs_creation
+from app.runs.infrastructure import postgres as runs_postgres
+from app.runs.infrastructure import replay_postgres as runs_replay
+from app.runs.infrastructure import steps_postgres as runs_steps
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.settings import get_settings
 from app.skills.api import materialize_skill_manifest_pins
+from app.skills.infrastructure import catalog_postgres as skills_catalog
+from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots
+from app.skills.infrastructure import versions_postgres as skills_versions
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
     SkillVersionMaterializationError,
@@ -116,7 +137,17 @@ from app.skills.pinning import (
     governed_locked_skill_version,
     validate_skill_manifest_refs,
 )
-from app.skills.release_policy import release_decision_payload_for_locked_version, resolve_rollout_skill_decision
+from app.skills.release_policy import (
+    release_decision_payload_for_locked_version,
+    resolve_rollout_skill_decision,
+)
+from app.streaming.api import (
+    V4PublicationTransportUnavailable,
+    WorkerV4Capabilities,
+    admit_v4_stream,
+    publish_run_event,
+)
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
@@ -143,14 +174,14 @@ def _raise_if_capability_revoked(exc: Exception) -> None:
 
 async def _audit_capability_denial(
     principal: AuthPrincipal,
-    error: repositories.RepositoryAuthorizationError,
+    error: platform_errors.RepositoryAuthorizationError,
     *,
     source: str,
 ) -> None:
     if error.denial is None:
         return
     async with transaction() as conn:
-        await repositories.append_capability_authorization_denial_audit(
+        await identity_audit.append_capability_authorization_denial_audit(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -166,7 +197,7 @@ async def _audit_wrapped_capability_denial(
     source: str,
 ) -> None:
     cause = error.__cause__
-    if isinstance(cause, repositories.RepositoryAuthorizationError):
+    if isinstance(cause, platform_errors.RepositoryAuthorizationError):
         await _audit_capability_denial(principal, cause, source=source)
 
 
@@ -248,8 +279,8 @@ async def _governed_skill_manifest_pins(
             skill_id=skill_id,
             input_payload=input_payload,
             release_policy_version=release_policy_version,
-            get_skill=repositories.get_skill,
-            get_effective_skill_version=repositories.get_effective_skill_version_for_policy,
+            get_skill=skills_catalog.get_skill,
+            get_effective_skill_version=skills_versions.get_effective_skill_version_for_policy,
             is_user_runnable_status=is_user_runnable_status,
             build_skill_version_policy_manifest_pins=build_skill_version_policy_manifest_pins,
             materialization_error=SkillVersionMaterializationError,
@@ -592,7 +623,7 @@ def event_visible_to_principal(row: dict[str, object], principal: AuthPrincipal)
 
 async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -> None:
     limit = int(get_settings().max_active_runs_per_user)
-    await repositories.enforce_user_active_run_admission(
+    await runs_postgres.enforce_user_active_run_admission(
         conn,
         tenant_id=tenant_id,
         user_id=user_id,
@@ -631,7 +662,7 @@ async def _compensate_enqueue_failure(
 
 
 def _strip_server_owned_control_metadata(input_payload: object, *, redact_public: bool = False) -> dict[str, Any]:
-    return repositories.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
+    return runs_capability_admission.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
 
 
 def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | None:
@@ -649,7 +680,7 @@ async def prepare_copied_run_for_queue(
 ) -> dict[str, Any]:
     effective_principal = queue_principal or principal
     snapshot_auth_source = copied.get("auth_source") if queue_principal is not None else principal.source
-    copied_snapshot = repositories.copied_run_execution_snapshot(copied)
+    copied_snapshot = runs_replay.copied_run_execution_snapshot(copied)
     copied_input = copied_snapshot["input"]
     execution_kind = str(
         copied_snapshot.get("execution_kind") or RUN_EXECUTION_KIND_SKILL
@@ -659,7 +690,7 @@ async def prepare_copied_run_for_queue(
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
     skill_manifest_refs = copied_snapshot["skill_manifests"]
-    skill_manifests = await repositories.materialize_run_skill_manifests(
+    skill_manifests = await skills_run_snapshots.materialize_run_skill_manifests(
         conn,
         tenant_id=effective_principal.tenant_id,
         run_id=str(copied["run_id"]),
@@ -672,7 +703,7 @@ async def prepare_copied_run_for_queue(
         await authorize_selected_chat_mcp_tools(
             conn,
             tenant_id=effective_principal.tenant_id,
-            tool_ids=repositories.extract_run_mcp_tool_ids(copied_input),
+            tool_ids=runs_capability_admission.extract_run_mcp_tool_ids(copied_input),
             principal_department_id=effective_principal.department_id,
             principal_roles=effective_principal.roles,
             is_admin=is_ai_admin(effective_principal),
@@ -691,7 +722,7 @@ async def prepare_copied_run_for_queue(
                 run_id=str(copied["run_id"]),
             )
         else:
-            await repositories.authorize_replay_run_capabilities(
+            await runs_capability_admission.authorize_replay_run_capabilities(
                 conn,
                 tenant_id=effective_principal.tenant_id,
                 agent_id=str(copied["agent_id"]),
@@ -709,7 +740,7 @@ async def prepare_copied_run_for_queue(
         raise RepositoryConflictError("run_execution_skill_identity_mismatch")
     copied["skill_version"] = copied_skill_version
     copied["release_decision"] = copied_snapshot["release_decision"]
-    await repositories.update_run_auth_snapshot(
+    await runs_creation.update_run_auth_snapshot(
         conn,
         tenant_id=effective_principal.tenant_id,
         run_id=copied["run_id"],
@@ -723,7 +754,7 @@ async def prepare_copied_run_for_queue(
         authority_checked_at=effective_principal.authority_checked_at or None,
     )
     if execution_kind == RUN_EXECUTION_KIND_SKILL:
-        await repositories.append_event(
+        await streaming_run_events.append_event(
             conn,
             tenant_id=effective_principal.tenant_id,
             run_id=copied["run_id"],
@@ -767,7 +798,7 @@ async def prepare_copied_run_for_queue(
         source=source,
         execution_kind=execution_kind,
     ):
-        await repositories.append_event(
+        await streaming_run_events.append_event(
             conn,
             tenant_id=effective_principal.tenant_id,
             run_id=copied["run_id"],
@@ -776,7 +807,7 @@ async def prepare_copied_run_for_queue(
             message=event["message"],
             payload=event["payload"],
         )
-    queue_snapshot = repositories.copied_run_execution_snapshot(
+    queue_snapshot = runs_replay.copied_run_execution_snapshot(
         {
             **copied_snapshot,
             "skill_version": copied_skill_version,
@@ -799,8 +830,8 @@ async def prepare_copied_run_for_queue(
             **queue_snapshot,
         }
     )
-    validated_snapshot = repositories.copied_run_execution_snapshot(queue_payload)
-    await repositories.update_run_input_execution_snapshot(
+    validated_snapshot = runs_replay.copied_run_execution_snapshot(queue_payload)
+    await runs_replay.update_run_input_execution_snapshot(
         conn,
         tenant_id=effective_principal.tenant_id,
         run_id=copied["run_id"],
@@ -855,13 +886,13 @@ async def create_run(
             request.input,
             redact_public=not is_ai_admin(principal),
         )
-    except repositories.RepositoryAuthorizationError as exc:
+    except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="create_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
             if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
-                harness_agent = await repositories.get_agent(
+                harness_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=tenant_id,
                     agent_id=resolved_agent_id,
@@ -874,7 +905,7 @@ async def create_run(
                 await authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=tenant_id,
-                    tool_ids=repositories.extract_run_mcp_tool_ids(run_input),
+                    tool_ids=runs_capability_admission.extract_run_mcp_tool_ids(run_input),
                     principal_department_id=principal.department_id,
                     principal_roles=principal.roles,
                     is_admin=is_ai_admin(principal),
@@ -896,14 +927,14 @@ async def create_run(
                     "permissions": principal.permissions,
                 }
                 if request.selected_skill is not None:
-                    skill = await repositories.authorize_selected_run_capabilities(
+                    skill = await runs_capability_admission.authorize_selected_run_capabilities(
                         conn,
                         expected_version=request.selected_skill.expected_version,
                         rollout_key=user_id,
                         **authorization_kwargs,
                     )
                 else:
-                    skill = await repositories.authorize_run_capabilities(
+                    skill = await runs_capability_admission.authorize_run_capabilities(
                         conn,
                         **authorization_kwargs,
                     )
@@ -911,7 +942,7 @@ async def create_run(
                 input_modes = list(skill.get("input_modes") or [])
             reusable_file_rows = []
             if request.session_id and not request.file_ids and has_file_input_mode(input_modes):
-                reusable_file_rows = await repositories.list_authorized_session_input_files(
+                reusable_file_rows = await context_file_continuity.list_authorized_session_input_files(
                     conn,
                     tenant_id=tenant_id,
                     workspace_id=request.workspace_id,
@@ -957,10 +988,10 @@ async def create_run(
                     skill_manifests,
                     release_decision=release_decision_payload,
                 )
-                skill_manifests = repositories.pin_primary_skill_mcp_tool_ids(
+                skill_manifests = skills_run_snapshots.pin_primary_skill_mcp_tool_ids(
                     skill_manifests,
                     skill_id=resolved_skill_id,
-                    mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
+                    mcp_tool_ids=runs_capability_admission.run_mcp_tool_ids_for_skill(skill, run_input),
                 )
             else:
                 skill_version = None
@@ -972,9 +1003,9 @@ async def create_run(
                 raise HTTPException(status_code=503, detail="run_model_unavailable") from exc
             if selected_model is None:
                 raise HTTPException(status_code=503, detail="run_model_unavailable")
-            skill_manifest_transport = repositories.skill_manifest_refs(skill_manifests)
-            session_id = request.session_id or repositories.new_id("ses")
-            run_id = repositories.new_id("run")
+            skill_manifest_transport = skills_run_snapshots.skill_manifest_refs(skill_manifests)
+            session_id = request.session_id or platform_values.new_id("ses")
+            run_id = platform_values.new_id("run")
             base_queue_payload = {
                 "tenant_id": tenant_id,
                 "workspace_id": request.workspace_id,
@@ -999,12 +1030,12 @@ async def create_run(
                 ),
             }
             queue_payload = _validate_queue_payload_for_enqueue(base_queue_payload)
-            await repositories.ensure_workspace_belongs_to_tenant(
+            await conversations_postgres.ensure_workspace_belongs_to_tenant(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=request.workspace_id,
             )
-            await repositories.authorize_files_for_run(
+            await files_run_bindings.authorize_files_for_run(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=request.workspace_id,
@@ -1014,13 +1045,13 @@ async def create_run(
                 file_ids=request.file_ids,
                 input_modes=input_modes,
             )
-            await repositories.ensure_user(
+            await identity_postgres.ensure_user(
                 conn,
                 tenant_id=tenant_id,
                 user_id=user_id,
                 display_name=principal.display_name,
             )
-            session_id = await repositories.create_session(
+            session_id = await conversations_postgres.create_session(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=request.workspace_id,
@@ -1029,7 +1060,7 @@ async def create_run(
                 title=request.title or resolved_agent_id,
                 session_id=session_id,
             )
-            run_id = await repositories.create_run(
+            run_id = await runs_creation.create_run(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=request.workspace_id,
@@ -1069,14 +1100,14 @@ async def create_run(
                 max_output_tokens=selected_model.max_output_tokens,
             )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
-                await repositories.insert_run_skill_snapshots_at_creation(
+                await skills_run_snapshots.insert_run_skill_snapshots_at_creation(
                     conn,
                     tenant_id=tenant_id,
                     run_id=run_id,
                     skill_manifests=skill_manifests,
                     release_decision=release_decision_payload,
                 )
-            await repositories.bind_files_to_run(
+            await files_run_bindings.bind_files_to_run(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=request.workspace_id,
@@ -1121,7 +1152,7 @@ async def create_run(
                 source="runs_api",
                 execution_kind=execution_kind,
             ):
-                await repositories.append_event(
+                await streaming_run_events.append_event(
                     conn,
                     tenant_id=tenant_id,
                     run_id=run_id,
@@ -1132,7 +1163,7 @@ async def create_run(
                 )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 assert resolved_skill_id is not None
-                await repositories.append_event(
+                await streaming_run_events.append_event(
                     conn,
                     tenant_id=tenant_id,
                     run_id=run_id,
@@ -1144,7 +1175,7 @@ async def create_run(
                         skill_id=resolved_skill_id,
                     ),
                 )
-    except repositories.RepositoryAuthorizationError as exc:
+    except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="create_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except RepositoryNotFoundError as exc:
@@ -1200,7 +1231,7 @@ async def copy_run(
                 principal=principal,
                 run_id=run_id,
             )
-            copied = await repositories.copy_run_as_new_task(
+            copied = await runs_replay.copy_run_as_new_task(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1223,7 +1254,7 @@ async def copy_run(
     except HTTPException as exc:
         await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
         raise
-    except repositories.RepositoryAuthorizationError as exc:
+    except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="copy_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
@@ -1254,7 +1285,7 @@ async def copy_run(
             diagnostic_error=exc,
             run_diagnostics=getattr(request.app.state, "run_diagnostics_service", None),
         )
-        if isinstance(exc, repositories.RepositoryAuthorizationError):
+        if isinstance(exc, platform_errors.RepositoryAuthorizationError):
             await _audit_capability_denial(principal, exc, source="copy_run")
             raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
         if isinstance(exc, SkillVersionMaterializationError):
@@ -1319,7 +1350,7 @@ def _run_control_queue_payload(
 ) -> dict[str, Any]:
     """Rebuild the exact immutable queue payload stored on a committed child."""
 
-    snapshot = repositories.copied_run_execution_snapshot(operation.get("input_json"))
+    snapshot = runs_replay.copied_run_execution_snapshot(operation.get("input_json"))
     return _validate_queue_payload_for_enqueue(
         {
             "tenant_id": principal.tenant_id,
@@ -1411,7 +1442,7 @@ async def _mutate_run_control_child(
         async with transaction() as conn:
             # Global order: operation advisory -> user admission advisory ->
             # source-run row. The resolver takes the same first lock.
-            await repositories.acquire_run_control_operation_lock(
+            await runs_control_operations.acquire_run_control_operation_lock(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1419,7 +1450,7 @@ async def _mutate_run_control_child(
                 action=action,
                 operation_id=normalized_operation_id,
             )
-            copied = await repositories.get_run_control_operation(
+            copied = await runs_control_operations.get_run_control_operation(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -1442,7 +1473,7 @@ async def _mutate_run_control_child(
                     principal=principal,
                     run_id=run_id,
                 )
-                source = await repositories.get_authorized_run(
+                source = await runs_creation.get_authorized_run(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
@@ -1458,9 +1489,9 @@ async def _mutate_run_control_child(
                     if reason:
                         raise RepositoryConflictError(reason)
                 mutation = (
-                    repositories.retry_run_as_new_task
+                    runs_replay.retry_run_as_new_task
                     if action == "retry"
-                    else repositories.resume_run_as_new_task
+                    else runs_replay.resume_run_as_new_task
                 )
                 copied = await mutation(
                     conn,
@@ -1482,7 +1513,7 @@ async def _mutate_run_control_child(
                         source=f"{action}_run",
                         authorized_source_run_id=run_id,
                     )
-                    await repositories.record_run_control_operation(
+                    await runs_control_operations.record_run_control_operation(
                         conn,
                         tenant_id=principal.tenant_id,
                         source_run_id=run_id,
@@ -1494,7 +1525,7 @@ async def _mutate_run_control_child(
     except HTTPException as exc:
         await _audit_wrapped_capability_denial(principal, exc, source=f"{action}_run")
         raise
-    except repositories.RepositoryAuthorizationError as exc:
+    except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source=f"{action}_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
@@ -1523,7 +1554,7 @@ async def _mutate_run_control_child(
         except HTTPException as exc:
             await _audit_wrapped_capability_denial(principal, exc, source=f"{action}_run")
             raise
-        except repositories.RepositoryAuthorizationError as exc:
+        except platform_errors.RepositoryAuthorizationError as exc:
             await _audit_capability_denial(principal, exc, source=f"{action}_run")
             raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
         except SkillVersionMaterializationError as exc:
@@ -1607,7 +1638,7 @@ async def get_run_control_operation(
     response.headers["Cache-Control"] = "private, no-store"
     normalized_operation_id = str(operation_id)
     async with transaction() as conn:
-        await repositories.acquire_run_control_operation_lock(
+        await runs_control_operations.acquire_run_control_operation_lock(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1615,7 +1646,7 @@ async def get_run_control_operation(
             action=action,
             operation_id=normalized_operation_id,
         )
-        source = await repositories.get_authorized_run(
+        source = await runs_creation.get_authorized_run(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1623,7 +1654,7 @@ async def get_run_control_operation(
         )
         if source is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        operation = await repositories.get_run_control_operation(
+        operation = await runs_control_operations.get_run_control_operation(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1659,7 +1690,7 @@ async def get_copy_run_plan(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1667,7 +1698,7 @@ async def get_copy_run_plan(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
+        steps = await runs_steps.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
     plan = copy_recovery_plan(run, steps, include_raw_skill=is_ai_admin(principal))
     plan["queue_insight"] = await get_queue_insight(principal.tenant_id, user_id=principal.user_id)
     return plan
@@ -1680,7 +1711,7 @@ async def get_run_control_readiness(
 ) -> dict[str, object]:
     """Return read-only readiness for platform-controlled run actions."""
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -1688,7 +1719,7 @@ async def get_run_control_readiness(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
+        steps = await runs_steps.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
     run_status = normalize_run_status(str(run["status"]))
     queue_insight = (
         await queue_insight_for_status(run_status, principal.tenant_id, user_id=principal.user_id)
@@ -1711,7 +1742,7 @@ async def get_run_resume_manifest(
     """Return read-only checkpoint reuse intent for an authorized copied run."""
     tenant_id = principal.tenant_id
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=tenant_id,
             user_id=principal.user_id,
@@ -1719,11 +1750,11 @@ async def get_run_resume_manifest(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        steps = await runs_steps.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
         authorized_source_run_ids: set[str] = set()
         if is_ai_admin(principal):
             for source_run_id in _resume_manifest_source_run_candidates(steps):
-                source_run = await repositories.get_authorized_run(
+                source_run = await runs_creation.get_authorized_run(
                     conn,
                     tenant_id=tenant_id,
                     user_id=principal.user_id,
@@ -1747,7 +1778,7 @@ async def get_run_checkpoint_audit(
     """Return read-only checkpoint materialization audit for an authorized run."""
     tenant_id = principal.tenant_id
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=tenant_id,
             user_id=principal.user_id,
@@ -1755,8 +1786,8 @@ async def get_run_checkpoint_audit(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-        artifacts = await repositories.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
+        steps = await runs_steps.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        artifacts = await artifacts_records.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
     return run_checkpoint_audit_snapshot(run=run, steps=steps, artifacts=artifacts, principal=principal)
 
 
@@ -1829,7 +1860,7 @@ async def cancel_run(
                         leases=exc.stopped_leases,
                         trace_id=result.get("trace_id"),
                     )
-                await repositories.record_sandbox_runtime_cleanup_outcome(
+                await sandbox_leases.record_sandbox_runtime_cleanup_outcome(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=str(result["run_id"]),
@@ -1855,7 +1886,7 @@ async def cancel_run(
                     leases=stopped_sandbox_leases,
                     trace_id=result.get("trace_id"),
                 )
-                await repositories.record_sandbox_runtime_cleanup_outcome(
+                await sandbox_leases.record_sandbox_runtime_cleanup_outcome(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=str(result["run_id"]),
@@ -1881,18 +1912,18 @@ async def get_run(
 ) -> RunResponse:
     tenant_id = principal.tenant_id
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=tenant_id,
             user_id=principal.user_id,
             run_id=run_id,
         )
-        artifacts = await repositories.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id) if run else []
-        events = await repositories.list_run_events(conn, tenant_id=tenant_id, run_id=run_id) if run else []
-        steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id) if run else []
+        artifacts = await artifacts_records.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id) if run else []
+        events = await streaming_run_events.list_run_events(conn, tenant_id=tenant_id, run_id=run_id) if run else []
+        steps = await runs_steps.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id) if run else []
         bound_context_snapshot = None
         if run is not None and hasattr(conn, "execute"):
-            bound_context_snapshot = await repositories.get_bound_executor_context_snapshot(
+            bound_context_snapshot = await context_snapshot_postgres.get_bound_executor_context_snapshot(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=str(run.get("workspace_id") or ""),
@@ -2015,7 +2046,7 @@ async def get_run_playback(
     tenant_id = principal.tenant_id
     event_limit = max(min(limit, 500), 1)
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=tenant_id,
             user_id=principal.user_id,
@@ -2023,18 +2054,18 @@ async def get_run_playback(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        events = await repositories.list_run_events(
+        events = await streaming_run_events.list_run_events(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
             after_sequence=after_sequence,
             limit=event_limit,
         )
-        artifacts = await repositories.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
-        steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        artifacts = await artifacts_records.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
+        steps = await runs_steps.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
         bound_context_snapshot = None
         if hasattr(conn, "execute"):
-            bound_context_snapshot = await repositories.get_bound_executor_context_snapshot(
+            bound_context_snapshot = await context_snapshot_postgres.get_bound_executor_context_snapshot(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=str(run.get("workspace_id") or ""),
@@ -2092,7 +2123,7 @@ async def get_run_provenance(
     """Return the read-only public provenance graph for an authorized run."""
     tenant_id = principal.tenant_id
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=tenant_id,
             user_id=principal.user_id,
@@ -2100,8 +2131,8 @@ async def get_run_provenance(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        artifacts = await repositories.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
-        steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        artifacts = await artifacts_records.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
+        steps = await runs_steps.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     return run_provenance_snapshot(run=run, steps=steps, artifacts=artifacts, principal=principal)
 
 
@@ -2114,7 +2145,7 @@ async def get_run_events(
 ) -> dict[str, object]:
     tenant_id = principal.tenant_id
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=tenant_id,
             user_id=principal.user_id,
@@ -2124,7 +2155,7 @@ async def get_run_events(
             raise HTTPException(status_code=404, detail="run_not_found")
         run_contract_version(run)
         executor_result_schema_version(run)
-        events = await repositories.list_run_events(
+        events = await streaming_run_events.list_run_events(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -2148,7 +2179,7 @@ async def get_run_steps(
 ) -> dict[str, object]:
     tenant_id = principal.tenant_id
     async with transaction() as conn:
-        run = await repositories.get_authorized_run(
+        run = await runs_creation.get_authorized_run(
             conn,
             tenant_id=tenant_id,
             user_id=principal.user_id,
@@ -2156,5 +2187,5 @@ async def get_run_steps(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        steps = await runs_steps.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     return {"run_id": run_id, "steps": run_step_responses(steps, principal=principal)}

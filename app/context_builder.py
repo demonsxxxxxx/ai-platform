@@ -4,7 +4,14 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from app import repositories
+from app.artifacts.infrastructure import records_postgres as artifacts_records_postgres
+from app.context.infrastructure import postgres as context_postgres
+from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
+from app.context.infrastructure import sources_postgres as context_sources_postgres
+from app.platform.postgres import errors as platform_errors
+from app.runs.infrastructure import creation_postgres as runs_creation_postgres
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events_postgres
+
 from app.context.api import (
     ConversationSourceChain, ProviderSessionScope, claim_provider_lineage,
     validate_authority_receipt,
@@ -579,7 +586,7 @@ async def record_initial_context_snapshot(
     history_authorized_count = 0
     conversation_authority: dict[str, Any] | None = None
     if include_session_history:
-        current_run = await repositories.get_authorized_run(
+        current_run = await runs_creation_postgres.get_authorized_run(
             conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id,
         )
         if (
@@ -588,14 +595,14 @@ async def record_initial_context_snapshot(
             or current_run.get("session_id") != session_id
             or current_run.get("agent_id") != agent_id
         ):
-            raise repositories.RepositoryConflictError("conversation_authority_scope_invalid")
+            raise platform_errors.RepositoryConflictError("conversation_authority_scope_invalid")
         try:
             await claim_provider_lineage(
                 conn, scope=ProviderSessionScope(tenant_id, workspace_id, user_id, session_id, agent_id),
                 run_id=run_id,
             )
         except ValueError as exc:
-            raise repositories.RepositoryConflictError(str(exc)) from exc
+            raise platform_errors.RepositoryConflictError(str(exc)) from exc
         scope = {"tenant_id": tenant_id, "workspace_id": workspace_id, "user_id": user_id,
                  "session_id": session_id, "agent_id": agent_id}
         chain = ConversationSourceChain(
@@ -604,7 +611,7 @@ async def record_initial_context_snapshot(
             current_run_id=run_id,
             current_message_id=(included_message_ids[-1] if included_message_ids else None),
         )
-        history_candidate_count = await repositories.count_session_context_messages(
+        history_candidate_count = await context_sources_postgres.count_session_context_messages(
             conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -613,7 +620,7 @@ async def record_initial_context_snapshot(
             run_id=run_id,
         )
         while True:
-            page = await repositories.list_session_context_messages(
+            page = await context_sources_postgres.list_session_context_messages(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
@@ -626,16 +633,16 @@ async def record_initial_context_snapshot(
                 after_id=chain.range_end["id"] if chain.range_end else None,
             )
             if len(page) > 4 or sum(len(str(row.get("content") or "").encode("utf-8")) for row in page) > 1024 * 1024:
-                raise repositories.RepositoryConflictError("conversation_source_page_invalid")
+                raise platform_errors.RepositoryConflictError("conversation_source_page_invalid")
             chain.add_page(page)
             if len(page) < 4:
                 break
         if chain.predecessor_message_count + chain.message_count != history_candidate_count:
-            raise repositories.RepositoryConflictError("conversation_authority_range_invalid")
+            raise platform_errors.RepositoryConflictError("conversation_authority_range_invalid")
         history_authorized_count = history_candidate_count
         conversation_authority = validate_authority_receipt(chain.receipt())
         if include_session_files:
-            session_files = await repositories.list_session_context_files(
+            session_files = await context_sources_postgres.list_session_context_files(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
@@ -652,7 +659,7 @@ async def record_initial_context_snapshot(
                     if isinstance(row, dict) and row.get("id")
                 ],
             )
-        session_artifacts = await repositories.list_session_context_artifacts(
+        session_artifacts = await context_sources_postgres.list_session_context_artifacts(
             conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -662,7 +669,7 @@ async def record_initial_context_snapshot(
             limit=8,
         )
         source_artifacts.extend(row for row in session_artifacts if isinstance(row, dict))
-        legacy_history_excluded = await repositories.session_has_legacy_run_history(
+        legacy_history_excluded = await context_sources_postgres.session_has_legacy_run_history(
             conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -671,7 +678,7 @@ async def record_initial_context_snapshot(
             run_id=run_id,
         )
     if source_run_id:
-        authorized_source_run = await repositories.get_authorized_run(
+        authorized_source_run = await runs_creation_postgres.get_authorized_run(
             conn,
             tenant_id=tenant_id,
             user_id=user_id,
@@ -685,10 +692,10 @@ async def record_initial_context_snapshot(
             and authorized_source_run.get("session_id") == session_id
         )
         if included_file_ids and not source_scope_matches:
-            raise repositories.RepositoryConflictError("context_file_unavailable")
+            raise platform_errors.RepositoryConflictError("context_file_unavailable")
         if source_scope_matches:
             for file_id in included_file_ids:
-                source_file = await repositories.get_scoped_context_file(
+                source_file = await context_sources_postgres.get_scoped_context_file(
                     conn,
                     tenant_id=tenant_id,
                     workspace_id=workspace_id,
@@ -698,8 +705,8 @@ async def record_initial_context_snapshot(
                     file_id=file_id,
                 )
                 if source_file is None:
-                    raise repositories.RepositoryConflictError("context_file_unavailable")
-            explicit_source_artifacts = await repositories.list_run_artifacts(
+                    raise platform_errors.RepositoryConflictError("context_file_unavailable")
+            explicit_source_artifacts = await artifacts_records_postgres.list_run_artifacts(
                 conn,
                 tenant_id=tenant_id,
                 run_id=source_run_id,
@@ -736,7 +743,7 @@ async def record_initial_context_snapshot(
     )
     authorized_file_rows: list[dict[str, Any]] = []
     if hasattr(conn, "execute"):
-        authorized_file_rows = await repositories.list_authorized_context_file_rows(
+        authorized_file_rows = await context_sources_postgres.list_authorized_context_file_rows(
             conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
@@ -744,7 +751,7 @@ async def record_initial_context_snapshot(
             session_id=session_id,
             file_ids=included_file_ids,
         )
-    memory_policy = await repositories.get_effective_memory_policy(
+    memory_policy = await context_postgres.get_effective_memory_policy(
         conn,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
@@ -786,7 +793,7 @@ async def record_initial_context_snapshot(
         "long_term_memory_enabled": False,
         "retention_days": int(memory_policy.get("retention_days") or 90),
     }
-    snapshot = await repositories.create_context_snapshot(
+    snapshot = await context_snapshot_postgres.create_context_snapshot(
         conn,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
@@ -831,14 +838,14 @@ async def record_initial_context_snapshot(
         "context_manifest": public_manifest,
         "context_window": public_manifest["context_window"],
     }
-    await repositories.update_run_context_snapshot_ref(
+    await context_snapshot_postgres.update_run_context_snapshot_ref(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
         context_snapshot_id=str(snapshot["id"]),
         context_snapshot=context_ref,
     )
-    await repositories.append_event(
+    await streaming_run_events_postgres.append_event(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,

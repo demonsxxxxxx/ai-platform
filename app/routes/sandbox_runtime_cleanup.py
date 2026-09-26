@@ -3,6 +3,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from app.db import transaction
 from app.execution_boundary import (
     GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
     GOVERNED_EGRESS_PROOF_LABEL,
@@ -10,7 +11,6 @@ from app.execution_boundary import (
     governed_egress_proof_label,
     is_governed_egress_proof,
 )
-from app.settings import get_settings
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.container_provider import ContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease
@@ -21,10 +21,10 @@ from app.runtime.sandbox.opensandbox_policy import (
     internal_test_orphan_cleanup_expected_labels,
     requested_opensandbox_image,
 )
+from app.sandbox.infrastructure import leases_postgres as sandbox_leases_postgres
+from app.settings import get_settings
+from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.validation import assert_safe_id
-from app import repositories
-from app.db import transaction
-
 
 ProviderFactory = Callable[[str | None], ContainerProvider]
 
@@ -314,7 +314,7 @@ async def release_stopped_sandbox_leases_for_cancel(
         }
         if requested_by_role:
             payload["requested_by_role"] = requested_by_role
-        await repositories.append_event(
+        await streaming_run_events.append_event(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -353,7 +353,7 @@ async def release_stopped_sandbox_leases(
         lease_ids=lease_ids,
     )
     for lease in released_leases:
-        await repositories.append_event(
+        await streaming_run_events.append_event(
             conn,
             tenant_id=tenant_id,
             run_id=str(lease["run_id"]),
@@ -383,7 +383,7 @@ async def cleanup_expired_sandbox_leases(
         reason=reason,
     )
     for lease in rows:
-        await repositories.append_event(
+        await streaming_run_events.append_event(
             conn,
             tenant_id=str(lease["tenant_id"]),
             run_id=str(lease["run_id"]),
@@ -463,7 +463,7 @@ async def cleanup_failed_sandbox_executor_reconciliation_leases(
             )
             if finalized is None:
                 continue
-            await repositories.append_event(
+            await streaming_run_events.append_event(
                 conn,
                 tenant_id=str(finalized["tenant_id"]),
                 run_id=str(finalized["run_id"]),
@@ -521,7 +521,7 @@ async def cleanup_expired_sandbox_runtime_leases(
         if exc.stopped_leases:
             await release_stopped_with_conn(conn, exc.stopped_leases)
         for (failure_tenant_id, failure_run_id), subject in grouped.items():
-            await repositories.record_sandbox_runtime_cleanup_outcome(
+            await sandbox_leases_postgres.record_sandbox_runtime_cleanup_outcome(
                 conn,
                 tenant_id=failure_tenant_id,
                 run_id=failure_run_id,

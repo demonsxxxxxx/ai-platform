@@ -1,4 +1,5 @@
 from __future__ import annotations
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 
 import os
 import uuid
@@ -95,7 +96,7 @@ async def test_callback_acknowledges_only_after_commit_and_stream_write(monkeypa
     monkeypatch.setattr(route, "_lock_current_runtime_attempt_then_run", AsyncMock(return_value=({"tenant_id": "tenant-a"}, {})))
     monkeypatch.setattr(route, "_require_current_runtime_attempt", AsyncMock())
     monkeypatch.setattr(route, "get_stream_authority", AsyncMock(return_value=authority))
-    monkeypatch.setattr(route.repositories, "append_event_batch", AsyncMock(return_value={"duplicate": False}))
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event_batch', AsyncMock(return_value={"duplicate": False}))
     monkeypatch.setattr(route, "callback_event_to_run_events", lambda _: [SimpleNamespace(model_dump=lambda **_: {})])
     monkeypatch.setattr(route, "callback_thinking_summary_to_v4", lambda *_, **__: ())
     monkeypatch.setattr(route, "agent_event_to_executor_event", lambda _: {})

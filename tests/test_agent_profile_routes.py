@@ -131,7 +131,7 @@ def test_agent_profile_favorite_uses_authenticated_principal_and_safe_projection
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.agent_profiles.repositories.get_authorized_session_projection",
+        'app.conversations.infrastructure.postgres.get_authorized_session_projection',
         get_session,
     )
     monkeypatch.setattr("app.routes.chat.chat_stream", chat_stream)
@@ -195,7 +195,7 @@ def test_dedicated_agent_run_rejects_every_override_before_storage_or_dispatch(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.agent_profiles.repositories.get_authorized_session_projection",
+        'app.conversations.infrastructure.postgres.get_authorized_session_projection',
         forbidden_session_read,
     )
     monkeypatch.setattr("app.routes.chat.chat_stream", forbidden_chat)
@@ -242,7 +242,7 @@ def test_dedicated_agent_run_fails_closed_on_ownership_or_agent_mismatch(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.agent_profiles.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.agent_profiles.repositories.get_authorized_session_projection",
+        'app.conversations.infrastructure.postgres.get_authorized_session_projection',
         get_session,
     )
     monkeypatch.setattr("app.routes.chat.chat_stream", forbidden_chat)
@@ -322,7 +322,8 @@ def test_builder_trial_run_is_idempotently_bound_to_one_test_session_and_canonic
 
 
 async def test_resolve_agent_skill_uses_global_skill_lifecycle_status():
-    from app.repositories import RepositoryConflictError, resolve_agent_skill
+    from app.platform.postgres.errors import RepositoryConflictError
+    from app.skills.infrastructure.resolution_postgres import resolve_agent_skill
 
     class OneRowCursor:
         async def fetchone(self):
@@ -362,7 +363,7 @@ async def test_resolve_agent_skill_uses_global_skill_lifecycle_status():
 
 
 async def test_resolve_agent_skill_projects_canonical_mcp_backing_for_authorizer():
-    from app.repositories import resolve_agent_skill
+    from app.skills.infrastructure.resolution_postgres import resolve_agent_skill
 
     class OneRowCursor:
         async def fetchone(self):
@@ -404,7 +405,8 @@ async def test_resolve_agent_skill_projects_canonical_mcp_backing_for_authorizer
 
 
 async def test_authorize_run_capabilities_rejects_disabled_mcp_backed_skill(monkeypatch):
-    from app import repositories
+    import app.platform.postgres.errors as _repo_app_platform_postgres_errors
+    import app.runs.infrastructure.capability_admission_postgres as _repo_app_runs_infrastructure_capability_admission_postgres
 
     calls = []
 
@@ -441,8 +443,8 @@ async def test_authorize_run_capabilities_rejects_disabled_mcp_backed_skill(monk
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", get_distribution)
     monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", get_tool)
 
-    with pytest.raises(repositories.RepositoryAuthorizationError) as exc_info:
-        await repositories.authorize_run_capabilities(
+    with pytest.raises(_repo_app_platform_postgres_errors.RepositoryAuthorizationError) as exc_info:
+        await _repo_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
             object(),
             tenant_id="default",
             agent_id="sop-assistant",

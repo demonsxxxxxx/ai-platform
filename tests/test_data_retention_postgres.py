@@ -1,3 +1,10 @@
+import app.context.infrastructure.snapshot_postgres as _owner_context_infrastructure_snapshot_postgres
+import app.files.infrastructure.run_bindings_postgres as _owner_files_infrastructure_run_bindings_postgres
+import app.persistence.artifacts as _owner_persistence_artifacts
+import app.persistence.file_deletions as _owner_persistence_file_deletions
+import app.persistence.object_deletions as _owner_persistence_object_deletions
+import app.persistence.retention as _owner_persistence_retention
+import app.platform.postgres.errors as _owner_platform_postgres_errors
 import asyncio
 import os
 from pathlib import Path
@@ -8,7 +15,6 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -101,7 +107,7 @@ async def test_snapshot_member_locks_prevent_concurrent_retention_cleanup():
         snapshot_conn = await _scoped_connection(dsn, schema_name)
         retention_conn = await _scoped_connection(dsn, schema_name)
         async with snapshot_conn.transaction():
-            await repositories.create_context_snapshot(
+            await _owner_context_infrastructure_snapshot_postgres.create_context_snapshot(
                 snapshot_conn,
                 tenant_id="tenant-a",
                 workspace_id="workspace-a",
@@ -119,11 +125,11 @@ async def test_snapshot_member_locks_prevent_concurrent_retention_cleanup():
             )
             await asyncio.sleep(0.6)
             async with retention_conn.transaction():
-                assert await repositories.queue_expired_artifacts_for_deletion(retention_conn) == []
+                assert await _owner_persistence_artifacts.queue_expired_artifacts_for_deletion(retention_conn) == []
 
         async with retention_conn.transaction():
-            assert await repositories.queue_expired_artifacts_for_deletion(retention_conn) == []
-            purged = await repositories.purge_deleted_memory_records(
+            assert await _owner_persistence_artifacts.queue_expired_artifacts_for_deletion(retention_conn) == []
+            purged = await _owner_persistence_retention.purge_deleted_memory_records(
                 retention_conn,
                 grace_days=7,
             )
@@ -141,13 +147,13 @@ async def test_snapshot_member_locks_prevent_concurrent_retention_cleanup():
                     where id = 'memory-active'
                     """
                 )
-                return await repositories.purge_deleted_memory_records(
+                return await _owner_persistence_retention.purge_deleted_memory_records(
                     retention_conn,
                     grace_days=7,
                 )
 
         async with snapshot_conn.transaction():
-            await repositories.create_context_snapshot(
+            await _owner_context_infrastructure_snapshot_postgres.create_context_snapshot(
                 snapshot_conn,
                 tenant_id="tenant-a",
                 workspace_id="workspace-a",
@@ -169,7 +175,7 @@ async def test_snapshot_member_locks_prevent_concurrent_retention_cleanup():
             assert not retention_task.done()
 
         assert await retention_task == []
-        backlog = await repositories.get_data_retention_backlog(
+        backlog = await _owner_persistence_retention.get_data_retention_backlog(
             retention_conn,
             retention_days={"messages": 7},
         )
@@ -342,7 +348,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
             {"tenant_id": "tenant-b", "workspace_id": "workspace-c", "user_id": "user-b"},
         ):
             async with primary.transaction():
-                assert await repositories.queue_unbound_file_for_deletion(
+                assert await _owner_persistence_file_deletions.queue_unbound_file_for_deletion(
                     primary,
                     file_id="file-delete",
                     **scope,
@@ -356,8 +362,8 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
             ("file-artifact-reference", "file_artifact_referenced"),
         ):
             async with primary.transaction():
-                with pytest.raises(repositories.FileDeletionBlockedError, match=reason):
-                    await repositories.queue_unbound_file_for_deletion(
+                with pytest.raises(_owner_persistence_file_deletions.FileDeletionBlockedError, match=reason):
+                    await _owner_persistence_file_deletions.queue_unbound_file_for_deletion(
                         primary,
                         tenant_id="tenant-a",
                         workspace_id="workspace-a",
@@ -370,7 +376,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
 
         async def queue_first() -> dict:
             async with primary.transaction():
-                result = await repositories.queue_unbound_file_for_deletion(
+                result = await _owner_persistence_file_deletions.queue_unbound_file_for_deletion(
                     primary,
                     tenant_id="tenant-a",
                     workspace_id="workspace-a",
@@ -385,7 +391,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
         async def queue_duplicate() -> dict:
             await first_queued.wait()
             async with secondary.transaction():
-                result = await repositories.queue_unbound_file_for_deletion(
+                result = await _owner_persistence_file_deletions.queue_unbound_file_for_deletion(
                     secondary,
                     tenant_id="tenant-a",
                     workspace_id="workspace-a",
@@ -412,7 +418,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
 
         async def attempt_delete_bound_file():
             async with secondary.transaction():
-                return await repositories.queue_unbound_file_for_deletion(
+                return await _owner_persistence_file_deletions.queue_unbound_file_for_deletion(
                     secondary,
                     tenant_id="tenant-a",
                     workspace_id="workspace-a",
@@ -421,7 +427,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
                 )
 
         async with primary.transaction():
-            await repositories.authorize_files_for_run(
+            await _owner_files_infrastructure_run_bindings_postgres.authorize_files_for_run(
                 primary,
                 tenant_id="tenant-a",
                 workspace_id="workspace-a",
@@ -433,7 +439,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
             blocked_delete = asyncio.create_task(attempt_delete_bound_file())
             await asyncio.sleep(0.1)
             assert not blocked_delete.done()
-            await repositories.bind_files_to_run(
+            await _owner_files_infrastructure_run_bindings_postgres.bind_files_to_run(
                 primary,
                 tenant_id="tenant-a",
                 workspace_id="workspace-a",
@@ -442,12 +448,12 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
                 run_id="run-bind",
                 file_ids=["file-bind"],
             )
-        with pytest.raises(repositories.FileDeletionBlockedError, match="file_session_or_run_bound"):
+        with pytest.raises(_owner_persistence_file_deletions.FileDeletionBlockedError, match="file_session_or_run_bound"):
             await blocked_delete
 
         async def attempt_bind_tombstoned_file():
             async with secondary.transaction():
-                await repositories.authorize_files_for_run(
+                await _owner_files_infrastructure_run_bindings_postgres.authorize_files_for_run(
                     secondary,
                     tenant_id="tenant-a",
                     workspace_id="workspace-a",
@@ -458,7 +464,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
                 )
 
         async with primary.transaction():
-            delete_first = await repositories.queue_unbound_file_for_deletion(
+            delete_first = await _owner_persistence_file_deletions.queue_unbound_file_for_deletion(
                 primary,
                 tenant_id="tenant-a",
                 workspace_id="workspace-a",
@@ -469,7 +475,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
             blocked_bind = asyncio.create_task(attempt_bind_tombstoned_file())
             await asyncio.sleep(0.1)
             assert not blocked_bind.done()
-        with pytest.raises(repositories.RepositoryNotFoundError, match="file_not_found"):
+        with pytest.raises(_owner_platform_postgres_errors.RepositoryNotFoundError, match="file_not_found"):
             await blocked_bind
 
         cursor = await primary.execute(
@@ -497,28 +503,28 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
         )
 
         async with primary.transaction():
-            claimed = await repositories.claim_object_deletions(primary, limit=10, max_attempts=5)
+            claimed = await _owner_persistence_object_deletions.claim_object_deletions(primary, limit=10, max_attempts=5)
             assert all(item["id"] != "objdel_file-mismatch" for item in claimed)
             delete_claim = next(item for item in claimed if item["file_id"] == "file-delete")
             stale_reclaim = next(
                 item for item in claimed if item["file_id"] == "file-delete-first"
             )
             assert (stale_reclaim["attempts"], stale_reclaim["lease_generation"]) == (2, 2)
-            assert not await repositories.fail_object_deletion(
+            assert not await _owner_persistence_object_deletions.fail_object_deletion(
                 primary,
                 outbox_id=stale_reclaim["id"],
                 tenant_id="tenant-a",
                 lease_generation=1,
                 error_code="stale_worker",
             )
-            assert await repositories.fail_object_deletion(
+            assert await _owner_persistence_object_deletions.fail_object_deletion(
                 primary,
                 outbox_id=stale_reclaim["id"],
                 tenant_id="tenant-a",
                 lease_generation=stale_reclaim["lease_generation"],
                 error_code="object_delete_transient",
             ) == "file_failed"
-            assert await repositories.complete_object_deletion(
+            assert await _owner_persistence_object_deletions.complete_object_deletion(
                 primary,
                 outbox_id=delete_claim["id"],
                 tenant_id="tenant-a",
@@ -544,13 +550,13 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
             """
         )
         async with primary.transaction():
-            retried_file = await repositories.claim_object_deletions(
+            retried_file = await _owner_persistence_object_deletions.claim_object_deletions(
                 primary,
                 limit=10,
                 max_attempts=5,
             )
             assert [item["id"] for item in retried_file] == ["objdel_file-delete-first"]
-            assert await repositories.complete_object_deletion(
+            assert await _owner_persistence_object_deletions.complete_object_deletion(
                 primary,
                 outbox_id=retried_file[0]["id"],
                 tenant_id="tenant-a",
@@ -558,7 +564,7 @@ async def test_file_deletion_is_owner_reference_and_row_lock_safe():
             )
         await primary.commit()
         async with primary.transaction():
-            replay = await repositories.queue_unbound_file_for_deletion(
+            replay = await _owner_persistence_file_deletions.queue_unbound_file_for_deletion(
                 primary,
                 tenant_id="tenant-a",
                 workspace_id="workspace-a",
@@ -618,12 +624,24 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
         await admin.execute(
             """
             insert into artifacts(
-              id, tenant_id, run_id, artifact_type, label, content_type,
-              storage_key, size_bytes, lifecycle_state, delete_requested_at
+              id, tenant_id, run_id, trace_id, artifact_type, label, content_type,
+              storage_key, size_bytes, lifecycle_state, delete_requested_at, manifest_json
             ) values
-              ('artifact-bad', 'tenant-a', 'run-a', 'text', 'Bad', 'text/plain', 'bad', 1, 'delete_pending', now()),
-              ('artifact-good', 'tenant-a', 'run-a', 'text', 'Good', 'text/plain', 'good', 1, 'delete_pending', now()),
-              ('artifact-retry', 'tenant-a', 'run-a', 'text', 'Retry', 'text/plain', 'retry', 1, 'delete_pending', now())
+              (
+                'artifact-bad', 'tenant-a', null, 'trace-bad', 'text', 'Bad', 'text/plain',
+                'bad', 1, 'delete_pending', now(),
+                '{"retention_artifact_cleanup":true,"deletion_owner_run_id":"run-a"}'::jsonb
+              ),
+              (
+                'artifact-good', 'tenant-a', null, 'trace-good', 'text', 'Good', 'text/plain',
+                'good', 1, 'delete_pending', now(),
+                '{"retention_artifact_cleanup":true,"deletion_owner_run_id":"run-a"}'::jsonb
+              ),
+              (
+                'artifact-retry', 'tenant-a', null, 'trace-retry', 'text', 'Retry', 'text/plain',
+                'retry', 1, 'delete_pending', now(),
+                '{"retention_artifact_cleanup":true,"deletion_owner_run_id":"run-a"}'::jsonb
+              )
             """
         )
         await admin.execute(
@@ -639,7 +657,7 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
         conn = await _scoped_connection(dsn, schema_name)
 
         async with conn.transaction():
-            claimed = await repositories.claim_object_deletions(
+            claimed = await _owner_persistence_object_deletions.claim_object_deletions(
                 conn,
                 limit=10,
                 max_attempts=3,
@@ -648,7 +666,7 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
         claims = {row["id"]: row for row in claimed}
 
         async with conn.transaction():
-            assert await repositories.fail_object_deletion(
+            assert await _owner_persistence_object_deletions.fail_object_deletion(
                 conn,
                 outbox_id="out-bad",
                 tenant_id="tenant-a",
@@ -658,7 +676,7 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
                 retry_base_seconds=60,
                 retry_cap_seconds=300,
             ) == "dead_letter"
-            assert await repositories.fail_object_deletion(
+            assert await _owner_persistence_object_deletions.fail_object_deletion(
                 conn,
                 outbox_id="out-retry",
                 tenant_id="tenant-a",
@@ -668,7 +686,7 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
                 retry_base_seconds=60,
                 retry_cap_seconds=300,
             ) == "failed"
-            assert await repositories.complete_object_deletion(
+            assert await _owner_persistence_object_deletions.complete_object_deletion(
                 conn,
                 outbox_id="out-good",
                 tenant_id="tenant-a",
@@ -694,13 +712,13 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
             "update object_deletion_outbox set available_at = now() - interval '1 second' where id = 'out-retry'"
         )
         async with conn.transaction():
-            claimed_retry = await repositories.claim_object_deletions(
+            claimed_retry = await _owner_persistence_object_deletions.claim_object_deletions(
                 conn,
                 limit=10,
                 max_attempts=3,
             )
             assert [row["id"] for row in claimed_retry] == ["out-retry"]
-            assert await repositories.fail_object_deletion(
+            assert await _owner_persistence_object_deletions.fail_object_deletion(
                 conn,
                 outbox_id="out-retry",
                 tenant_id="tenant-a",
@@ -717,12 +735,12 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
         await conn.commit()
 
         async with conn.transaction():
-            assert await repositories.requeue_dead_letter_object_deletion(
+            assert await _owner_persistence_object_deletions.requeue_dead_letter_object_deletion(
                 conn,
                 outbox_id="out-bad",
                 tenant_id="tenant-a",
             )
-            first_unknown_claim = await repositories.claim_object_deletions(
+            first_unknown_claim = await _owner_persistence_object_deletions.claim_object_deletions(
                 conn,
                 limit=1,
                 max_attempts=3,
@@ -734,26 +752,26 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
             "update object_deletion_outbox set leased_at = now() - interval '6 minutes' where id = 'out-bad'"
         )
         async with conn.transaction():
-            retried_unknown = await repositories.claim_object_deletions(
+            retried_unknown = await _owner_persistence_object_deletions.claim_object_deletions(
                 conn,
                 limit=1,
                 max_attempts=3,
             )
             assert [row["id"] for row in retried_unknown] == ["out-bad"]
-            assert not await repositories.complete_object_deletion(
+            assert not await _owner_persistence_object_deletions.complete_object_deletion(
                 conn,
                 outbox_id="out-bad",
                 tenant_id="tenant-a",
                 lease_generation=stale_generation,
             )
-            assert await repositories.complete_object_deletion(
+            assert await _owner_persistence_object_deletions.complete_object_deletion(
                 conn,
                 outbox_id="out-bad",
                 tenant_id="tenant-a",
                 lease_generation=retried_unknown[0]["lease_generation"],
             )
 
-        backlog = await repositories.get_data_retention_backlog(conn)
+        backlog = await _owner_persistence_retention.get_data_retention_backlog(conn)
         assert backlog["object_delete_dead_letter"] == 0
         assert backlog["object_delete_reconcile_required"] == 0
         cursor = await conn.execute(

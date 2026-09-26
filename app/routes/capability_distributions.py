@@ -2,7 +2,6 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessContext,
@@ -18,6 +17,12 @@ from app.department_directory import (
     fetch_department_directory,
     validate_distribution_department_authorities,
 )
+from app.identity.infrastructure import audit_postgres as identity_audit
+from app.identity.infrastructure import (
+    capability_distributions_postgres as identity_capability_distributions,
+)
+from app.identity.infrastructure import postgres as identity_postgres
+from app.mcp import api as mcp_api
 from app.models import (
     CapabilityDistributionAuthorityUpdateRequest,
     CapabilityDistributionListResponse,
@@ -26,7 +31,8 @@ from app.models import (
     CapabilityDistributionWriteResponse,
     DepartmentDirectoryResponse,
 )
-from app.mcp import api as mcp_api
+from app.platform.postgres import errors as platform_errors
+from app.skills.infrastructure import catalog_postgres as skills_catalog
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -97,7 +103,7 @@ async def _require_existing_capability(
     capability_id: str,
 ) -> None:
     if capability_kind == "skill":
-        if await repositories.get_skill(conn, skill_id=capability_id) is None:
+        if await skills_catalog.get_skill(conn, skill_id=capability_id) is None:
             raise HTTPException(status_code=404, detail="skill_not_found")
         return
     names = await mcp_api.list_mcp_server_registry_names(conn, tenant_id=tenant_id)
@@ -163,7 +169,7 @@ async def _write_distribution(
                 capability_kind=capability_kind,
                 capability_id=capability_id,
             )
-            await repositories.ensure_user(
+            await identity_postgres.ensure_user(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -173,7 +179,7 @@ async def _write_distribution(
                 writer = (
                     mcp_api.upsert_mcp_server_distribution
                     if capability_kind == "mcp_server"
-                    else repositories.upsert_capability_distribution_row
+                    else identity_capability_distributions.upsert_capability_distribution_row
                 )
                 values = {
                     "tenant_id": principal.tenant_id,
@@ -201,7 +207,7 @@ async def _write_distribution(
                         updated_by=principal.user_id,
                     )
                 else:
-                    row = await repositories.toggle_capability_distribution_row(
+                    row = await identity_capability_distributions.toggle_capability_distribution_row(
                         conn,
                         tenant_id=principal.tenant_id,
                         capability_kind=capability_kind,
@@ -209,7 +215,7 @@ async def _write_distribution(
                         enabled=request.requested_enabled(),
                         updated_by=principal.user_id,
                     )
-            audit_id = await repositories.append_audit_log(
+            audit_id = await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -224,9 +230,9 @@ async def _write_distribution(
                 audit_id=audit_id,
                 audit_action=action,
             )
-    except repositories.RepositoryNotFoundError as exc:
+    except platform_errors.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except repositories.RepositoryConflictError as exc:
+    except platform_errors.RepositoryConflictError as exc:
         detail = (
             "capability_distribution_archived"
             if str(exc) == "capability_distribution_archived"
@@ -247,7 +253,7 @@ async def admin_list_capability_distributions(
     _require_admin(principal)
     safe_kind = _safe_capability_kind(capability_kind) if capability_kind else None
     async with transaction() as conn:
-        rows = await repositories.list_capability_distribution_rows(
+        rows = await identity_capability_distributions.list_capability_distribution_rows(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind=safe_kind,
@@ -294,7 +300,7 @@ async def admin_get_capability_distribution(
     safe_kind = _safe_capability_kind(capability_kind)
     safe_id = _safe_capability_id(capability_id)
     async with transaction() as conn:
-        row = await repositories.get_capability_distribution_row(
+        row = await identity_capability_distributions.get_capability_distribution_row(
             conn,
             tenant_id=principal.tenant_id,
             capability_kind=safe_kind,

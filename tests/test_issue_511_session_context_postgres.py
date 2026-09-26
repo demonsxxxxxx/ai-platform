@@ -1,4 +1,7 @@
 """Opt-in PostgreSQL coverage for #511's immutable session-context authority."""
+import app.context.infrastructure.snapshot_postgres as _owner_context_infrastructure_snapshot_postgres
+import app.platform.postgres.errors as _owner_platform_postgres_errors
+import app.runs.infrastructure.creation_postgres as _owner_runs_infrastructure_creation_postgres
 
 import asyncio
 import json
@@ -11,7 +14,6 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app import repositories
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -143,7 +145,7 @@ async def test_issue_511_schema_backfill_binding_and_allocator_race_in_postgres(
             conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
             try:
                 await _set_search_path(conn, schema_name)
-                return await repositories.allocate_session_run_generation(
+                return await _owner_runs_infrastructure_creation_postgres.allocate_session_run_generation(
                     conn,
                     tenant_id="tenant-a",
                     workspace_id="workspace-a",
@@ -160,14 +162,14 @@ async def test_issue_511_schema_backfill_binding_and_allocator_race_in_postgres(
         await _insert_run(admin, run_id="run-binding", input_json={})
         await _insert_executor_snapshot(admin, snapshot_id="ctx-binding", run_id="run-binding")
         bound_ref = {"context_snapshot_id": "ctx-binding"}
-        await repositories.update_run_context_snapshot_ref(
+        await _owner_context_infrastructure_snapshot_postgres.update_run_context_snapshot_ref(
             admin,
             tenant_id="tenant-a",
             run_id="run-binding",
             context_snapshot_id="ctx-binding",
             context_snapshot=bound_ref,
         )
-        await repositories.update_run_context_snapshot_ref(
+        await _owner_context_infrastructure_snapshot_postgres.update_run_context_snapshot_ref(
             admin,
             tenant_id="tenant-a",
             run_id="run-binding",
@@ -175,8 +177,8 @@ async def test_issue_511_schema_backfill_binding_and_allocator_race_in_postgres(
             context_snapshot=bound_ref,
         )
         await _insert_executor_snapshot(admin, snapshot_id="ctx-other", run_id="run-binding")
-        with pytest.raises(repositories.RepositoryConflictError, match="context_snapshot_binding_invalid"):
-            await repositories.update_run_context_snapshot_ref(
+        with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError, match="context_snapshot_binding_invalid"):
+            await _owner_context_infrastructure_snapshot_postgres.update_run_context_snapshot_ref(
                 admin,
                 tenant_id="tenant-a",
                 run_id="run-binding",

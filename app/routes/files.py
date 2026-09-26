@@ -1,19 +1,47 @@
 import asyncio
 import codecs
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import io
 import re
 import unicodedata
+import zipfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Event
 from urllib.parse import quote
-import zipfile
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
 
+from app.artifact_preview import artifact_preview_allowed
+from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.context.infrastructure.sources_postgres import get_scoped_context_file
+from app.control_plane_contracts import standard_trace_id
+from app.conversations.infrastructure.session_queries_postgres import (
+    ensure_workspace,
+    get_authorized_session,
+)
+from app.db import transaction
+from app.file_preview_contracts import (
+    XLSX_CONTENT_TYPE,
+    XlsxPreviewResponse,
+    acquire_xlsx_preview_lease,
+    build_xlsx_preview,
+    run_xlsx_preview_job,
+    xlsx_preview_identity_from_metadata,
+    xlsx_preview_max_bytes,
+)
 from app.files.api import (
     MAX_UPLOAD_BYTES,
     ProfileDriveTransferError,
@@ -24,6 +52,7 @@ from app.files.api import (
     create_file_upload_session,
     delete_expired_file_upload_session,
     direct_upload_storage_key,
+    download_profile_drive_file,
     expire_file_upload_sessions,
     get_authorized_file_upload_session,
     get_file_storage_usage,
@@ -35,54 +64,35 @@ from app.files.api import (
     parse_multipart_upload_complete_request,
     parse_multipart_upload_create_request,
     parse_profile_drive_file_import_request,
-    download_profile_drive_file,
     retry_expired_file_upload_session,
 )
-from app.artifact_preview import artifact_preview_allowed
-from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.control_plane_contracts import standard_trace_id
-from app.db import transaction
-from app.file_preview_contracts import (
-    XLSX_CONTENT_TYPE,
-    XlsxPreviewResponse,
-    acquire_xlsx_preview_lease,
-    build_xlsx_preview,
-    run_xlsx_preview_job,
-    xlsx_preview_identity_from_metadata,
-    xlsx_preview_max_bytes,
-)
+from app.files.infrastructure.run_bindings_postgres import create_file, get_file
+from app.identity.infrastructure.audit_postgres import append_audit_log
+from app.identity.infrastructure.postgres import ensure_user
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.models import (
     FileDeletionResponse,
     SessionInputFileResponse,
     SessionInputFilesResponse,
 )
-from app.repositories import (
+from app.persistence.artifacts import get_admin_artifact, get_authorized_artifact
+from app.persistence.file_deletions import (
     FileDeletionBlockedError,
-    ObjectDeletionStateError,
-    RepositoryNotFoundError,
-    append_audit_log,
-    create_file,
-    ensure_user,
-    ensure_workspace,
-    get_admin_artifact,
-    get_authorized_artifact,
-    get_authorized_run,
-    get_authorized_session,
-    get_file,
-    get_scoped_context_file,
-    new_id,
     queue_unbound_file_for_deletion,
 )
+from app.persistence.object_deletions import ObjectDeletionStateError
+from app.platform.postgres.errors import RepositoryNotFoundError
+from app.platform.postgres.values import new_id
+from app.runs.infrastructure.creation_postgres import get_authorized_run
+from app.settings import get_settings
 from app.storage import (
     ObjectStorage,
     ObjectStorageSizeLimitError,
-    StoredObject,
     StorageIOBusyError,
     StorageIOTimeoutError,
+    StoredObject,
     run_storage_io,
 )
-from app.settings import get_settings
 from app.validation import assert_safe_id
 
 router = APIRouter()

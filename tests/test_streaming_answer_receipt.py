@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.persistence_limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
+from app.platform.postgres.limits import (
+    MESSAGE_CONTENT_MAX_BYTES,
+    RUN_RESULT_MAX_BYTES,
+    json_size_bytes,
+)
 from app.streaming.api import opaque_message_id
 from app.streaming.application.worker_publication_v4 import AssistantAnswerReceiptError
 from app.streaming.infrastructure.v4 import load_answer_by_receipt

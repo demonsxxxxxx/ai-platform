@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from app.auth import AuthPrincipal
 from app.main import create_app
 from app.models import AdminSkillDetailResponse
-from app.repositories import RepositoryConflictError
+from app.platform.postgres.errors import RepositoryConflictError
 from app.routes.admin_skills import admin_upload_skill_package
 from app.skills import packages as skill_packages
 from app.skills.dependencies import (
@@ -204,7 +204,7 @@ def test_admin_skill_detail_hides_retired_aggregate(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_admin_skill_detail", fake_detail)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_admin_skill_detail", fake_detail)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/skills/baoyu-translate", headers=admin_headers())
@@ -258,7 +258,7 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_admin_skill_summaries", fake_list_summaries)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.list_admin_skill_summaries", fake_list_summaries)
     monkeypatch.setattr(
         "app.routes.admin_skills.list_uploaded_skill_display_version_rows",
         fake_display_versions,
@@ -337,8 +337,8 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_admin_skill_detail", fake_detail)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_admin_skill_detail", fake_detail)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/skills/qa-file-reviewer", headers=admin_headers())
@@ -494,8 +494,8 @@ def test_admin_skill_detail_does_not_infer_dependency_without_persisted_version(
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_admin_skill_detail", fake_detail)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_admin_skill_detail", fake_detail)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/skills/qa-file-reviewer", headers=admin_headers())
@@ -540,8 +540,8 @@ def test_skill_admin_upload_existing_catalog_skill_is_denied_before_storage(monk
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
 
     response = client.post(
@@ -631,16 +631,16 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
     monkeypatch.setattr("app.routes.admin_skills.run_storage_io", fake_run_storage_io)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr(
         "app.routes.admin_skills.list_uploaded_skill_display_version_rows",
         fake_display_versions,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.upsert_skill_version", fake_upsert)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     client = TestClient(create_app())
 
     response = client.post(
@@ -772,18 +772,18 @@ def test_skill_admin_upload_new_skill_package_creates_draft_without_release_or_v
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.create_skill_catalog", fake_create_catalog, raising=False)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.create_skill_catalog", fake_create_catalog, raising=False)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.upsert_skill_version", fake_upsert_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fake_set_uploaded_workbench_status,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     client = TestClient(create_app())
 
     response = client.post(
@@ -865,19 +865,18 @@ def test_admin_upload_new_skill_catalog_conflict_fails_without_global_overwrite(
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.create_skill_catalog", fake_create_catalog, raising=False)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_catalog", fail_upsert_catalog, raising=False)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fail_after_catalog_conflict)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fail_after_catalog_conflict)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.create_skill_catalog", fake_create_catalog, raising=False)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.upsert_skill_version", fail_after_catalog_conflict)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fail_after_catalog_conflict)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fail_after_catalog_conflict,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fail_after_catalog_conflict)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_after_catalog_conflict)
     client = TestClient(create_app())
 
     response = client.post(
@@ -897,7 +896,7 @@ def test_admin_preview_skill_package_uses_global_catalog_existence(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
 
     response = client.post(
@@ -933,7 +932,7 @@ def test_admin_preview_skill_package_accepts_one_wrapped_skill_directory(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1031,19 +1030,18 @@ def test_admin_upload_existing_catalog_skill_creates_draft_without_policy_or_dis
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_catalog", fail_upsert_catalog, raising=False)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.upsert_skill_version", fake_upsert_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fake_set_uploaded_workbench_status,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1119,21 +1117,21 @@ def test_admin_draft_upload_rolls_back_when_response_model_build_fails(monkeypat
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", recording_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.create_skill_catalog",
+        "app.skills.infrastructure.versions_postgres.create_skill_catalog",
         fake_create_skill_catalog,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert_skill_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_skill_release_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.upsert_skill_version", fake_upsert_skill_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_skill_release_policy)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fake_set_uploaded_workbench_skill_status,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_append_audit_log)
     monkeypatch.setattr("app.routes.admin_skills.AdminSkillUploadResponse", fail_response_build)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
@@ -1266,12 +1264,12 @@ def test_admin_upload_skill_package_reuses_existing_version_without_storage_over
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fail_upsert)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.upsert_skill_version", fail_upsert)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1365,19 +1363,19 @@ def test_admin_upload_existing_version_reuses_draft_without_policy_or_distributi
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fail_upsert)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.upsert_skill_version", fail_upsert)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fake_set_uploaded_workbench_status,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1426,10 +1424,10 @@ def test_admin_upload_skill_package_reuse_rejects_non_uploaded_existing_version(
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fail_audit)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_audit)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1477,18 +1475,18 @@ def test_admin_upload_skill_package_rejects_concurrent_version_conflict_before_p
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fail_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.upsert_skill_version", fake_upsert_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fail_set_policy)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fail_set_uploaded_workbench_status,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fail_audit)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_audit)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1546,7 +1544,7 @@ def test_admin_skill_version_diff_returns_manifest_changes(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.diff_skill_versions", fake_diff)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.diff_skill_versions", fake_diff)
     client = TestClient(create_app())
 
     response = client.get(
@@ -1633,8 +1631,8 @@ def test_admin_skill_version_status_reviewed_requires_release_review(monkeypatch
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fail_update_status, raising=False)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fail_update_status, raising=False)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", blocked_skill_version_release)
     client = TestClient(create_app())
 
@@ -1664,9 +1662,9 @@ def test_admin_skill_version_status_rejects_review_transition_from_non_draft_ver
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.update_skill_version_status",
+        "app.skills.infrastructure.versions_postgres.update_skill_version_status",
         fail_update_status,
         raising=False,
     )
@@ -1705,9 +1703,9 @@ def test_admin_skill_version_status_marks_reviewed_and_audits(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status, raising=False)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status, raising=False)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
     client = TestClient(create_app())
 
@@ -1813,16 +1811,16 @@ def test_admin_standard_uploaded_skill_package_can_progress_draft_reviewed_and_r
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fake_set_uploaded_visibility,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     client = TestClient(create_app())
 
     reviewed = client.post(
@@ -1880,8 +1878,8 @@ def test_admin_promote_rejects_tampered_uploaded_package_contract_before_policy_
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fail_policy)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1921,10 +1919,10 @@ def test_admin_skill_version_status_can_disable_or_deprecate_without_release_rev
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status, raising=False)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status, raising=False)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", fail_review)
     client = TestClient(create_app())
 
@@ -1955,9 +1953,9 @@ def test_admin_skill_version_status_rejects_disabling_current_release_policy(mon
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fail_update_status, raising=False)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fail_update_status, raising=False)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1992,9 +1990,9 @@ def test_admin_skill_version_status_rejects_disabling_gray_rollout_previous_poli
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fail_update_status, raising=False)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fail_update_status, raising=False)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2061,11 +2059,11 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
@@ -2118,8 +2116,8 @@ def test_admin_promote_rejects_unreviewed_release_evidence_before_policy_lookup(
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", blocked_release_review)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
@@ -2149,8 +2147,8 @@ def test_admin_promote_rejects_draft_skill_version_before_release_review(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fail_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", fail_review)
     client = TestClient(create_app())
 
@@ -2193,11 +2191,11 @@ def test_admin_promote_accepts_gray_rollout_policy(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
@@ -2259,10 +2257,10 @@ def test_admin_promote_gray_rejects_unmaterializable_existing_policy_current_ver
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fail_set_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fail_audit)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fail_set_policy)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
@@ -2308,16 +2306,16 @@ def test_admin_promote_gray_without_policy_uses_catalog_version_as_previous(monk
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fake_set_uploaded_visibility,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
@@ -2386,16 +2384,16 @@ def test_admin_promote_full_without_policy_allows_unmaterializable_catalog_previ
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fake_set_uploaded_visibility,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
     client = TestClient(create_app())
 
@@ -2436,7 +2434,7 @@ def test_admin_promote_rejects_inactive_skill_version(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2465,7 +2463,7 @@ def test_admin_promote_rejects_builtin_version_that_cannot_be_materialized(monke
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "current-hash")
     client = TestClient(create_app())
 
@@ -2510,15 +2508,15 @@ def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch)
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr(
-        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fake_set_uploaded_visibility,
     )
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
     client = TestClient(create_app())
 
@@ -2553,7 +2551,7 @@ def test_admin_promote_rejects_uploaded_version_without_snapshot_files(monkeypat
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2589,8 +2587,8 @@ def test_admin_promote_rejects_uploaded_version_with_missing_dependency_snapshot
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2622,8 +2620,8 @@ def test_admin_promote_rejects_fileless_builtin_version(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fail_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
@@ -2643,7 +2641,7 @@ def test_admin_promote_missing_version_returns_404(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2695,11 +2693,11 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
@@ -2741,7 +2739,7 @@ def test_admin_rollback_missing_version_returns_404(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2770,7 +2768,7 @@ def test_admin_rollback_rejects_inactive_skill_version(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2799,7 +2797,7 @@ def test_admin_rollback_rejects_builtin_version_that_cannot_be_materialized(monk
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "current-hash")
     client = TestClient(create_app())
 
@@ -2840,11 +2838,11 @@ def test_admin_rollback_accepts_uploaded_version_with_snapshot_files(monkeypatch
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2878,7 +2876,7 @@ def test_admin_rollback_rejects_uploaded_version_without_snapshot_files(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2914,8 +2912,8 @@ def test_admin_rollback_rejects_uploaded_version_with_missing_dependency_snapsho
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fail_get_policy)
     client = TestClient(create_app())
 
     response = client.post(
@@ -2947,8 +2945,8 @@ def test_admin_rollback_rejects_fileless_builtin_version(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fail_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
@@ -2971,8 +2969,8 @@ def test_admin_rollback_requires_existing_policy(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
@@ -3013,11 +3011,11 @@ def test_admin_rollback_accepts_existing_gray_release_policy(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
@@ -3064,11 +3062,11 @@ def test_admin_rollback_converges_gray_policy_without_previous_version(monkeypat
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
@@ -3106,8 +3104,8 @@ def test_admin_rollback_requires_previous_version_target(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 

@@ -326,7 +326,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "runtime_evidence" in context_evidence[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_live_evidence_sections"]
-    assert "app.repositories.get_context_snapshot_for_worker" in context_evidence[
+    assert "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker" in context_evidence[
         "executor_context_pack_runtime_acceptance_contract"
     ]["source_functions"]
     assert "app.context_builder.executor_context_pack_from_snapshot" in context_evidence[

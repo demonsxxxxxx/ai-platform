@@ -318,10 +318,10 @@ def test_failed_step_event_routes_and_snapshot_allowlist_unmarked_executor_diagn
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
     client = TestClient(create_app())
 
     events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
@@ -387,10 +387,10 @@ def test_subagent_failed_event_routes_use_fixed_public_activity(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", empty_steps)
     client = TestClient(create_app())
 
     events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
@@ -489,10 +489,10 @@ def test_failed_run_event_and_playback_routes_replace_unmarked_executor_diagnost
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
     client = TestClient(create_app())
 
     events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
@@ -626,10 +626,10 @@ def test_ordinary_activity_routes_use_fixed_envelopes_for_syntax_safe_executor_v
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", empty_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", empty_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", empty_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", empty_steps)
     client = TestClient(create_app())
 
     events_response = client.get("/api/ai/runs/run-a/events", headers=headers())
@@ -715,8 +715,8 @@ def test_run_events_route_supports_sequence_replay_cursor(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/events?after_sequence=7&limit=10", headers=headers())
@@ -807,11 +807,11 @@ def test_run_playback_projection_redacts_ordinary_user_timeline(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/playback?after_sequence=5&limit=50", headers=headers())
@@ -876,9 +876,9 @@ def test_run_provenance_snapshot_links_steps_checkpoints_and_artifacts(monkeypat
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
@@ -934,9 +934,9 @@ def test_run_provenance_snapshot_projects_operational_artifact_tree(monkeypatch)
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
@@ -990,9 +990,9 @@ def test_run_provenance_snapshot_reports_artifact_tree_gaps(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
@@ -1044,9 +1044,9 @@ def test_run_provenance_snapshot_fail_closes_dirty_artifact_lineage_graph_ids(mo
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
     monkeypatch.setattr("app.run_provenance.artifact_card", dirty_artifact_card)
     client = TestClient(create_app())
 
@@ -1110,9 +1110,9 @@ def test_run_provenance_snapshot_rejects_unsafe_step_graph_ids(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
@@ -1150,9 +1150,9 @@ def test_run_provenance_snapshot_returns_not_found_for_unauthorized_run(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/missing-run/provenance", headers=headers())
@@ -1161,7 +1161,7 @@ def test_run_provenance_snapshot_returns_not_found_for_unauthorized_run(monkeypa
     assert response.json() == {"detail": "run_not_found"}
 
 
-def test_run_playback_projects_tool_permission_card_for_ordinary_user(monkeypatch):
+def test_run_playback_projects_retired_tool_permission_event_as_activity(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return run_row()
 
@@ -1198,21 +1198,21 @@ def test_run_playback_projects_tool_permission_card_for_ordinary_user(monkeypatc
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/playback", headers=headers())
 
     assert response.status_code == 200
     body = response.json()
-    assert body["events"][0]["event_type"] == "tool_permission_card"
-    assert body["events"][0]["stage"] == "policy"
-    assert body["events"][0]["message"] == "权限决策状态已更新。"
-    assert body["events"][0]["payload"] == {"activity": {"category": "policy", "status": "waiting"}}
+    assert body["events"][0]["event_type"] == "activity"
+    assert body["events"][0]["stage"] == "status"
+    assert body["events"][0]["message"] == "任务正在处理中。"
+    assert body["events"][0]["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(body)
     assert "write_business_system" not in public_dump
     assert "command_sha256" not in public_dump
@@ -1248,8 +1248,8 @@ def test_run_events_redacts_malformed_tool_permission_internal_payloads(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/events", headers=headers())
@@ -1261,7 +1261,7 @@ def test_run_events_redacts_malformed_tool_permission_internal_payloads(monkeypa
     assert "smoke-secret-token" not in public_dump
 
 
-def test_run_events_projects_tool_permission_decision_card_for_ordinary_user(monkeypatch):
+def test_run_events_projects_retired_tool_permission_decision_as_activity(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {
             "id": run_id,
@@ -1298,18 +1298,18 @@ def test_run_events_projects_tool_permission_decision_card_for_ordinary_user(mon
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/events", headers=headers())
 
     assert response.status_code == 200
     body = response.json()
-    assert body["events"][0]["event_type"] == "tool_permission_card"
-    assert body["events"][0]["stage"] == "policy"
-    assert body["events"][0]["message"] == "权限决策已记录。"
-    assert body["events"][0]["payload"] == {"activity": {"category": "policy", "status": "completed"}}
+    assert body["events"][0]["event_type"] == "activity"
+    assert body["events"][0]["stage"] == "status"
+    assert body["events"][0]["message"] == "任务正在处理中。"
+    assert body["events"][0]["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(body)
     assert "write_business_system" not in public_dump
     assert "command_sha256" not in public_dump
@@ -1339,11 +1339,11 @@ def test_run_playback_projection_keeps_admin_runtime_controls(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_events", fake_list_run_events)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_context_snapshots", fake_list_context_snapshots)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.context.infrastructure.snapshot_postgres.list_context_snapshots", fake_list_context_snapshots)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/playback", headers=admin_headers())

@@ -1,9 +1,10 @@
+import app.mcp.infrastructure.tool_policies_postgres as _owner_mcp_infrastructure_tool_policies_postgres
+import app.mcp.repository as _owner_mcp_repository
 import json
 from pathlib import Path
 
 import pytest
 
-from app import repositories
 from app.mcp.infrastructure import postgres as mcp_repository
 from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 
@@ -349,8 +350,8 @@ async def test_builtin_ragflow_keeps_strict_code_owned_registry_path(monkeypatch
             return _Cursor(row)
 
     monkeypatch.setattr(
-        repositories,
-        "_tool_policy_projection",
+        _owner_mcp_infrastructure_tool_policies_postgres,
+        '_tool_policy_projection',
         lambda value, *, tenant_id: {
             **value,
             "tenant_id": tenant_id,
@@ -360,7 +361,7 @@ async def test_builtin_ragflow_keeps_strict_code_owned_registry_path(monkeypatch
             "visible_to_user": True,
         },
     )
-    entry = await repositories.get_mcp_tool_registry_entry(
+    entry = await _owner_mcp_repository.get_mcp_tool_registry_entry(
         Connection(),
         tenant_id="tenant-a",
         tool_id="ragflow-knowledge-search",

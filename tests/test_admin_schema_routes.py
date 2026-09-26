@@ -42,7 +42,7 @@ def test_admin_retention_status_exposes_unsupported_policy_and_age_backlog(monke
     monkeypatch.setattr("app.auth.get_settings", lambda: configured)
     monkeypatch.setattr("app.routes.health.get_settings", lambda: configured)
     monkeypatch.setattr("app.routes.health.transaction", opaque_transaction)
-    monkeypatch.setattr("app.routes.health.repositories.get_data_retention_backlog", fake_backlog)
+    monkeypatch.setattr("app.persistence.retention.get_data_retention_backlog", fake_backlog)
 
     response = TestClient(create_app()).get(
         "/api/ai/admin/retention/status",
@@ -69,7 +69,7 @@ def test_admin_can_requeue_dead_letter_object_deletion(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", _settings)
     monkeypatch.setattr("app.routes.health.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.health.repositories.requeue_dead_letter_object_deletion",
+        "app.persistence.object_deletions.requeue_dead_letter_object_deletion",
         fake_requeue,
     )
 
@@ -90,7 +90,7 @@ def test_admin_requeue_fails_closed_for_wrong_state(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", _settings)
     monkeypatch.setattr("app.routes.health.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.health.repositories.requeue_dead_letter_object_deletion",
+        "app.persistence.object_deletions.requeue_dead_letter_object_deletion",
         fake_requeue,
     )
 

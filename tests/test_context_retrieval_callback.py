@@ -1,3 +1,7 @@
+import app.context.infrastructure.snapshot_postgres as _owner_context_infrastructure_snapshot_postgres
+import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
+import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 import base64
 import hashlib
 import hmac
@@ -124,14 +128,14 @@ def _patch_route(
 
     monkeypatch.setattr(callbacks, "get_settings", lambda: type("S", (), {"sandbox_callback_token": "secret"})())
     monkeypatch.setattr(callbacks, "transaction", lambda: _Transaction())
-    monkeypatch.setattr(callbacks.repositories, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
-        callbacks.repositories,
-        "list_current_sandbox_runtime_leases_for_attempt",
+        _owner_sandbox_infrastructure_leases_postgres,
+        'list_current_sandbox_runtime_leases_for_attempt',
         list_current_leases,
     )
-    monkeypatch.setattr(callbacks.repositories, "get_bound_executor_context_snapshot", get_snapshot)
-    monkeypatch.setattr(callbacks.repositories, "append_event", append_event)
+    monkeypatch.setattr(_owner_context_infrastructure_snapshot_postgres, 'get_bound_executor_context_snapshot', get_snapshot)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event)
     monkeypatch.setattr(callbacks, "ObjectStorage", lambda: object())
     authority = type("Authority", (), {"execute": staticmethod(run_action)})()
     monkeypatch.setattr(
@@ -170,7 +174,6 @@ def test_context_retrieval_callback_derives_scope_and_records_allowed_event(monk
 def test_parallel_same_run_context_attempts_each_use_their_exact_lease_and_token(monkeypatch):
     calls = _patch_route(monkeypatch)
     lease_checks = []
-    import app.routes.runtime_callbacks as callbacks
 
     async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
         lease_checks.append((tenant_id, run_id, attempt_id))
@@ -178,7 +181,7 @@ def test_parallel_same_run_context_attempts_each_use_their_exact_lease_and_token
             return []
         return [{"lease_payload_json": {"attempt_id": attempt_id}}]
 
-    monkeypatch.setattr(callbacks.repositories, "list_current_sandbox_runtime_leases_for_attempt", exact_lease)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, 'list_current_sandbox_runtime_leases_for_attempt', exact_lease)
     client = TestClient(create_app())
     first = client.post(
         "/api/ai/runtime/callbacks/context-retrieval",
@@ -315,12 +318,11 @@ def test_context_retrieval_callback_rejects_terminal_run_and_cross_snapshot_id(m
 
 def test_context_retrieval_callback_fails_closed_when_fixed_snapshot_is_unavailable(monkeypatch):
     calls = _patch_route(monkeypatch)
-    import app.routes.runtime_callbacks as callbacks
 
     async def missing_snapshot(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(callbacks.repositories, "get_bound_executor_context_snapshot", missing_snapshot)
+    monkeypatch.setattr(_owner_context_infrastructure_snapshot_postgres, 'get_bound_executor_context_snapshot', missing_snapshot)
     response = TestClient(create_app()).post(
         "/api/ai/runtime/callbacks/context-retrieval",
         headers={"X-AI-Platform-Callback-Token": _token("secret")},

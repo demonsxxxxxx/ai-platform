@@ -1,3 +1,11 @@
+import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
+import app.runs.infrastructure.control_operations_postgres as _owner_runs_infrastructure_control_operations_postgres
+import app.runs.infrastructure.creation_postgres as _owner_runs_infrastructure_creation_postgres
+import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
+import app.runs.infrastructure.replay_postgres as _owner_runs_infrastructure_replay_postgres
+import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
+import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
+import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 from contextlib import asynccontextmanager
 import json
 
@@ -5,13 +13,12 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app import repositories as repository_module
 from app.auth import AuthPrincipal
 import app.runs.infrastructure.admin_queries_postgres as run_queries_persistence
 import app.runs.infrastructure.replay_postgres as replay_persistence
 from app.main import create_app
 from app.queue import QueueAdmissionMetadata
-from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
+from app.platform.postgres.errors import RepositoryAuthorizationError, RepositoryConflictError
 from app.routes import sandbox_runtime_cleanup
 from app.runs.api import RunAttemptLifecycleService
 from app.runs.infrastructure import postgres as run_attempt_persistence
@@ -91,9 +98,9 @@ async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
             attempt_lifecycle=RunAttemptLifecycleService(
                 persistence=run_attempt_persistence
             ),
-            append_event=repository_module.append_event,
-            append_audit_log=repository_module.append_audit_log,
-            list_active_sandbox_leases=repository_module.list_active_sandbox_leases_for_run,
+            append_event=_owner_streaming_infrastructure_run_events_postgres.append_event,
+            append_audit_log=_owner_identity_infrastructure_audit_postgres.append_audit_log,
+            list_active_sandbox_leases=_owner_sandbox_infrastructure_leases_postgres.list_active_sandbox_leases_for_run,
         ),
         event_writer=_NoOpCancellationEventWriter(),
         progress_terminalization=_no_terminal_progress,
@@ -117,9 +124,9 @@ async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
             attempt_lifecycle=RunAttemptLifecycleService(
                 persistence=run_attempt_persistence
             ),
-            append_event=repository_module.append_event,
-            append_audit_log=repository_module.append_audit_log,
-            list_active_sandbox_leases=repository_module.list_active_sandbox_leases_for_run,
+            append_event=_owner_streaming_infrastructure_run_events_postgres.append_event,
+            append_audit_log=_owner_identity_infrastructure_audit_postgres.append_audit_log,
+            list_active_sandbox_leases=_owner_sandbox_infrastructure_leases_postgres.list_active_sandbox_leases_for_run,
         ),
         event_writer=_NoOpCancellationEventWriter(),
         progress_terminalization=_no_terminal_progress,
@@ -187,7 +194,7 @@ def _stub_run_skill_materialization_for_route_fakes(monkeypatch):
             manifests.append(manifest)
         return manifests
 
-    monkeypatch.setattr(repository_module, "materialize_run_skill_manifests", materialize)
+    monkeypatch.setattr(_owner_skills_infrastructure_run_snapshots_postgres, 'materialize_run_skill_manifests', materialize)
     monkeypatch.setattr(replay_persistence, "materialize_run_skill_manifests", materialize)
 
 
@@ -262,7 +269,7 @@ def stub_session_generation(monkeypatch, generation: int = 1) -> None:
     async def allocate_session_run_generation(*_args, **_kwargs) -> int:
         return generation
 
-    monkeypatch.setattr(repository_module, "allocate_session_run_generation", allocate_session_run_generation)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'allocate_session_run_generation', allocate_session_run_generation)
     monkeypatch.setattr(replay_persistence, "allocate_session_run_generation", allocate_session_run_generation)
 
 
@@ -272,7 +279,7 @@ def stub_run_event_append(monkeypatch) -> None:
     async def append_event(*_args, **_kwargs) -> str:
         return "evt-copy"
 
-    monkeypatch.setattr(repository_module, "append_event", append_event)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event)
     monkeypatch.setattr(replay_persistence, "append_event", append_event)
 
 
@@ -330,27 +337,27 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", validate_source_snapshots)
 
     monkeypatch.setattr(
-        "app.routes.runs.repositories.update_run_auth_snapshot",
+        'app.runs.infrastructure.creation_postgres.update_run_auth_snapshot',
         update_auth_snapshot,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.authorize_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities',
         authorize_capabilities,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.repositories.authorize_replay_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_replay_run_capabilities',
         authorize_replay_capabilities,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.repositories.insert_run_skill_snapshots_at_creation",
+        'app.skills.infrastructure.run_snapshots_postgres.insert_run_skill_snapshots_at_creation',
         insert_creation_snapshots,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.repositories.validate_run_skill_snapshots_for_dispatch",
+        'app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch',
         validate_source_snapshots,
         raising=False,
     )
@@ -360,31 +367,31 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
         record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
         record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.acquire_run_control_operation_lock",
+        'app.runs.infrastructure.control_operations_postgres.acquire_run_control_operation_lock',
         acquire_run_control_operation_lock,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.get_run_control_operation",
+        'app.runs.infrastructure.control_operations_postgres.get_run_control_operation',
         get_run_control_operation,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.get_authorized_run",
+        'app.runs.infrastructure.creation_postgres.get_authorized_run',
         get_retryable_source,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.record_run_control_operation",
+        'app.runs.infrastructure.control_operations_postgres.record_run_control_operation',
         record_run_control_operation,
         raising=False,
     )
@@ -560,7 +567,7 @@ def test_copy_run_reauthorizes_exact_pinned_profile_before_child_persistence(mon
         reauthorize,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", copy)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', copy)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
@@ -691,7 +698,7 @@ def test_copy_run_profile_reauthorization_denials_have_no_child_side_effect(
         deny,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", forbidden_copy)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', forbidden_copy)
 
     response = TestClient(create_app(), raise_server_exceptions=False).post(
         "/api/ai/runs/run-source/copy",
@@ -737,7 +744,7 @@ def test_copy_run_audits_wrapped_capability_denial_after_transaction_rollback(mo
         deny,
     )
     monkeypatch.setattr("app.routes.runs._audit_capability_denial", audit)
-    monkeypatch.setattr(repository_module, "copy_run_as_new_task", forbidden_copy)
+    monkeypatch.setattr(_owner_runs_infrastructure_replay_postgres, 'copy_run_as_new_task', forbidden_copy)
 
     response = TestClient(create_app(), raise_server_exceptions=False).post(
         "/api/ai/runs/run-source/copy",
@@ -784,8 +791,8 @@ def test_run_control_audits_wrapped_capability_denial_after_transaction_rollback
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
-    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", noop)
-    monkeypatch.setattr(repository_module, "get_run_control_operation", absent)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'acquire_run_control_operation_lock', noop)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'get_run_control_operation', absent)
     monkeypatch.setattr("app.routes.runs.enforce_user_active_run_limit", noop)
     monkeypatch.setattr(
         "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
@@ -845,7 +852,7 @@ def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(m
         reauthorize,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", copy)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', copy)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
     monkeypatch.setattr("app.routes.runs.enqueue_run", forbidden_enqueue)
     monkeypatch.setattr("app.routes.runs._compensate_enqueue_failure", compensate)
@@ -994,21 +1001,21 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", EmptyBuiltinRegistry, raising=False)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', fake_copy_run_as_new_task)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.get_effective_skill_version_for_policy",
+        'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
         fake_update_run_input_execution_snapshot,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", fake_read_queue_admission)
@@ -1070,7 +1077,7 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
         {
             "tenant_id": "default",
             "run_id": "run_new",
-            "execution_snapshot": repository_module.copied_run_execution_snapshot(queued_payload),
+            "execution_snapshot": _owner_runs_infrastructure_replay_postgres.copied_run_execution_snapshot(queued_payload),
         }
     ]
     assert queued_payload["model_id"] == "model-catalog-copy"
@@ -1097,11 +1104,11 @@ def test_copy_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     monkeypatch.setattr("app.routes.runs.get_settings", lambda: LimitSettings())
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fail_copy_run_as_new_task, raising=False)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', fail_copy_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
     client = TestClient(create_app())
 
@@ -1188,20 +1195,20 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.retry_run_as_new_task', fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
         fake_update_run_input_execution_snapshot,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
     client = TestClient(create_app())
@@ -1234,7 +1241,7 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
         {
             "tenant_id": "default",
             "run_id": "run-retry",
-            "execution_snapshot": repository_module.copied_run_execution_snapshot(calls["enqueue"][0]),
+            "execution_snapshot": _owner_runs_infrastructure_replay_postgres.copied_run_execution_snapshot(calls["enqueue"][0]),
         }
     ]
     assert calls["enqueue"][0]["model_id"] == "model-catalog-retry"
@@ -1317,17 +1324,17 @@ def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creati
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
-    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
-    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", admit, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'acquire_run_control_operation_lock', acquire_lock, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'get_run_control_operation', resolve_operation, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'enforce_user_active_run_admission', admit, raising=False)
     monkeypatch.setattr(
         "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
         reauthorize,
         raising=False,
     )
-    monkeypatch.setattr(repository_module, "retry_run_as_new_task", retry, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_replay_postgres, 'retry_run_as_new_task', retry, raising=False)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
-    monkeypatch.setattr(repository_module, "record_run_control_operation", record, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'record_run_control_operation', record, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission, raising=False)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
@@ -1403,16 +1410,16 @@ def test_existing_retry_operation_recovers_missing_queue_admission_without_dupli
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
-    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'acquire_run_control_operation_lock', acquire_lock, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'get_run_control_operation', resolve_operation, raising=False)
     monkeypatch.setattr(
         "app.routes.runs._agent_profile_authority.reauthorize_pinned_run_for_replay",
         reauthorize,
         raising=False,
     )
-    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", forbidden, raising=False)
-    monkeypatch.setattr(repository_module, "retry_run_as_new_task", forbidden, raising=False)
-    monkeypatch.setattr(repository_module, "record_run_control_operation", forbidden, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'enforce_user_active_run_admission', forbidden, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_replay_postgres, 'retry_run_as_new_task', forbidden, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'record_run_control_operation', forbidden, raising=False)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
@@ -1504,12 +1511,12 @@ def test_retry_ambiguous_enqueue_uses_readback_and_returns_same_child(monkeypatc
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
-    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
-    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", admit, raising=False)
-    monkeypatch.setattr(repository_module, "retry_run_as_new_task", retry, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'acquire_run_control_operation_lock', acquire_lock, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'get_run_control_operation', resolve_operation, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'enforce_user_active_run_admission', admit, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_replay_postgres, 'retry_run_as_new_task', retry, raising=False)
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepare)
-    monkeypatch.setattr(repository_module, "record_run_control_operation", record, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'record_run_control_operation', record, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission, raising=False)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_insight)
@@ -1580,11 +1587,11 @@ def test_retry_same_operation_recovers_after_unconfirmed_enqueue_without_recreat
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
-    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
-    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", forbidden, raising=False)
-    monkeypatch.setattr(repository_module, "retry_run_as_new_task", forbidden, raising=False)
-    monkeypatch.setattr(repository_module, "record_run_control_operation", forbidden, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'acquire_run_control_operation_lock', acquire_lock, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'get_run_control_operation', resolve_operation, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'enforce_user_active_run_admission', forbidden, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_replay_postgres, 'retry_run_as_new_task', forbidden, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'record_run_control_operation', forbidden, raising=False)
     monkeypatch.setattr("app.routes.runs._compensate_enqueue_failure", forbidden)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
@@ -1629,9 +1636,9 @@ def test_run_control_operation_get_linearizes_before_authorized_absence(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", acquire_lock, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_run", authorized_source)
-    monkeypatch.setattr(repository_module, "get_run_control_operation", absent_operation, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'acquire_run_control_operation_lock', acquire_lock, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', authorized_source)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'get_run_control_operation', absent_operation, raising=False)
     client = TestClient(create_app())
 
     response = client.get(
@@ -1690,9 +1697,9 @@ def test_run_control_operation_get_reports_safe_pending_queue_admission(monkeypa
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "acquire_run_control_operation_lock", noop_lock, raising=False)
-    monkeypatch.setattr(repository_module, "get_authorized_run", authorized_source)
-    monkeypatch.setattr(repository_module, "get_run_control_operation", resolve_operation, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'acquire_run_control_operation_lock', noop_lock, raising=False)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', authorized_source)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'get_run_control_operation', resolve_operation, raising=False)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", absent_admission, raising=False)
     client = TestClient(create_app())
 
@@ -1774,11 +1781,11 @@ def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     monkeypatch.setattr("app.routes.runs.get_settings", lambda: LimitSettings())
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fail_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.retry_run_as_new_task', fail_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
     client = TestClient(create_app())
 
@@ -1790,7 +1797,7 @@ def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
 
 
 def test_retry_run_returns_capability_not_authorized_for_stale_source_capability(monkeypatch):
-    from app.repositories import RepositoryNotFoundError
+    from app.platform.postgres.errors import RepositoryNotFoundError
 
     calls = []
 
@@ -1809,11 +1816,11 @@ def test_retry_run_returns_capability_not_authorized_for_stale_source_capability
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.retry_run_as_new_task', fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
@@ -1825,7 +1832,7 @@ def test_retry_run_returns_capability_not_authorized_for_stale_source_capability
 
 
 def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
-    from app.repositories import RepositoryConflictError
+    from app.platform.postgres.errors import RepositoryConflictError
 
     calls = []
 
@@ -1844,11 +1851,11 @@ def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.retry_run_as_new_task', fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     client = TestClient(create_app())
 
@@ -1883,16 +1890,16 @@ def test_retry_run_rejects_unconfirmed_mcp_execution_without_copy(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.get_authorized_run",
+        'app.runs.infrastructure.creation_postgres.get_authorized_run',
         fake_get_authorized_run,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.retry_run_as_new_task",
+        'app.runs.infrastructure.replay_postgres.retry_run_as_new_task',
         fail_retry_run_as_new_task,
         raising=False,
     )
@@ -1930,15 +1937,15 @@ def test_resume_run_rejects_unconfirmed_mcp_execution_without_copy(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run
+        'app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.resume_run_as_new_task",
+        'app.runs.infrastructure.replay_postgres.resume_run_as_new_task',
         fail_resume_run_as_new_task,
     )
     client = TestClient(create_app())
@@ -1971,11 +1978,11 @@ def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.retry_run_as_new_task', fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     client = TestClient(create_app())
 
@@ -2081,7 +2088,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
@@ -2090,15 +2097,15 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         reauthorize,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.resume_run_as_new_task', fake_resume_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
         fake_update_run_input_execution_snapshot,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
@@ -2144,14 +2151,14 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         {
             "tenant_id": "default",
             "run_id": "run-resume-new",
-            "execution_snapshot": repository_module.copied_run_execution_snapshot(calls["enqueue"][0]),
+            "execution_snapshot": _owner_runs_infrastructure_replay_postgres.copied_run_execution_snapshot(calls["enqueue"][0]),
         }
     ]
     assert calls["enqueue"][0]["model_id"] == "model-catalog-resume"
     assert calls["enqueue"][0]["model_value"] == "provider-model-resume"
     assert calls["enqueue"][0]["input"]["resume"]["completed_step_outputs"] == {"code": "code output"}
 def test_resume_run_rejects_source_without_checkpoint_outputs(monkeypatch):
-    from app.repositories import RepositoryConflictError
+    from app.platform.postgres.errors import RepositoryConflictError
 
     calls = []
 
@@ -2170,11 +2177,11 @@ def test_resume_run_rejects_source_without_checkpoint_outputs(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.enforce_user_active_run_admission",
+        'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
         fake_enforce_user_active_run_admission,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.resume_run_as_new_task', fake_resume_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     client = TestClient(create_app())
 
@@ -2236,8 +2243,8 @@ def test_copy_run_plan_previews_reused_and_rerun_steps(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
     client = TestClient(create_app())
 
@@ -2342,8 +2349,8 @@ def test_run_control_readiness_enables_resume_from_checkpoint_outputs(monkeypatc
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight)
     client = TestClient(create_app())
 
@@ -2422,11 +2429,11 @@ def test_run_control_readiness_blocks_retry_for_unconfirmed_mcp_execution(
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.get_authorized_run",
+        'app.runs.infrastructure.creation_postgres.get_authorized_run',
         fake_get_authorized_run,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.list_run_steps", fake_list_run_steps
+        'app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps
     )
     monkeypatch.setattr(
         "app.routes.runs.queue_insight_for_status", fake_queue_insight
@@ -2480,8 +2487,8 @@ def test_run_control_readiness_redacts_raw_skill_ids_from_public_scalars(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-ready/control/readiness", headers=headers())
@@ -2523,8 +2530,8 @@ def test_run_control_readiness_enables_cancel_and_includes_queue_insight(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight)
     client = TestClient(create_app())
 
@@ -2560,8 +2567,8 @@ def test_run_control_readiness_omits_retired_multi_agent_projection(monkeypatch)
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-ready/control/readiness", headers=headers())
@@ -2580,8 +2587,8 @@ def test_run_control_readiness_returns_not_found_without_loading_steps(monkeypat
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/missing-run/control/readiness", headers=headers())
@@ -2663,8 +2670,8 @@ def test_run_resume_manifest_projects_copied_reuse_intent(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
@@ -2751,8 +2758,8 @@ def test_run_resume_manifest_redacts_raw_skill_ids_from_public_scalars(monkeypat
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
@@ -2812,8 +2819,8 @@ def test_run_resume_manifest_rejects_unsafe_source_run_id_and_public_scalars(mon
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
@@ -2879,8 +2886,8 @@ def test_run_resume_manifest_ordinary_hides_source_without_lookup_while_admin_au
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
@@ -2915,8 +2922,8 @@ def test_run_resume_manifest_keeps_non_failed_error_message_empty_after_redactio
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
@@ -2952,8 +2959,8 @@ def test_run_resume_manifest_returns_disabled_state_for_normal_run(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/resume/manifest", headers=headers())
@@ -2978,8 +2985,8 @@ def test_run_resume_manifest_returns_not_found_without_loading_steps(monkeypatch
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/missing-run/resume/manifest", headers=headers())
@@ -3064,9 +3071,9 @@ def test_run_checkpoint_audit_projects_materialization_without_private_payload(m
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/checkpoints/audit", headers=headers())
@@ -3151,9 +3158,9 @@ def test_run_checkpoint_audit_reports_artifact_only_and_uncheckpointed_step_gaps
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
@@ -3234,9 +3241,9 @@ def test_run_checkpoint_audit_admin_retains_raw_skill_checkpoint_correlation(mon
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
@@ -3291,9 +3298,9 @@ def test_run_checkpoint_audit_admin_retains_fingerprint_step_key_for_correlation
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
@@ -3404,9 +3411,9 @@ def test_run_checkpoint_audit_reports_step_only_incomplete_and_producer_mismatch
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
@@ -3499,9 +3506,9 @@ def test_run_checkpoint_audit_requires_valid_artifact_source_step_for_materializ
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
@@ -3568,9 +3575,9 @@ def test_run_checkpoint_audit_missing_producer_does_not_materialize_existing_che
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=admin_headers())
@@ -3602,9 +3609,9 @@ def test_run_checkpoint_audit_returns_not_found_without_loading_steps_or_artifac
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
+    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.list_run_artifacts', fake_list_run_artifacts)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/missing-run/checkpoints/audit", headers=headers())
@@ -3640,8 +3647,8 @@ def test_copy_run_plan_redacts_runtime_private_step_titles_for_ordinary_user(mon
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_get_authorized_run)
+    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', fake_list_run_steps)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
     client = TestClient(create_app())
 
@@ -3659,7 +3666,7 @@ def test_copy_run_plan_redacts_runtime_private_step_titles_for_ordinary_user(mon
 async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monkeypatch):
     stub_session_generation(monkeypatch)
     stub_run_event_append(monkeypatch)
-    from app import repositories
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     class RecordingConnection:
         def __init__(self):
@@ -3710,9 +3717,9 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
         )
         return {"executor_type": "claude-agent-worker", "skill_version": "2.0.0"}
 
-    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr(
-        "app.repositories.authorize_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities',
         lambda conn, **kwargs: fake_resolve_agent_skill(
             conn,
             tenant_id=kwargs["tenant_id"],
@@ -3722,7 +3729,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     )
 
     conn = RecordingConnection()
-    copied = await repositories.copy_run_as_new_task(
+    copied = await _repo_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
         conn,
         tenant_id="default",
         user_id="user-a",
@@ -3755,7 +3762,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     persisted_input = json.loads(persisted_json)
     assert persisted_input["model_id"] == "model-catalog-a"
     assert persisted_input["model_value"] == "provider-model-a"
-    persisted_snapshot = repositories.copied_run_execution_snapshot(persisted_input)
+    persisted_snapshot = _repo_app_runs_infrastructure_replay_postgres.copied_run_execution_snapshot(persisted_input)
     assert {field: copied[field] for field in persisted_snapshot} == persisted_snapshot
 
 
@@ -3763,7 +3770,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
 async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monkeypatch):
     stub_session_generation(monkeypatch)
     stub_run_event_append(monkeypatch)
-    from app import repositories
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
     import json
 
     class RecordingConnection:
@@ -3814,9 +3821,9 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
         }
 
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_rollout_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_rollout_agent_skill)
     monkeypatch.setattr(
-        "app.repositories.authorize_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities',
         lambda conn, **kwargs: fake_resolve_rollout_agent_skill(
             conn,
             tenant_id=kwargs["tenant_id"],
@@ -3826,7 +3833,7 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
     )
     conn = RecordingConnection()
 
-    copied = await repositories.copy_run_as_new_task(
+    copied = await _repo_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
         conn,
         tenant_id="default",
         user_id="user-a",
@@ -3852,7 +3859,7 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
 async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_principal(monkeypatch):
     stub_session_generation(monkeypatch)
     stub_run_event_append(monkeypatch)
-    from app import repositories
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     class RecordingConnection:
         def __init__(self):
@@ -3887,10 +3894,10 @@ async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_pr
         }
 
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     conn = RecordingConnection()
 
-    copied = await repositories.copy_run_as_new_task(
+    copied = await _repo_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
         conn,
         tenant_id="default",
         user_id="user-a",
@@ -3920,7 +3927,7 @@ async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_pr
 async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monkeypatch):
     stub_session_generation(monkeypatch)
     stub_run_event_append(monkeypatch)
-    from app import repositories
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
     import json
 
     class RecordingConnection:
@@ -3955,10 +3962,10 @@ async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monk
         }
 
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     conn = RecordingConnection()
 
-    copied = await repositories.copy_run_as_new_task(
+    copied = await _repo_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
         conn,
         tenant_id="default",
         user_id="user-a",
@@ -3981,7 +3988,7 @@ async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monk
 async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkeypatch):
     stub_session_generation(monkeypatch)
     stub_run_event_append(monkeypatch)
-    from app import repositories
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     class FakeCursor:
         def __init__(self, rows=None):
@@ -4033,9 +4040,9 @@ async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkey
         }
 
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
 
-    copied = await repositories.copy_run_as_new_task(
+    copied = await _repo_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
         StepConnection(),
         tenant_id="default",
         user_id="user-a",
@@ -4065,7 +4072,8 @@ async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkey
 
 @pytest.mark.asyncio
 async def test_resume_run_as_new_task_rejects_active_source_without_copy(monkeypatch):
-    from app import repositories
+    import app.platform.postgres.errors as _repo_app_platform_postgres_errors
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     class RecordingConnection:
         def __init__(self):
@@ -4102,8 +4110,8 @@ async def test_resume_run_as_new_task_rejects_active_source_without_copy(monkeyp
     monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy_run_as_new_task)
     conn = RecordingConnection()
 
-    with pytest.raises(repositories.RepositoryConflictError, match="active_run"):
-        await repositories.resume_run_as_new_task(
+    with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="active_run"):
+        await _repo_app_runs_infrastructure_replay_postgres.resume_run_as_new_task(
             conn,
             tenant_id="default",
             user_id="user-a",
@@ -4115,7 +4123,8 @@ async def test_resume_run_as_new_task_rejects_active_source_without_copy(monkeyp
 
 @pytest.mark.asyncio
 async def test_resume_run_as_new_task_rejects_source_without_completed_outputs(monkeypatch):
-    from app import repositories
+    import app.platform.postgres.errors as _repo_app_platform_postgres_errors
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     class FakeCursor:
         async def fetchone(self):
@@ -4151,8 +4160,8 @@ async def test_resume_run_as_new_task_rejects_source_without_completed_outputs(m
     monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy_run_as_new_task)
     conn = RecordingConnection()
 
-    with pytest.raises(repositories.RepositoryConflictError, match="no_checkpoint_outputs"):
-        await repositories.resume_run_as_new_task(
+    with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="no_checkpoint_outputs"):
+        await _repo_app_runs_infrastructure_replay_postgres.resume_run_as_new_task(
             conn,
             tenant_id="default",
             user_id="user-a",
@@ -4165,7 +4174,8 @@ async def test_resume_run_as_new_task_rejects_source_without_completed_outputs(m
 
 @pytest.mark.asyncio
 async def test_resume_run_as_new_task_rejects_when_resume_is_already_active(monkeypatch):
-    from app import repositories
+    import app.platform.postgres.errors as _repo_app_platform_postgres_errors
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     calls = []
 
@@ -4203,8 +4213,8 @@ async def test_resume_run_as_new_task_rejects_when_resume_is_already_active(monk
     monkeypatch.setattr(replay_persistence, "get_active_resume_for_source_run", fake_get_active_resume_for_source_run, raising=False)
     monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy_run_as_new_task)
 
-    with pytest.raises(repositories.RepositoryConflictError, match="resume_already_active"):
-        await repositories.resume_run_as_new_task(
+    with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="resume_already_active"):
+        await _repo_app_runs_infrastructure_replay_postgres.resume_run_as_new_task(
             object(),
             tenant_id="default",
             user_id="user-a",
@@ -4219,7 +4229,7 @@ async def test_resume_run_as_new_task_rejects_when_resume_is_already_active(monk
 
 @pytest.mark.asyncio
 async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatch):
-    from app import repositories
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     calls = []
 
@@ -4279,7 +4289,7 @@ async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatc
     monkeypatch.setattr(replay_persistence, "append_event", fake_append_event)
     monkeypatch.setattr(replay_persistence, "append_audit_log", fake_append_audit_log)
 
-    copied = await repositories.resume_run_as_new_task(
+    copied = await _repo_app_runs_infrastructure_replay_postgres.resume_run_as_new_task(
         object(),
         tenant_id="default",
         user_id="user-a",
@@ -4319,7 +4329,7 @@ async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatc
 async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verified_outputs(monkeypatch):
     stub_session_generation(monkeypatch)
     stub_run_event_append(monkeypatch)
-    from app import repositories
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     class FakeCursor:
         async def fetchone(self):
@@ -4359,9 +4369,9 @@ async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verifie
         }
 
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
 
-    copied = await repositories.copy_run_as_new_task(
+    copied = await _repo_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
         StepConnection(),
         tenant_id="default",
         user_id="user-a",
@@ -4376,7 +4386,7 @@ async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verifie
 async def test_copy_run_as_new_task_preserves_chained_checkpoint_producer_lineage(monkeypatch):
     stub_session_generation(monkeypatch)
     stub_run_event_append(monkeypatch)
-    from app import repositories
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     class FakeCursor:
         def __init__(self, rows=None):
@@ -4424,9 +4434,9 @@ async def test_copy_run_as_new_task_preserves_chained_checkpoint_producer_lineag
         }
 
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
 
-    copied = await repositories.copy_run_as_new_task(
+    copied = await _repo_app_runs_infrastructure_replay_postgres.copy_run_as_new_task(
         StepConnection(),
         tenant_id="default",
         user_id="user-a",
@@ -4444,7 +4454,8 @@ async def test_copy_run_as_new_task_preserves_chained_checkpoint_producer_lineag
 
 @pytest.mark.asyncio
 async def test_retry_run_as_new_task_rejects_non_retryable_status(monkeypatch):
-    from app import repositories
+    import app.platform.postgres.errors as _repo_app_platform_postgres_errors
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id, for_update=False):
         assert for_update is True
@@ -4464,13 +4475,14 @@ async def test_retry_run_as_new_task_rejects_non_retryable_status(monkeypatch):
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy)
 
-    with pytest.raises(repositories.RepositoryConflictError, match="status_not_retryable"):
-        await repositories.retry_run_as_new_task(object(), tenant_id="default", user_id="user-a", run_id="run-running")
+    with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="status_not_retryable"):
+        await _repo_app_runs_infrastructure_replay_postgres.retry_run_as_new_task(object(), tenant_id="default", user_id="user-a", run_id="run-running")
 
 
 @pytest.mark.asyncio
 async def test_retry_run_as_new_task_rejects_when_retry_is_already_active(monkeypatch):
-    from app import repositories
+    import app.platform.postgres.errors as _repo_app_platform_postgres_errors
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     class ActiveRetryCursor:
         async def fetchone(self):
@@ -4505,8 +4517,8 @@ async def test_retry_run_as_new_task_rejects_when_retry_is_already_active(monkey
     monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy)
     conn = ActiveRetryConnection()
 
-    with pytest.raises(repositories.RepositoryConflictError, match="retry_already_active"):
-        await repositories.retry_run_as_new_task(conn, tenant_id="default", user_id="user-a", run_id="run-failed")
+    with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="retry_already_active"):
+        await _repo_app_runs_infrastructure_replay_postgres.retry_run_as_new_task(conn, tenant_id="default", user_id="user-a", run_id="run-failed")
 
     sql, params = conn.queries[0]
     assert "status in ('queued', 'running')" in sql
@@ -4515,7 +4527,7 @@ async def test_retry_run_as_new_task_rejects_when_retry_is_already_active(monkey
 
 @pytest.mark.asyncio
 async def test_retry_run_as_new_task_auth_snapshot_records_retry_events_and_audit(monkeypatch):
-    from app import repositories
+    import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 
     calls = []
 
@@ -4566,7 +4578,7 @@ async def test_retry_run_as_new_task_auth_snapshot_records_retry_events_and_audi
     monkeypatch.setattr(replay_persistence, "append_event", fake_append_event)
     monkeypatch.setattr(replay_persistence, "append_audit_log", fake_append_audit_log)
 
-    copied = await repositories.retry_run_as_new_task(
+    copied = await _repo_app_runs_infrastructure_replay_postgres.retry_run_as_new_task(
         object(),
         tenant_id="default",
         user_id="user-a",
@@ -4648,7 +4660,7 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
         fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
@@ -4832,7 +4844,7 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
         fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
@@ -4955,7 +4967,7 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
         fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
@@ -5100,7 +5112,7 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
         fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
@@ -5140,7 +5152,7 @@ def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
         fail_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
@@ -5234,7 +5246,7 @@ async def test_request_run_cancel_closes_pending_steps_when_owner_cancels_queued
         calls.append(("event", kwargs))
         return "evt-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     result = await _request_owner_cancel(
         FakeConnection(),
@@ -5279,7 +5291,7 @@ async def test_request_run_cancel_defers_active_sandbox_lease_release_until_clea
         calls.append(("event", kwargs))
         return "evt-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     result = await _request_owner_cancel(
         FakeConnection(),
@@ -5338,7 +5350,7 @@ async def test_request_run_cancel_allows_cancelled_run_with_active_sandbox_lease
         calls.append(("event", kwargs))
         return "evt-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     result = await _request_owner_cancel(
         FakeConnection(),
@@ -5383,7 +5395,7 @@ async def test_release_stopped_sandbox_leases_for_cancel_releases_only_stopped_l
         calls.append(("event", kwargs))
         return "evt-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     released = await sandbox_runtime_cleanup.release_stopped_sandbox_leases_for_cancel(
         FakeConnection(),
@@ -5436,7 +5448,7 @@ def test_cancel_running_run_does_not_remove_queued_payload(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_admin_runs_is_tenant_scoped_and_parameterized():
-    from app import repositories
+    import app.runs.infrastructure.admin_queries_postgres as _repo_app_runs_infrastructure_admin_queries_postgres
 
     class FakeCursor:
         async def fetchall(self):
@@ -5470,7 +5482,7 @@ async def test_list_admin_runs_is_tenant_scoped_and_parameterized():
             assert params == ("default", "user-a", "user-a", "running", "running", 25)
             return FakeCursor()
 
-    rows = await repositories.list_admin_runs(
+    rows = await _repo_app_runs_infrastructure_admin_queries_postgres.list_admin_runs(
         FakeConnection(),
         tenant_id="default",
         user_id="user-a",
@@ -5486,7 +5498,7 @@ async def test_list_admin_runs_is_tenant_scoped_and_parameterized():
 
 @pytest.mark.asyncio
 async def test_admin_run_detail_includes_run_steps(monkeypatch):
-    from app import repositories
+    import app.runs.infrastructure.admin_queries_postgres as _repo_app_runs_infrastructure_admin_queries_postgres
 
     async def fake_get_run(conn, *, tenant_id, run_id):
         return {
@@ -5549,7 +5561,7 @@ async def test_admin_run_detail_includes_run_steps(monkeypatch):
     monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr(run_queries_persistence, "list_run_steps", fake_list_run_steps)
 
-    detail = await repositories.get_admin_run_detail(FakeConnection(), tenant_id="default", run_id="run-a")
+    detail = await _repo_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="default", run_id="run-a")
 
     assert detail["run"]["cancel_requested_at"] == "2026-05-27T01:02:03Z"
     assert detail["run"]["cancel_requested_by"] == "admin-a"
@@ -5604,8 +5616,8 @@ async def test_request_admin_run_cancel_does_not_filter_target_user_and_audits(m
         calls.append(("audit", kwargs))
         return "aud-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', fake_append_audit_log)
 
     result = await _request_admin_cancel(
         FakeConnection(),
@@ -5683,8 +5695,8 @@ async def test_request_run_cancel_owner_cancel_writes_structured_audit(monkeypat
         calls.append(("audit", kwargs))
         return "aud-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', fake_append_audit_log)
 
     result = await _request_owner_cancel(
         FakeConnection(),
@@ -5744,8 +5756,8 @@ async def test_request_admin_run_cancel_closes_pending_steps_when_queued_cancell
         calls.append(("audit", kwargs))
         return "aud-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', fake_append_audit_log)
 
     result = await _request_admin_cancel(
         FakeConnection(),
@@ -5792,8 +5804,8 @@ async def test_request_admin_run_cancel_defers_active_sandbox_lease_release_unti
         calls.append(("audit", kwargs))
         return "aud-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', fake_append_audit_log)
 
     result = await _request_admin_cancel(
         FakeConnection(),
@@ -5854,8 +5866,8 @@ async def test_request_admin_run_cancel_allows_cancelled_run_with_active_sandbox
         calls.append(("audit", kwargs))
         return "aud-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', fake_append_audit_log)
 
     result = await _request_admin_cancel(
         FakeConnection(),
@@ -5892,7 +5904,7 @@ async def test_release_stopped_sandbox_leases_for_admin_cancel_emits_admin_role(
         calls.append(("event", kwargs))
         return "evt-a"
 
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
 
     released = await sandbox_runtime_cleanup.release_stopped_sandbox_leases_for_cancel(
         FakeConnection(),

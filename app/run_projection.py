@@ -16,7 +16,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.file_preview_contracts import xlsx_preview_identity_from_metadata
-from app.memory_redaction import sanitizer_unstable_suffix_length
+from app.kernel.memory_redaction import sanitizer_unstable_suffix_length
 from app.platform.public_payload import sanitize_public_answer_text
 from app.projection_redaction import (
     PUBLIC_AGENT_ID_BY_CAPABILITY,

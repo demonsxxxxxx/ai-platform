@@ -92,8 +92,8 @@ def test_admin_trajectory_route_is_read_only_tenant_scoped_and_paginated(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", _auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", _transaction)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.get_run", get_run)
-    monkeypatch.setattr("app.routes.admin_runs.repositories.list_run_events", list_events)
+    monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", list_events)
     client = TestClient(create_app())
 
     denied = client.get("/api/ai/admin/runs/run_a/trajectory", headers=_headers("user"))

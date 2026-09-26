@@ -2,7 +2,9 @@
 
 from functools import partial
 
-from app import repositories
+from app.platform.postgres import errors as platform_errors
+from app.runs.infrastructure import postgres as runs_postgres
+
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.execution.api import WorkerAttemptLifecyclePorts
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
@@ -23,7 +25,7 @@ def build_worker_attempt_lifecycle_ports(
 
     run_diagnostics = build_run_diagnostics_service()
     return WorkerAttemptLifecyclePorts(
-        lock_run=repositories.get_run,
+        lock_run=runs_postgres.get_run,
         complete_run=partial(complete_run_with_v4, lifecycle=lifecycle),
         fail_run=partial(fail_run_with_v4, lifecycle=lifecycle),
         cancel_run=partial(cancel_run_with_v4, lifecycle=lifecycle),
@@ -38,6 +40,6 @@ def build_worker_attempt_lifecycle_ports(
         terminalize_attempt=attempt_lifecycle.terminalize,
         is_cancel_requested=lifecycle.is_cancel_requested,
         classify_success_commit_block=lifecycle.classify_success_commit_block,
-        conflict_error=repositories.RepositoryConflictError,
+        conflict_error=platform_errors.RepositoryConflictError,
         record_result_diagnostics=run_diagnostics.capture_failure_result,
     )

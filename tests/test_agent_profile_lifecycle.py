@@ -1,3 +1,5 @@
+import app.conversations.infrastructure.postgres as _owner_conversations_infrastructure_postgres
+import app.platform.postgres.errors as _owner_platform_postgres_errors
 import subprocess
 import sys
 from uuid import UUID
@@ -243,11 +245,11 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
         return {"name": kwargs["name"], "status": "disabled"}
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.resolve_selected_skill",
+        'app.skills.infrastructure.resolution_postgres.resolve_selected_skill',
         resolve_skill,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
         authorize_skill,
     )
     monkeypatch.setattr(
@@ -271,22 +273,21 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
 
 @pytest.mark.asyncio
 async def test_profile_definition_preserves_repository_authorization_status(monkeypatch):
-    from app import repositories
     from app.agent_apps import AgentProfileAuthority
     from app.agent_apps.authority import _draft_from_row
 
     async def deny_skill(*_args, **_kwargs):
-        raise repositories.RepositoryAuthorizationError("denied")
+        raise _owner_platform_postgres_errors.RepositoryAuthorizationError("denied")
 
     async def resolve_skill(*_args, **_kwargs):
         return {"skill_version": "version-a"}
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.resolve_selected_skill",
+        'app.skills.infrastructure.resolution_postgres.resolve_selected_skill',
         resolve_skill,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.authorize_selected_run_capabilities",
+        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
         deny_skill,
     )
 
@@ -369,17 +370,17 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         lock_profile,
         raising=False,
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', ensure_user)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.ensure_agent_profile_identity", ensure_identity)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.create_agent_profile_revision", append_revision)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_draft", record_draft)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", read_draft)
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.get_tenant_profile_validation_agent",
+        'app.agent_apps.infrastructure.catalog_postgres.get_tenant_profile_validation_agent',
         validation_agent,
     )
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_publication", record_publication)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
     authority = AgentProfileAuthority(
         department_authority_validator=validate_departments,
     )
@@ -451,7 +452,7 @@ async def test_publish_rejects_a_tampered_draft_before_validation_or_append(monk
         raise AssertionError("tampered draft must fail before validation, append, or audit")
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        'app.identity.infrastructure.postgres.ensure_submission_principal',
         noop,
     )
     monkeypatch.setattr(
@@ -467,7 +468,7 @@ async def test_publish_rejects_a_tampered_draft_before_validation_or_append(monk
         forbidden,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.append_audit_log",
+        'app.identity.infrastructure.audit_postgres.append_audit_log',
         forbidden,
     )
     authority = AgentProfileAuthority()
@@ -509,7 +510,7 @@ async def test_publish_rejects_an_unsigned_multi_skill_draft(monkeypatch, invali
         raise AssertionError("unsigned draft must fail before validation, append, or audit")
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        'app.identity.infrastructure.postgres.ensure_submission_principal',
         noop,
     )
     monkeypatch.setattr(
@@ -525,7 +526,7 @@ async def test_publish_rejects_an_unsigned_multi_skill_draft(monkeypatch, invali
         forbidden,
     )
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.append_audit_log",
+        'app.identity.infrastructure.audit_postgres.append_audit_log',
         forbidden,
     )
     authority = AgentProfileAuthority()
@@ -546,7 +547,7 @@ async def test_publish_rejects_an_unsigned_multi_skill_draft(monkeypatch, invali
 
 @pytest.mark.asyncio
 async def test_profile_authority_provisions_and_tenant_validates_admin_fk_identity(monkeypatch):
-    from app import repositories
+    import app.identity.infrastructure.postgres as _repo_app_identity_infrastructure_postgres
     from app.agent_apps import AgentProfileAuthority
 
     calls: list[dict[str, object]] = []
@@ -555,7 +556,7 @@ async def test_profile_authority_provisions_and_tenant_validates_admin_fk_identi
         calls.append(kwargs)
         return {"id": kwargs["user_id"], "tenant_id": kwargs["tenant_id"]}
 
-    monkeypatch.setattr(repositories, "ensure_submission_principal", provision)
+    monkeypatch.setattr(_repo_app_identity_infrastructure_postgres, 'ensure_submission_principal', provision)
     await AgentProfileAuthority()._ensure_principal_user(  # noqa: SLF001 - focused authority contract
         object(),
         principal=_principal(roles=["admin"]),
@@ -569,9 +570,9 @@ async def test_profile_authority_provisions_and_tenant_validates_admin_fk_identi
     ]
 
     async def wrong_tenant(*_args, **_kwargs):
-        raise repositories.RepositoryAuthorizationError("principal_user_scope_mismatch")
+        raise _owner_platform_postgres_errors.RepositoryAuthorizationError("principal_user_scope_mismatch")
 
-    monkeypatch.setattr(repositories, "ensure_submission_principal", wrong_tenant)
+    monkeypatch.setattr(_repo_app_identity_infrastructure_postgres, 'ensure_submission_principal', wrong_tenant)
     with pytest.raises(HTTPException) as caught:
         await AgentProfileAuthority()._ensure_principal_user(  # noqa: SLF001 - focused authority contract
             object(),
@@ -644,13 +645,13 @@ async def test_profile_update_persists_the_submitted_canonical_definition(monkey
         return "aud_profile"
 
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', noop)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.ensure_agent_profile_identity", noop)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", read_prior)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.create_agent_profile_revision", append_revision)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_draft", noop)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_publication", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
     authority = AgentProfileAuthority(department_authority_validator=noop)
 
     async def validate(*_args, **_kwargs):
@@ -771,11 +772,11 @@ async def test_draft_preview_validates_the_submitted_canonical_definition(monkey
     async def audit(*_args, **_kwargs):
         return "aud_preview"
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', noop)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock", noop)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_aggregate", read_aggregate)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", read_prior)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
     authority = AgentProfileAuthority(department_authority_validator=noop)
     monkeypatch.setattr(authority, "_validate_definition", validate)
     omitted = AgentProfileDraftRequest(
@@ -839,14 +840,14 @@ async def test_draft_preview_rejects_a_superseded_revision_before_validation_or_
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("superseded preview must fail before revision validation or audit")
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', ensure_user)
     monkeypatch.setattr(
         "app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock",
         lifecycle_lock,
     )
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_aggregate", aggregate)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", forbidden)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", forbidden)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', forbidden)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", forbidden)
 
@@ -930,7 +931,7 @@ async def test_favorite_does_not_bypass_public_profile_acl(monkeypatch):
     async def validate(*_args, **_kwargs):
         return ({"skill_id": "general-chat", "skill_version": "version-a"},)
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', ensure_user)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
     authority = AgentProfileAuthority(favorite_setter=set_favorite)
     monkeypatch.setattr(authority, "_validate_definition", validate)
@@ -1137,10 +1138,10 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
         return "aud_conversation"
 
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", remember_workspace)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", remember_user)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", create_session)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.ensure_workspace', remember_workspace)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', remember_user)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', create_session)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", validate)
 
@@ -1192,7 +1193,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
 
 @pytest.mark.asyncio
 async def test_agent_conversation_operation_replay_returns_one_pinned_session_without_second_audit(monkeypatch):
-    from app import repositories
+    import app.platform.postgres.errors as _repo_app_platform_postgres_errors
     from app.agent_apps import AgentProfileAuthority
     from app.models import SelectedAgentProfileRequest
 
@@ -1241,11 +1242,11 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
         return None
 
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_session_projection", get_session)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", create_session)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.get_authorized_session_projection', get_session)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.ensure_workspace', noop)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', create_session)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", validate)
     selection = SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7)
@@ -1273,7 +1274,7 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
     assert replay.agent_conversation.revision == 7
     assert calls == {"create": 1, "audit": 1, "admission": 1}
 
-    with pytest.raises(repositories.RepositoryConflictError, match="agent_conversation_operation_conflict"):
+    with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="agent_conversation_operation_conflict"):
         await authority.create_conversation(
             object(),
             principal=_principal(),
@@ -1302,7 +1303,7 @@ async def test_agent_conversation_operation_replay_rejects_exact_title_mismatch(
     stored_title,
     retry_title,
 ):
-    from app import repositories
+    import app.platform.postgres.errors as _repo_app_platform_postgres_errors
     from app.agent_apps import AgentProfileAuthority
     from app.models import SelectedAgentProfileRequest
 
@@ -1329,11 +1330,11 @@ async def test_agent_conversation_operation_replay_rejects_exact_title_mismatch(
     async def get_session(*_args, **_kwargs):
         return existing
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.get_authorized_session_projection", get_session)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.ensure_workspace', noop)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.get_authorized_session_projection', get_session)
 
-    with pytest.raises(repositories.RepositoryConflictError, match="agent_conversation_operation_conflict"):
+    with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="agent_conversation_operation_conflict"):
         await AgentProfileAuthority().create_conversation(
             object(),
             principal=_principal(),
@@ -1405,10 +1406,10 @@ async def test_revision_bound_conversations_stay_on_their_publication_until_unpu
         get_bound,
         raising=False,
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_workspace", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", noop)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.create_session", create_session)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.ensure_workspace', noop)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', noop)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', create_session)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", validate)
 
@@ -1596,7 +1597,14 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from app import repositories
+    import app.agent_apps.infrastructure.catalog_postgres as _repo_app_agent_apps_infrastructure_catalog_postgres
+    import app.context.file_continuity as _repo_app_context_file_continuity
+    import app.conversations.infrastructure.postgres as _repo_app_conversations_infrastructure_postgres
+    import app.conversations.infrastructure.session_queries_postgres as _repo_app_conversations_infrastructure_session_queries_postgres
+    import app.files.infrastructure.run_bindings_postgres as _repo_app_files_infrastructure_run_bindings_postgres
+    import app.identity.infrastructure.postgres as _repo_app_identity_infrastructure_postgres
+    import app.persistence.chat_submissions as _repo_app_persistence_chat_submissions
+    import app.runs.infrastructure.postgres as _repo_app_runs_infrastructure_postgres
     from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
     from app.execution.api import RunModelSelection
     from app.main import create_app
@@ -1726,21 +1734,21 @@ async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_overri
             )
         ),
     )
-    monkeypatch.setattr(repositories, "get_chat_submission", AsyncMock(return_value=None))
-    monkeypatch.setattr(repositories, "ensure_submission_principal", noop)
-    monkeypatch.setattr(repositories, "get_authorized_session", owned_session)
-    monkeypatch.setattr(repositories, "acquire_user_active_run_admission_lock", noop)
-    monkeypatch.setattr(repositories, "get_latest_authorized_session_run_input", noop)
-    monkeypatch.setattr(repositories, "get_agent", harness_agent)
-    monkeypatch.setattr(repositories, "enforce_user_active_run_admission_under_lock", noop)
-    monkeypatch.setattr(repositories, "ensure_workspace_belongs_to_tenant", noop)
+    monkeypatch.setattr(_repo_app_persistence_chat_submissions, 'get_chat_submission', AsyncMock(return_value=None))
+    monkeypatch.setattr(_repo_app_identity_infrastructure_postgres, 'ensure_submission_principal', noop)
+    monkeypatch.setattr(_repo_app_conversations_infrastructure_session_queries_postgres, 'get_authorized_session', owned_session)
+    monkeypatch.setattr(_repo_app_runs_infrastructure_postgres, 'acquire_user_active_run_admission_lock', noop)
+    monkeypatch.setattr(_repo_app_conversations_infrastructure_session_queries_postgres, 'get_latest_authorized_session_run_input', noop)
+    monkeypatch.setattr(_repo_app_agent_apps_infrastructure_catalog_postgres, 'get_agent', harness_agent)
+    monkeypatch.setattr(_repo_app_runs_infrastructure_postgres, 'enforce_user_active_run_admission_under_lock', noop)
+    monkeypatch.setattr(_repo_app_conversations_infrastructure_postgres, 'ensure_workspace_belongs_to_tenant', noop)
     monkeypatch.setattr(
-        repositories,
-        "list_authorized_session_input_files",
+        _repo_app_context_file_continuity,
+        'list_authorized_session_input_files',
         AsyncMock(return_value=[]),
     )
-    monkeypatch.setattr(repositories, "authorize_files_for_run", noop)
-    monkeypatch.setattr(repositories, "claim_chat_submission", claim_submission)
+    monkeypatch.setattr(_repo_app_files_infrastructure_run_bindings_postgres, 'authorize_files_for_run', noop)
+    monkeypatch.setattr(_repo_app_persistence_chat_submissions, 'claim_chat_submission', claim_submission)
     monkeypatch.setattr("app.routes.chat.pin_agent_skill_set", lock_profile_skills)
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_bound_for_submission", bound_profile)
     monkeypatch.setattr(
@@ -1861,12 +1869,12 @@ async def test_unpublish_records_an_immutable_withdrawn_revision_and_clears_admi
         lock_profile,
         raising=False,
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', ensure_user)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_aggregate", aggregate)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_agent_profile_revision", get_revision)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.create_agent_profile_revision", append_revision)
     monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.record_agent_profile_withdrawal", record_withdrawal)
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
 
     profile, audit_id = await AgentProfileAuthority().unpublish(
         object(),
@@ -1935,7 +1943,7 @@ async def test_retire_deactivates_only_a_non_published_profile_identity(
         observed.append(("audit", kwargs))
         return "aud_profile_retired"
 
-    monkeypatch.setattr("app.agent_apps.authority.repositories.ensure_submission_principal", ensure_user)
+    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', ensure_user)
     monkeypatch.setattr(
         "app.agent_apps.authority.agent_profile_repository.acquire_agent_profile_lifecycle_lock",
         lock_profile,
@@ -1948,7 +1956,7 @@ async def test_retire_deactivates_only_a_non_published_profile_identity(
         "app.agent_apps.authority.agent_profile_repository.retire_agent_profile_identity",
         retire_identity,
     )
-    monkeypatch.setattr("app.agent_apps.authority.repositories.append_audit_log", audit)
+    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
 
     audit_id = await AgentProfileAuthority().retire(
         object(),
@@ -1988,7 +1996,7 @@ async def test_retire_requires_unpublish_before_deactivation(monkeypatch):
         raise AssertionError("published profile must not be retired")
 
     monkeypatch.setattr(
-        "app.agent_apps.authority.repositories.ensure_submission_principal",
+        'app.identity.infrastructure.postgres.ensure_submission_principal',
         no_user_write,
     )
     monkeypatch.setattr(
@@ -2442,8 +2450,8 @@ async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(mon
 
     monkeypatch.setattr(agent_profiles, "transaction", transaction)
     monkeypatch.setattr(
-        agent_profiles.repositories,
-        "get_authorized_session_projection",
+        _owner_conversations_infrastructure_postgres,
+        'get_authorized_session_projection',
         get_session,
     )
     monkeypatch.setattr("app.routes.chat.chat_stream", chat_stream)

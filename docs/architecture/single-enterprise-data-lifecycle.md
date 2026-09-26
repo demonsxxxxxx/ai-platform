@@ -181,10 +181,10 @@ The former `ARTIFACT_OBJECT_DELETE_*` environment and Python aliases, and the
 artifact-retention fallback for the shared claim batch, are no longer
 accepted. This remains a configuration and code-ownership rename only: it does
 not change SQL, persisted states, retry semantics, or retention eligibility.
-The logic-free `app.artifact_lifecycle_repository` import facade remains under
-the base architecture policy and only re-exports canonical `app.persistence`
-symbols. It owns no SQL or lifecycle behavior; removing it requires a prior
-authority-only policy change.
+The old `app.artifact_lifecycle_repository` import facade has been removed.
+Artifact and file lifecycle callers use the owning persistence modules directly.
+Some cross-domain adapter calls remain and are tracked as future architecture
+debt; removing this facade does not claim complete layer separation.
 
 Cleanup runs in small worker batches and is retryable:
 

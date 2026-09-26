@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.memory_redaction import (
+from app.kernel.memory_redaction import (
     MEMORY_REDACTION_MODE_STRICT,
     is_sensitive_redaction_key,
     redact_memory_text,
