@@ -36,7 +36,6 @@ from app.streaming.api import (
     publish_run_event,
 )
 from app.control_plane_contracts import sanitize_public_text
-from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -190,7 +189,6 @@ async def admin_run_cancel(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     runtime = request.app.state.run_stream_runtime
-    attempt_lifecycle = request.app.state.run_attempt_lifecycle
     cancellation = await _require_run_cancellation_use_case(request).request_admin_cancel(
         tenant_id=principal.tenant_id,
         admin_user_id=principal.user_id,
@@ -214,37 +212,7 @@ async def admin_run_cancel(
             )
     result = cancellation.as_route_result() if cancellation is not None else None
     if result is not None:
-        initial_progress = result.pop("_permission_terminalization_progress", None)
-        if initial_progress is not None:
-            await reconcile_terminalized_permission_run(
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                progress=initial_progress,
-                transaction_factory=transaction,
-                attempt_lifecycle=attempt_lifecycle,
-            )
-        progress = await drain_run_tool_permission_terminalization(
-            tenant_id=principal.tenant_id,
-            run_id=run_id,
-            capabilities=runtime.worker_capabilities,
-            transaction_factory=transaction,
-            attempt_lifecycle=attempt_lifecycle,
-            attempt_id=cancellation.attempt_id if cancellation is not None else None,
-        )
-        if progress is not None and progress.is_terminal():
-            progressed_status = str(progress.status or result["status"])
-            if result["status"] not in {"succeeded", "failed", "cancelled"} or progressed_status in {
-                "failed",
-                "cancelled",
-            }:
-                result["status"] = progressed_status
-        await reconcile_terminalized_permission_run(
-            tenant_id=principal.tenant_id,
-            run_id=run_id,
-            progress=progress,
-            transaction_factory=transaction,
-            attempt_lifecycle=attempt_lifecycle,
-        )
+        result.pop("_terminalization_progress", None)
     if cancellation is not None and cancellation.attempt_id:
         try:
             await publish_run_event(

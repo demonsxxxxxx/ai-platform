@@ -174,10 +174,10 @@ async def test_shared_run_projection_includes_session_agent_profile_pins():
 @pytest.mark.asyncio
 async def test_terminal_intent_preserves_cas_scope_and_unicode_json():
     conn = RecordingConnection(
-        [{"id": "run-a", "permission_terminalization_target": "failed"}]
+        [{"id": "run-a", "terminalization_target": "failed"}]
     )
 
-    row = await run_persistence._stage_run_tool_permission_terminalization(
+    row = await run_persistence.stage_run_terminalization(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -188,9 +188,9 @@ async def test_terminal_intent_preserves_cas_scope_and_unicode_json():
         error_message="failed",
     )
 
-    assert row["permission_terminalization_target"] == "failed"
+    assert row["terminalization_target"] == "failed"
     sql, params = conn.calls[0]
-    assert "permission_terminalization_target = case" in sql
+    assert "terminalization_target = case" in sql
     assert "status not in ('succeeded', 'failed', 'cancelled')" in sql
     assert params == (
         "failed",
@@ -214,9 +214,9 @@ async def test_terminal_intent_rejects_invalid_target_before_query():
 
     with pytest.raises(
         ValueError,
-        match="invalid_run_tool_permission_terminal_target",
+        match="invalid_run_terminalization_target",
     ):
-        await run_persistence._stage_run_tool_permission_terminalization(
+        await run_persistence.stage_run_terminalization(
             conn,
             tenant_id="tenant-a",
             run_id="run-a",

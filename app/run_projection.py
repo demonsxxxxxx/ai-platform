@@ -411,11 +411,7 @@ PUBLIC_EVENT_TYPE_ALIASES = {
     "mcp_tool_call_completed": "tool_call_completed",
     "mcp_tool_call_started": "tool_call_started",
     "mcp_tool_denied": "tool_denied",
-    "run_multi_agent_child_created": "run_child_created",
     "skill_selected": "capability_selected",
-    "tool_permission_decided": "tool_permission_card",
-    "tool_permission_requested": "tool_permission_card",
-    "tool_permission_terminalized": "tool_permission_card",
     "worker_started": "run_started",
 }
 
@@ -549,34 +545,15 @@ PUBLIC_ORDINARY_EVENT_DETAILS.update(
 )
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
-        ("mcp_tool_denied", "tool_denied", "tool_permission_denied"),
+        ("mcp_tool_denied", "tool_denied"),
         stage="policy",
-        message="当前处理步骤未获授权，正在等待权限调整。",
+        message="当前处理步骤未获授权。",
         status="blocked",
         severity="warning",
         event_type="tool_denied",
-        error_code="tool_permission_denied",
+        error_code="tool_denied",
     )
 )
-PUBLIC_ORDINARY_EVENT_DETAILS.update(
-    _ordinary_event_details(
-        ("tool_permission_requested", "tool_permission_decided", "tool_permission_terminalized"),
-        stage="policy",
-        message="权限决策状态已更新。",
-        status="waiting",
-        event_type="tool_permission_card",
-    )
-)
-PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_decided"] = {
-    **PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_decided"],
-    "message": "权限决策已记录。",
-    "status": "completed",
-}
-PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_terminalized"] = {
-    **PUBLIC_ORDINARY_EVENT_DETAILS["tool_permission_terminalized"],
-    "message": "权限请求已结束。",
-    "status": "completed",
-}
 PUBLIC_ORDINARY_EVENT_DETAILS.update(
     _ordinary_event_details(
         ("capability_selected", "skill_selected"),
@@ -681,14 +658,8 @@ PUBLIC_ORDINARY_EVENT_DETAILS.update(
             "event_replayed",
             "heartbeat",
             "legacy_runtime211_direct_executor_denied",
-            "multi_agent_dispatch_enqueue_failed",
-            "multi_agent_dispatch_handoff",
-            "multi_agent_dispatch_parent_parked",
-            "multi_agent_dispatch_reconciled",
-            "multi_agent_parent_finalized",
             "run_completed",
             "run_created",
-            "run_multi_agent_child_created",
             "run_succeeded",
             "sandbox_lease_created",
             "sandbox_lease_released",
@@ -724,13 +695,6 @@ PUBLIC_ORDINARY_EVENT_DETAILS["run_succeeded"] = {
     "status": "completed",
     "event_type": "run_completed",
 }
-PUBLIC_ORDINARY_EVENT_DETAILS["run_multi_agent_child_created"] = {
-    **PUBLIC_ORDINARY_EVENT_DETAILS["run_multi_agent_child_created"],
-    "message": "已安排协同任务。",
-    "status": "running",
-    "event_type": "run_child_created",
-}
-
 PUBLIC_ORDINARY_GENERIC_EVENT_DETAIL = {
     "event_type": "activity",
     "stage": "status",

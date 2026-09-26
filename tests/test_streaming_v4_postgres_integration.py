@@ -26,11 +26,7 @@ from app.platform.public_payload import sanitize_public_payload, sanitize_public
 from app.routes import runtime_callbacks
 from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
-from app.tool_permission_lifecycle import (
-    cancel_run_with_v4,
-    complete_run_with_v4,
-    fail_run_with_v4,
-)
+from app.runs.api import cancel_run_with_v4, complete_run_with_v4, fail_run_with_v4
 from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities, admit_v4_stream, publish_run_event
 from app.streaming.api import build_v4_control, stream_key
 from app.streaming.redis import RedisStreamBridge, StreamAuthority, StreamTransportUnavailable
@@ -99,7 +95,7 @@ def _callback_capabilities(dsn: str, schema_name: str, *, bridge=None) -> Worker
         event_persistence=PostgresWorkerEventPersistence(
             factory,
             append_event=repositories.append_event,
-            is_cancel_requested=repositories.is_cancel_requested,
+            is_cancel_requested=run_lifecycle.build_run_lifecycle_service().is_cancel_requested,
             load_terminal_event_fact=load_current_terminal_event_fact,
         ),
         publication_transport=RedisV4PublicationTransport(bridge) if bridge is not None else object(),
@@ -137,7 +133,8 @@ def _production_cancellation_use_case(conn):
         patch.object(run_lifecycle, "get_settings", return_value=settings),
     ):
         return run_lifecycle.build_run_cancellation_use_case(
-            attempt_lifecycle=build_run_attempt_lifecycle_service()
+            attempt_lifecycle=build_run_attempt_lifecycle_service(),
+            lifecycle=run_lifecycle.build_run_lifecycle_service(),
         )
 
 
@@ -531,6 +528,7 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
                 await terminalize_enqueue_failure_with_v4(
                     rollback_capabilities,
                     conn,
+                    lifecycle=run_lifecycle.build_run_lifecycle_service(),
                     tenant_id=tenant,
                     user_id=user_id,
                     run_id=run,
@@ -556,7 +554,7 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
         event_persistence = PostgresWorkerEventPersistence(
             factory,
             append_event=repositories.append_event,
-            is_cancel_requested=repositories.is_cancel_requested,
+            is_cancel_requested=run_lifecycle.build_run_lifecycle_service().is_cancel_requested,
             load_terminal_event_fact=load_current_terminal_event_fact,
         )
         capabilities = WorkerV4Capabilities(
@@ -568,6 +566,7 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
             progress = await terminalize_enqueue_failure_with_v4(
                 capabilities,
                 conn,
+                lifecycle=run_lifecycle.build_run_lifecycle_service(),
                 tenant_id=tenant,
                 user_id=user_id,
                 run_id=run,
@@ -999,6 +998,7 @@ async def test_complete_run_writes_one_v4_terminal_row_from_the_run_fact():
         async with _connection_factory(_dsn(), schema_name) as conn:
             assert await complete_run_with_v4(
                 conn,
+                lifecycle=run_lifecycle.build_run_lifecycle_service(),
                 capabilities=_callback_capabilities(_dsn_value, schema_name),
                 tenant_id=tenant,
                 run_id=run,
@@ -1036,6 +1036,7 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
             if status == "failed":
                 progress = await fail_run_with_v4(
                     conn,
+                    lifecycle=run_lifecycle.build_run_lifecycle_service(),
                     capabilities=_callback_capabilities(_dsn_value, schema_name),
                     tenant_id=tenant,
                     run_id=run,
@@ -1045,6 +1046,7 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
             else:
                 progress = await cancel_run_with_v4(
                     conn,
+                    lifecycle=run_lifecycle.build_run_lifecycle_service(),
                     capabilities=_callback_capabilities(_dsn_value, schema_name),
                     tenant_id=tenant,
                     run_id=run,
@@ -1158,22 +1160,6 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
             assert first is not None
             assert first["status"] == "cancelled"
 
-            await conn.execute(
-                """
-                insert into run_tool_permission_requests(
-                  id, tenant_id, workspace_id, user_id, session_id, run_id,
-                  tool_id, tool_call_id, status
-                ) values (%s, %s, %s, %s, %s, %s, 'tool', 'call-retry', 'pending')
-                """,
-                (
-                    f"permission_{suffix}",
-                    tenant,
-                    f"w_{suffix}",
-                    user,
-                    f"s_{suffix}",
-                    run,
-                ),
-            )
             second = await _request_owner_cancel(
                 use_case,
                 tenant_id=tenant,
@@ -1183,14 +1169,6 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
             assert second is not None
             assert second["status"] == "cancelled"
 
-            permission_cursor = await conn.execute(
-                """
-                select status from run_tool_permission_requests
-                where tenant_id = %s and run_id = %s and tool_call_id = 'call-retry'
-                """,
-                (tenant, run),
-            )
-            assert await permission_cursor.fetchone() == {"status": "cancelled"}
 
             cursor = await conn.execute(
                 """
@@ -1308,14 +1286,14 @@ async def test_production_cancel_composition_rolls_back_run_events_and_audit():
                 run_id=run,
                 attempt_id=attempt,
             )
-            real_append_audit_log = run_lifecycle.repositories.append_audit_log
+            real_append_audit_log = run_lifecycle.append_audit_log
 
             async def fail_after_audit_write(*args, **kwargs):
                 await real_append_audit_log(*args, **kwargs)
                 raise RuntimeError("force_cancel_rollback")
 
             with patch.object(
-                run_lifecycle.repositories,
+                run_lifecycle,
                 "append_audit_log",
                 fail_after_audit_write,
             ):
@@ -1330,7 +1308,7 @@ async def test_production_cancel_composition_rolls_back_run_events_and_audit():
 
             run_cursor = await conn.execute(
                 """
-                select status, cancel_requested_at, permission_terminalization_target
+                select status, cancel_requested_at, terminalization_target
                 from runs where tenant_id = %s and id = %s
                 """,
                 (tenant, run),
@@ -1339,7 +1317,7 @@ async def test_production_cancel_composition_rolls_back_run_events_and_audit():
             assert run_row == {
                 "status": "queued",
                 "cancel_requested_at": None,
-                "permission_terminalization_target": None,
+                "terminalization_target": None,
             }
             evidence_cursor = await conn.execute(
                 """

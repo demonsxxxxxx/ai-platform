@@ -37,8 +37,8 @@ class CancelRequestResult:
     def as_route_result(self) -> dict[str, Any]:
         result: dict[str, Any] = {"run_id": self.run_id, "status": self.status}
         progress = self.initial_terminalization_progress
-        if progress is not None and progress.did_transition and progress.needs_reconcile:
-            result["_permission_terminalization_progress"] = progress
+        if progress is not None and progress.did_transition:
+            result["_terminalization_progress"] = progress
         if self.active_sandbox_leases:
             result["trace_id"] = self.trace_ref
             result["active_sandbox_leases"] = list(self.active_sandbox_leases)

@@ -37,7 +37,7 @@ class WorkerQueueLease:
 
 
 class WorkerQueuePayload(Protocol):
-    """Run identity and child-dispatch fields required by worker orchestration."""
+    """Run identity and execution input required by worker orchestration."""
 
     tenant_id: str
     run_id: str
@@ -52,7 +52,6 @@ class WorkerAttemptLifecyclePorts:
     complete_run: AsyncPort
     fail_run: AsyncPort
     cancel_run: AsyncPort
-    drain_terminalization: AsyncPort
     is_reconciliation_claim_current: AsyncPort
     get_attempt: AsyncPort
     get_attempt_for_queue_attempt: AsyncPort
@@ -60,6 +59,8 @@ class WorkerAttemptLifecyclePorts:
     assert_current_attempt: AsyncPort
     request_attempt_cancel: AsyncPort
     terminalize_attempt: AsyncPort
+    is_cancel_requested: AsyncPort
+    classify_success_commit_block: AsyncPort
     conflict_error: Callable[[str], Exception]
     record_result_diagnostics: AsyncPort | None = None
 
@@ -84,6 +85,16 @@ class WorkerAttemptLifecycle:
     queue_lease: WorkerQueueLease | None = None
     reconciliation_lease_id: str | None = None
     reconciliation_claim_token: str | None = None
+
+    async def is_cancel_requested(self, conn: Any) -> bool:
+        return bool(await self.ports.is_cancel_requested(
+            conn, tenant_id=self.tenant_id, run_id=self.run_id,
+        ))
+
+    async def classify_success_commit_block(self, conn: Any) -> str:
+        return str(await self.ports.classify_success_commit_block(
+            conn, tenant_id=self.tenant_id, run_id=self.run_id,
+        ))
 
     @classmethod
     def from_leased_attempt(
@@ -342,13 +353,13 @@ class WorkerAttemptLifecycle:
         error_code: str,
         error_message: str,
         result_json: dict[str, Any] | None = None,
-    ) -> RunTerminalizationProgress:
+    ) -> bool:
         observed = self._observed_terminal_progress(
             await self._lock_run(conn),
             requested_status="failed",
         )
         if observed is not None:
-            return observed
+            return observed.completed
         attempt = await self._current_attempt(conn)
         if self.ports.record_result_diagnostics is not None:
             result_json = await self.ports.record_result_diagnostics(
@@ -380,7 +391,7 @@ class WorkerAttemptLifecycle:
                 terminal_reason="run_failed",
                 error_code=error_code,
             )
-        return progress
+        return progress.is_terminal("failed")
 
     async def cancel(
         self,
@@ -388,13 +399,13 @@ class WorkerAttemptLifecycle:
         *,
         capabilities: Any,
         result_json: dict[str, Any] | None = None,
-    ) -> RunTerminalizationProgress:
+    ) -> bool:
         observed = self._observed_terminal_progress(
             await self._lock_run(conn),
             requested_status="cancelled",
         )
         if observed is not None:
-            return observed
+            return observed.completed
         attempt = await self._current_attempt(conn)
         if attempt is not None:
             attempt = await self.ports.request_attempt_cancel(
@@ -419,26 +430,7 @@ class WorkerAttemptLifecycle:
                 status="cancelled",
                 terminal_reason="run_cancelled",
             )
-        return progress
-
-    async def drain(
-        self,
-        *,
-        capabilities: Any,
-        transaction_factory: Callable[[], Any],
-        error_code: str | None = None,
-        max_batches: int = 4,
-    ) -> RunTerminalizationProgress | None:
-        return await self.ports.drain_terminalization(
-            tenant_id=self.tenant_id,
-            run_id=self.run_id,
-            capabilities=capabilities,
-            transaction_factory=transaction_factory,
-            max_batches=max_batches,
-            attempt_id=self.attempt_id,
-            attempt_error_code=error_code,
-        )
-
+        return progress.is_terminal("cancelled")
 
 def bind_worker_attempt_lifecycle(
     payload: WorkerQueuePayload,
@@ -466,52 +458,7 @@ def bind_worker_attempt_lifecycle(
     )
 
 
-async def worker_child_terminal_progress(
-    conn: Any,
-    *,
-    payload: WorkerQueuePayload,
-    child_status: str,
-    result_json: dict[str, Any] | None = None,
-    error_code: str | None = None,
-    error_message: str | None = None,
-    is_multi_agent_child: bool | None = None,
-) -> RunTerminalizationProgress | None:
-    """Carry one committed child transition to the post-commit lifecycle seam."""
-
-    del conn, result_json, error_code, error_message
-    child_dispatch = isinstance(payload.input.get("multi_agent_dispatch"), dict)
-    if child_status not in {"succeeded", "failed", "cancelled"} or not (
-        child_dispatch if is_multi_agent_child is None else is_multi_agent_child
-    ):
-        return None
-    return RunTerminalizationProgress(
-        completed=True,
-        status=child_status,
-        did_transition=True,
-        needs_reconcile=True,
-    )
-
-
-async def finalize_worker_child_parent(
-    transaction_factory: Callable[[], Any],
-    payload: WorkerQueuePayload,
-    reconciled: Any | None,
-    *,
-    reconcile_terminalized_run: AsyncPort,
-) -> Any | None:
-    """Invoke the shared post-commit parent finalizer for one child transition."""
-
-    if not isinstance(reconciled, RunTerminalizationProgress):
-        return None
-    return await reconcile_terminalized_run(
-        tenant_id=payload.tenant_id,
-        run_id=payload.run_id,
-        progress=reconciled,
-        transaction_factory=transaction_factory,
-    )
-
-
-async def fail_run_and_reconcile_worker_child(
+async def fail_run_for_worker(
     conn: Any,
     *,
     payload: WorkerQueuePayload,
@@ -520,12 +467,10 @@ async def fail_run_and_reconcile_worker_child(
     error_code: str,
     error_message: str,
     capabilities: Any,
-    reconcile_child: AsyncPort,
     attempt_lifecycle: WorkerAttemptLifecycle,
     result_json: dict[str, Any] | None = None,
-    is_multi_agent_child: bool | None = None,
-) -> tuple[bool, Any | None]:
-    """Fail one Run and project a child terminal fact when this is a child."""
+) -> bool:
+    """Fail one Run under its queue and attempt authority."""
 
     terminal_written = await attempt_lifecycle.fail(
         conn,
@@ -535,15 +480,5 @@ async def fail_run_and_reconcile_worker_child(
         result_json=result_json,
     )
     if not terminal_written:
-        return False, None
-    if tenant_id == payload.tenant_id and run_id == payload.run_id:
-        return True, await reconcile_child(
-            conn,
-            payload=payload,
-            child_status="failed",
-            result_json=result_json,
-            error_code=error_code,
-            error_message=error_message,
-            is_multi_agent_child=is_multi_agent_child,
-        )
-    return True, None
+        return False
+    return True

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.models import ChatStreamResponse
+from app.runs.infrastructure import capability_admission_postgres as capability_admission_persistence
 
 
 def auth_settings():
@@ -436,9 +437,9 @@ async def test_authorize_run_capabilities_rejects_disabled_mcp_backed_skill(monk
             "visible_to_user": True,
         }
 
-    monkeypatch.setattr(repositories, "resolve_agent_skill", resolve_skill)
-    monkeypatch.setattr(repositories, "get_capability_distribution_row", get_distribution)
-    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", get_tool)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", resolve_skill)
+    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", get_distribution)
+    monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", get_tool)
 
     with pytest.raises(repositories.RepositoryAuthorizationError) as exc_info:
         await repositories.authorize_run_capabilities(

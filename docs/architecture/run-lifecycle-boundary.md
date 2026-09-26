@@ -45,11 +45,12 @@ their owning modules. Publication queues, terminal intents and successor recover
 are retired; [SSE execution control](redis-streams-sse-execution-control.md) owns
 the current transport behavior.
 
-The application-boundary migration remains incremental. Route/Worker
-orchestration, Sandbox lifecycle access and legacy repository surfaces must be
-inventoried per exact delivery subject. Target adapter names below describe
-ownership, not completed package placement. Source, tests, image and runtime
-acceptance remain separate. No issue is declared closed by this document.
+`RunLifecycleService` now owns ordinary complete/fail/cancel/enqueue-failure
+transitions through explicit ports. `bootstrap.run_lifecycle` constructs it for
+API and Worker composition; `lifecycle_postgres` owns its SQL and
+`terminalization_v4` coordinates provider lineage and committed event rows.
+Legacy repository lifecycle exports and human approval/parent-child recovery
+are retired. Source, tests, image and runtime acceptance remain separate.
 
 ## 2. Source ownership
 
@@ -80,11 +81,9 @@ The Runs PostgreSQL adapter owns operations equivalent to:
 - lock and read one Run identity/status;
 - stage the first business terminalization target with compare-and-set semantics;
 - acquire an owner/admin cancellation row lock and persist the cancellation fact;
-- list bounded terminalization, child-reconciliation, and parent-finalization
-  candidates with `FOR UPDATE SKIP LOCKED`;
+- list bounded stale-run candidates with `FOR UPDATE SKIP LOCKED`;
 - transition open Run steps to cancelled or failed;
 - persist one terminal Run state and its observability counters;
-- lock and update a multi-agent parent step using dispatch identity fences;
 - test whether the terminal Run/event/audit facts already exist.
 
 Each primitive accepts the caller's transaction connection. It MUST NOT start,
@@ -100,9 +99,7 @@ append user-visible events, select error wording, or call another context.
 - fail, cancel, or complete one Run;
 - compensate a committed queue-admission failure;
 - reconcile a stale ownerless Run;
-- drain bounded pending terminalization work;
-- reconcile one terminal multi-agent child into its parent step;
-- finalize a ready multi-agent parent exactly once.
+- finish a staged terminal transition and its exact Attempt.
 
 These operations coordinate PostgreSQL primitives and explicit event-ledger,
 audit-ledger and Sandbox Runtime application ports, then invoke direct Streaming
@@ -118,7 +115,6 @@ Pure Runs policy owns:
   `cancelled`; a settled terminal Run cannot be overwritten);
 - classification of a blocked success commit;
 - typed `RunTerminalizationProgress` semantics;
-- parent status/count/message decisions from already-authorized child facts;
 - safe terminal result/error projection rules.
 
 Public sanitization uses an explicit stable public contract. Raw child result,
@@ -135,7 +131,7 @@ The migration MUST preserve these observable semantics:
    `run_events`; `AuditLedgerWriter` owns `audit_logs`; neither starts or commits
    a transaction supplied by Runs.
 2. **Owning row first.** Acquire the owning Run row before dependent step or
-   child reconciliation locks. Do not introduce a reverse lock order.
+   Attempt locks. Do not introduce a reverse lock order.
 3. **First business terminalization target wins.** The first nonterminal target is retained;
    only the defined `cancel_requested` to `cancelled` advancement is allowed.
 4. **Terminal rows are immutable.** Success, failure, and cancellation CAS
@@ -143,11 +139,11 @@ The migration MUST preserve these observable semantics:
 5. **Bounded maintenance.** Candidate scans retain their limit and
    `FOR UPDATE SKIP LOCKED` behavior. One blocked candidate cannot serialize the
    entire maintenance loop.
-6. **Dispatch fencing.** A child may update a parent step only when parent,
-   step, dispatch identity, child Run identity, and handed-off state still
-   match.
-7. **Exactly-once durable facts.** Parent finalization and child reconciliation
-   keep their event/audit existence checks or an equivalent unique receipt.
+6. **Attempt fencing.** A worker transition retains its exact Run, Attempt,
+   queue owner, and reconciliation claim checks.
+7. **Exactly-once durable facts.** Only the transaction that changes a
+   nonterminal Run appends its terminal event/audit facts. Repeated completion
+   returns the existing terminal status without duplicating those facts.
 8. **Side-effect order.** Publish only after the Run transition and its facts
    commit. Derive stable terminal/end identities from the committed Run fact;
    Redis receipts enforce idempotency and callback-prefix ordering. There is no
@@ -225,6 +221,22 @@ They MUST NOT become canonical Runs names or permanent aliases.
 Issue #1013 is a hard cutover: retired human approval decisions never become
 synchronous authorization grants, and no approval writer remains.
 
+Schema `2026.09.26.1` completes the persisted-state cutover. Stop old API and
+Worker processes and their in-flight dispatch before applying this migration;
+old binaries query the removed approval table and permission-prefixed columns
+and cannot share this schema with new binaries. The transactional migration
+settles only open Runs carrying retired platform orchestration controls and
+their open Attempts through legal transitions. Run/Attempt history, immutable
+specifications, ordinary staged terminal results, SDK subagents, and generic
+copy lineage remain. Sandbox leases retain their existing cleanup owner.
+
+The migration drops `run_tool_permission_requests` and renames
+`permission_terminalization_*` to `terminalization_*`. Readiness checks require
+the new contract and absence of the retired relation. A rollback to old binaries
+requires restoring the pre-upgrade database backup with the fleet stopped;
+renaming columns back cannot restore deleted approval records. Source merge
+does not execute this deployment operation.
+
 The inactive `app/repositories.py -> app.runs.infrastructure.lifecycle`
 migration bridge is intentionally removed before activation. It incorrectly
 classified application orchestration as infrastructure persistence. Its
@@ -284,7 +296,7 @@ The terminal behavior change is not ready until focused evidence covers:
 - route tests with an explicitly injected fake application service;
 - worker tests with an explicitly injected fake application service;
 - replay of success, failure, cancellation, queue compensation, stale-owner
-  recovery, child reconciliation, and parent finalization;
+  recovery, and idempotent historical schema settlement;
 - architecture tests rejecting transport-to-bootstrap imports, service-locator
   patterns, and lifecycle orchestration under infrastructure;
 - exact base/head, immutable governance, and independent fixed-SHA review.

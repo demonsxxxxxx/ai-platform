@@ -19,7 +19,6 @@ def _lifecycle_ports(**overrides):
         "complete_run": forbidden,
         "fail_run": forbidden,
         "cancel_run": forbidden,
-        "drain_terminalization": forbidden,
         "is_reconciliation_claim_current": forbidden,
         "get_attempt": forbidden,
         "get_attempt_for_queue_attempt": forbidden,
@@ -27,6 +26,8 @@ def _lifecycle_ports(**overrides):
         "assert_current_attempt": forbidden,
         "request_attempt_cancel": forbidden,
         "terminalize_attempt": forbidden,
+        "is_cancel_requested": forbidden,
+        "classify_success_commit_block": forbidden,
         "conflict_error": ValueError,
     }
     values.update(overrides)
@@ -205,7 +206,7 @@ async def test_fail_persists_private_diagnostics_before_terminal_result_on_same_
         result_json={"message": "safe", "runtime_diagnostics": {"private": True}},
     )
 
-    assert progress.is_terminal("failed")
+    assert progress is True
     assert [item[0] for item in calls] == ["diagnostics", "fail", "attempt"]
     assert all(item[1] is conn for item in calls)
     assert calls[0][2]["attempt_id"] == lifecycle.attempt_id
@@ -252,6 +253,6 @@ async def test_fail_strips_private_diagnostics_when_current_attempt_is_absent():
         result_json={"runtime_diagnostics": {"private": True}},
     )
 
-    assert progress.is_terminal("failed")
+    assert progress is True
     assert calls[0][1]["attempt_id"] is None
     assert calls[1][1]["result_json"] == {"message": "safe"}

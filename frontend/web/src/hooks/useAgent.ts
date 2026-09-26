@@ -1069,7 +1069,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setConnectionStatus("disconnected");
       setIsInitializingSandbox(false);
       setSandboxError(null);
-      options?.onClearApprovals?.();
       const productCard = (): MessagePart | null => {
         if (outcome === "failed") {
           return {
@@ -1205,7 +1204,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       });
       return true;
     },
-    [options, clearReconcileOwners],
+    [clearReconcileOwners],
   );
 
   const finalizeTerminalRun = useCallback(
@@ -1278,7 +1277,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           let hydratedMessages = reconstructMessagesFromEvents(
             events,
             processedEventIdsRef.current,
-            { options, activeSubagentStack: activeSubagentStackRef.current },
+            { activeSubagentStack: activeSubagentStackRef.current },
           );
           let hydratedAssistant = [...hydratedMessages]
             .reverse()
@@ -1376,11 +1375,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       terminalHydrationOwnerRef.current = owner;
       return promise;
     },
-    [
-      options,
-      finalizeTerminalRun,
-      finalizeTerminalResultUnavailable,
-    ],
+    [finalizeTerminalRun, finalizeTerminalResultUnavailable],
   );
 
   const hydrateActiveRun = useCallback(
@@ -1407,7 +1402,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       if (!isCurrent()) return null;
       const events = (eventsData.events || []) as HistoryEvent[];
       let reconstructed = reconstructMessagesFromEvents(events, new Set<string>(), {
-        options,
         activeSubagentStack: activeSubagentStackRef.current,
       });
       const prepared = prepareMessagesForRunningRun(
@@ -1467,7 +1461,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setMessageSnapshot({ messagesRef, setMessages }, merged);
       return streamingMessageId;
     },
-    [options],
+    [],
   );
 
   // Create event handler context
@@ -1692,9 +1686,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         .markRead(targetSessionId)
         .catch(() => {});
 
-      // Clear approvals before loading new session
-      options?.onClearApprovals?.();
-
       let historyFailurePhase: HistoryLoadFailurePhase = "session_projection";
       try {
         await markReadPromise;
@@ -1848,7 +1839,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             ? reconstructMessagesFromEvents(
                 eventsData.events as HistoryEvent[],
                 processedEventIdsRef.current,
-                { options, activeSubagentStack: activeSubagentStackRef.current },
+                { activeSubagentStack: activeSubagentStackRef.current },
               )
             : [];
           if (targetRunId) {
@@ -2037,7 +2028,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       return null;
     },
     [
-      options,
       createSSEContext,
       finalizeRunStatusUnavailable,
       finalizeTerminalResultUnavailable,

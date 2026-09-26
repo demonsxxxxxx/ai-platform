@@ -7,11 +7,13 @@ from fastapi.testclient import TestClient
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
+import app.runs.infrastructure.admin_queries_postgres as run_queries_persistence
+import app.runs.infrastructure.replay_postgres as replay_persistence
 from app.main import create_app
 from app.queue import QueueAdmissionMetadata
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
 from app.routes import sandbox_runtime_cleanup
-from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
+from app.runs.api import RunAttemptLifecycleService
 from app.runs.infrastructure import postgres as run_attempt_persistence
 from app.runs.application.cancellation import RunCancellationUseCase
 from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
@@ -28,16 +30,28 @@ class _RouteCancellationReceipt:
         return dict(self._value)
 
 
+class _RouteCancellationHandlers:
+    owner = None
+    admin = None
+
+
+route_cancellation_handlers = _RouteCancellationHandlers()
+
+
 class _RouteCancellationAdapter:
     async def request_owner_cancel(self, *, tenant_id, owner_user_id, run_id):
-        handler = getattr(repository_module, "_test_owner_cancel")
+        handler = route_cancellation_handlers.owner
         value = await handler(None, tenant_id=tenant_id, user_id=owner_user_id, run_id=run_id)
         return _RouteCancellationReceipt(value) if value is not None else None
 
     async def request_admin_cancel(self, *, tenant_id, admin_user_id, run_id):
-        handler = getattr(repository_module, "_test_admin_cancel")
+        handler = route_cancellation_handlers.admin
         value = await handler(None, tenant_id=tenant_id, admin_user_id=admin_user_id, run_id=run_id)
         return _RouteCancellationReceipt(value) if value is not None else None
+
+
+async def _no_terminal_progress(*_args, **_kwargs):
+    return None
 
 
 class _NoOpCancellationEventWriter:
@@ -61,6 +75,8 @@ class _CancellationTestConnection:
         normalized = " ".join(sql.split())
         if normalized.startswith("select * from run_attempts"):
             return _RunAttemptCursor()
+        if normalized.startswith("update runs set terminalization_target"):
+            return _RunAttemptCursor()
         return await self._conn.execute(sql, params)
 
 
@@ -80,7 +96,7 @@ async def _request_owner_cancel(conn, *, tenant_id, user_id, run_id):
             list_active_sandbox_leases=repository_module.list_active_sandbox_leases_for_run,
         ),
         event_writer=_NoOpCancellationEventWriter(),
-        progress_terminalization=repository_module.progress_run_tool_permission_terminalization,
+        progress_terminalization=_no_terminal_progress,
     )
     result = await use_case.request_owner_cancel(
         tenant_id=tenant_id,
@@ -106,7 +122,7 @@ async def _request_admin_cancel(conn, *, tenant_id, admin_user_id, run_id):
             list_active_sandbox_leases=repository_module.list_active_sandbox_leases_for_run,
         ),
         event_writer=_NoOpCancellationEventWriter(),
-        progress_terminalization=repository_module.progress_run_tool_permission_terminalization,
+        progress_terminalization=_no_terminal_progress,
     )
     result = await use_case.request_admin_cancel(
         tenant_id=tenant_id,
@@ -125,8 +141,8 @@ def _install_route_cancellation_adapter(monkeypatch):
         return None
 
     adapter = _RouteCancellationAdapter()
-    monkeypatch.setattr(repository_module, "_test_owner_cancel", missing_cancel, raising=False)
-    monkeypatch.setattr(repository_module, "_test_admin_cancel", missing_cancel, raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", missing_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "admin", missing_cancel)
     monkeypatch.setattr("app.routes.runs._require_run_cancellation_use_case", lambda _request: adapter)
     monkeypatch.setattr("app.routes.admin_runs._require_run_cancellation_use_case", lambda _request: adapter)
     monkeypatch.setattr(
@@ -146,6 +162,7 @@ def _install_test_run_stream_runtime(monkeypatch):
             (),
             {"worker_capabilities": object()},
         )()
+        app.state.run_lifecycle = object()
         return app
 
     monkeypatch.setattr(f"{__name__}.create_app", create_app_with_runtime)
@@ -160,24 +177,6 @@ def _stub_run_model_inheritance_for_route_fakes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _stub_permission_terminalization_for_run_control_mocks(monkeypatch):
-    """Keep legacy route fakes focused on route-side cancel effects, not batch SQL internals."""
-
-    async def stage(conn, **kwargs):
-        return {"id": kwargs["run_id"], "permission_terminalization_target": kwargs["target_status"]}
-
-    async def progress(conn, *, tenant_id, run_id):
-        return RunTerminalizationProgress(
-            completed=True,
-            status="cancelled" if "queued" in run_id else "cancel_requested",
-        )
-
-    monkeypatch.setattr(repository_module, "_stage_run_tool_permission_terminalization", stage)
-    monkeypatch.setattr(run_attempt_persistence, "_stage_run_tool_permission_terminalization", stage)
-    monkeypatch.setattr(repository_module, "progress_run_tool_permission_terminalization", progress)
-
-
-@pytest.fixture(autouse=True)
 def _stub_run_skill_materialization_for_route_fakes(monkeypatch):
     async def materialize(*_args, skill_manifest_refs, **_kwargs):
         manifests = []
@@ -189,6 +188,7 @@ def _stub_run_skill_materialization_for_route_fakes(monkeypatch):
         return manifests
 
     monkeypatch.setattr(repository_module, "materialize_run_skill_manifests", materialize)
+    monkeypatch.setattr(replay_persistence, "materialize_run_skill_manifests", materialize)
 
 
 def replay_manifest(skill_id: str, version: str = "hash-v1") -> dict:
@@ -263,6 +263,7 @@ def stub_session_generation(monkeypatch, generation: int = 1) -> None:
         return generation
 
     monkeypatch.setattr(repository_module, "allocate_session_run_generation", allocate_session_run_generation)
+    monkeypatch.setattr(replay_persistence, "allocate_session_run_generation", allocate_session_run_generation)
 
 
 def stub_run_event_append(monkeypatch) -> None:
@@ -272,6 +273,7 @@ def stub_run_event_append(monkeypatch) -> None:
         return "evt-copy"
 
     monkeypatch.setattr(repository_module, "append_event", append_event)
+    monkeypatch.setattr(replay_persistence, "append_event", append_event)
 
 
 @pytest.fixture(autouse=True)
@@ -322,6 +324,10 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
 
     async def record_run_control_operation(*_args, **_kwargs):
         return "evt-control-operation"
+
+    monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", authorize_replay_capabilities)
+    monkeypatch.setattr(replay_persistence, "insert_run_skill_snapshots_at_creation", insert_creation_snapshots)
+    monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", validate_source_snapshots)
 
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_auth_snapshot",
@@ -2195,11 +2201,6 @@ def test_copy_run_plan_previews_reused_and_rerun_steps(monkeypatch):
             "input_json": {
                 "input": {
                     "message": "build feature",
-                    "execution_mode": "multi_agent",
-                    "multi_agent_steps": [
-                        {"step_key": "code", "role": "coding", "title": "实现代码"},
-                        {"step_key": "verify", "role": "test", "title": "验证结果", "depends_on": ["code"]},
-                    ],
                 }
             },
         }
@@ -3692,19 +3693,6 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
                     "executor_type": "retired-executor-fixture",
                     "skill_ids": ["qa-file-reviewer"],
                     "skillIds": ["qa-file-reviewer"],
-                    "execution_mode": "multi_agent",
-                    "multi_agent_steps": [
-                        {
-                            "step_key": "code",
-                            "stepKey": "code",
-                            "role": "coding",
-                            "skill_ids": ["qa-file-reviewer"],
-                            "skillIds": ["qa-file-reviewer"],
-                            "executor_type": "retired-executor-fixture",
-                            "workerPath": "/var/lib/ai-platform/run_old",
-                        },
-                        {"step_key": "verify", "role": "test", "depends_on": ["code"]},
-                    ],
                 },
                 **replay_provenance("qa-file-reviewer", "hash-v1"),
                 "model_id": "model-catalog-a",
@@ -3712,7 +3700,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
             },
         }
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         assert (tenant_id, agent_id, skill_id) == (
@@ -3741,8 +3729,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
         run_id="run_old",
     )
 
-    assert copied["input"]["execution_mode"] == "multi_agent"
-    assert copied["input"]["multi_agent_steps"][1]["step_key"] == "verify"
+    assert copied["input"]["message"] == "build feature"
     assert copied["input"]["copied_from_run_id"] == "run_old"
     assert copied["executor_type"] == "claude-agent-worker"
     assert copied["skill_version"] == "hash-v1"
@@ -3752,10 +3739,6 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert "executor_type" not in copied["input"]
     assert "skill_ids" not in copied["input"]
     assert "skillIds" not in copied["input"]
-    assert "executor_type" not in copied["input"]["multi_agent_steps"][0]
-    assert "skill_ids" not in copied["input"]["multi_agent_steps"][0]
-    assert "skillIds" not in copied["input"]["multi_agent_steps"][0]
-    assert "workerPath" not in copied["input"]["multi_agent_steps"][0]
     persisted_json = next(
         item
         for sql, params in conn.executed
@@ -3830,7 +3813,7 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
             "release_policy_rollout_percent": 0,
         }
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_rollout_agent_skill)
     monkeypatch.setattr(
         "app.repositories.authorize_run_capabilities",
@@ -3903,7 +3886,7 @@ async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_pr
             },
         }
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     conn = RecordingConnection()
 
@@ -3966,17 +3949,12 @@ async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monk
             "input_json": {
                 "input": {
                     "message": "build feature",
-                    "execution_mode": "multi_agent",
-                    "multi_agent_steps": [
-                        {"step_key": "code", "role": "coding"},
-                        {"step_key": "verify", "role": "test", "depends_on": ["code"]},
-                    ],
                 },
                 **replay_provenance("general-chat", "hash-v1"),
             },
         }
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     conn = RecordingConnection()
 
@@ -4049,18 +4027,12 @@ async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkey
             "input_json": {
                 "input": {
                     "message": "build feature",
-                    "execution_mode": "multi_agent",
-                    "multi_agent_steps": [
-                        {"step_key": "code", "role": "coding"},
-                        {"step_key": "docs", "role": "doc"},
-                        {"step_key": "verify", "role": "test", "depends_on": ["code", "docs"]},
-                    ],
                 },
                 **replay_provenance("general-chat", "hash-v1"),
             },
         }
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
 
     copied = await repositories.copy_run_as_new_task(
@@ -4126,8 +4098,8 @@ async def test_resume_run_as_new_task_rejects_active_source_without_copy(monkeyp
     async def fail_copy_run_as_new_task(*args, **kwargs):
         raise AssertionError("active source must not be copied for resume")
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy_run_as_new_task)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy_run_as_new_task)
     conn = RecordingConnection()
 
     with pytest.raises(repositories.RepositoryConflictError, match="active_run"):
@@ -4175,8 +4147,8 @@ async def test_resume_run_as_new_task_rejects_source_without_completed_outputs(m
     async def fail_copy_run_as_new_task(*args, **kwargs):
         raise AssertionError("source without checkpoint outputs must not be copied for resume")
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy_run_as_new_task)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy_run_as_new_task)
     conn = RecordingConnection()
 
     with pytest.raises(repositories.RepositoryConflictError, match="no_checkpoint_outputs"):
@@ -4226,10 +4198,10 @@ async def test_resume_run_as_new_task_rejects_when_resume_is_already_active(monk
     async def fail_copy_run_as_new_task(*args, **kwargs):
         raise AssertionError("active resume source must not be copied again")
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories._completed_steps_for_resume", fake_completed_steps_for_resume)
-    monkeypatch.setattr("app.repositories.get_active_resume_for_source_run", fake_get_active_resume_for_source_run, raising=False)
-    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy_run_as_new_task)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", fake_completed_steps_for_resume)
+    monkeypatch.setattr(replay_persistence, "get_active_resume_for_source_run", fake_get_active_resume_for_source_run, raising=False)
+    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy_run_as_new_task)
 
     with pytest.raises(repositories.RepositoryConflictError, match="resume_already_active"):
         await repositories.resume_run_as_new_task(
@@ -4300,12 +4272,12 @@ async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatc
         calls.append(("active_resume", tenant_id, user_id, run_id))
         return None
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories._completed_steps_for_resume", fake_completed_steps_for_resume)
-    monkeypatch.setattr("app.repositories.get_active_resume_for_source_run", fake_get_active_resume_for_source_run)
-    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", fake_completed_steps_for_resume)
+    monkeypatch.setattr(replay_persistence, "get_active_resume_for_source_run", fake_get_active_resume_for_source_run)
+    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr(replay_persistence, "append_event", fake_append_event)
+    monkeypatch.setattr(replay_persistence, "append_audit_log", fake_append_audit_log)
 
     copied = await repositories.resume_run_as_new_task(
         object(),
@@ -4370,7 +4342,6 @@ async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verifie
             "input_json": {
                 "input": {
                     "message": "build feature",
-                    "execution_mode": "multi_agent",
                     "resume": {
                         "copied_from_run_id": "run-other",
                         "completed_step_outputs": {"code": "forged output"},
@@ -4387,7 +4358,7 @@ async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verifie
             },
         }
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
 
     copied = await repositories.copy_run_as_new_task(
@@ -4447,14 +4418,12 @@ async def test_copy_run_as_new_task_preserves_chained_checkpoint_producer_lineag
             "input_json": {
                 "input": {
                     "message": "build feature",
-                    "execution_mode": "multi_agent",
-                    "multi_agent_steps": [{"step_key": "code", "role": "coding"}],
                 },
                 **replay_provenance("general-chat", "hash-v1"),
             },
         }
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
 
     copied = await repositories.copy_run_as_new_task(
@@ -4492,8 +4461,8 @@ async def test_retry_run_as_new_task_rejects_non_retryable_status(monkeypatch):
     async def fail_copy(*args, **kwargs):
         raise AssertionError("non-retryable source must not be copied")
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy)
 
     with pytest.raises(repositories.RepositoryConflictError, match="status_not_retryable"):
         await repositories.retry_run_as_new_task(object(), tenant_id="default", user_id="user-a", run_id="run-running")
@@ -4532,8 +4501,8 @@ async def test_retry_run_as_new_task_rejects_when_retry_is_already_active(monkey
     async def fail_copy(*args, **kwargs):
         raise AssertionError("active retry source must not be copied again")
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fail_copy)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy)
     conn = ActiveRetryConnection()
 
     with pytest.raises(repositories.RepositoryConflictError, match="retry_already_active"):
@@ -4591,15 +4560,11 @@ async def test_retry_run_as_new_task_auth_snapshot_records_retry_events_and_audi
         calls.append(("active_retry", tenant_id, user_id, run_id))
         return None
 
-    monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr(
-        "app.repositories.get_active_retry_for_source_run",
-        fake_get_active_retry_for_source_run,
-        raising=False,
-    )
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr(replay_persistence, "get_active_retry_for_source_run", fake_get_active_retry_for_source_run, raising=False)
+    monkeypatch.setattr(replay_persistence, "append_event", fake_append_event)
+    monkeypatch.setattr(replay_persistence, "append_audit_log", fake_append_audit_log)
 
     copied = await repositories.retry_run_as_new_task(
         object(),
@@ -4622,1656 +4587,19 @@ async def test_retry_run_as_new_task_auth_snapshot_records_retry_events_and_audi
     assert audit["payload_json"]["new_run_id"] == "run-new"
 
 
-@pytest.mark.asyncio
-async def test_reconcile_multi_agent_child_success_updates_parent_step_event_and_audit(monkeypatch):
-    from app import repositories
-    import json
-
-    calls = []
-
-    child_run = {
-        "id": "run-child",
-        "tenant_id": "default",
-        "copied_from_run_id": "run-parent",
-        "trace_id": "trace-child",
-        "status": "succeeded",
-        "input_json": {
-            "input": {
-                "multi_agent_dispatch": {
-                    "parent_run_id": "run-parent",
-                    "parent_step_id": "step-code",
-                    "step_key": "code",
-                    "dispatch_id": "dispatch-code",
-                }
-            }
-        },
-    }
-    parent_step = {
-        "id": "step-code",
-        "run_id": "run-parent",
-        "step_key": "code",
-        "step_kind": "agent",
-        "status": "running",
-        "title": "Code",
-        "role": "coder",
-        "sequence": 2,
-        "payload_json": {
-            "dispatch_id": "dispatch-code",
-            "dispatch_state": "handed_off",
-            "dispatch_child_run_id": "run-child",
-        },
-    }
-
-    class Cursor:
-        def __init__(self, row=None):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append(("sql", normalized, params))
-            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
-                return Cursor(row=child_run)
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(row=parent_step)
-            if normalized.startswith("update run_steps"):
-                return Cursor(row={"id": "step-code"})
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fake_append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return "evt-reconcile"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "aud-reconcile"
-
-    async def fake_finalize_parent(conn, **kwargs):
-        return None
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-    monkeypatch.setattr("app.repositories.finalize_multi_agent_parent_run_if_ready", fake_finalize_parent)
-
-    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
-        FakeConnection(),
-        tenant_id="default",
-        child_run_id="run-child",
-        child_status="succeeded",
-        result_json={
-            "message": "child output",
-            "executor_payload": {"private_payload": "must not copy"},
-            "artifacts": [{"storage_key": "private/object"}],
-        },
-    )
-
-    assert result == {
-        "parent_run_id": "run-parent",
-        "parent_step_id": "step-code",
-        "child_run_id": "run-child",
-        "step_key": "code",
-        "status": "succeeded",
-        "dispatch_state": "completed",
-        "event_id": "evt-reconcile",
-        "audit_id": "aud-reconcile",
-    }
-    update_sql, update_params = next(
-        (sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps")
-    )
-    assert "dispatch_child_run_id" in update_sql
-    assert "dispatch_state' = 'handed_off'" in update_sql
-    update_payload = json.loads(update_params[0])
-    assert update_payload["dispatch_state"] == "completed"
-    assert update_payload["dispatch_child_status"] == "succeeded"
-    assert update_payload["output"] == "child output"
-    assert update_payload["checkpoint_id"] == "checkpoint_step-code"
-    assert update_payload["source_step_id"] == "step-code"
-    assert "default" in update_params
-    assert "run-parent" in update_params
-    assert "step-code" in update_params
-    assert "dispatch-code" in update_params
-    assert "run-child" in update_params
-    event = next(item[1] for item in calls if item[0] == "event")
-    assert event["run_id"] == "run-parent"
-    assert event["event_type"] == "multi_agent_dispatch_reconciled"
-    assert event["visible_to_user"] is False
-    audit = next(item[1] for item in calls if item[0] == "audit")
-    assert audit["action"] == "run.multi_agent.dispatch.reconcile"
-    assert audit["target_id"] == "step-code"
-
-
-@pytest.mark.asyncio
-async def test_reconcile_multi_agent_child_failure_does_not_copy_private_payload(monkeypatch):
-    from app import repositories
-    import json
-
-    calls = []
-
-    class Cursor:
-        def __init__(self, row=None):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append(("sql", normalized, params))
-            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
-                return Cursor(
-                    row={
-                        "id": "run-child",
-                        "tenant_id": "default",
-                        "copied_from_run_id": "run-parent",
-                        "trace_id": "trace-child",
-                        "status": "failed",
-                        "input_json": {
-                            "input": {
-                                "multi_agent_dispatch": {
-                                    "parent_run_id": "run-parent",
-                                    "parent_step_id": "step-code",
-                                    "step_key": "code",
-                                    "dispatch_id": "dispatch-code",
-                                }
-                            }
-                        },
-                    }
-                )
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(
-                    row={
-                        "id": "step-code",
-                        "run_id": "run-parent",
-                        "step_key": "code",
-                        "step_kind": "agent",
-                        "status": "running",
-                        "title": "Code",
-                        "role": "coder",
-                        "sequence": 2,
-                        "payload_json": {
-                            "dispatch_id": "dispatch-code",
-                            "dispatch_state": "handed_off",
-                            "dispatch_child_run_id": "run-child",
-                        },
-                    }
-                )
-            if normalized.startswith("update run_steps"):
-                return Cursor(row={"id": "step-code"})
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fake_append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return "evt-reconcile"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "aud-reconcile"
-
-    async def fake_finalize_parent(conn, **kwargs):
-        return None
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-    monkeypatch.setattr("app.repositories.finalize_multi_agent_parent_run_if_ready", fake_finalize_parent)
-
-    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
-        FakeConnection(),
-        tenant_id="default",
-        child_run_id="run-child",
-        child_status="failed",
-        result_json={
-            "message": "failed at /var/lib/private",
-            "executor_payload": {"worker_path": "/app/private.py"},
-            "private_payload": {"secret": "abc"},
-            "storage_key": "tenant/default/private",
-        },
-        error_code="executor_failed",
-        error_message="failed at /var/lib/private",
-    )
-
-    assert result["status"] == "failed"
-    assert result["dispatch_state"] == "failed"
-    update_sql, update_params = next(
-        (sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps")
-    )
-    assert "status = %s" in update_sql
-    update_payload = json.loads(update_params[0])
-    payload_dump = json.dumps(update_payload, ensure_ascii=False).lower()
-    assert update_payload["dispatch_state"] == "failed"
-    assert update_payload["dispatch_child_status"] == "failed"
-    assert update_payload["error_code"] == "executor_failed"
-    assert update_payload["error"] == "child_run_failed"
-    assert "executor_payload" not in payload_dump
-    assert "private_payload" not in payload_dump
-    assert "worker_path" not in payload_dump
-    assert "storage_key" not in payload_dump
-    assert "/var/" not in payload_dump
-    assert "/app/" not in payload_dump
-
-
-@pytest.mark.asyncio
-async def test_reconcile_multi_agent_child_ignores_forged_unmatched_relationship(monkeypatch):
-    from app import repositories
-
-    calls = []
-
-    class Cursor:
-        def __init__(self, row=None):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append(("sql", normalized, params))
-            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
-                return Cursor(
-                    row={
-                        "id": "run-child",
-                        "tenant_id": "default",
-                        "copied_from_run_id": "run-parent",
-                        "trace_id": "trace-child",
-                        "status": "succeeded",
-                        "input_json": {
-                            "input": {
-                                "multi_agent_dispatch": {
-                                    "parent_run_id": "run-other",
-                                    "parent_step_id": "step-code",
-                                    "step_key": "code",
-                                    "dispatch_id": "dispatch-code",
-                                }
-                            }
-                        },
-                    }
-                )
-            raise AssertionError(f"forged relationship must not continue to writes: {normalized}")
-
-    async def fake_append_event(conn, **kwargs):
-        raise AssertionError("forged relationship must not append events")
-
-    async def fake_append_audit_log(conn, **kwargs):
-        raise AssertionError("forged relationship must not append audit")
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-
-    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
-        FakeConnection(),
-        tenant_id="default",
-        child_run_id="run-child",
-        child_status="succeeded",
-        result_json={"message": "forged"},
-    )
-
-    assert result is None
-    assert not any(item[1].startswith("update run_steps") for item in calls if item[0] == "sql")
-
-
-@pytest.mark.asyncio
-async def test_reconcile_multi_agent_child_requires_persisted_terminal_child_status(monkeypatch):
-    from app import repositories
-
-    calls = []
-
-    class Cursor:
-        def __init__(self, row=None):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append(("sql", normalized, params))
-            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
-                return Cursor(
-                    row={
-                        "id": "run-child",
-                        "tenant_id": "default",
-                        "copied_from_run_id": "run-parent",
-                        "trace_id": "trace-child",
-                        "status": "running",
-                        "input_json": {
-                            "input": {
-                                "multi_agent_dispatch": {
-                                    "parent_run_id": "run-parent",
-                                    "parent_step_id": "step-code",
-                                    "step_key": "code",
-                                    "dispatch_id": "dispatch-code",
-                                }
-                            }
-                        },
-                    }
-                )
-            raise AssertionError(f"non-terminal child must not load parent step: {normalized}")
-
-    async def fake_append_event(conn, **kwargs):
-        raise AssertionError("non-terminal child must not append events")
-
-    async def fake_append_audit_log(conn, **kwargs):
-        raise AssertionError("non-terminal child must not append audit")
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-
-    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
-        FakeConnection(),
-        tenant_id="default",
-        child_run_id="run-child",
-        child_status="succeeded",
-        result_json={"message": "not terminal yet"},
-    )
-
-    assert result is None
-    assert not any(item[1].startswith("update run_steps") for item in calls if item[0] == "sql")
-
-
-@pytest.mark.asyncio
-async def test_reconcile_multi_agent_child_sanitizes_unsafe_error_code(monkeypatch):
-    from app import repositories
-    import json
-
-    calls = []
-
-    class Cursor:
-        def __init__(self, row=None):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append(("sql", normalized, params))
-            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
-                return Cursor(
-                    row={
-                        "id": "run-child",
-                        "tenant_id": "default",
-                        "copied_from_run_id": "run-parent",
-                        "trace_id": "trace-child",
-                        "status": "failed",
-                        "input_json": {
-                            "input": {
-                                "multi_agent_dispatch": {
-                                    "parent_run_id": "run-parent",
-                                    "parent_step_id": "step-code",
-                                    "step_key": "code",
-                                    "dispatch_id": "dispatch-code",
-                                }
-                            }
-                        },
-                    }
-                )
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(
-                    row={
-                        "id": "step-code",
-                        "run_id": "run-parent",
-                        "step_key": "code",
-                        "step_kind": "agent",
-                        "status": "running",
-                        "title": "Code",
-                        "role": "coder",
-                        "sequence": 2,
-                        "payload_json": {
-                            "dispatch_id": "dispatch-code",
-                            "dispatch_state": "handed_off",
-                            "dispatch_child_run_id": "run-child",
-                        },
-                    }
-                )
-            if normalized.startswith("update run_steps"):
-                return Cursor(row={"id": "step-code"})
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fake_append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return "evt-reconcile"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "aud-reconcile"
-
-    async def fake_finalize_parent(conn, **kwargs):
-        return None
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-    monkeypatch.setattr("app.repositories.finalize_multi_agent_parent_run_if_ready", fake_finalize_parent)
-
-    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
-        FakeConnection(),
-        tenant_id="default",
-        child_run_id="run-child",
-        child_status="failed",
-        result_json={"message": "safe failure"},
-        error_code="/app/private.py?api_key=secret",
-        error_message="safe failure",
-    )
-
-    assert result["status"] == "failed"
-    update_params = next(params for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps"))
-    update_payload = json.loads(update_params[0])
-    assert update_payload["error_code"] == "child_run_failed"
-    payload_dump = json.dumps(update_payload, ensure_ascii=False).lower()
-    assert "/app/" not in payload_dump
-    assert "api_key" not in payload_dump
-    assert "secret" not in payload_dump
-
-
-@pytest.mark.asyncio
-async def test_reconcile_multi_agent_child_skips_event_and_audit_when_update_is_stale(monkeypatch):
-    from app import repositories
-
-    calls = []
-
-    class Cursor:
-        def __init__(self, row=None):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append(("sql", normalized, params))
-            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
-                return Cursor(
-                    row={
-                        "id": "run-child",
-                        "tenant_id": "default",
-                        "copied_from_run_id": "run-parent",
-                        "trace_id": "trace-child",
-                        "status": "succeeded",
-                        "input_json": {
-                            "input": {
-                                "multi_agent_dispatch": {
-                                    "parent_run_id": "run-parent",
-                                    "parent_step_id": "step-code",
-                                    "step_key": "code",
-                                    "dispatch_id": "dispatch-code",
-                                }
-                            }
-                        },
-                    }
-                )
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(
-                    row={
-                        "id": "step-code",
-                        "run_id": "run-parent",
-                        "step_key": "code",
-                        "step_kind": "agent",
-                        "status": "running",
-                        "title": "Code",
-                        "role": "coder",
-                        "sequence": 2,
-                        "payload_json": {
-                            "dispatch_id": "dispatch-code",
-                            "dispatch_state": "handed_off",
-                            "dispatch_child_run_id": "run-child",
-                        },
-                    }
-                )
-            if normalized.startswith("update run_steps"):
-                return Cursor(row=None)
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fake_append_event(conn, **kwargs):
-        raise AssertionError("stale update must not append events")
-
-    async def fake_append_audit_log(conn, **kwargs):
-        raise AssertionError("stale update must not append audit")
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-
-    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
-        FakeConnection(),
-        tenant_id="default",
-        child_run_id="run-child",
-        child_status="succeeded",
-        result_json={"message": "child output"},
-    )
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_finalize_multi_agent_parent_run_success_writes_public_result_event_and_audit(monkeypatch):
-    from app import repositories
-    import json
-
-    calls = []
-    parent_run = {
-        "id": "run-parent",
-        "tenant_id": "default",
-        "copied_from_run_id": None,
-        "trace_id": "trace-parent",
-        "status": "running",
-        "cancel_requested_at": None,
-        "input_json": {
-            "input": {
-                "execution_mode": "multi_agent",
-                "multi_agent_steps": [
-                    {"step_key": "plan", "role": "planner", "depends_on": []},
-                    {"step_key": "code", "role": "coder", "depends_on": ["plan"]},
-                ],
-            }
-        },
-    }
-    parent_steps = [
-        {
-            "id": "step-plan",
-            "run_id": "run-parent",
-            "step_key": "plan",
-            "step_kind": "agent",
-            "status": "succeeded",
-            "title": "Plan",
-            "role": "planner",
-            "sequence": 1,
-            "payload_json": {
-                "depends_on": [],
-                "dispatch_state": "completed",
-                "dispatch_child_run_id": "run-child-plan",
-                "output": "safe plan",
-                "checkpoint_id": "checkpoint_step-plan",
-                "source_step_id": "step-plan",
-                "executor_payload": {"private_payload": "hidden"},
-                "storage_key": "tenant/default/private/object",
-            },
-            "started_at": None,
-            "finished_at": None,
-            "created_at": None,
-            "updated_at": None,
-        },
-        {
-            "id": "step-code",
-            "run_id": "run-parent",
-            "step_key": "code",
-            "step_kind": "agent",
-            "status": "succeeded",
-            "title": "Code",
-            "role": "coder",
-            "sequence": 2,
-            "payload_json": {
-                "depends_on": ["plan"],
-                "dispatch_state": "completed",
-                "dispatch_child_run_id": "run-child-code",
-                "output": "a" * 64,
-                "checkpoint_id": "checkpoint_step-code",
-                "source_step_id": "step-code",
-            },
-            "started_at": None,
-            "finished_at": None,
-            "created_at": None,
-            "updated_at": None,
-        },
-    ]
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            calls.append(("sql", normalized, params))
-            if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
-                return Cursor(row=parent_run)
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(rows=parent_steps)
-            if normalized.startswith("select child.id"):
-                return Cursor(rows=[])
-            if "has_parent_finalized_event" in normalized:
-                return Cursor(row={"has_parent_finalized_event": False, "has_parent_finalized_audit": False})
-            if normalized.startswith("update runs"):
-                return Cursor(row={"id": "run-parent", "status": "succeeded"})
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fake_append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return "evt-parent-finalized"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "aud-parent-finalized"
-
-    async def complete_parent(conn, **kwargs):
-        calls.append(("complete", kwargs))
-        return True
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-    monkeypatch.setattr("app.repositories.complete_run", complete_parent)
-
-    result = await repositories.finalize_multi_agent_parent_run_if_ready(
-        FakeConnection(),
-        tenant_id="default",
-        parent_run_id="run-parent",
-        triggered_by_child_run_id="run-child-code",
-    )
-
-    assert result == {
-        "parent_run_id": "run-parent",
-        "status": "succeeded",
-        "event_id": "evt-parent-finalized",
-        "audit_id": "aud-parent-finalized",
-        "counts": {"total": 2, "succeeded": 2, "failed": 0, "cancelled": 0},
-    }
-    result_payload = next(item[1]["result_json"] for item in calls if item[0] == "complete")
-    assert result_payload["message"] == "Multi-agent run succeeded"
-    assert result_payload["multi_agent"]["status"] == "succeeded"
-    assert result_payload["multi_agent"]["triggered_by_child_run_id"] == "run-child-code"
-    assert result_payload["multi_agent"]["steps"][0]["output"] == "safe plan"
-    dumped = json.dumps(result_payload, ensure_ascii=False)
-    assert "private_payload" not in dumped
-    assert "storage_key" not in dumped
-    assert "a" * 64 not in dumped
-    event = next(item[1] for item in calls if item[0] == "event")
-    assert event["event_type"] == "multi_agent_parent_finalized"
-    assert event["visible_to_user"] is False
-    audit = next(item[1] for item in calls if item[0] == "audit")
-    assert audit["action"] == "run.multi_agent.parent.finalize"
-    assert audit["target_id"] == "run-parent"
-
-
-@pytest.mark.asyncio
-async def test_finalize_multi_agent_parent_run_failure_and_cancel_statuses(monkeypatch):
-    from app import repositories
-
-    calls = []
-    statuses_seen = []
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class FakeConnection:
-        def __init__(self, parent_statuses):
-            self.parent_statuses = parent_statuses
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
-                return Cursor(
-                    row={
-                        "id": "run-parent",
-                        "tenant_id": "default",
-                        "copied_from_run_id": None,
-                        "trace_id": "trace-parent",
-                        "status": "running",
-                        "cancel_requested_at": self.parent_statuses.get("cancel_requested_at"),
-                        "input_json": {"input": {"execution_mode": "multi_agent", "multi_agent_steps": [{"step_key": "step-a"}]}},
-                    }
-                )
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(rows=self.parent_statuses["steps"])
-            if normalized.startswith("select child.id"):
-                return Cursor(rows=[])
-            if "has_parent_finalized_event" in normalized:
-                return Cursor(row={"has_parent_finalized_event": False, "has_parent_finalized_audit": False})
-            if normalized.startswith("update runs"):
-                statuses_seen.append(params[0])
-                return Cursor(row={"id": "run-parent", "status": params[0]})
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fake_append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return f"evt-{kwargs['payload']['status']}"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return f"aud-{kwargs['payload_json']['status']}"
-
-    async def fail_parent(conn, **kwargs):
-        statuses_seen.append("failed")
-        if len(statuses_seen) == 3:
-            # This represents a parent whose first 50 permission rows drained
-            # but whose final row still keeps the durable finalizer partial.
-            return RunTerminalizationProgress(False, "failed")
-        return True
-
-    async def cancel_parent(conn, **kwargs):
-        statuses_seen.append("cancelled")
-        return True
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-    monkeypatch.setattr("app.repositories.fail_run", fail_parent)
-    monkeypatch.setattr("app.repositories.cancel_run", cancel_parent)
-
-    failed = await repositories.finalize_multi_agent_parent_run_if_ready(
-        FakeConnection(
-            {
-                "cancel_requested_at": None,
-                "steps": [
-                    {
-                        "id": "step-a",
-                        "run_id": "run-parent",
-                        "step_key": "step-a",
-                        "step_kind": "agent",
-                        "status": "failed",
-                        "title": "Step A",
-                        "role": "coder",
-                        "sequence": 1,
-                        "payload_json": {"error_code": "child_run_failed", "error": "safe failure"},
-                        "started_at": None,
-                        "finished_at": None,
-                        "created_at": None,
-                        "updated_at": None,
-                    }
-                ],
-            }
-        ),
-        tenant_id="default",
-        parent_run_id="run-parent",
-    )
-    cancelled = await repositories.finalize_multi_agent_parent_run_if_ready(
-        FakeConnection(
-            {
-                "cancel_requested_at": "2026-06-06T00:00:00+00:00",
-                "steps": [
-                    {
-                        "id": "step-a",
-                        "run_id": "run-parent",
-                        "step_key": "step-a",
-                        "step_kind": "agent",
-                        "status": "succeeded",
-                        "title": "Step A",
-                        "role": "coder",
-                        "sequence": 1,
-                        "payload_json": {"output": "done"},
-                        "started_at": None,
-                        "finished_at": None,
-                        "created_at": None,
-                        "updated_at": None,
-                    }
-                ],
-            }
-        ),
-        tenant_id="default",
-        parent_run_id="run-parent",
-    )
-    partial = await repositories.finalize_multi_agent_parent_run_if_ready(
-        FakeConnection(
-            {
-                "cancel_requested_at": None,
-                "steps": [
-                    {
-                        "id": "step-a",
-                        "run_id": "run-parent",
-                        "step_key": "step-a",
-                        "step_kind": "agent",
-                        "status": "failed",
-                        "title": "Step A",
-                        "role": "coder",
-                        "sequence": 1,
-                        "payload_json": {"error_code": "child_run_failed", "error": "safe failure"},
-                        "started_at": None,
-                        "finished_at": None,
-                        "created_at": None,
-                        "updated_at": None,
-                    }
-                ],
-            }
-        ),
-        tenant_id="default",
-        parent_run_id="run-parent",
-    )
-
-    assert failed["status"] == "failed"
-    assert cancelled["status"] == "cancelled"
-    assert partial is None
-    assert statuses_seen == ["failed", "cancelled", "failed"]
-    assert [item[1]["event_type"] for item in calls if item[0] == "event"] == [
-        "multi_agent_parent_finalized",
-        "multi_agent_parent_finalized",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_finalize_multi_agent_parent_run_blocks_active_children_and_non_multi_agent(monkeypatch):
-    from app import repositories
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class FakeConnection:
-        def __init__(self, *, execution_mode="multi_agent", active_children=None):
-            self.execution_mode = execution_mode
-            self.active_children = active_children or []
-            self.active_child_sql = None
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
-                return Cursor(
-                    row={
-                        "id": "run-parent",
-                        "tenant_id": "default",
-                        "copied_from_run_id": None,
-                        "trace_id": "trace-parent",
-                        "status": "running",
-                        "cancel_requested_at": None,
-                        "input_json": {"input": {"execution_mode": self.execution_mode, "multi_agent_steps": [{"step_key": "step-a"}]}},
-                    }
-                )
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(
-                    rows=[
-                        {
-                            "id": "step-a",
-                            "run_id": "run-parent",
-                            "step_key": "step-a",
-                            "step_kind": "agent",
-                            "status": "succeeded",
-                            "title": "Step A",
-                            "role": "coder",
-                            "sequence": 1,
-                            "payload_json": {"output": "done"},
-                            "started_at": None,
-                            "finished_at": None,
-                            "created_at": None,
-                            "updated_at": None,
-                        }
-                    ]
-                )
-            if normalized.startswith("select child.id"):
-                self.active_child_sql = normalized
-                return Cursor(rows=self.active_children)
-            if normalized.startswith("update runs"):
-                raise AssertionError("blocked parent must not be finalized")
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fail_event(conn, **kwargs):
-        raise AssertionError("blocked parent must not emit event")
-
-    monkeypatch.setattr("app.repositories.append_event", fail_event)
-
-    active_child_conn = FakeConnection(active_children=[{"id": "run-child", "status": "queued"}])
-    active_child_result = await repositories.finalize_multi_agent_parent_run_if_ready(
-        active_child_conn,
-        tenant_id="default",
-        parent_run_id="run-parent",
-    )
-    non_multi_agent_result = await repositories.finalize_multi_agent_parent_run_if_ready(
-        FakeConnection(execution_mode="single_agent"),
-        tenant_id="default",
-        parent_run_id="run-parent",
-    )
-
-    assert active_child_result is None
-    assert active_child_conn.active_child_sql is not None
-    assert "join run_steps" not in active_child_conn.active_child_sql
-    assert non_multi_agent_result is None
-
-
-@pytest.mark.asyncio
-async def test_finalize_multi_agent_parent_run_blocks_open_dispatch_state(monkeypatch):
-    from app import repositories
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
-                return Cursor(
-                    row={
-                        "id": "run-parent",
-                        "tenant_id": "default",
-                        "copied_from_run_id": None,
-                        "trace_id": "trace-parent",
-                        "status": "running",
-                        "cancel_requested_at": None,
-                        "input_json": {"input": {"execution_mode": "multi_agent", "multi_agent_steps": [{"step_key": "step-a"}]}},
-                    }
-                )
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(
-                    rows=[
-                        {
-                            "id": "step-a",
-                            "run_id": "run-parent",
-                            "step_key": "step-a",
-                            "step_kind": "agent",
-                            "status": "succeeded",
-                            "title": "Step A",
-                            "role": "coder",
-                            "sequence": 1,
-                            "payload_json": {
-                                "dispatch_state": "handed_off",
-                                "dispatch_child_run_id": "run-child",
-                                "output": "done",
-                            },
-                            "started_at": None,
-                            "finished_at": None,
-                            "created_at": None,
-                            "updated_at": None,
-                        }
-                    ]
-                )
-            if normalized.startswith("select child.id"):
-                return Cursor(rows=[])
-            if normalized.startswith("update runs"):
-                raise AssertionError("open dispatch state must block parent finalization")
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fail_event(conn, **kwargs):
-        raise AssertionError("open dispatch state must not emit event")
-
-    monkeypatch.setattr("app.repositories.append_event", fail_event)
-
-    result = await repositories.finalize_multi_agent_parent_run_if_ready(
-        FakeConnection(),
-        tenant_id="default",
-        parent_run_id="run-parent",
-    )
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_finalize_multi_agent_parent_run_blocks_missing_configured_step(monkeypatch):
-    from app import repositories
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
-                return Cursor(
-                    row={
-                        "id": "run-parent",
-                        "tenant_id": "default",
-                        "copied_from_run_id": None,
-                        "trace_id": "trace-parent",
-                        "status": "running",
-                        "cancel_requested_at": None,
-                        "input_json": {
-                            "input": {
-                                "execution_mode": "multi_agent",
-                                "multi_agent_steps": [
-                                    {"step_key": "plan"},
-                                    {"step_key": "code"},
-                                ],
-                            }
-                        },
-                    }
-                )
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(
-                    rows=[
-                        {
-                            "id": "step-plan",
-                            "run_id": "run-parent",
-                            "step_key": "plan",
-                            "step_kind": "agent",
-                            "status": "succeeded",
-                            "title": "Plan",
-                            "role": "planner",
-                            "sequence": 1,
-                            "payload_json": {"output": "plan done"},
-                            "started_at": None,
-                            "finished_at": None,
-                            "created_at": None,
-                            "updated_at": None,
-                        },
-                        {
-                            "id": "step-extra",
-                            "run_id": "run-parent",
-                            "step_key": "extra",
-                            "step_kind": "agent",
-                            "status": "succeeded",
-                            "title": "Extra",
-                            "role": "coder",
-                            "sequence": 2,
-                            "payload_json": {"output": "extra done"},
-                            "started_at": None,
-                            "finished_at": None,
-                            "created_at": None,
-                            "updated_at": None,
-                        },
-                    ]
-                )
-            if normalized.startswith("select child.id"):
-                return Cursor(rows=[])
-            if normalized.startswith("update runs"):
-                raise AssertionError("missing configured step must block parent finalization")
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fail_event(conn, **kwargs):
-        raise AssertionError("missing configured step must not emit event")
-
-    monkeypatch.setattr("app.repositories.append_event", fail_event)
-
-    result = await repositories.finalize_multi_agent_parent_run_if_ready(
-        FakeConnection(),
-        tenant_id="default",
-        parent_run_id="run-parent",
-    )
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_finalize_multi_agent_parent_run_blocks_duplicate_or_malformed_configured_steps(monkeypatch):
-    from app import repositories
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class FakeConnection:
-        def __init__(self, configured_steps):
-            self.configured_steps = configured_steps
-
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
-                return Cursor(
-                    row={
-                        "id": "run-parent",
-                        "tenant_id": "default",
-                        "copied_from_run_id": None,
-                        "trace_id": "trace-parent",
-                        "status": "running",
-                        "cancel_requested_at": None,
-                        "input_json": {
-                            "input": {
-                                "execution_mode": "multi_agent",
-                                "multi_agent_steps": self.configured_steps,
-                            }
-                        },
-                    }
-                )
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                raise AssertionError("malformed configured steps must block before loading persisted steps")
-            if normalized.startswith("update runs"):
-                raise AssertionError("malformed configured steps must not finalize parent")
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fail_event(conn, **kwargs):
-        raise AssertionError("malformed configured steps must not emit event")
-
-    monkeypatch.setattr("app.repositories.append_event", fail_event)
-
-    for configured_steps in (
-        [{"step_key": "plan"}, {"step_key": "plan"}],
-        [{"role": "planner"}],
-        ["not-a-step"],
-        "step-a",
-        {"step_key": "step-a"},
-    ):
-        result = await repositories.finalize_multi_agent_parent_run_if_ready(
-            FakeConnection(configured_steps),
-            tenant_id="default",
-            parent_run_id="run-parent",
-        )
-        assert result is None
-
-
-@pytest.mark.asyncio
-async def test_finalize_multi_agent_parent_run_blocks_ordinary_copied_run_and_uses_skip_locked(monkeypatch):
-    from app import repositories
-
-    parent_select_sql = ""
-
-    class Cursor:
-        def __init__(self, row=None, rows=None):
-            self.row = row
-            self.rows = rows or []
-
-        async def fetchone(self):
-            return self.row
-
-        async def fetchall(self):
-            return self.rows
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            nonlocal parent_select_sql
-            normalized = " ".join(sql.split())
-            if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
-                parent_select_sql = normalized.lower()
-                return Cursor(
-                    row={
-                        "id": "run-copied",
-                        "tenant_id": "default",
-                        "copied_from_run_id": "run-source",
-                        "trace_id": "trace-copied",
-                        "status": "running",
-                        "cancel_requested_at": None,
-                        "input_json": {
-                            "input": {
-                                "execution_mode": "multi_agent",
-                                "multi_agent_steps": [{"step_key": "step-a"}],
-                            }
-                        },
-                    }
-                )
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                raise AssertionError("ordinary copied run must be rejected before loading steps")
-            if normalized.startswith("update runs"):
-                raise AssertionError("ordinary copied run must not be finalized")
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fail_event(conn, **kwargs):
-        raise AssertionError("ordinary copied run must not emit event")
-
-    monkeypatch.setattr("app.repositories.append_event", fail_event)
-
-    result = await repositories.finalize_multi_agent_parent_run_if_ready(
-        FakeConnection(),
-        tenant_id="default",
-        parent_run_id="run-copied",
-    )
-
-    assert result is None
-    assert "for update skip locked" in parent_select_sql
-
-
-@pytest.mark.asyncio
-async def test_reconcile_multi_agent_child_success_invokes_parent_rollup(monkeypatch):
-    from app import repositories
-
-    calls = []
-    child_run = {
-        "id": "run-child",
-        "tenant_id": "default",
-        "copied_from_run_id": "run-parent",
-        "trace_id": "trace-child",
-        "status": "succeeded",
-        "input_json": {
-            "input": {
-                "multi_agent_dispatch": {
-                    "parent_run_id": "run-parent",
-                    "parent_step_id": "step-code",
-                    "step_key": "code",
-                    "dispatch_id": "dispatch-code",
-                }
-            }
-        },
-    }
-    parent_step = {
-        "id": "step-code",
-        "run_id": "run-parent",
-        "step_key": "code",
-        "step_kind": "agent",
-        "status": "running",
-        "title": "Code",
-        "role": "coder",
-        "sequence": 2,
-        "payload_json": {
-            "dispatch_id": "dispatch-code",
-            "dispatch_state": "handed_off",
-            "dispatch_child_run_id": "run-child",
-        },
-    }
-
-    class Cursor:
-        def __init__(self, row=None):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
-                return Cursor(row=child_run)
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(row=parent_step)
-            if normalized.startswith("update run_steps"):
-                return Cursor(row={"id": "step-code"})
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fake_append_event(conn, **kwargs):
-        return "evt-reconcile"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        return "aud-reconcile"
-
-    async def fake_finalize(conn, **kwargs):
-        calls.append(kwargs)
-        return {"parent_run_id": "run-parent", "status": "succeeded"}
-
-    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
-    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
-    monkeypatch.setattr("app.repositories.finalize_multi_agent_parent_run_if_ready", fake_finalize, raising=False)
-
-    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
-        FakeConnection(),
-        tenant_id="default",
-        child_run_id="run-child",
-        child_status="succeeded",
-        result_json={"message": "child output"},
-    )
-
-    assert result["status"] == "succeeded"
-    assert calls == [
-        {
-            "tenant_id": "default",
-            "parent_run_id": "run-parent",
-            "triggered_by_child_run_id": "run-child",
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_reconcile_multi_agent_child_stale_update_does_not_invoke_parent_rollup(monkeypatch):
-    from app import repositories
-
-    child_run = {
-        "id": "run-child",
-        "tenant_id": "default",
-        "copied_from_run_id": "run-parent",
-        "trace_id": "trace-child",
-        "status": "succeeded",
-        "input_json": {
-            "input": {
-                "multi_agent_dispatch": {
-                    "parent_run_id": "run-parent",
-                    "parent_step_id": "step-code",
-                    "step_key": "code",
-                    "dispatch_id": "dispatch-code",
-                }
-            }
-        },
-    }
-    parent_step = {
-        "id": "step-code",
-        "run_id": "run-parent",
-        "step_key": "code",
-        "step_kind": "agent",
-        "status": "running",
-        "title": "Code",
-        "role": "coder",
-        "sequence": 2,
-        "payload_json": {
-            "dispatch_id": "dispatch-code",
-            "dispatch_state": "handed_off",
-            "dispatch_child_run_id": "run-child",
-        },
-    }
-
-    class Cursor:
-        def __init__(self, row=None):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
-    class FakeConnection:
-        async def execute(self, sql, params):
-            normalized = " ".join(sql.split())
-            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
-                return Cursor(row=child_run)
-            if normalized.startswith("select id, run_id, step_key") and "from run_steps" in normalized:
-                return Cursor(row=parent_step)
-            if normalized.startswith("update run_steps"):
-                return Cursor(row=None)
-            raise AssertionError(f"unexpected sql: {normalized}")
-
-    async def fail_finalize(conn, **kwargs):
-        raise AssertionError("stale update must not finalize parent")
-
-    monkeypatch.setattr("app.repositories.finalize_multi_agent_parent_run_if_ready", fail_finalize, raising=False)
-
-    result = await repositories.reconcile_multi_agent_child_run_terminal_state(
-        FakeConnection(),
-        tenant_id="default",
-        child_run_id="run-child",
-        child_status="succeeded",
-        result_json={"message": "child output"},
-    )
-
-    assert result is None
-
-
 def test_cancel_run_records_platform_cancel_request(monkeypatch):
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
         return {"run_id": run_id, "status": "cancel_requested"}
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "cancel_requested"
-
-
-@pytest.mark.parametrize(
-    ("module_path", "path", "is_admin", "initial_progress", "drained_progress", "expected_status", "expected_calls"),
-    [
-        (
-            "app.routes.runs",
-            "/api/ai/runs/run_active/cancel",
-            False,
-            RunTerminalizationProgress(True, "cancelled", True, True),
-            RunTerminalizationProgress(True, "cancelled"),
-            "cancelled",
-            1,
-        ),
-        (
-            "app.routes.admin_runs",
-            "/api/ai/admin/runs/run_active/cancel",
-            True,
-            RunTerminalizationProgress(True, "cancelled", True, True),
-            RunTerminalizationProgress(True, "cancelled"),
-            "cancelled",
-            1,
-        ),
-        (
-            "app.routes.runs",
-            "/api/ai/runs/run_active/cancel",
-            False,
-            RunTerminalizationProgress(False, "cancelled"),
-            RunTerminalizationProgress(False, "cancelled"),
-            "cancel_requested",
-            0,
-        ),
-        (
-            "app.routes.admin_runs",
-            "/api/ai/admin/runs/run_active/cancel",
-            True,
-            RunTerminalizationProgress(False, "cancelled"),
-            RunTerminalizationProgress(False, "cancelled"),
-            "cancel_requested",
-            0,
-        ),
-        (
-            "app.routes.runs",
-            "/api/ai/runs/run_active/cancel",
-            False,
-            RunTerminalizationProgress(False, "cancel_requested"),
-            RunTerminalizationProgress(True, "cancel_requested"),
-            "cancel_requested",
-            0,
-        ),
-        (
-            "app.routes.admin_runs",
-            "/api/ai/admin/runs/run_active/cancel",
-            True,
-            RunTerminalizationProgress(False, "cancel_requested"),
-            RunTerminalizationProgress(True, "cancel_requested"),
-            "cancel_requested",
-            0,
-        ),
-    ],
-    ids=["owner-final", "admin-final", "owner-partial", "admin-partial", "owner-soft-intent", "admin-soft-intent"],
-)
-def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
-    monkeypatch,
-    module_path,
-    path,
-    is_admin,
-    initial_progress,
-    drained_progress,
-    expected_status,
-    expected_calls,
-):
-    """Both cancellation routes consume initial and drained typed progress without duplicate reconciliation."""
-
-    reconciled = []
-
-    async def fake_request_cancel(_conn, **_kwargs):
-        return {
-            "run_id": "run_active",
-            "status": "cancel_requested",
-            "_permission_terminalization_progress": initial_progress,
-        }
-
-    async def drain(**_kwargs):
-        return drained_progress
-
-    async def reconcile(**kwargs):
-        progress = kwargs.get("progress")
-        if progress is not None and progress.did_transition and progress.needs_reconcile:
-            reconciled.append((kwargs["tenant_id"], kwargs["run_id"], progress.status))
-
-    async def remove_queued_run(**_kwargs):
-        return 0
-
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr(f"{module_path}.transaction", fake_transaction)
-    cancel_hook = "_test_admin_cancel" if is_admin else "_test_owner_cancel"
-    monkeypatch.setattr(repository_module, cancel_hook, fake_request_cancel)
-    monkeypatch.setattr(f"{module_path}.drain_run_tool_permission_terminalization", drain)
-    monkeypatch.setattr(f"{module_path}.reconcile_terminalized_permission_run", reconcile)
-    monkeypatch.setattr(f"{module_path}.remove_queued_run", remove_queued_run, raising=False)
-
-    response = TestClient(create_app()).post(path, headers=admin_headers() if is_admin else headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == expected_status
-    assert reconciled == ([('default', 'run_active', 'cancelled')] if expected_calls else [])
-
-
-
-@pytest.mark.parametrize(
-    ("module_path", "path", "is_admin"),
-    [
-        ("app.routes.runs", "/api/ai/runs/run_active/cancel", False),
-        ("app.routes.admin_runs", "/api/ai/admin/runs/run_active/cancel", True),
-    ],
-    ids=["owner", "admin"],
-)
-def test_cancel_routes_publish_only_after_drain_can_create_terminal_row(
-    monkeypatch,
-    module_path,
-    path,
-    is_admin,
-):
-    calls: list[str] = []
-
-    class Cancellation:
-        run_id = "run_active"
-        attempt_id = "attempt-a"
-
-        @staticmethod
-        def as_route_result():
-            return {"run_id": "run_active", "status": "cancel_requested"}
-
-    class UseCase:
-        async def request_owner_cancel(self, **_kwargs):
-            return Cancellation()
-
-        async def request_admin_cancel(self, **_kwargs):
-            return Cancellation()
-
-    async def admit(*_args, **_kwargs):
-        calls.append("admit")
-
-    async def drain(**_kwargs):
-        calls.append("drain")
-        return RunTerminalizationProgress(True, "cancelled", True, True)
-
-    async def reconcile(**_kwargs):
-        calls.append("reconcile")
-
-    async def publish(*_args, **_kwargs):
-        calls.append("publish")
-        return True
-
-    async def remove_queued_run(**_kwargs):
-        return 0
-
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr(f"{module_path}._require_run_cancellation_use_case", lambda _request: UseCase())
-    monkeypatch.setattr(f"{module_path}.admit_v4_stream", admit)
-    monkeypatch.setattr(f"{module_path}.drain_run_tool_permission_terminalization", drain)
-    monkeypatch.setattr(f"{module_path}.reconcile_terminalized_permission_run", reconcile)
-    monkeypatch.setattr(f"{module_path}.publish_run_event", publish)
-    monkeypatch.setattr(f"{module_path}.remove_queued_run", remove_queued_run, raising=False)
-
-    app = create_app()
-    app.state.run_stream_runtime = type(
-        "Runtime",
-        (),
-        {"worker_capabilities": object()},
-    )()
-    response = TestClient(app).post(path, headers=admin_headers() if is_admin else headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "cancelled"
-    assert calls == ["admit", "drain", "reconcile", "publish"]
-
-
-@pytest.mark.parametrize(
-    ("module_path", "path", "is_admin"),
-    [
-        ("app.routes.runs", "/api/ai/runs/run_active/cancel", False),
-        ("app.routes.admin_runs", "/api/ai/admin/runs/run_active/cancel", True),
-    ],
-    ids=["owner", "admin"],
-)
-@pytest.mark.parametrize("failure_phase", ["admit", "publish"])
-def test_cancel_routes_complete_queue_cleanup_when_v4_publication_raises(
-    monkeypatch,
-    module_path,
-    path,
-    is_admin,
-    failure_phase,
-):
-    calls: list[str] = []
-
-    class Cancellation:
-        run_id = "run_active"
-        attempt_id = "attempt-a"
-
-        @staticmethod
-        def as_route_result():
-            return {"run_id": "run_active", "status": "cancel_requested"}
-
-    class UseCase:
-        async def request_owner_cancel(self, **_kwargs):
-            return Cancellation()
-
-        async def request_admin_cancel(self, **_kwargs):
-            return Cancellation()
-
-    async def admit(*_args, **_kwargs):
-        calls.append("admit")
-        if failure_phase == "admit":
-            raise RuntimeError("admission failed")
-
-    async def drain(**_kwargs):
-        calls.append("drain")
-        return RunTerminalizationProgress(True, "cancelled", True, True)
-
-    async def reconcile(**_kwargs):
-        calls.append("reconcile")
-
-    async def publish(*_args, **_kwargs):
-        calls.append("publish")
-        if failure_phase == "publish":
-            raise RuntimeError("publication failed")
-        return True
-
-    async def remove_queued_run(**_kwargs):
-        calls.append("queue_cleanup")
-        return 0
-
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr(
-        f"{module_path}._require_run_cancellation_use_case",
-        lambda _request: UseCase(),
-    )
-    monkeypatch.setattr(f"{module_path}.admit_v4_stream", admit)
-    monkeypatch.setattr(
-        f"{module_path}.drain_run_tool_permission_terminalization",
-        drain,
-    )
-    monkeypatch.setattr(
-        f"{module_path}.reconcile_terminalized_permission_run",
-        reconcile,
-    )
-    monkeypatch.setattr(f"{module_path}.publish_run_event", publish)
-    monkeypatch.setattr(
-        f"{module_path}.remove_queued_run",
-        remove_queued_run,
-        raising=False,
-    )
-
-    app = create_app()
-    app.state.run_stream_runtime = type(
-        "Runtime",
-        (),
-        {"worker_capabilities": object()},
-    )()
-    response = TestClient(app).post(
-        path,
-        headers=admin_headers() if is_admin else headers(),
-    )
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "cancelled"
-    assert calls[-1] == "queue_cleanup"
-
 
 
 def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
@@ -6313,7 +4641,7 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6391,7 +4719,7 @@ def test_cancel_run_ignores_user_controlled_sandbox_container_payload(monkeypatc
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6442,7 +4770,7 @@ def test_cancel_run_uses_platform_verified_runtime_handle_not_user_payload(monke
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6497,7 +4825,7 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6548,7 +4876,7 @@ def test_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6580,7 +4908,7 @@ def test_cancel_run_surfaces_unsupported_sandbox_provider_without_db_release(mon
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6620,7 +4948,7 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6663,7 +4991,7 @@ def test_cancel_queued_run_removes_queued_payload(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
     client = TestClient(create_app())
 
@@ -6710,7 +5038,7 @@ def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeyp
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_admin_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
         "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6765,7 +5093,7 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_admin_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
         "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -6805,7 +5133,7 @@ def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_admin_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
         "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
         lambda *args, **kwargs: None,
@@ -6851,7 +5179,7 @@ def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_admin_cancel", fake_request_admin_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
         "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
@@ -7096,7 +5424,7 @@ def test_cancel_running_run_does_not_remove_queued_payload(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr("app.repositories._test_owner_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
     client = TestClient(create_app())
 
@@ -7157,7 +5485,7 @@ async def test_list_admin_runs_is_tenant_scoped_and_parameterized():
 
 
 @pytest.mark.asyncio
-async def test_admin_run_detail_includes_multi_agent_steps(monkeypatch):
+async def test_admin_run_detail_includes_run_steps(monkeypatch):
     from app import repositories
 
     async def fake_get_run(conn, *, tenant_id, run_id):
@@ -7216,10 +5544,10 @@ async def test_admin_run_detail_includes_multi_agent_steps(monkeypatch):
         async def execute(self, sql, params):
             return FakeAuditCursor()
 
-    monkeypatch.setattr("app.repositories.get_run", fake_get_run)
-    monkeypatch.setattr("app.repositories.list_run_events", fake_list_run_events)
-    monkeypatch.setattr("app.repositories.list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr("app.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr(run_queries_persistence, "get_run", fake_get_run)
+    monkeypatch.setattr(run_queries_persistence, "list_run_events", fake_list_run_events)
+    monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_list_run_artifacts)
+    monkeypatch.setattr(run_queries_persistence, "list_run_steps", fake_list_run_steps)
 
     detail = await repositories.get_admin_run_detail(FakeConnection(), tenant_id="default", run_id="run-a")
 

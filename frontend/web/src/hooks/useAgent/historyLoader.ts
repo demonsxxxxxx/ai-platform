@@ -4,10 +4,10 @@
  *
  * Message transformation logic is unified in processMessageEvent (messageParts.ts).
  * This file handles: event iteration, message reconstruction, and
- * user:message / user:cancel / approval_required which are history-specific.
+ * user:message / user:cancel which are history-specific.
  */
 
-import type { Message, MessagePart, FormField } from "../../types";
+import type { Message, MessagePart } from "../../types";
 import { uuid } from "../../utils/uuid";
 import i18n from "../../i18n";
 import type {
@@ -34,14 +34,6 @@ function resolveUserMessageId(
 }
 
 interface ProcessHistoryOptions {
-  options?: {
-    onApprovalRequired?: (approval: {
-      id: string;
-      message: string;
-      type: string;
-      fields?: FormField[];
-    }) => void;
-  };
   activeSubagentStack: SubagentStackItem[];
 }
 
@@ -98,12 +90,23 @@ const DIRECT_HISTORY_PROCESSOR_EVENTS = new Set([
   "artifact_card",
   "model.completed",
 ]);
+const RETIRED_HISTORY_EVENTS = new Set([
+  "approval_required",
+  "tool_permission_card",
+  "tool_permission_requested",
+  "tool_permission_decided",
+  "tool_permission_terminalized",
+  "subagent_started",
+  "subagent_completed",
+  "subagent_failed",
+  "run_child_created",
+]);
 
 /**
  * Persisted compatibility history intentionally exposes its production event
- * type at the outer level.  The message processor's durable status and tool
- * permission projection still uses the `run_event` envelope, so translate
- * only sequenced persisted rows that have no dedicated visual processor.
+ * type at the outer level. The message processor's durable run-status and
+ * execution projection uses the `run_event` envelope, so translate only
+ * sequenced persisted rows that have no dedicated visual processor.
  */
 function historyProcessorEventType(
   event: HistoryEvent,
@@ -160,8 +163,11 @@ function processHistoryEvent(
     return currentAssistantMessage;
   }
 
-  // Handle approval_required
-  if (eventType === "approval_required") {
+  // Retired approval and platform-child events do not create empty messages.
+  if (
+    RETIRED_HISTORY_EVENTS.has(eventType) ||
+    RETIRED_HISTORY_EVENTS.has(String(eventData.event_type || ""))
+  ) {
     return currentAssistantMessage;
   }
 

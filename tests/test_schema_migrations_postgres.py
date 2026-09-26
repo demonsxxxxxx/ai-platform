@@ -1,6 +1,8 @@
 import asyncio
 from contextlib import asynccontextmanager
+import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -28,6 +30,9 @@ REPOSITORY_SKILL_RETIREMENT_BASE_COMMIT = (
 )
 REPOSITORY_SKILL_RETIREMENT_BASE_CHECKSUM = (
     "a8aeca36bdc095c451f00ac9dc358c90528df2f837b5888b9af9249c6ef67019"
+)
+HUMAN_APPROVAL_RETIREMENT_BASE_COMMIT = (
+    "0a1f24526e94a6c7700516cee787cccdd8078b01"
 )
 
 
@@ -358,6 +363,307 @@ async def test_real_postgres_cutover_rejects_an_older_binary_after_migration(
                 sql.Identifier(schema_name)
             )
         )
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_schema_retirement_upgrades_exact_previous_schema_and_preserves_history(
+    tmp_path: Path,
+):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_approval_recovery_retirement_{uuid.uuid4().hex}"
+    exact_base = _load_schema_migrations_at_commit(
+        tmp_path,
+        HUMAN_APPROVAL_RETIREMENT_BASE_COMMIT,
+    )
+    admin = await psycopg.AsyncConnection.connect(
+        dsn,
+        autocommit=True,
+        row_factory=dict_row,
+    )
+    try:
+        assert exact_base.TARGET_SCHEMA_VERSION == "2026.09.22.1"
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        base_result = await exact_base.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert base_result["version"] == exact_base.TARGET_SCHEMA_VERSION
+
+        await admin.execute(
+            "insert into users(id, tenant_id, display_name) values ('retire-user', 'default', 'Retire')"
+        )
+        await admin.execute(
+            "insert into agents(id, tenant_id, name, agent_type) values ('retire-agent', 'default', 'Retire', 'chat')"
+        )
+        await admin.execute(
+            "insert into skills(id, name, version, executor_type) values ('retire-skill', 'Retire', '1', 'fake')"
+        )
+        await admin.execute(
+            "insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title, status) "
+            "values ('retire-session', 'default', 'default', 'retire-user', 'retire-agent', 'Retire', 'active')"
+        )
+
+        legacy_runs = (
+            ("legacy-created", "queued", {"execution_mode": "ordinary", "input": {"Execution-Mode": "MULTI-AGENT"}}, None),
+            ("legacy-queued", "queued", {"input": {"MULTI-AGENT-STEPS": ["b"]}}, None),
+            ("legacy-claimed", "queued", {"ExecutionMode": "multi_agent"}, "cancelled"),
+            ("legacy-running", "queued", {"input": {"execution_mode": "multi_agent"}}, "failed"),
+            ("legacy-running-cancel", "queued", {"execution_mode": "multi-agent"}, "cancelled"),
+            ("legacy-cancel-requested", "queued", {"execution_mode": "multi_agent"}, "cancelled"),
+            ("legacy-expired", "queued", {"Multi_Agent_Dispatch": ["c"]}, None),
+            ("legacy-no-attempt", "running", {"input": {"multi_agent_steps": []}}, "failed"),
+            ("ordinary-staged", "queued", {"prompt": "ordinary work"}, "failed"),
+            ("ordinary-source", "queued", {"prompt": "copy source"}, None),
+            ("ordinary-copy", "queued", {"prompt": "generic copy"}, None),
+            ("sdk-subagent", "queued", {"sdk_subagents": [{"name": "reviewer"}]}, None),
+        )
+        for run_id, status, payload, staged_target in legacy_runs:
+            await admin.execute(
+                """
+                insert into runs(
+                  id, tenant_id, workspace_id, session_id, user_id, agent_id,
+                  skill_id, status, input_json, permission_terminalization_target,
+                  permission_terminalization_reason, permission_terminalization_result_json,
+                  permission_terminalization_error_code, permission_terminalization_error_message
+                ) values (
+                  %s, 'default', 'default', 'retire-session', 'retire-user',
+                  'retire-agent', 'retire-skill', %s, %s::jsonb, %s,
+                  'preserved-reason', '{"preserved":true}'::jsonb,
+                  'preserved-code', 'preserved-message'
+                )
+                """,
+                (run_id, status, json.dumps(payload), staged_target),
+            )
+        await admin.execute(
+            "update runs set copied_from_run_id = 'ordinary-source' where id = 'ordinary-copy'"
+        )
+        await admin.execute(
+            "update runs set permission_terminalization_result_json = '{\"retired\":true}'::jsonb, "
+            "permission_terminalization_error_code = 'staged-code', "
+            "permission_terminalization_error_message = 'staged-message' where id = 'legacy-running'"
+        )
+        await admin.execute(
+            "update runs set permission_terminalization_result_json = '{\"no_attempt\":true}'::jsonb, "
+            "permission_terminalization_error_code = 'no-attempt-code', "
+            "permission_terminalization_error_message = 'no-attempt-message' where id = 'legacy-no-attempt'"
+        )
+
+        await admin.execute(
+            """
+            insert into run_tool_permission_requests(
+              id, tenant_id, workspace_id, user_id, session_id, run_id,
+              tool_id, tool_call_id, status
+            ) values (
+              'pending-approval', 'default', 'default', 'retire-user',
+              'retire-session', 'legacy-running', 'tool-a', 'call-a', 'pending'
+            )
+            """
+        )
+
+        async def create_attempt(run_id: str, attempt_id: str, terminal_state: str) -> None:
+            spec = json.dumps(
+                {
+                    "schema_version": "ai-platform.execution-spec.v1",
+                    "tenant_id": "default",
+                    "run_id": run_id,
+                    "workspace_id": "default",
+                    "user_id": "retire-user",
+                    "session_id": "retire-session",
+                    "agent_id": "retire-agent",
+                    "execution_kind": "skill",
+                    "skill_id": "retire-skill",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            await admin.execute(
+                """
+                insert into run_attempts(
+                  id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                  queue_attempt_id, execution_spec_schema_version, execution_spec_json,
+                  execution_spec_canonical_json, execution_spec_sha256
+                ) values (
+                  %s, 'default', %s, 1, 'created', 'queue_worker', 'retire-worker',
+                  %s, 'ai-platform.execution-spec.v1', %s::jsonb, %s, %s
+                )
+                """,
+                (
+                    attempt_id,
+                    run_id,
+                    f"queue-{attempt_id}",
+                    spec,
+                    spec,
+                    hashlib.sha256(spec.encode("utf-8")).hexdigest(),
+                ),
+            )
+            if terminal_state == "created":
+                return
+            await admin.execute(
+                "update run_attempts set status = 'queued', owner_generation = owner_generation + 1, "
+                "queue_message_id = %s where id = %s",
+                (f"message-{attempt_id}", attempt_id),
+            )
+            if terminal_state == "queued":
+                return
+            await admin.execute(
+                "update run_attempts set status = 'claimed', owner_generation = owner_generation + 1, "
+                "lease_expires_at = clock_timestamp() + interval '5 minutes' where id = %s",
+                (attempt_id,),
+            )
+            if terminal_state == "claimed":
+                return
+            await admin.execute(
+                "update run_attempts set status = 'running', owner_generation = owner_generation + 1, "
+                "started_at = clock_timestamp(), last_heartbeat_at = clock_timestamp(), "
+                "lease_expires_at = clock_timestamp() + interval '5 minutes' where id = %s",
+                (attempt_id,),
+            )
+            if terminal_state == "running":
+                return
+            if terminal_state == "cancel_requested":
+                await admin.execute(
+                    "update runs set cancel_requested_at = clock_timestamp() where id = %s",
+                    (run_id,),
+                )
+                await admin.execute(
+                    "update run_attempts set status = 'cancel_requested', "
+                    "owner_generation = owner_generation + 1 where id = %s",
+                    (attempt_id,),
+                )
+                return
+            assert terminal_state == "expired"
+            await admin.execute(
+                "update run_attempts set status = 'expired', owner_kind = 'reconciler', "
+                "owner_id = 'retire-reconciler', owner_generation = owner_generation + 1 "
+                "where id = %s",
+                (attempt_id,),
+            )
+
+        for run_id, attempt_id, state in (
+            ("legacy-created", "attempt-created", "created"),
+            ("legacy-queued", "attempt-queued", "queued"),
+            ("legacy-claimed", "attempt-claimed", "claimed"),
+            ("legacy-running", "attempt-running", "running"),
+            ("legacy-running-cancel", "attempt-running-cancel", "running"),
+            ("legacy-cancel-requested", "attempt-cancel", "cancel_requested"),
+            ("legacy-expired", "attempt-expired", "expired"),
+        ):
+            await create_attempt(run_id, attempt_id, state)
+        claimed_start = (await (await admin.execute(
+            "select started_at from runs where id = 'legacy-claimed'"
+        )).fetchone())["started_at"]
+        await admin.execute(
+            "insert into run_steps(id, tenant_id, run_id, step_key, step_kind, status) "
+            "values ('legacy-open-step', 'default', 'legacy-no-attempt', 'child', 'agent', 'running')"
+        )
+
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
+        assert (await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        ))["status"] == "current"
+
+        attempts = await (
+            await admin.execute(
+                "select id, status, started_at, owner_generation, terminal_reason from run_attempts order by id"
+            )
+        ).fetchall()
+        attempt_statuses = {row["id"]: row["status"] for row in attempts}
+        assert attempt_statuses == {
+            "attempt-created": "cancelled",
+            "attempt-queued": "cancelled",
+            "attempt-claimed": "failed",
+            "attempt-running": "failed",
+            "attempt-running-cancel": "cancelled",
+            "attempt-cancel": "cancelled",
+            "attempt-expired": "failed",
+        }
+        assert all(row["owner_generation"] > 1 for row in attempts)
+        assert all(row["terminal_reason"] == "legacy_multi_agent_recovery_retired" for row in attempts)
+        assert next(row for row in attempts if row["id"] == "attempt-claimed")["started_at"] is None
+
+        runs = await (
+            await admin.execute(
+                "select id, status, started_at, input_json, result_json, copied_from_run_id, error_code, error_message, "
+                "terminalization_target, terminalization_reason, terminalization_result_json, "
+                "terminalization_error_code, terminalization_error_message "
+                "from runs order by id"
+            )
+        ).fetchall()
+        by_id = {row["id"]: row for row in runs}
+        for run_id in (
+            "legacy-created", "legacy-queued", "legacy-claimed", "legacy-running", "legacy-running-cancel",
+            "legacy-cancel-requested", "legacy-expired", "legacy-no-attempt",
+        ):
+            assert by_id[run_id]["status"] in {"failed", "cancelled"}
+        assert by_id["legacy-running"]["status"] == "failed"
+        assert by_id["legacy-running"]["result_json"] == {"retired": True}
+        assert by_id["legacy-running"]["error_code"] == "staged-code"
+        assert by_id["legacy-running"]["error_message"] == "staged-message"
+        assert by_id["legacy-claimed"]["status"] == "failed"
+        assert by_id["legacy-claimed"]["started_at"] == claimed_start
+        assert by_id["legacy-running-cancel"]["status"] == "cancelled"
+        assert by_id["legacy-no-attempt"]["result_json"] == {"no_attempt": True}
+        assert by_id["legacy-no-attempt"]["error_code"] == "no-attempt-code"
+        assert by_id["legacy-no-attempt"]["error_message"] == "no-attempt-message"
+        assert by_id["legacy-no-attempt"]["terminalization_target"] is None
+        assert by_id["legacy-no-attempt"]["terminalization_reason"] == ""
+        assert by_id["legacy-no-attempt"]["terminalization_result_json"] == {}
+        assert by_id["legacy-no-attempt"]["terminalization_error_code"] is None
+        assert by_id["legacy-no-attempt"]["terminalization_error_message"] is None
+        for run_id in (
+            "legacy-created", "legacy-queued", "legacy-claimed", "legacy-running", "legacy-running-cancel",
+            "legacy-cancel-requested", "legacy-expired",
+        ):
+            attempt_id = {
+                "legacy-created": "attempt-created",
+                "legacy-queued": "attempt-queued",
+                "legacy-claimed": "attempt-claimed",
+                "legacy-running": "attempt-running",
+                "legacy-running-cancel": "attempt-running-cancel",
+                "legacy-cancel-requested": "attempt-cancel",
+                "legacy-expired": "attempt-expired",
+            }[run_id]
+            assert by_id[run_id]["status"] == attempt_statuses[attempt_id]
+            assert by_id[run_id]["terminalization_target"] is None
+            assert by_id[run_id]["terminalization_reason"] == ""
+            assert by_id[run_id]["terminalization_result_json"] == {}
+            assert by_id[run_id]["terminalization_error_code"] is None
+            assert by_id[run_id]["terminalization_error_message"] is None
+        assert by_id["ordinary-staged"]["status"] == "queued"
+        assert by_id["ordinary-staged"]["terminalization_target"] == "failed"
+        assert by_id["ordinary-staged"]["terminalization_reason"] == "preserved-reason"
+        assert by_id["ordinary-staged"]["terminalization_result_json"] == {"preserved": True}
+        assert by_id["ordinary-staged"]["terminalization_error_code"] == "preserved-code"
+        assert by_id["ordinary-staged"]["terminalization_error_message"] == "preserved-message"
+        assert by_id["sdk-subagent"]["status"] == "queued"
+        assert by_id["sdk-subagent"]["input_json"]["sdk_subagents"] == [{"name": "reviewer"}]
+        assert by_id["ordinary-copy"]["status"] == "queued"
+        assert by_id["ordinary-copy"]["copied_from_run_id"] == "ordinary-source"
+        step = await (
+            await admin.execute(
+                "select status, finished_at, payload_json from run_steps where id = 'legacy-open-step'"
+            )
+        ).fetchone()
+        assert step["status"] == "failed"
+        assert step["finished_at"] is not None
+        assert step["payload_json"]["terminal_reason"] == "legacy_multi_agent_recovery_retired"
+        assert await (
+            await admin.execute("select to_regclass('run_tool_permission_requests') as relation")
+        ).fetchone() == {"relation": None}
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+    finally:
+        sys.modules.pop(exact_base.__name__, None)
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await admin.close()
 
 

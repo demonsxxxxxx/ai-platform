@@ -53,14 +53,6 @@ import {
   updateSubagentResult,
   clearAllLoadingStates,
 } from "./messageParts";
-import {
-  applyToolPermissionDecisionPart,
-  createToolPermissionCardPart,
-  createToolPermissionDecidedPart,
-  createToolPermissionRequestedPart,
-  createToolPermissionTerminalizedPart,
-  upsertToolPermissionPart,
-} from "./toolPermissionParts";
 import type { ThinkingPart } from "../../types";
 import type { V4PublicEvent } from "../../components/chat/assistant-ui/publicEventAdapter";
 
@@ -607,17 +599,6 @@ export function processMessageEvent(
 
     // ---- ai-platform run playback events ----
 
-    case "tool_permission_card": {
-      const permissionCard = createToolPermissionCardPart(data);
-      if (permissionCard) {
-        result.parts =
-          permissionCard.status === "decided" || permissionCard.decision
-            ? applyToolPermissionDecisionPart(parts, permissionCard)
-            : upsertToolPermissionPart(parts, permissionCard);
-      }
-      break;
-    }
-
     case "run_event": {
       const executionKind = String(data.event_type || "");
       if (PUBLIC_EXECUTION_EVENT_TYPES.has(executionKind as never)) {
@@ -626,47 +607,6 @@ export function processMessageEvent(
           result.parts = upsertPublicExecutionStep(parts, executionPart);
         }
         break;
-      }
-      if (data.event_type === "tool_permission_card") {
-        const permissionCard = createToolPermissionCardPart(data);
-        if (permissionCard) {
-          result.parts =
-            permissionCard.status === "decided" || permissionCard.decision
-              ? applyToolPermissionDecisionPart(parts, permissionCard)
-              : upsertToolPermissionPart(parts, permissionCard);
-          break;
-        }
-      }
-      if (data.event_type === "tool_permission_requested") {
-        // Public persisted history projects permission requests as a
-        // controlled card.  Live legacy frames may still carry the older
-        // direct payload, so accept both without reintroducing action rights.
-        const permissionPart =
-          createToolPermissionCardPart(data) ??
-          createToolPermissionRequestedPart(data);
-        if (permissionPart) {
-          result.parts = upsertToolPermissionPart(parts, permissionPart);
-          break;
-        }
-      }
-      if (data.event_type === "tool_permission_decided") {
-        const permissionDecision = createToolPermissionDecidedPart(data);
-        if (permissionDecision) {
-          result.parts = applyToolPermissionDecisionPart(
-            parts,
-            permissionDecision,
-          );
-          break;
-        }
-      }
-      if (data.event_type === "tool_permission_terminalized") {
-        const permissionTerminal =
-          createToolPermissionCardPart(data) ??
-          createToolPermissionTerminalizedPart(data);
-        if (permissionTerminal) {
-          result.parts = upsertToolPermissionPart(parts, permissionTerminal);
-          break;
-        }
       }
       if (data.event_type === "public_tool_activity") {
         const toolPart = createPublicToolPart(data);

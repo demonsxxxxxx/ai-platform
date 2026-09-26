@@ -8,18 +8,16 @@ from app import repositories
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.runs.api import (
     RunDiagnosticsService,
+    RunLifecycleService,
     RunTerminalizationProgress,
-    mark_run_enqueue_failed_with_context,
 )
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     exception_chain_from_error,
 )
 from app.streaming.api import WorkerV4Capabilities
-from app.tool_permission_lifecycle import fail_run_with_v4
 from app.run_admission_policy import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
-    RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON,
     contains_persisted_platform_multi_agent_control,
 )
 
@@ -28,6 +26,7 @@ async def terminalize_enqueue_failure_with_v4(
     v4_capabilities: WorkerV4Capabilities,
     conn: AsyncConnection,
     *,
+    lifecycle: RunLifecycleService,
     tenant_id: str,
     user_id: str | None,
     run_id: str,
@@ -43,9 +42,8 @@ async def terminalize_enqueue_failure_with_v4(
         run_id=run_id,
         attempt_id=f"enqueue_failure_{run_id}",
     )
-    progress = await mark_run_enqueue_failed_with_context(
+    progress = await lifecycle.mark_run_enqueue_failed(
         conn,
-        mark_run_enqueue_failed=repositories.mark_run_enqueue_failed,
         tenant_id=tenant_id,
         user_id=user_id,
         run_id=run_id,
@@ -89,29 +87,6 @@ async def terminalize_enqueue_failure_with_v4(
     return progress
 
 
-async def terminalize_retired_platform_multi_agent_run(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
-    v4_capabilities: WorkerV4Capabilities,
-) -> RunTerminalizationProgress:
-    """Stage a retired-control failure through the durable terminalization lifecycle."""
-
-    error_message = "Platform multi-agent orchestration is no longer supported."
-    progress = await fail_run_with_v4(
-        conn,
-        capabilities=v4_capabilities,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        error_code=PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
-        error_message=error_message,
-        result_json={"message": error_message, "retryable": False},
-        terminal_reason=RETIRED_PLATFORM_MULTI_AGENT_TERMINAL_REASON,
-    )
-    return progress
-
-
 async def reject_chat_submission_for_retired_platform_multi_agent(
     conn: AsyncConnection,
     *,
@@ -121,7 +96,6 @@ async def reject_chat_submission_for_retired_platform_multi_agent(
     run_id: str,
     run: dict[str, object],
     execution_snapshot: dict[str, object] | None,
-    v4_capabilities: WorkerV4Capabilities,
 ) -> bool:
     rejected = str(run.get("error_code") or "") == PLATFORM_MULTI_AGENT_NOT_SUPPORTED or (
         execution_snapshot is not None
@@ -129,13 +103,6 @@ async def reject_chat_submission_for_retired_platform_multi_agent(
     )
     if not rejected:
         return False
-    if str(run.get("error_code") or "") != PLATFORM_MULTI_AGENT_NOT_SUPPORTED:
-        await terminalize_retired_platform_multi_agent_run(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            v4_capabilities=v4_capabilities,
-        )
     await repositories.finalize_chat_submission(
         conn,
         tenant_id=tenant_id,

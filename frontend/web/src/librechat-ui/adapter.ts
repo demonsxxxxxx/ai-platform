@@ -1,6 +1,5 @@
 import type {
   MessageAttachment,
-  PendingApproval,
   SkillResponse,
   ToolState,
 } from "../types";
@@ -46,7 +45,6 @@ export interface ChatWorkbenchAdapter {
   selectedMcpChips: ComposerChip[];
   availableSkills?: SkillResponse[];
   availableTools?: ToolState[];
-  pendingApprovals?: PendingApproval[];
   sendMessage(input: ComposerInput): Promise<void>;
   subscribeRunEvents(runId: string): RunEventSubscription;
   openArtifact(artifactId: string): void;

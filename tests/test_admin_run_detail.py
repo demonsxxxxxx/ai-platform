@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.runs.api import RunDiagnosticsService, RunTerminalizationProgress
+from app.runs.api import RunDiagnosticsService
 from app.sandbox.api import normalize_sdk_runtime_diagnostics
 
 
@@ -33,17 +33,10 @@ class _AdminCancellationAdapter:
 
 
 def _install_admin_cancel(monkeypatch, handler):
-    async def no_terminal_progress(**_kwargs):
-        return RunTerminalizationProgress(False, "cancelled")
-
     adapter = _AdminCancellationAdapter(handler)
     monkeypatch.setattr(
         "app.routes.admin_runs._require_run_cancellation_use_case",
         lambda _request: adapter,
-    )
-    monkeypatch.setattr(
-        "app.routes.admin_runs.drain_run_tool_permission_terminalization",
-        no_terminal_progress,
     )
 
 

@@ -142,3 +142,24 @@ def test_no_active_production_permission_request_producer_or_sandbox_callback_se
     assert "on_tool_permission" not in runner_sources
     assert "get_exact_tool_permission_decision(" not in runner_sources
     assert "consume_tool_permission_decision(" not in runner_sources
+
+
+def test_repository_does_not_expose_retired_tool_permission_approval_entry_points():
+    from app import repositories
+
+    retired_entry_points = (
+        "create_tool_permission_request",
+        "get_tool_permission_request",
+        "get_tool_permission_request_for_tenant",
+        "get_tool_permission_request_by_id",
+        "get_tool_permission_request_by_id_for_tenant",
+        "list_tool_permission_inbox",
+        "list_tool_permission_inbox_for_tenant",
+        "decide_tool_permission_request",
+        "get_exact_tool_permission_decision",
+        "get_latest_tool_permission_decision",
+        "consume_tool_permission_decision",
+        "expire_tool_permission_request",
+    )
+
+    assert all(not hasattr(repositories, name) for name in retired_entry_points)

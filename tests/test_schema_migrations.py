@@ -186,10 +186,12 @@ class FakeSchemaStatusConnection:
         self,
         *,
         missing_relation: str | None = None,
+        missing_retired_relation: str | None = None,
         constraint_definitions_current: bool = True,
         model_index_definitions_current: bool = True,
     ):
         self.missing_relation = missing_relation
+        self.missing_retired_relation = missing_retired_relation
         self.constraint_definitions_current = constraint_definitions_current
         self.model_index_definitions_current = model_index_definitions_current
         self.calls = []
@@ -198,6 +200,10 @@ class FakeSchemaStatusConnection:
         normalized = " ".join(str(statement).split()).lower()
         self.calls.append((normalized, params))
         if "from jsonb_array_elements_text" in normalized:
+            if "to_regclass(relation_name) is null" in normalized:
+                return FakeCursor(
+                    {"current": self.missing_retired_relation is None}
+                )
             return FakeCursor({"current": self.missing_relation is None})
         if "attributes.attname is not null" in normalized:
             return FakeCursor({"current": True})
@@ -310,6 +316,17 @@ async def test_schema_status_is_not_ready_when_model_control_plane_relation_is_m
 
     assert status["ready"] is False
     assert status["relations_current"] is False
+    assert status["contracts_current"] is False
+
+
+@pytest.mark.asyncio
+async def test_schema_status_requires_retired_approval_relation_to_be_absent() -> None:
+    status = await schema_migrations.schema_status(
+        FakeSchemaStatusConnection(missing_retired_relation="run_tool_permission_requests")
+    )
+
+    assert status["ready"] is False
+    assert status["retired_relations_current"] is False
     assert status["contracts_current"] is False
 
 
@@ -489,10 +506,10 @@ def test_stream_only_schema_change_advances_schema_version():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.22.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.26.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.REPOSITORY_SKILL_RETIREMENT_SCHEMA_VERSION
+        == schema_migrations.HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION
     )
     assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
     assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
@@ -533,6 +550,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "conversation_context_checkpoints",
         "run_context_snapshots",
     )
+    assert schema_migrations.RETIRED_RELATIONS == ("run_tool_permission_requests",)
     assert (
         "users",
         "metadata_json",

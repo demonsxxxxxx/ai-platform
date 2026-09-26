@@ -91,7 +91,6 @@ from app.run_admission_policy import (
 )
 from app.run_admission_terminalization import (
     terminalize_enqueue_failure_with_v4,
-    terminalize_retired_platform_multi_agent_run,
 )
 from app.run_control_readiness import run_control_readiness_snapshot
 from app.runs.api import RunCancellationUseCase, RunDiagnosticsService
@@ -110,7 +109,6 @@ from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
 from app.skills.api import materialize_skill_manifest_pins
 from app.skills.lifecycle import is_user_runnable_status
-from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.skills.pinning import (
     SkillVersionMaterializationError,
     attach_skill_snapshot_governance,
@@ -612,6 +610,7 @@ async def _compensate_enqueue_failure(
     *,
     principal: AuthPrincipal,
     run_id: str,
+    run_lifecycle: Any,
     v4_capabilities: WorkerV4Capabilities,
     diagnostic_error: BaseException | None = None,
     run_diagnostics: RunDiagnosticsService | None = None,
@@ -621,6 +620,7 @@ async def _compensate_enqueue_failure(
 
     async with transaction() as conn:
         await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
+            lifecycle=run_lifecycle,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             run_id=run_id,
@@ -1163,6 +1163,7 @@ async def create_run(
             await _compensate_enqueue_failure(
                 principal=principal,
                 run_id=run_id,
+                run_lifecycle=http_request.app.state.run_lifecycle,
                 v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
                 diagnostic_error=exc,
                 run_diagnostics=getattr(
@@ -1248,6 +1249,7 @@ async def copy_run(
         await _compensate_enqueue_failure(
             principal=principal,
             run_id=str(copied["run_id"]),
+            run_lifecycle=request.app.state.run_lifecycle,
             v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
             diagnostic_error=exc,
             run_diagnostics=getattr(request.app.state, "run_diagnostics_service", None),
@@ -1277,6 +1279,7 @@ async def copy_run(
             await _compensate_enqueue_failure(
                 principal=principal,
                 run_id=str(copied["run_id"]),
+                run_lifecycle=request.app.state.run_lifecycle,
                 v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
                 diagnostic_error=exc,
                 run_diagnostics=getattr(
@@ -1428,14 +1431,6 @@ async def _mutate_run_control_child(
                 retired_control_rejected = contains_persisted_platform_multi_agent_control(
                     copied.get("input_json")
                 )
-                if retired_control_rejected:
-                    child_run_id = str(copied["run_id"])
-                    await terminalize_retired_platform_multi_agent_run(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        run_id=child_run_id,
-                        v4_capabilities=v4_capabilities,
-                    )
             if copied is None:
                 await enforce_user_active_run_limit(
                     conn,
@@ -1772,7 +1767,6 @@ async def cancel_run(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     runtime = request.app.state.run_stream_runtime
-    attempt_lifecycle = request.app.state.run_attempt_lifecycle
     cancellation = await _require_run_cancellation_use_case(request).request_owner_cancel(
         tenant_id=principal.tenant_id,
         owner_user_id=principal.user_id,
@@ -1796,37 +1790,7 @@ async def cancel_run(
             )
     result = cancellation.as_route_result() if cancellation is not None else None
     if result is not None:
-        initial_progress = result.pop("_permission_terminalization_progress", None)
-        if initial_progress is not None:
-            await reconcile_terminalized_permission_run(
-                tenant_id=principal.tenant_id,
-                run_id=run_id,
-                progress=initial_progress,
-                transaction_factory=transaction,
-                attempt_lifecycle=attempt_lifecycle,
-            )
-        progress = await drain_run_tool_permission_terminalization(
-            tenant_id=principal.tenant_id,
-            run_id=run_id,
-            capabilities=runtime.worker_capabilities,
-            transaction_factory=transaction,
-            attempt_lifecycle=attempt_lifecycle,
-            attempt_id=cancellation.attempt_id if cancellation is not None else None,
-        )
-        if progress is not None and progress.is_terminal():
-            progressed_status = str(progress.status or result["status"])
-            if result["status"] not in {"succeeded", "failed", "cancelled"} or progressed_status in {
-                "failed",
-                "cancelled",
-            }:
-                result["status"] = progressed_status
-        await reconcile_terminalized_permission_run(
-            tenant_id=principal.tenant_id,
-            run_id=run_id,
-            progress=progress,
-            transaction_factory=transaction,
-            attempt_lifecycle=attempt_lifecycle,
-        )
+        result.pop("_terminalization_progress", None)
     if cancellation is not None and cancellation.attempt_id:
         try:
             await publish_run_event(

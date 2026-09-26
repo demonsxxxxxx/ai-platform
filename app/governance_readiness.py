@@ -201,7 +201,6 @@ def build_governance_readiness(
                 "tenant_scoped_tool_policy_update_audit",
                 "zero_click_model_tool_policy",
                 "risk_write_fail_closed_policy_evaluation",
-                "public_tool_permission_card_projection",
                 "audit_visible_legacy_frontend_route_policy_mapping",
                 "allow_deny_tool_policy_taxonomy_evidence",
                 "platform_registered_mcp_only_policy",

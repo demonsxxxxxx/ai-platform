@@ -21,6 +21,7 @@ from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, San
 from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
 from app.repositories import RepositoryConflictError
 from app.runs.api import RunTerminalizationProgress
+from app.runs.infrastructure import replay_postgres as replay_persistence
 from app.routes import lambchat_compat as lambchat_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
@@ -91,12 +92,24 @@ _TEST_V4_CAPABILITIES = SimpleNamespace(
     pending_admissions=_NoOpPendingAdmissions(),
     event_persistence=_NoOpTerminalEventPersistence(),
 )
+
+
+async def _default_enqueue_failure(*_args, **_kwargs):
+    return RunTerminalizationProgress(
+        completed=True,
+        status="failed",
+        did_transition=True,
+    )
+
+
+_TEST_RUN_LIFECYCLE = SimpleNamespace(mark_run_enqueue_failed=_default_enqueue_failure)
 _TEST_STREAM_REQUEST = SimpleNamespace(
     app=SimpleNamespace(
         state=SimpleNamespace(
             run_stream_runtime=SimpleNamespace(
                 worker_capabilities=_TEST_V4_CAPABILITIES,
-            )
+            ),
+            run_lifecycle=_TEST_RUN_LIFECYCLE,
         )
     )
 )
@@ -670,7 +683,7 @@ def test_run_event_response_redacts_dispatch_control_metadata_for_ordinary_user(
         principal=principal(),
     )
 
-    assert event["message"] == "已安排协同任务。"
+    assert event["message"] == "任务正在处理中。"
     assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(event)
     assert "dispatch-code" not in public_dump
@@ -709,10 +722,10 @@ def test_run_event_response_aliases_multi_agent_child_created_for_ordinary_user(
     event = run_event_response("run-child", row, principal=principal())
     admin_event = run_event_response("run-child", row, principal=principal(roles=["admin"]))
 
-    assert event["event_type"] == "run_child_created"
-    assert event["type"] == "run_child_created"
+    assert event["event_type"] == "activity"
+    assert event["type"] == "activity"
     assert admin_event["event_type"] == "run_multi_agent_child_created"
-    assert event["message"] == "已安排协同任务。"
+    assert event["message"] == "任务正在处理中。"
     assert event["payload"] == {"activity": {"category": "status", "status": "running"}}
     public_dump = str(event)
     assert "dispatch-code" not in public_dump
@@ -4531,6 +4544,8 @@ async def test_create_run_reconciles_enqueue_after_creation_commit(monkeypatch, 
         )
     )
 
+    request.app.state.run_lifecycle = _TEST_RUN_LIFECYCLE
+
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", resolve_skill)
     monkeypatch.setattr("app.routes.runs.repositories.ensure_user", ensure_user)
@@ -4541,7 +4556,7 @@ async def test_create_run_reconciles_enqueue_after_creation_commit(monkeypatch, 
     monkeypatch.setattr("app.routes.runs.repositories.append_event", noop)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", read_admission)
-    monkeypatch.setattr("app.routes.runs.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
 
     if enqueue_mode == "rejected":
         with pytest.raises(HTTPException) as exc_info:
@@ -5283,7 +5298,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
     monkeypatch.setattr(repository_module, "get_active_retry_for_source_run", no_active_run)
     monkeypatch.setattr(repository_module, "get_active_resume_for_source_run", no_active_run)
     monkeypatch.setattr(repository_module, "_completed_steps_for_resume", completed_steps)
-    monkeypatch.setattr(repository_module, "resolve_selected_skill", reject_selector)
+    monkeypatch.setattr("app.runs.infrastructure.capability_admission_postgres.resolve_selected_skill", reject_selector)
     monkeypatch.setattr(
         repository_module,
         "validate_run_skill_snapshots_for_dispatch",
@@ -5294,12 +5309,15 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         "authorize_replay_run_capabilities",
         _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES,
     )
-    monkeypatch.setattr(
-        runs_module._agent_profile_authority,
-        "reauthorize_pinned_run_for_replay",
-        _ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY,
-    )
     monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+    monkeypatch.setattr(replay_persistence, "get_authorized_run", get_authorized_run)
+    monkeypatch.setattr(replay_persistence, "get_active_retry_for_source_run", no_active_run)
+    monkeypatch.setattr(replay_persistence, "get_active_resume_for_source_run", no_active_run)
+    monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", completed_steps)
+    monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", validate_source_snapshot)
+    monkeypatch.setattr(replay_persistence, "materialize_run_skill_manifests", repository_module.materialize_run_skill_manifests)
+    monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES)
+    monkeypatch.setattr(runs_module._agent_profile_authority, "reauthorize_pinned_run_for_replay", _ORIGINAL_REAUTHORIZE_PINNED_RUN_FOR_REPLAY)
     _stub_run_control_operation_guard(monkeypatch, events)
 
     with pytest.raises(HTTPException) as exc_info:

@@ -53,6 +53,13 @@ def _principal() -> AuthPrincipal:
     return AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="tenant-a", roles=["admin"])
 
 
+async def _default_enqueue_failure(*_args, **_kwargs):
+    return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
+
+
+_TEST_RUN_LIFECYCLE = SimpleNamespace(mark_run_enqueue_failed=_default_enqueue_failure)
+
+
 def _stream_request(pending_admissions, event_persistence):
     return SimpleNamespace(
         app=SimpleNamespace(
@@ -62,7 +69,8 @@ def _stream_request(pending_admissions, event_persistence):
                         pending_admissions=pending_admissions,
                         event_persistence=event_persistence,
                     )
-                )
+                ),
+                run_lifecycle=_TEST_RUN_LIFECYCLE,
             )
         )
     )
@@ -278,12 +286,13 @@ async def test_run_enqueue_compensation_uses_the_durable_failed_transition(monke
             return "row-a"
 
     monkeypatch.setattr("app.routes.runs.transaction", _fake_transaction)
-    monkeypatch.setattr("app.routes.runs.repositories.mark_run_enqueue_failed", mark_failed)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_failed)
 
     await _compensate_enqueue_failure(
         principal=_principal(),
         run_id="run-a",
         trace_id="trace-run-a",
+        run_lifecycle=_TEST_RUN_LIFECYCLE,
         v4_capabilities=SimpleNamespace(
             pending_admissions=PendingAdmissions(),
             event_persistence=EventPersistence(),
@@ -416,7 +425,7 @@ async def test_copied_run_ambiguous_enqueue_preserves_committed_child(
     monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", prepared_queue_payload)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", no_queue_admission)
-    monkeypatch.setattr("app.routes.runs.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
 
     if repository_method == "copy_run_as_new_task":
         result = await route(source_run_id, request=request, principal=_principal())

@@ -39,7 +39,8 @@ MODEL_TOKEN_LIMIT_EXPAND_SCHEMA_VERSION = "2026.09.15.1"
 CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION = "2026.09.15.2"
 SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION = "2026.09.16.1"
 REPOSITORY_SKILL_RETIREMENT_SCHEMA_VERSION = "2026.09.22.1"
-TARGET_SCHEMA_VERSION = REPOSITORY_SKILL_RETIREMENT_SCHEMA_VERSION
+HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION = "2026.09.26.1"
+TARGET_SCHEMA_VERSION = HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = STREAM_ONLY_SCHEMA_VERSION
@@ -77,6 +78,7 @@ CRITICAL_RELATIONS = (
     "conversation_context_checkpoints",
     "run_context_snapshots",
 )
+RETIRED_RELATIONS = ("run_tool_permission_requests",)
 CRITICAL_COLUMNS = (
     ("users", "metadata_json", "jsonb", True),
     ("sessions", "title_source", "text", True),
@@ -93,6 +95,11 @@ CRITICAL_COLUMNS = (
     ("runs", "model_gateway_revision", "int8", False),
     ("runs", "max_input_tokens", "int8", False),
     ("runs", "max_output_tokens", "int8", False),
+    ("runs", "terminalization_target", "text", False),
+    ("runs", "terminalization_reason", "text", True),
+    ("runs", "terminalization_result_json", "jsonb", True),
+    ("runs", "terminalization_error_code", "text", False),
+    ("runs", "terminalization_error_message", "text", False),
     ("run_diagnostics", "diagnostic_id", "text", True),
     ("run_diagnostics", "tenant_id", "text", True),
     ("run_diagnostics", "run_id", "text", True),
@@ -1272,6 +1279,13 @@ async def schema_status(conn: Any) -> dict[str, object]:
         """,
         (json.dumps(CRITICAL_RELATIONS),),
     )
+    retired_relation_cursor = await conn.execute(
+        """
+        select coalesce(bool_and(to_regclass(relation_name) is null), true) as current
+        from jsonb_array_elements_text(%s::jsonb) as retired(relation_name)
+        """,
+        (json.dumps(RETIRED_RELATIONS),),
+    )
     column_cursor = await conn.execute(
         """
         select coalesce(bool_and(
@@ -1483,6 +1497,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         ),
     )
     relation_row = await relation_cursor.fetchone() or {}
+    retired_relation_row = await retired_relation_cursor.fetchone() or {}
     column_row = await column_cursor.fetchone() or {}
     constraint_row = await constraint_cursor.fetchone() or {}
     constraint_definition_row = await constraint_definition_cursor.fetchone() or {}
@@ -1491,6 +1506,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
     index_row = await index_cursor.fetchone() or {}
     ledger_row = await ledger_cursor.fetchone() or {}
     relations_current = bool(relation_row.get("current"))
+    retired_relations_current = bool(retired_relation_row.get("current"))
     columns_current = bool(column_row.get("current"))
     constraints_current = bool(constraint_row.get("current"))
     constraint_definitions_current = bool(constraint_definition_row.get("current"))
@@ -1506,6 +1522,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
     contracts_current = all(
         (
             relations_current,
+            retired_relations_current,
             columns_current,
             constraints_current,
             constraint_definitions_current,
@@ -1529,6 +1546,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         "index_ledger_current": bool(ledger_row.get("index_ledger_current")),
         "contracts_current": contracts_current,
         "relations_current": relations_current,
+        "retired_relations_current": retired_relations_current,
         "columns_current": columns_current,
         "constraints_current": constraints_current,
         "constraint_definitions_current": constraint_definitions_current,

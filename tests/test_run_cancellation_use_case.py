@@ -84,7 +84,7 @@ class _Progressor:
     async def __call__(self, conn, **kwargs):
         self.calls += 1
         self._order.append("v4.run.cancelled")
-        return RunTerminalizationProgress(True, "cancelled", True, True)
+        return RunTerminalizationProgress(True, "cancelled", True)
 
 
 def _authority(

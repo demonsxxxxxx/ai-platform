@@ -14,6 +14,7 @@ import app.execution.application.model_control_plane as model_control_plane_modu
 import app.execution.application.worker_attempt_lifecycle as worker_attempt_lifecycle_module
 import app.runs.application.model_snapshot as run_model_snapshot_module
 import app.worker as worker_module
+from app.runs.infrastructure import lifecycle_postgres as run_lifecycle_postgres
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
 from app.control_plane_contracts import standard_trace_id
@@ -67,9 +68,7 @@ from app.worker import (
     process_run_payload as _process_run_payload,
     WorkerOutcome,
     _locked_run_principal,
-    _multi_agent_result_summary,
     _payload_from_locked_run,
-    _record_run_step_from_event,
     parse_queue_payload,
 )
 from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutorStub
@@ -78,6 +77,7 @@ RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
 _TEST_ATTEMPT_PERSISTENCE = None
 _TEST_RUN_ATTEMPT_LIFECYCLE = None
+_TEST_RUN_LIFECYCLE = None
 _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = repository_module.materialize_run_skill_manifests
 
@@ -88,9 +88,29 @@ def _stub_terminal_context_ports(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
+        "app.runs.application.terminalization_v4.release_provider_lineage",
         release,
     )
+
+
+class _FakeRunLifecycle:
+    async def mark_run_running(self, _conn, **_kwargs):
+        return True
+
+    async def complete_run(self, _conn, **_kwargs):
+        return True
+
+    async def fail_run(self, _conn, **_kwargs):
+        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
+
+    async def cancel_run(self, _conn, **_kwargs):
+        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
+
+    async def is_cancel_requested(self, _conn, **_kwargs):
+        return False
+
+    async def classify_success_commit_block(self, _conn, **_kwargs):
+        return "stale_terminal_state"
 
 
 class _FakeWorkerV4Admission:
@@ -162,7 +182,6 @@ class _FakeWorkerV4Persistence:
         stage,
         message,
         payload,
-        record_run_step,
     ):
         async with worker_module.transaction() as conn:
             if persist_event:
@@ -178,15 +197,7 @@ class _FakeWorkerV4Persistence:
                     message=message,
                     payload=merged,
                 )
-                await record_run_step(
-                    conn,
-                    tenant_id=run_payload.tenant_id,
-                    run_id=run_payload.run_id,
-                    event_type=event_type,
-                    message=message,
-                    payload=payload,
-                )
-            return await repository_module.is_cancel_requested(
+            return await _TEST_RUN_LIFECYCLE.is_cancel_requested(
                 conn,
                 tenant_id=run_payload.tenant_id,
                 run_id=run_payload.run_id,
@@ -210,6 +221,7 @@ async def process_run_payload(*args, **kwargs):
     if _TEST_RUN_ATTEMPT_LIFECYCLE is None:
         raise RuntimeError("test_run_attempt_lifecycle_unavailable")
     kwargs.setdefault("run_attempt_lifecycle", _TEST_RUN_ATTEMPT_LIFECYCLE)
+    kwargs.setdefault("run_lifecycle", _TEST_RUN_LIFECYCLE)
     return await _process_run_payload(*args, **kwargs)
 
 
@@ -991,7 +1003,9 @@ def default_cancel_not_requested(monkeypatch):
     global _CURRENT_QUEUE_PAYLOAD
     global _TEST_ATTEMPT_PERSISTENCE
     global _TEST_RUN_ATTEMPT_LIFECYCLE
+    global _TEST_RUN_LIFECYCLE
     _CURRENT_QUEUE_PAYLOAD = None
+    _TEST_RUN_LIFECYCLE = _FakeRunLifecycle()
     original_locked_agent_profile_identity_valid = (
         worker_module._locked_agent_profile_identity_valid
     )
@@ -1125,10 +1139,8 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr("app.worker.worker_dispatch_fence", ready_fence)
 
     async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
-        locked_run = await worker_module.repositories.mark_run_running(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
+        locked_run = await _TEST_RUN_LIFECYCLE.mark_run_running(
+            conn, tenant_id=tenant_id, run_id=run_id
         )
         if locked_run is True:
             locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
@@ -1184,7 +1196,7 @@ def default_cancel_not_requested(monkeypatch):
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
 
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested, raising=False)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
 
     async def complete_run(conn, **kwargs):
         return True
@@ -1198,9 +1210,6 @@ def default_cancel_not_requested(monkeypatch):
 
     async def classify_success_commit_block(conn, **kwargs):
         return "stale_terminal_state"
-
-    async def drain_run_tool_permission_terminalization(**kwargs):
-        return None
 
     async def create_artifact(conn, **kwargs):
         return None
@@ -1220,28 +1229,15 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_test_assistant)
 
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run, raising=False)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run, raising=False)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact, raising=False)
     monkeypatch.setattr(
-        "app.worker.repositories.classify_success_commit_block",
+        _TEST_RUN_LIFECYCLE,
+        "classify_success_commit_block",
         classify_success_commit_block,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
-        drain_run_tool_permission_terminalization,
-        raising=False,
     )
 
-    async def has_pending_tool_permission_requests(conn, *, tenant_id, run_id):
-        return False
-
-    monkeypatch.setattr(
-        "app.worker.repositories.has_pending_tool_permission_requests",
-        has_pending_tool_permission_requests,
-        raising=False,
-    )
 
     async def validate_run_skill_snapshots_for_dispatch(*_args, **_kwargs):
         return None
@@ -1327,48 +1323,6 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
-    async def reconcile_multi_agent_child_run_terminal_state(conn, **kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "app.worker.repositories.reconcile_multi_agent_child_run_terminal_state",
-        reconcile_multi_agent_child_run_terminal_state,
-        raising=False,
-    )
-
-    async def finalize_multi_agent_parent_run_if_ready(conn, **kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "app.worker.repositories.finalize_multi_agent_parent_run_if_ready",
-        finalize_multi_agent_parent_run_if_ready,
-        raising=False,
-    )
-
-    async def reconcile_terminalized_permission_run(
-        *,
-        tenant_id,
-        run_id,
-        progress,
-        transaction_factory,
-        attempt_lifecycle,
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
-        if not progress.did_transition or not progress.needs_reconcile:
-            return None
-        async with transaction_factory() as conn:
-            return await repository_module.reconcile_multi_agent_child_run_terminal_state(
-                conn,
-                tenant_id=tenant_id,
-                child_run_id=run_id,
-                child_status=str(progress.status or ""),
-            )
-
-    monkeypatch.setattr(
-        "app.worker.reconcile_terminalized_permission_run",
-        reconcile_terminalized_permission_run,
-        raising=False,
-    )
 
     async def create_sandbox_lease(conn, **kwargs):
         return {
@@ -1724,93 +1678,6 @@ def test_locked_run_uses_one_complete_model_authority(
         assert (reconstructed.model_id, reconstructed.model_value) == expected_model
 
 
-@pytest.mark.asyncio
-async def test_reused_step_event_clears_checkpoint_reuse_pending(monkeypatch):
-    calls = []
-
-    async def upsert_run_step(conn, **kwargs):
-        calls.append(kwargs)
-        return "step-a"
-
-    monkeypatch.setattr("app.worker.repositories.upsert_run_step", upsert_run_step, raising=False)
-
-    await _record_run_step_from_event(
-        object(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        event_type="agent_step_reused",
-        message="coding agent reused checkpoint",
-        payload={
-            "role": "coding",
-            "step_key": "code",
-            "step_index": 1,
-            "checkpoint_reused": True,
-            "output": "code output",
-        },
-    )
-
-    assert calls[0]["payload_json"]["checkpoint_reused"] is True
-    assert calls[0]["payload_json"]["checkpoint_reuse_pending"] is False
-
-
-@pytest.mark.asyncio
-async def test_completed_step_event_materializes_source_step_id_for_checkpoint(monkeypatch):
-    calls = []
-
-    async def upsert_run_step(conn, **kwargs):
-        calls.append(kwargs)
-        return "step-created"
-
-    monkeypatch.setattr("app.worker.repositories.upsert_run_step", upsert_run_step, raising=False)
-
-    await _record_run_step_from_event(
-        object(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        event_type="agent_step_completed",
-        message="coding agent completed",
-        payload={
-            "role": "coding",
-            "step_key": "code",
-            "step_index": 1,
-            "checkpoint_id": "checkpoint-run-a-code",
-            "output": "code output",
-        },
-    )
-
-    assert calls[0]["payload_json"]["checkpoint_id"] == "checkpoint-run-a-code"
-    assert "source_step_id" not in calls[0]["payload_json"]
-    assert calls[1]["payload_json"] == {"source_step_id": "step-created"}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("event_type", ["agent_step_started", "agent_step_completed", "agent_step_failed", "agent_step_blocked"])
-async def test_non_pending_step_event_clears_checkpoint_reuse_pending(monkeypatch, event_type):
-    calls = []
-
-    async def upsert_run_step(conn, **kwargs):
-        calls.append(kwargs)
-        return "step-a"
-
-    monkeypatch.setattr("app.worker.repositories.upsert_run_step", upsert_run_step, raising=False)
-
-    await _record_run_step_from_event(
-        object(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        event_type=event_type,
-        message="agent step progressed",
-        payload={
-            "role": "coding",
-            "step_key": "code",
-            "step_index": 1,
-            "checkpoint_reuse_pending": True,
-        },
-    )
-
-    assert calls[0]["payload_json"]["checkpoint_reuse_pending"] is False
-
-
 def base_payload(**overrides):
     leased = overrides.pop("_leased", True)
     skill_id = overrides.get("skill_id", "qa-file-reviewer")
@@ -2032,12 +1899,14 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         transaction_factory,
         v4_capabilities,
         run_attempt_lifecycle,
+        run_lifecycle,
     ):
         del registry, reconciliation
         assert worker_id == "worker-a"
         assert transaction_factory is None
         assert v4_capabilities is _FAKE_WORKER_V4_CAPABILITIES
         assert run_attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
+        assert run_lifecycle is _TEST_RUN_LIFECYCLE
         assert raw["_queue_attempt_id"] == "attempt-a"
         queue_payload = QueueRunPayload.model_validate(
             {key: value for key, value in raw.items() if key != "_queue_attempt_id"}
@@ -2086,6 +1955,7 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         claim_token="claim-a",
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
         run_attempt_lifecycle=_TEST_RUN_ATTEMPT_LIFECYCLE,
+        run_lifecycle=_TEST_RUN_LIFECYCLE,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -2164,7 +2034,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(
         "app.worker.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize_profile,
@@ -2226,6 +2096,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         transaction_factory=fake_transaction,
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
         run_attempt_lifecycle=_TEST_RUN_ATTEMPT_LIFECYCLE,
+        run_lifecycle=_TEST_RUN_LIFECYCLE,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -2318,7 +2189,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(
         "app.worker.promote_provisional_artifact_cleanup",
         promote_artifact_cleanup,
@@ -2396,6 +2267,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         claim_token="claim-a",
         v4_capabilities=_FAKE_WORKER_V4_CAPABILITIES,
         run_attempt_lifecycle=_TEST_RUN_ATTEMPT_LIFECYCLE,
+        run_lifecycle=_TEST_RUN_LIFECYCLE,
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
@@ -2847,7 +2719,7 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         )
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr(
@@ -2978,9 +2850,9 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
         )
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr(
         "app.worker.reauthorize_bound_profile_for_worker_dispatch",
@@ -3040,7 +2912,7 @@ async def test_mark_run_running_projects_distinct_run_and_session_profile_pins()
             return Cursor()
 
     assert (
-        await repository_module.mark_run_running(
+        await run_lifecycle_postgres.mark_run_running(
             Connection(),
             tenant_id="tenant-a",
             run_id="run-a",
@@ -3091,7 +2963,7 @@ async def test_worker_rechecks_queued_state_after_current_principal_http(monkeyp
     monkeypatch.setattr("app.worker.transaction", recording_transaction)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.resolve_current_principal", resolve_current_principal)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(base_payload())
@@ -3108,83 +2980,6 @@ async def test_worker_rechecks_queued_state_after_current_principal_http(monkeyp
         "skip_event",
         "transaction_exit",
     ]
-
-
-def test_multi_agent_result_summary_counts_pending_and_cancelled_steps_like_sse_snapshot():
-    summary = _multi_agent_result_summary(
-        [
-            {
-                "step_key": "code",
-                "status": "pending",
-                "role": "coding",
-                "sequence": 1,
-                "payload_json": {},
-            },
-            {
-                "step_key": "verify",
-                "status": "cancelled",
-                "role": "test",
-                "sequence": 2,
-                "payload_json": {},
-            },
-        ]
-    )
-
-    assert summary["counts"] == {
-        "total": 2,
-        "pending": 1,
-        "succeeded": 0,
-        "failed": 0,
-        "running": 0,
-        "cancelled": 1,
-        "reused": 0,
-        "blocked": 0,
-    }
-
-
-def test_multi_agent_result_summary_normalizes_legacy_canceled_step_status():
-    summary = _multi_agent_result_summary(
-        [
-            {
-                "step_key": "verify",
-                "status": "canceled",
-                "role": "test",
-                "sequence": 1,
-                "payload_json": {},
-            },
-        ]
-    )
-
-    assert summary["steps"][0]["status"] == "cancelled"
-    assert summary["counts"]["cancelled"] == 1
-
-
-def test_multi_agent_result_summary_preserves_step_governance_context():
-    summary = _multi_agent_result_summary(
-        [
-            {
-                "step_key": "verify",
-                "status": "succeeded",
-                "role": "test",
-                "sequence": 2,
-                "payload_json": {
-                    "depends_on": ["code"],
-                    "output": "verify output",
-                    "skill_ids": ["qa-file-reviewer"],
-                    "mcp_tool_ids": ["ragflow-knowledge-search"],
-                    "resource_limits": {"max_tool_calls": 3},
-                    "sandbox_mode": "ephemeral",
-                    "browser_enabled": True,
-                },
-            }
-        ]
-    )
-
-    assert summary["steps"][0]["skill_ids"] == ["qa-file-reviewer"]
-    assert summary["steps"][0]["mcp_tool_ids"] == ["ragflow-knowledge-search"]
-    assert summary["steps"][0]["resource_limits"] == {"max_tool_calls": 3}
-    assert summary["steps"][0]["sandbox_mode"] == "ephemeral"
-    assert summary["steps"][0]["browser_enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -3265,10 +3060,10 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr(
         "app.bootstrap.worker_attempt_lifecycle.build_run_diagnostics_service",
@@ -3458,52 +3253,15 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
         raise AssertionError("dispatch acceptance must not terminalize the run")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
 
     outcome = await process_run_payload(raw, AdapterRegistry({"fake": AcceptedAdapter()}))
 
     assert outcome == WorkerOutcome("running", "run-a")
     assert calls == [("adapter", "run-a")]
-
-
-@pytest.mark.asyncio
-async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_bypass_success(monkeypatch):
-    calls = []
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def has_pending(conn, *, tenant_id, run_id):
-        assert (tenant_id, run_id) == ("tenant-a", "run-a")
-        return True
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
-        calls.append(("fail", error_code, error_message))
-        return RunTerminalizationProgress(True, "failed", True)
-
-    async def complete_run(conn, **kwargs):
-        raise AssertionError("a pending permission must prevent complete_run")
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
-        return "evt-a"
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-
-    outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
-
-    assert outcome.status == "failed"
-    assert ("fail", "tool_permission_pending", "A pending tool-permission request blocks successful completion.") in calls
-    assert not any(event_type == "run_succeeded" for kind, event_type, *_ in calls if kind == "event")
 
 
 @pytest.mark.asyncio
@@ -3551,10 +3309,7 @@ async def test_worker_enforces_declared_required_artifact_types(
     async def mark_run_running(conn, *, tenant_id, run_id):
         return True
 
-    async def has_pending(conn, *, tenant_id, run_id):
-        return False
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message))
         return RunTerminalizationProgress(True, "failed", True)
 
@@ -3570,10 +3325,9 @@ async def test_worker_enforces_declared_required_artifact_types(
         return "evt-a"
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
@@ -3604,9 +3358,9 @@ async def test_worker_enforces_declared_required_artifact_types(
 @pytest.mark.parametrize(
     ("case", "skill_id", "agent_id", "file_ids", "artifacts", "expected_status"),
     [
-        ("document_resume_without_artifact", "qa-file-reviewer", "qa-word-review", ["file-a"], [], "failed"),
+        ("document_without_artifact", "qa-file-reviewer", "qa-word-review", ["file-a"], [], "failed"),
         (
-            "document_resume_with_result_docx",
+            "document_with_result_docx",
             "qa-file-reviewer",
             "qa-word-review",
             ["file-a"],
@@ -3621,10 +3375,10 @@ async def test_worker_enforces_declared_required_artifact_types(
             ],
             "succeeded",
         ),
-        ("general_resume_without_artifact", "general-chat", "general-agent", [], [], "succeeded"),
+        ("general_chat_without_artifact", "general-chat", "general-agent", [], [], "succeeded"),
     ],
 )
-async def test_worker_enforces_capability_artifact_contract_for_real_checkpoint_resume(
+async def test_worker_enforces_capability_artifact_contract_without_executor_requirements(
     monkeypatch,
     case,
     skill_id,
@@ -3634,37 +3388,30 @@ async def test_worker_enforces_capability_artifact_contract_for_real_checkpoint_
     expected_status,
 ):
     calls = []
-    claude_adapter = ClaudeAgentWorkerAdapter()
-
-    async def allow_resume_preflight(*_args, **_kwargs):
-        return None
-
-    class CheckpointResumeAdapter:
+    class ExecutorAdapter:
         async def submit_run(self, payload, event_sink=None):
-            # This contract test exercises the real resume result path. Its
-            # lightweight transaction double intentionally does not model
-            # streamed run-step persistence, so resume output is collected
-            # without an event sink here.
-            resumed = await claude_adapter._run_multi_agent_file_skill(payload, event_sink=None)
-            # The real resume result omits this field. Explicitly supplying an
-            # empty list here proves the worker cannot treat executor metadata
-            # as authority over the selected capability's required artifact.
-            return replace(
-                resumed,
+            # An executor cannot override the selected Skill's artifact
+            # contract by returning an empty requirements list.
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="test-executor",
+                executor_version="test",
+                capabilities={},
+                result={"message": "completed"},
                 artifacts=artifacts,
-                executor_payload={**resumed.executor_payload, "required_artifact_types": []},
+                executor_payload={"required_artifact_types": []},
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         return True
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("repository_terminal", error_code, error_message))
         return RunTerminalizationProgress(
             completed=True,
             status="failed",
             did_transition=True,
-            needs_reconcile=False,
         )
 
     async def complete_run(conn, *, tenant_id, run_id, result_json):
@@ -3681,11 +3428,10 @@ async def test_worker_enforces_capability_artifact_contract_for_real_checkpoint_
         calls.append(("worker_event", kwargs["event_type"], kwargs["stage"]))
         return "evt-a"
 
-    monkeypatch.setattr(claude_adapter, "_preflight_resume_pinned_skills", allow_resume_preflight)
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.list_run_steps", list_run_steps)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
@@ -3697,12 +3443,10 @@ async def test_worker_enforces_capability_artifact_contract_for_real_checkpoint_
             agent_id=agent_id,
             file_ids=file_ids,
             input={
-                "execution_mode": "multi_agent",
-                "multi_agent_steps": [{"step_key": "review", "role": "review"}],
-                "resume": {"completed_step_outputs": {"review": "checkpointed output"}},
+                "message": "review",
             },
         ),
-        AdapterRegistry({"fake": CheckpointResumeAdapter()}),
+        AdapterRegistry({"fake": ExecutorAdapter()}),
     )
 
     assert outcome.status == expected_status, case
@@ -3748,24 +3492,17 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     async def classify_success_commit_block(conn, *, tenant_id, run_id):
         return "stale_terminal_state"
 
-    async def drain_terminalization(**kwargs):
-        return None
-
     async def release_sandbox_lease(conn, **kwargs):
         calls.append(("release", kwargs["reason"]))
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
-    monkeypatch.setattr(
-        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
-        drain_terminalization,
-    )
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "classify_success_commit_block", classify_success_commit_block)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -3776,91 +3513,6 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     assert ("complete", "run-a") in calls
     assert not any(item[0] == "event" and item[1] in {"run_succeeded", "status"} for item in calls)
     assert not any(item == ("release", "run_succeeded") for item in calls)
-
-
-@pytest.mark.asyncio
-async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrives_before_final_completion(monkeypatch):
-    visible_writes = []
-    initial_permission_check = asyncio.Event()
-    permission_inserted = asyncio.Event()
-
-    class TransactionConnection:
-        def __init__(self):
-            self.pending_writes = []
-
-    @asynccontextmanager
-    async def transactional_connection():
-        conn = TransactionConnection()
-        try:
-            yield conn
-        except Exception:  # noqa: TRY203 - model transaction rollback before re-raising.
-            # A real database transaction drops these writes before recovery.
-            raise
-        else:
-            visible_writes.extend(conn.pending_writes)
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def has_pending(conn, *, tenant_id, run_id):
-        initial_permission_check.set()
-        return False
-
-    async def insert_permission_after_initial_check():
-        await initial_permission_check.wait()
-        permission_inserted.set()
-
-    async def create_artifact(conn, **kwargs):
-        conn.pending_writes.append(("artifact", kwargs["artifact_type"]))
-
-    async def append_message(conn, **kwargs):
-        conn.pending_writes.append(("message", kwargs["role"]))
-        return "msg-a"
-
-    async def append_event(conn, **kwargs):
-        conn.pending_writes.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def complete_run(conn, **kwargs):
-        await permission_inserted.wait()
-        return False
-
-    async def fail_run(conn, **kwargs):
-        conn.pending_writes.append(("fail", kwargs["error_code"]))
-        return RunTerminalizationProgress(True, "failed", True)
-
-    async def classify_success_commit_block(conn, *, tenant_id, run_id):
-        return "tool_permission_pending"
-
-    monkeypatch.setattr("app.worker.transaction", transactional_connection)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
-
-    injector = asyncio.create_task(insert_permission_after_initial_check())
-    outcome = await process_run_payload(
-        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
-    )
-    await injector
-
-    assert outcome == WorkerOutcome(
-        "failed",
-        "run-a",
-        "tool_permission_pending",
-        "A pending tool-permission request blocked successful completion.",
-    )
-    assert ("fail", "tool_permission_pending") in visible_writes
-    assert not any(kind in {"artifact", "message"} for kind, *_ in visible_writes)
-    assert not any(
-        kind == "event" and event_type in {"artifact_created", "assistant_message_created", "run_succeeded", "status"}
-        for kind, event_type in visible_writes
-    )
 
 
 @pytest.mark.asyncio
@@ -3880,9 +3532,6 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
     async def mark_run_running(conn, *, tenant_id, run_id):
         return True
 
-    async def has_pending(conn, *, tenant_id, run_id):
-        return False
-
     async def complete_run(conn, **kwargs):
         return False
 
@@ -3894,7 +3543,7 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
         return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
     async def fail_run(conn, **kwargs):
-        raise AssertionError("accepted cancellation must not be reported as tool_permission_pending")
+        raise AssertionError("accepted cancellation must not fail the Run")
 
     async def append_event(conn, **kwargs):
         conn.pending.append(("event", kwargs["event_type"]))
@@ -3911,12 +3560,11 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
         return None
 
     monkeypatch.setattr("app.worker.transaction", transactional_connection)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "classify_success_commit_block", classify_success_commit_block)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
@@ -3967,10 +3615,10 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -4053,16 +3701,16 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr(
         "app.worker.repositories.get_context_snapshot_for_worker",
         get_context_snapshot_for_worker,
     )
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
@@ -4180,7 +3828,8 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr(
-        "app.worker.repositories.mark_run_running",
+        _TEST_RUN_LIFECYCLE,
+        "mark_run_running",
         legacy_mark_run_running,
     )
     monkeypatch.setattr(
@@ -4257,15 +3906,11 @@ async def test_worker_early_failure_helpers_preserve_attempt_lifecycle(
     run_identity = worker_module._payload_identity(payload)
     attempt_lifecycle = object()
 
-    async def fail_run_and_reconcile_with_write(_conn, **kwargs):
+    async def fail_run_for_worker(_conn, **kwargs):
         captured.update(kwargs)
-        return False, None
+        return False
 
-    monkeypatch.setattr(
-        worker_module,
-        "_fail_run_and_reconcile_with_write",
-        fail_run_and_reconcile_with_write,
-    )
+    monkeypatch.setattr(worker_module, "_fail_run_for_worker", fail_run_for_worker)
 
     common = {
         "payload": payload,
@@ -4309,6 +3954,7 @@ async def test_worker_early_failure_helpers_preserve_attempt_lifecycle(
 
     assert outcome.outcome.status == "skipped"
     assert captured["attempt_lifecycle"] is attempt_lifecycle
+    assert captured["capabilities"] is _FAKE_WORKER_V4_CAPABILITIES
 
 
 @pytest.mark.asyncio
@@ -4344,7 +3990,7 @@ async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_trans
 
     async def cancel_run(*_args, **_kwargs):
         calls.append(("cancel_run",))
-        return RunTerminalizationProgress(True, "cancelled", True, True)
+        return RunTerminalizationProgress(True, "cancelled", True)
 
     async def terminalize(*_args, **kwargs):
         calls.append(("terminal", kwargs))
@@ -4379,7 +4025,7 @@ async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_trans
         worker_id="worker-a",
         is_reconciliation=False,
         ports=worker_module.build_worker_attempt_lifecycle_ports(
-            _TEST_RUN_ATTEMPT_LIFECYCLE
+            _TEST_RUN_ATTEMPT_LIFECYCLE, _TEST_RUN_LIFECYCLE
         ),
     )
     progress = await attempt_lifecycle.cancel(
@@ -4388,7 +4034,7 @@ async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_trans
         result_json={"message": "cancelled"},
     )
 
-    assert progress.is_terminal("cancelled")
+    assert progress is True
     assert [item[0] for item in calls] == [
         "lock_run",
         "fence",
@@ -4424,7 +4070,7 @@ async def test_worker_cancel_observes_an_already_cancelled_run_without_refencing
         worker_id="worker-a",
         is_reconciliation=False,
         ports=worker_module.build_worker_attempt_lifecycle_ports(
-            _TEST_RUN_ATTEMPT_LIFECYCLE
+            _TEST_RUN_ATTEMPT_LIFECYCLE, _TEST_RUN_LIFECYCLE
         ),
     )
     progress = await attempt_lifecycle.cancel(
@@ -4432,7 +4078,7 @@ async def test_worker_cancel_observes_an_already_cancelled_run_without_refencing
         capabilities=_FAKE_WORKER_V4_CAPABILITIES,
     )
 
-    assert progress.is_terminal("cancelled")
+    assert progress is True
 
 
 @pytest.mark.asyncio
@@ -4511,11 +4157,11 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
         raise AssertionError("sandbox-required ordinary runs must rely on SandboxRuntime leases, not worker placeholders")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
@@ -4569,9 +4215,9 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
         raise AssertionError("cancelled run that never reaches executor setup must not create runtime sandbox leases")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
@@ -4597,7 +4243,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
         return "evt-a"
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", run_id, error_code, error_message))
         return RunTerminalizationProgress(
             completed=True,
@@ -4614,9 +4260,9 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -4683,9 +4329,9 @@ async def test_worker_moves_http_failure_diagnostics_before_terminal_result(
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
         "assert_worker_run_attempt_current",
@@ -4733,7 +4379,7 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
         calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload")))
         return "evt-native-admission"
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", run_id, error_code, error_message))
         return RunTerminalizationProgress(
             completed=True,
@@ -4749,9 +4395,9 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -4789,7 +4435,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
         return "evt-a"
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", run_id, error_code, error_message))
         return RunTerminalizationProgress(
             completed=True,
@@ -4806,9 +4452,9 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -4837,7 +4483,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
         return "evt-stale"
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", run_id, error_code))
         return RunTerminalizationProgress(False, None, False)
 
@@ -4845,18 +4491,11 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
         calls.append(("release", kwargs["reason"]))
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
-    async def drain_terminalization(**kwargs):
-        return None
-
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
-    monkeypatch.setattr(
-        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
-        drain_terminalization,
-    )
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
@@ -4915,9 +4554,9 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
@@ -5034,11 +4673,11 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
         raise AssertionError("heavy_sandbox runtime path must not record worker placeholder leases")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
@@ -5094,10 +4733,10 @@ async def test_worker_prefers_cancelled_when_executor_raises_after_cancel_reques
         return "evt-cancelled"
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
@@ -5140,10 +4779,10 @@ async def test_worker_does_not_append_cancel_terminal_event_when_cancel_update_i
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
@@ -5189,7 +4828,7 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
         calls.append(("cancel", kwargs["run_id"]))
         return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True)
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
@@ -5224,11 +4863,11 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
         raise AssertionError("heavy_sandbox runtime path must not record worker placeholder leases")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
@@ -5298,11 +4937,11 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", recording_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
@@ -5324,536 +4963,6 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
 
 
 @pytest.mark.asyncio
-async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
-    calls = []
-
-    child_input = {
-        "mode": "file",
-        "multi_agent_dispatch": {
-            "parent_run_id": "run-parent",
-            "parent_step_id": "step-code",
-            "dispatch_id": "dispatch-code",
-            "step_key": "code",
-        },
-    }
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def create_artifact(conn, **kwargs):
-        return None
-
-    async def complete_run(conn, *, tenant_id, run_id, result_json):
-        calls.append(("complete", run_id, result_json["message"]))
-        return True
-
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert transaction_factory is fake_transaction
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
-        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
-        return {"parent_run_id": "run-parent"}
-
-    @asynccontextmanager
-    async def forbidden_module_transaction():
-        raise AssertionError("multi-agent reconciliation bypassed the injected transaction factory")
-        yield
-
-    monkeypatch.setattr("app.worker.transaction", forbidden_module_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-
-    outcome = await process_run_payload(
-        base_payload(run_id="run-child", skill_id="general-chat", agent_id="general-agent", input=child_input),
-        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
-        transaction_factory=fake_transaction,
-    )
-
-    assert outcome.status == "succeeded"
-    complete_index = next(index for index, item in enumerate(calls) if item[0] == "complete")
-    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
-    assert complete_index < reconcile_index
-    reconcile_call = calls[reconcile_index][1]
-    assert reconcile_call["tenant_id"] == "tenant-a"
-    assert reconcile_call["run_id"] == "run-child"
-    assert reconcile_call["progress"].status == "succeeded"
-    assert reconcile_call["progress"].did_transition is True
-    assert reconcile_call["progress"].needs_reconcile is True
-
-
-@pytest.mark.asyncio
-async def test_worker_retries_multi_agent_parent_rollup_after_child_transaction_commit(monkeypatch):
-    calls = []
-    tx_counter = 0
-    tx_events = []
-
-    @asynccontextmanager
-    async def recording_transaction():
-        nonlocal tx_counter
-        tx_counter += 1
-        tx_label = f"tx-{tx_counter}"
-        tx_events.append(("enter", tx_label))
-        try:
-            yield tx_label
-        except BaseException:
-            tx_events.append(("rollback", tx_label))
-            raise
-        else:
-            tx_events.append(("commit", tx_label))
-        finally:
-            tx_events.append(("exit", tx_label))
-
-    child_input = {
-        "mode": "file",
-        "multi_agent_dispatch": {
-            "parent_run_id": "run-parent",
-            "parent_step_id": "step-code",
-            "dispatch_id": "dispatch-code",
-            "step_key": "code",
-        },
-    }
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", conn, kwargs["event_type"]))
-        return "evt-a"
-
-    async def create_artifact(conn, **kwargs):
-        return None
-
-    async def complete_run(conn, *, tenant_id, run_id, result_json):
-        calls.append(("complete", conn, run_id))
-        return True
-
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
-        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
-        return {"parent_run_id": "run-parent"}
-
-    monkeypatch.setattr("app.worker.transaction", recording_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-
-    outcome = await process_run_payload(
-        base_payload(run_id="run-child", skill_id="general-chat", agent_id="general-agent", input=child_input),
-        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
-    )
-
-    assert outcome.status == "succeeded"
-    reconcile_call = next(item for item in calls if item[0] == "reconcile")
-    assert reconcile_call[1]["run_id"] == "run-child"
-    assert reconcile_call[1]["progress"].status == "succeeded"
-    first_commit = next(index for index, item in enumerate(tx_events) if item[0] == "commit")
-    assert first_commit < len(tx_events)
-
-
-@pytest.mark.asyncio
-async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
-    calls = []
-
-    child_input = {
-        "mode": "file",
-        "multi_agent_dispatch": {
-            "parent_run_id": "run-parent",
-            "parent_step_id": "step-code",
-            "dispatch_id": "dispatch-code",
-            "step_key": "code",
-        },
-    }
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
-        calls.append(("fail", run_id, error_code, error_message, result_json))
-        return RunTerminalizationProgress(True, "failed", True, True)
-
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
-        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
-        return {"parent_run_id": "run-parent"}
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-
-    outcome = await process_run_payload(
-        base_payload(run_id="run-child", input=child_input),
-        AdapterRegistry({"fake": FailingExecutorStub()}),
-    )
-
-    assert outcome.status == "failed"
-    fail_index = next(index for index, item in enumerate(calls) if item[0] == "fail")
-    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
-    assert fail_index < reconcile_index
-    reconcile_call = calls[reconcile_index][1]
-    assert reconcile_call["run_id"] == "run-child"
-    assert reconcile_call["progress"].status == "failed"
-    assert reconcile_call["progress"].did_transition is True
-
-
-@pytest.mark.asyncio
-async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
-    calls = []
-    cancel_checks = 0
-
-    child_input = {
-        "mode": "file",
-        "multi_agent_dispatch": {
-            "parent_run_id": "run-parent",
-            "parent_step_id": "step-code",
-            "dispatch_id": "dispatch-code",
-            "step_key": "code",
-        },
-    }
-
-    class StreamingAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            await event_sink(
-                event_type="assistant_delta",
-                stage="message",
-                message="partial",
-                payload={"delta": "partial"},
-            )
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="adapter/1",
-                executor_type="fake",
-                executor_version="fake/1",
-                capabilities={"streaming": True},
-                result={"message": "should not complete"},
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def is_cancel_requested(conn, *, tenant_id, run_id):
-        nonlocal cancel_checks
-        cancel_checks += 1
-        return cancel_checks >= 2
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
-        calls.append(("cancel", run_id, result_json))
-        return RunTerminalizationProgress(completed=True, status="cancelled", did_transition=True, needs_reconcile=True)
-
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
-        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
-        return {"parent_run_id": "run-parent"}
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-
-    outcome = await process_run_payload(
-        base_payload(run_id="run-child", input=child_input),
-        AdapterRegistry({"fake": StreamingAdapter()}),
-    )
-
-    assert outcome.status == "cancelled"
-    cancel_index = next(index for index, item in enumerate(calls) if item[0] == "cancel")
-    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
-    assert cancel_index < reconcile_index
-    reconcile_call = calls[reconcile_index][1]
-    assert reconcile_call["tenant_id"] == "tenant-a"
-    assert reconcile_call["run_id"] == "run-child"
-    assert reconcile_call["progress"].status == "cancelled"
-    assert reconcile_call["progress"].did_transition is True
-    assert reconcile_call["progress"].needs_reconcile is True
-
-
-@pytest.mark.asyncio
-async def test_worker_reconciliation_uses_repository_for_ordinary_run(monkeypatch):
-    calls = []
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        return "evt-a"
-
-    async def create_artifact(conn, **kwargs):
-        return None
-
-    async def complete_run(conn, *, tenant_id, run_id, result_json):
-        calls.append(("complete", run_id))
-        return True
-
-    async def reconcile(conn, **kwargs):
-        calls.append(("reconcile", kwargs))
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-
-    child_input = {
-        "mode": "chat",
-        "multi_agent_dispatch": {
-            "parent_run_id": "run-parent",
-            "parent_step_id": "step-code",
-            "dispatch_id": "dispatch-code",
-            "step_key": "code",
-        },
-    }
-    outcome = await process_run_payload(
-        base_payload(
-            file_ids=[],
-            skill_id="general-chat",
-            agent_id="general-agent",
-            input=child_input,
-        ),
-        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
-    )
-
-    assert outcome.status == "succeeded"
-    assert ("complete", "run-a") in calls
-    reconcile_call = next(item[1] for item in calls if item[0] == "reconcile")
-    assert reconcile_call["tenant_id"] == "tenant-a"
-    assert reconcile_call["child_run_id"] == "run-a"
-    assert reconcile_call["child_status"] == "succeeded"
-
-
-@pytest.mark.asyncio
-async def test_worker_reconciles_multi_agent_child_after_executor_exception(monkeypatch):
-    calls = []
-
-    child_input = {
-        "mode": "file",
-        "multi_agent_dispatch": {
-            "parent_run_id": "run-parent",
-            "parent_step_id": "step-code",
-            "dispatch_id": "dispatch-code",
-            "step_key": "code",
-        },
-    }
-
-    class RaisingAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            raise RuntimeError("executor crashed")
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
-        calls.append(("fail", run_id, error_code, error_message, result_json))
-        return RunTerminalizationProgress(True, "failed", True, True)
-
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
-        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
-        return {"parent_run_id": "run-parent"}
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-
-    outcome = await process_run_payload(
-        base_payload(run_id="run-child", input=child_input),
-        AdapterRegistry({"fake": RaisingAdapter()}),
-    )
-
-    assert outcome.status == "failed"
-    fail_index = next(index for index, item in enumerate(calls) if item[0] == "fail")
-    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
-    assert fail_index < reconcile_index
-    reconcile_call = calls[reconcile_index][1]
-    assert reconcile_call["run_id"] == "run-child"
-    assert reconcile_call["progress"].status == "failed"
-
-
-@pytest.mark.asyncio
-async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkeypatch):
-    calls = []
-
-    child_input = {
-        "mode": "file",
-        "multi_agent_dispatch": {
-            "parent_run_id": "run-parent",
-            "parent_step_id": "step-code",
-            "dispatch_id": "dispatch-code",
-            "step_key": "code",
-        },
-    }
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
-        calls.append(("fail", run_id, error_code, error_message, result_json))
-        return RunTerminalizationProgress(True, "failed", True, True)
-
-    async def assert_worker_run_attempt_current(_conn, **_kwargs):
-        return {"id": "rat-run-child", "status": "running"}
-
-    async def terminalize_run_attempt(_conn, **kwargs):
-        calls.append(("attempt_terminal", kwargs))
-        return {"id": kwargs["attempt_id"], "status": kwargs["status"]}
-
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
-        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
-        return {"parent_run_id": "run-parent"}
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "assert_worker_run_attempt_current",
-        assert_worker_run_attempt_current,
-    )
-    monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "terminalize_run_attempt",
-        terminalize_run_attempt,
-    )
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-
-    outcome = await process_run_payload(
-        base_payload(run_id="run-child", executor_type="missing", input=child_input),
-        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
-    )
-
-    assert outcome.status == "failed"
-    fail_index = next(index for index, item in enumerate(calls) if item[0] == "fail")
-    reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
-    assert fail_index < reconcile_index
-    reconcile_call = calls[reconcile_index][1]
-    assert reconcile_call["run_id"] == "run-child"
-    assert reconcile_call["progress"].status == "failed"
-    attempt_terminal = next(item[1] for item in calls if item[0] == "attempt_terminal")
-    assert attempt_terminal == {
-        "tenant_id": "tenant-a",
-        "run_id": "run-child",
-        "attempt_id": "rat-run-child",
-        "status": "failed",
-        "terminal_reason": "run_failed",
-        "error_code": "unknown_executor_type",
-    }
-
-
-@pytest.mark.asyncio
-async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconciliation(monkeypatch):
-    calls = []
-    tx_counter = 0
-    tx_events = []
-
-    @asynccontextmanager
-    async def recording_transaction():
-        nonlocal tx_counter
-        tx_counter += 1
-        tx_label = f"tx-{tx_counter}"
-        tx_events.append(("enter", tx_label))
-        try:
-            yield tx_label
-        except BaseException:
-            tx_events.append(("rollback", tx_label))
-            raise
-        else:
-            tx_events.append(("commit", tx_label))
-        finally:
-            tx_events.append(("exit", tx_label))
-
-    child_input = {
-        "mode": "file",
-        "multi_agent_dispatch": {
-            "parent_run_id": "run-parent",
-            "parent_step_id": "step-code",
-            "dispatch_id": "dispatch-code",
-            "step_key": "code",
-        },
-    }
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", conn, kwargs["event_type"]))
-        return "evt-a"
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
-        calls.append(("fail", conn, error_code))
-        return RunTerminalizationProgress(True, "failed", True, True)
-
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
-        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
-        return {"parent_run_id": "run-parent"}
-
-    monkeypatch.setattr("app.worker.transaction", recording_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-
-    outcome = await process_run_payload(
-        base_payload(run_id="run-child", executor_type="missing", input=child_input),
-        AdapterRegistry({"fake": SuccessfulExecutorStub()}),
-    )
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "unknown_executor_type"
-    reconcile_call = next(item for item in calls if item[0] == "reconcile")
-    assert reconcile_call[1]["run_id"] == "run-child"
-    assert reconcile_call[1]["progress"].status == "failed"
-    assert any(item[0] == "commit" for item in tx_events)
-
-
 @pytest.mark.asyncio
 async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
     captured = {}
@@ -5905,9 +5014,9 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", materialization_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -5950,13 +5059,13 @@ async def test_worker_requires_new_conversation_before_attempt_binding(monkeypat
         raise AssertionError("native continuity must fail before Attempt binding")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr(
         "app.worker.materialize_queued_worker_context_snapshot",
         missing_native_context,
     )
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(
         _TEST_RUN_ATTEMPT_LIFECYCLE.persistence,
         "start_worker_run_attempt",
@@ -6001,10 +5110,10 @@ async def test_worker_fails_missing_physical_context_snapshot_before_adapter(mon
         return RunTerminalizationProgress(True, "failed", True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", missing_snapshot)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
         base_payload(
@@ -6093,10 +5202,10 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
 
@@ -6219,11 +5328,11 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
     monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_assistant)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
@@ -6308,11 +5417,11 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
 
     monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_assistant)
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -6402,10 +5511,10 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -6487,10 +5596,10 @@ async def test_worker_preserves_safe_top_level_legacy_context_source(monkeypatch
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -6603,10 +5712,10 @@ async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkey
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -6716,10 +5825,10 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -6781,10 +5890,10 @@ async def test_worker_fails_invalid_physical_context_binding_before_adapter(monk
         return RunTerminalizationProgress(True, "failed", True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
         base_payload(
@@ -6835,9 +5944,9 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
         raise AssertionError("identity-mismatched queue payload must not create runtime sandbox leases")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
@@ -6887,9 +5996,9 @@ async def test_worker_rejects_missing_db_identity_fields_before_context_or_execu
         raise AssertionError("missing DB identity must not refresh context snapshot")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker"),
@@ -6945,10 +6054,10 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
         raise AssertionError("scope-invalid queued run must not refresh context snapshot")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
         "assert_worker_run_attempt_current",
@@ -7075,7 +6184,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr(model_control_plane_module, "_service", model_control_plane_module._service)
     monkeypatch.setattr(run_model_snapshot_module, "_service", run_model_snapshot_module._service)
     monkeypatch.setattr(model_services, "PostgresRunModelSnapshotRepository", SnapshotRepository)
@@ -7086,7 +6195,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
     )
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -7142,9 +6251,9 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
@@ -7223,9 +6332,9 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -7342,9 +6451,9 @@ async def test_worker_terminal_snapshots_keep_each_admitted_skill_release_decisi
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr(
         "app.worker.repositories.upsert_run_skill_snapshot",
@@ -7440,7 +6549,7 @@ async def test_worker_persists_reviewed_uploaded_skill_with_complete_governance_
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
@@ -7512,9 +6621,9 @@ async def test_worker_drops_executor_returned_snapshot_governance_without_payloa
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -7588,9 +6697,9 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -7676,9 +6785,9 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -7785,9 +6894,9 @@ async def test_worker_persists_platform_controlled_runner_as_actually_used(monke
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -7895,9 +7004,9 @@ async def test_optional_agent_skill_claim_cannot_bypass_required_artifact_contra
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     selected_adapter = NonHookAgentAdapter()
@@ -7972,9 +7081,9 @@ async def test_optional_agent_skill_claim_does_not_complete_platform_terminal_co
         )
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -8050,9 +7159,9 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
@@ -8113,9 +7222,9 @@ async def test_worker_persists_g2_executor_contract_latency_and_token_placeholde
     monotonic_values = iter([10.0])
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr(
         "app.worker.time.monotonic",
@@ -8190,9 +7299,9 @@ async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
     monotonic_values = iter([20.0])
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr(
         "app.worker.time.monotonic",
@@ -8264,10 +7373,10 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ArtifactAdapter()}))
@@ -8309,14 +7418,14 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
@@ -8364,14 +7473,14 @@ async def test_worker_persists_context_file_diagnostic_only_in_hidden_event(
         calls.append(("event", kwargs))
         return "evt-context-file-error"
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message, result_json))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     caplog.set_level("ERROR", logger="app.worker")
 
     outcome = await process_run_payload(
@@ -8462,14 +7571,14 @@ async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(
         calls.append(("event", kwargs))
         return "evt-malicious-sandbox-failure"
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message, result_json))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker"),
@@ -8543,14 +7652,14 @@ async def test_worker_preserves_canonical_sdk_failure_diagnostics_without_raw_er
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message, result_json))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SdkFailureAdapter()}))
 
@@ -8586,9 +7695,9 @@ async def test_worker_records_non_secret_runtime_evidence(monkeypatch):
         return None
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.new_id", lambda prefix: "art_runtime_evidence")
@@ -8620,7 +7729,7 @@ async def test_worker_rejects_bad_queue_payload_without_touching_database(monkey
         touched = True
         return True
 
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
 
     outcome = await process_run_payload(
         {"run_id": "../bad", "_queue_attempt_id": "qat-test-attempt"},
@@ -8647,7 +7756,7 @@ async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypa
         raise AssertionError("stale queue payload without a run row must not write run_events")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
@@ -8692,9 +7801,9 @@ async def test_worker_honors_cancel_before_executor_start(monkeypatch):
         calls.append(("event", event_type, stage, message))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
@@ -8728,9 +7837,9 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
         calls.append(("event", kwargs["event_type"]))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
@@ -8784,11 +7893,11 @@ async def test_worker_stops_running_executor_after_cancel_requested_on_event_bou
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": StreamingAdapter()}))
@@ -8837,11 +7946,11 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
         raise AssertionError("cancelled silent execution must not complete successfully")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     original_submit_until_cancelled = worker_module._submit_run_until_cancelled
@@ -8949,9 +8058,9 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
         calls.append(("lease_release", kwargs["reason"]))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
-    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr(
         "app.worker.repositories.get_context_snapshot_for_worker",
@@ -9026,7 +8135,7 @@ async def test_worker_records_unknown_executor_as_failed(monkeypatch):
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage))
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
@@ -9035,9 +8144,9 @@ async def test_worker_records_unknown_executor_as_failed(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(base_payload(executor_type="missing"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
@@ -9053,7 +8162,7 @@ async def test_worker_honors_explicit_empty_registry(monkeypatch):
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage))
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
@@ -9062,9 +8171,9 @@ async def test_worker_honors_explicit_empty_registry(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
     outcome = await process_run_payload(
         base_payload(executor_type="claude-agent-worker"),
@@ -9102,16 +8211,16 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
         calls.append(("complete", result_json["executor"]["adapter_version"]))
         return True
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -9144,9 +8253,9 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
         calls.append(("event", event_type, stage))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(
@@ -9173,7 +8282,7 @@ async def test_worker_routes_retired_runtime211_through_unknown_executor_guard(m
             calls.append(("adapter", payload.run_id))
             raise AssertionError("direct runtime211 queue payload must not reach adapter")
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
@@ -9185,8 +8294,8 @@ async def test_worker_routes_retired_runtime211_through_unknown_executor_guard(m
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(
@@ -9229,9 +8338,9 @@ async def test_worker_skips_direct_runtime211_payload_for_terminal_run(monkeypat
         calls.append(("event", event_type, stage))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.get_run", get_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(
@@ -9275,9 +8384,9 @@ async def test_worker_passes_user_id_to_executor_payload(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
@@ -9295,495 +8404,6 @@ async def test_worker_passes_user_id_to_executor_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_records_multi_agent_step_events(monkeypatch):
-    step_calls = []
-
-    class StepAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            await event_sink(
-                event_type="agent_step_started",
-                stage="agent",
-                message="coding agent started",
-                payload={"role": "coding", "step_key": "code", "step_index": 1, "depends_on": []},
-            )
-            await event_sink(
-                event_type="agent_step_completed",
-                stage="agent",
-                message="coding agent completed",
-                payload={
-                    "role": "coding",
-                    "step_key": "code",
-                    "step_index": 1,
-                    "depends_on": [],
-                    "output": "code output",
-                },
-            )
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="adapter/1",
-                executor_type="fake",
-                executor_version="fake/1",
-                capabilities={"multi_agent": True},
-                result={"message": "done"},
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        return "evt-a"
-
-    async def upsert_run_step(conn, **kwargs):
-        step_calls.append(kwargs)
-        return "step-a"
-
-    async def complete_run(conn, **kwargs):
-        return True
-
-    async def list_run_steps(conn, *, tenant_id, run_id):
-        return []
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_step", upsert_run_step, raising=False)
-    monkeypatch.setattr("app.worker.repositories.list_run_steps", list_run_steps)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-
-    outcome = await process_run_payload(
-        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": StepAdapter()}),
-    )
-
-    assert outcome.status == "succeeded"
-    assert [item["status"] for item in step_calls] == ["running", "succeeded"]
-    assert step_calls[0]["step_key"] == "code"
-    assert step_calls[0]["step_kind"] == "agent"
-    assert step_calls[0]["role"] == "coding"
-    assert step_calls[1]["payload_json"]["output"] == "code output"
-
-
-@pytest.mark.asyncio
-async def test_worker_records_multi_agent_blocked_step_events(monkeypatch):
-    step_calls = []
-    failed_result = {}
-
-    class BlockedStepAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            await event_sink(
-                event_type="agent_step_blocked",
-                stage="agent",
-                message="test agent blocked by unresolved dependencies",
-                payload={
-                    "role": "test",
-                    "step_key": "verify",
-                    "step_index": 2,
-                    "depends_on": ["unknown"],
-                    "missing_dependencies": ["unknown"],
-                    "error_code": "multi_agent_dependency_blocked",
-                },
-            )
-            return ExecutorResult(
-                status="failed",
-                adapter_version="adapter/1",
-                executor_type="fake",
-                executor_version="fake/1",
-                capabilities={"multi_agent": True},
-                result={"error_code": "multi_agent_dependency_blocked", "message": "blocked"},
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        return "evt-a"
-
-    async def upsert_run_step(conn, **kwargs):
-        step_calls.append(kwargs)
-        return "step-a"
-
-    async def list_run_steps(conn, *, tenant_id, run_id):
-        return [
-            {
-                "id": "step-verify",
-                "run_id": run_id,
-                "step_key": "verify",
-                "step_kind": "agent",
-                "status": "failed",
-                "title": "test agent blocked by unresolved dependencies",
-                "role": "test",
-                "sequence": 2,
-                "payload_json": {
-                    "depends_on": ["unknown"],
-                    "missing_dependencies": ["unknown"],
-                    "error_code": "multi_agent_dependency_blocked",
-                },
-                "started_at": None,
-                "finished_at": None,
-                "created_at": None,
-                "updated_at": None,
-            },
-        ]
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
-        failed_result.update(result_json or {})
-        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_step", upsert_run_step, raising=False)
-    monkeypatch.setattr("app.worker.repositories.list_run_steps", list_run_steps)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-
-    outcome = await process_run_payload(
-        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": BlockedStepAdapter()}),
-    )
-
-    assert outcome.status == "failed"
-    assert len(step_calls) == 1
-    assert step_calls[0]["status"] == "failed"
-    assert step_calls[0]["step_key"] == "verify"
-    assert step_calls[0]["role"] == "test"
-    assert step_calls[0]["payload_json"]["missing_dependencies"] == ["unknown"]
-    assert step_calls[0]["payload_json"]["error_code"] == "multi_agent_dependency_blocked"
-    assert failed_result["multi_agent"]["steps"][0]["error_code"] == "multi_agent_dependency_blocked"
-    assert failed_result["multi_agent"]["steps"][0]["error"] is None
-    assert failed_result["multi_agent"]["steps"][0]["missing_dependencies"] == ["unknown"]
-    assert failed_result["multi_agent"]["counts"] == {
-        "total": 1,
-        "pending": 0,
-        "succeeded": 0,
-        "failed": 1,
-        "running": 0,
-        "cancelled": 0,
-        "reused": 0,
-        "blocked": 1,
-    }
-
-
-@pytest.mark.asyncio
-async def test_worker_includes_multi_agent_step_summary_in_success_result(monkeypatch):
-    completed_result = {}
-
-    class MultiAgentAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            await event_sink(
-                event_type="agent_step_reused",
-                stage="agent",
-                message="coding agent reused checkpoint",
-                payload={
-                    "role": "coding",
-                    "step_key": "code",
-                    "step_index": 1,
-                    "depends_on": [],
-                    "output": "checkpointed code output",
-                    "checkpoint_reused": True,
-                },
-            )
-            await event_sink(
-                event_type="agent_step_completed",
-                stage="agent",
-                message="test agent completed",
-                payload={
-                    "role": "test",
-                    "step_key": "verify",
-                    "step_index": 2,
-                    "depends_on": ["code"],
-                    "output": "verify output",
-                },
-            )
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="adapter/1",
-                executor_type="fake",
-                executor_version="fake/1",
-                capabilities={"multi_agent": True},
-                result={"message": "verify output"},
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        return "evt-a"
-
-    async def upsert_run_step(conn, **kwargs):
-        return "step-a"
-
-    async def list_run_steps(conn, *, tenant_id, run_id):
-        return [
-            {
-                "id": "step-code",
-                "run_id": run_id,
-                "step_key": "code",
-                "step_kind": "agent",
-                "status": "succeeded",
-                "title": "coding agent reused checkpoint",
-                "role": "coding",
-                "sequence": 1,
-                "payload_json": {
-                    "depends_on": [],
-                    "output": "checkpointed code output",
-                    "checkpoint_reused": True,
-                },
-                "started_at": None,
-                "finished_at": None,
-                "created_at": None,
-                "updated_at": None,
-            },
-            {
-                "id": "step-verify",
-                "run_id": run_id,
-                "step_key": "verify",
-                "step_kind": "agent",
-                "status": "succeeded",
-                "title": "test agent completed",
-                "role": "test",
-                "sequence": 2,
-                "payload_json": {
-                    "depends_on": ["code"],
-                    "output": "verify output",
-                },
-                "started_at": None,
-                "finished_at": None,
-                "created_at": None,
-                "updated_at": None,
-            },
-        ]
-
-    async def complete_run(conn, *, tenant_id, run_id, result_json):
-        completed_result.update(result_json)
-        return True
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_step", upsert_run_step, raising=False)
-    monkeypatch.setattr("app.worker.repositories.list_run_steps", list_run_steps)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-
-    outcome = await process_run_payload(
-        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": MultiAgentAdapter()}),
-    )
-
-    assert outcome.status == "succeeded"
-    assert completed_result["multi_agent"] == {
-        "steps": [
-            {
-                "step_key": "code",
-                "status": "succeeded",
-                "role": "coding",
-                "sequence": 1,
-                "depends_on": [],
-                "checkpoint_reused": True,
-                "output": "checkpointed code output",
-                "error_code": None,
-                "error": None,
-                "missing_dependencies": [],
-            },
-            {
-                "step_key": "verify",
-                "status": "succeeded",
-                "role": "test",
-                "sequence": 2,
-                "depends_on": ["code"],
-                "checkpoint_reused": False,
-                "output": "verify output",
-                "error_code": None,
-                "error": None,
-                "missing_dependencies": [],
-            },
-        ],
-        "reused_step_keys": ["code"],
-        "completed_step_outputs": {
-            "code": "checkpointed code output",
-            "verify": "verify output",
-        },
-        "counts": {
-            "total": 2,
-            "pending": 0,
-            "succeeded": 2,
-            "failed": 0,
-            "running": 0,
-            "cancelled": 0,
-            "reused": 1,
-            "blocked": 0,
-        },
-    }
-
-
-@pytest.mark.asyncio
-async def test_worker_includes_multi_agent_step_summary_in_failed_result(monkeypatch):
-    failed_result = {}
-
-    class FailingMultiAgentAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            await event_sink(
-                event_type="agent_step_completed",
-                stage="agent",
-                message="coding agent completed",
-                payload={
-                    "role": "coding",
-                    "step_key": "code",
-                    "step_index": 1,
-                    "depends_on": [],
-                    "output": "code output",
-                },
-            )
-            await event_sink(
-                event_type="agent_step_failed",
-                stage="agent",
-                message="test agent failed",
-                payload={
-                    "role": "test",
-                    "step_key": "verify",
-                    "step_index": 2,
-                    "depends_on": ["code"],
-                    "error_code": "multi_agent_step_failed",
-                    "error": "tests failed",
-                },
-            )
-            return ExecutorResult(
-                status="failed",
-                adapter_version="adapter/1",
-                executor_type="fake",
-                executor_version="fake/1",
-                capabilities={"multi_agent": True},
-                result={"error_code": "multi_agent_step_failed", "message": "tests failed"},
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        return "evt-a"
-
-    async def upsert_run_step(conn, **kwargs):
-        return "step-a"
-
-    async def list_run_steps(conn, *, tenant_id, run_id):
-        return [
-            {
-                "id": "step-code",
-                "run_id": run_id,
-                "step_key": "code",
-                "step_kind": "agent",
-                "status": "succeeded",
-                "title": "coding agent completed",
-                "role": "coding",
-                "sequence": 1,
-                "payload_json": {
-                    "depends_on": [],
-                    "output": "code output",
-                },
-                "started_at": None,
-                "finished_at": None,
-                "created_at": None,
-                "updated_at": None,
-            },
-            {
-                "id": "step-verify",
-                "run_id": run_id,
-                "step_key": "verify",
-                "step_kind": "agent",
-                "status": "failed",
-                "title": "test agent failed",
-                "role": "test",
-                "sequence": 2,
-                "payload_json": {
-                    "depends_on": ["code"],
-                    "error_code": "multi_agent_step_failed",
-                    "error": "tests failed",
-                },
-                "started_at": None,
-                "finished_at": None,
-                "created_at": None,
-                "updated_at": None,
-            },
-        ]
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
-        failed_result.update(result_json or {})
-        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_step", upsert_run_step, raising=False)
-    monkeypatch.setattr("app.worker.repositories.list_run_steps", list_run_steps)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-
-    outcome = await process_run_payload(
-        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": FailingMultiAgentAdapter()}),
-    )
-
-    assert outcome.status == "failed"
-    assert failed_result["multi_agent"] == {
-        "steps": [
-            {
-                "step_key": "code",
-                "status": "succeeded",
-                "role": "coding",
-                "sequence": 1,
-                "depends_on": [],
-                "checkpoint_reused": False,
-                "output": "code output",
-                "error_code": None,
-                "error": None,
-                "missing_dependencies": [],
-            },
-            {
-                "step_key": "verify",
-                "status": "failed",
-                "role": "test",
-                "sequence": 2,
-                "depends_on": ["code"],
-                "checkpoint_reused": False,
-                "output": None,
-                "error_code": "multi_agent_step_failed",
-                "error": "tests failed",
-                "missing_dependencies": [],
-            },
-        ],
-        "reused_step_keys": [],
-        "completed_step_outputs": {"code": "code output"},
-        "counts": {
-            "total": 2,
-            "pending": 0,
-            "succeeded": 1,
-            "failed": 1,
-            "running": 0,
-            "cancelled": 0,
-            "reused": 0,
-            "blocked": 0,
-        },
-    }
-
-
-def test_executor_result_schema_validation_blocks_unstable_adapter_output():
-    result = ExecutorResult(
-        status="completed",
-        adapter_version="fake-adapter/1",
-        executor_type="fake",
-        executor_version="fake-executor/1",
-        capabilities={},
-    )
-
-    with pytest.raises(ValueError, match="Unsupported executor status"):
-        result.validate()
-
-
-def test_explicit_empty_adapter_registry_does_not_fall_back_to_defaults():
-    with pytest.raises(KeyError, match="Unknown executor_type: claude-agent-worker"):
-        AdapterRegistry({}).get("claude-agent-worker")
-
-
 @pytest.mark.asyncio
 async def test_worker_keeps_artifacts_out_of_success_message_text(monkeypatch):
     calls = []
@@ -9834,10 +8454,10 @@ async def test_worker_keeps_artifacts_out_of_success_message_text(monkeypatch):
         return "msg-a"
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     generated_ids = iter(["art_reviewed"])
     monkeypatch.setattr("app.worker.repositories.new_id", lambda prefix: next(generated_ids))
@@ -9906,10 +8526,10 @@ async def test_worker_sanitizes_artifact_manifest_paths_before_persisting(monkey
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.new_id", lambda prefix: "art-a")
 
@@ -9967,10 +8587,10 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.new_id", lambda prefix: "art-a")
 
@@ -10027,10 +8647,10 @@ async def test_worker_rejects_direct_assistant_delta_ingress(monkeypatch):
         )
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     payload = base_payload(skill_id="general-chat", executor_type="claude-agent-worker")
@@ -10072,9 +8692,9 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
         return "msg-a"
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": MessageAdapter()}))
@@ -10082,56 +8702,6 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
     assert outcome.status == "succeeded"
     assert ("complete", "最终回答") in calls
     assert ("message", "assistant", "最终回答", "run-a") in calls
-
-
-@pytest.mark.asyncio
-async def test_worker_follow_up_terminalization_reconciles_one_final_drain_only(monkeypatch):
-    calls = []
-
-    class FailingAdapter:
-        async def submit_run(self, _payload, event_sink=None):
-            return ExecutorResult(
-                status="failed", adapter_version="test", executor_type="fake", executor_version="test",
-                capabilities={}, result={"message": "failed", "error_code": "executor_failure"},
-            )
-
-    async def mark_run_running(_conn, **_kwargs):
-        return True
-
-    async def fail_run(_conn, **_kwargs):
-        return RunTerminalizationProgress(False, "failed")
-
-    final = RunTerminalizationProgress(True, "failed", True, True)
-
-    async def drain(**_kwargs):
-        return final
-
-    async def reconcile(**kwargs):
-        calls.append((kwargs["tenant_id"], kwargs["run_id"], kwargs["progress"].did_transition))
-
-    async def append_event(_conn, **kwargs):
-        calls.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr(
-        "app.bootstrap.worker_attempt_lifecycle.drain_run_tool_permission_terminalization",
-        drain,
-    )
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-
-    outcome = await process_run_payload(
-        base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
-        AdapterRegistry({"fake": FailingAdapter()}),
-    )
-
-    assert outcome.status == "failed"
-    assert calls.count(("tenant-a", "run-a", True)) == 1
-    assert not any(item == ("event", "run_failed") or item == ("event", "run_cancelled") for item in calls)
 
 
 @pytest.mark.asyncio
@@ -10155,7 +8725,7 @@ async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
         calls.append(("policy", tenant_id, tool_id))
         raise RepositoryConflictError("mcp_tool_disabled")
 
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
@@ -10163,9 +8733,9 @@ async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
         calls.append(("event", event_type, stage, payload or {}))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
 
     outcome = await process_run_payload(
@@ -10409,7 +8979,7 @@ def _install_task6_worker_fakes(
         resolve_task6_current_principal,
         raising=False,
     )
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
     monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_agent_skill, raising=False)
     monkeypatch.setattr(
@@ -10424,8 +8994,8 @@ def _install_task6_worker_fakes(
     )
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
+    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
@@ -10808,17 +9378,10 @@ async def test_worker_capability_distribution_rechecks_skill_changes_after_enque
 @pytest.mark.asyncio
 async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monkeypatch):
     global_reference = "server-global::tool-global"
-    step_reference = "server-step::tool-step"
+    second_reference = "server-second::tool-second"
     locked_input = {
         "mode": "file",
-        "mcp_tool_ids": [global_reference],
-        "multi_agent_steps": [
-            {
-                "step_key": "review",
-                "role": "review",
-                "mcp_tool_ids": [step_reference],
-            }
-        ],
+        "mcp_tool_ids": [global_reference, second_reference],
     }
     raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch, locked_input=locked_input)
     state["skill"]["executor_type"] = "claude-agent-worker"
@@ -10827,13 +9390,13 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
     state["tools"].update(
         {
             global_reference: _task6_tool(global_reference, "server-global"),
-            step_reference: _task6_tool(step_reference, "server-step"),
+            second_reference: _task6_tool(second_reference, "server-second"),
         }
     )
     state["distributions"].update(
         {
             ("mcp_server", "server-global"): _task6_distribution("mcp_server", "server-global"),
-            ("mcp_server", "server-step"): _task6_distribution("mcp_server", "server-step"),
+            ("mcp_server", "server-second"): _task6_distribution("mcp_server", "server-second"),
         }
     )
 
@@ -10841,10 +9404,9 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
 
     assert outcome.status == "succeeded"
     assert ("tool_lookup", "tenant-a", global_reference) in calls
-    assert ("tool_lookup", "tenant-a", step_reference) in calls
+    assert ("tool_lookup", "tenant-a", second_reference) in calls
     registered_input = next(call[1] for call in calls if call[0] == "adapter")
-    assert registered_input["mcp_tool_ids"] == [global_reference]
-    assert registered_input["multi_agent_steps"][0]["mcp_tool_ids"] == [step_reference]
+    assert registered_input["mcp_tool_ids"] == [global_reference, second_reference]
     assert "mcpToolIds" not in registered_input
 
 
@@ -11372,43 +9934,3 @@ async def test_worker_locked_snapshot_invalid_never_falls_back_to_queue_mcp_inpu
     )
     assert "queue-only-tool" not in evidence
     assert "queue-private-marker" not in evidence
-
-
-@pytest.mark.asyncio
-async def test_worker_invalid_locked_child_snapshot_reconciles_parent_after_commit(monkeypatch):
-    dispatch_input = {
-        "mode": "file",
-        "multi_agent_dispatch": {
-            "parent_run_id": "run-parent",
-            "parent_step_id": "step-code",
-            "dispatch_id": "dispatch-code",
-            "step_key": "code",
-        },
-    }
-    raw, registry, state, calls = _install_task6_worker_fakes(
-        monkeypatch,
-        locked_input=dispatch_input,
-        queue_input={"mode": "queue-without-dispatch"},
-    )
-    state["locked_run"]["input_json"]["skill_manifests"] = []
-
-    async def reconcile(
-        *, tenant_id, run_id, progress, transaction_factory, attempt_lifecycle
-    ):
-        assert attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
-        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
-        return {"parent_run_id": "run-parent"}
-
-    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
-
-    outcome = await process_run_payload(raw, registry=registry)
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    reconcile_call = next(call[1] for call in calls if call[0] == "reconcile")
-    assert reconcile_call["run_id"] == "run-a"
-    assert reconcile_call["progress"].status == "failed"
-    assert reconcile_call["progress"].did_transition is True
-    assert next(index for index, call in enumerate(calls) if call[0] == "fail") < next(
-        index for index, call in enumerate(calls) if call[0] == "reconcile"
-    )

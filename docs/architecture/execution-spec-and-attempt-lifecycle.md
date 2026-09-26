@@ -203,8 +203,10 @@ successful. Schema activation fails closed when an open attempt heartbeat is mor
 than five seconds ahead of the PostgreSQL clock, so operators must remediate that
 state before installing the monotonic guard. Stale-run recovery moves the exact
 open attempt into reconciler-owned `expired` or `cancel_requested` before terminal
-drain, and permission, executor, and multi-agent maintenance writers mirror the
-exact terminal attempt in the same transaction. New Sandbox leases carry the
+completion, and ordinary worker/executor terminalization mirrors the exact
+terminal attempt in the same transaction. Schema `2026.09.26.1` settles retired
+platform multi-agent attempts once; no permission or parent-child maintenance
+writer remains. New Sandbox leases carry the
 bound Attempt's `owner_generation` and a generation-specific callback token ID.
 Callback receipt and model-proxy connection reads require the lease generation
 to equal the current Attempt generation; previous-generation callbacks cannot

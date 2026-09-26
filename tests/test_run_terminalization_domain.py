@@ -29,20 +29,16 @@ def test_requested_status_decision_returns_the_winning_progress_unchanged():
         completed=True,
         status="failed",
         did_transition=True,
-        needs_reconcile=True,
-        terminalized_count=3,
     )
 
     assert progress_for_requested_status(progress, requested_status="failed") is progress
 
 
-def test_requested_status_decision_preserves_facts_when_another_intent_won():
+def test_requested_status_decision_preserves_transition_fact_when_another_intent_won():
     progress = RunTerminalizationProgress(
         completed=True,
         status="cancelled",
         did_transition=True,
-        needs_reconcile=True,
-        terminalized_count=2,
     )
 
     projected = progress_for_requested_status(progress, requested_status="failed")
@@ -51,8 +47,6 @@ def test_requested_status_decision_preserves_facts_when_another_intent_won():
         completed=False,
         status="cancelled",
         did_transition=True,
-        needs_reconcile=True,
-        terminalized_count=2,
     )
 
 
@@ -62,13 +56,11 @@ def test_requested_status_decision_maps_missing_progress_to_incomplete():
     )
 
 
-def test_progress_mapping_compatibility_reads_known_and_default_values():
+def test_progress_get_reads_known_and_default_values():
     progress = RunTerminalizationProgress(
         completed=False,
         status="running",
-        terminalized_count=4,
     )
 
     assert progress.get("status") == "running"
-    assert progress.get("terminalized_count") == 4
     assert progress.get("missing", "fallback") == "fallback"

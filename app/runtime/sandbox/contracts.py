@@ -10,7 +10,6 @@ from app.control_plane_contracts import normalize_thinking_effort
 from app.mcp.api import assert_mcp_tool_reference
 from app.persistence_limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.runtime.kernel_contracts import AgentEvent
-from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 from app.sandbox.api import AssistantAnswerReceipt
 from app.validation import (
     MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
@@ -25,7 +24,6 @@ CallbackStatus = Literal["running", "completed", "failed", "cancelled"]
 TerminalCallbackStatus = Literal["completed", "failed", "cancelled"]
 EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
-EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/tool-permission"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
 EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/provider-session"
 PROFILE_DRIVE_STAGE_TOOL = "stage_profile_drive_file_to_workspace"
@@ -115,7 +113,6 @@ class TrustedCallbackTarget:
 
     base_url: str
     callback_url: str
-    tool_permission_url: str
     context_retrieval_url: str
     provider_session_url: str
     host: str
@@ -184,7 +181,6 @@ def build_trusted_callback_target(
     return TrustedCallbackTarget(
         base_url=normalized_base_url,
         callback_url=f"{normalized_base_url}{EXECUTOR_CALLBACK_PATH}",
-        tool_permission_url=f"{normalized_base_url}{EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH}",
         context_retrieval_url=f"{normalized_base_url}{EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH}",
         provider_session_url=f"{normalized_base_url}{EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH}",
         host=host,
@@ -849,33 +845,3 @@ class ExecutorContextRetrievalRequest(BaseModel):
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
-
-
-class ExecutorToolPermissionRequest(BaseModel):
-    """Sandbox executor callback payload for brokered Claude SDK tool permissions."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    session_id: str
-    run_id: str
-    attempt_id: str
-    callback_token_id: str
-    sdk_session_id: str | None = None
-    tool_name: str
-    tool_input: dict[str, Any] = Field(default_factory=dict)
-    tool_call_id: str = ""
-    action: str = "execute"
-    risk_level: str = "high"
-    write_capable: bool = True
-    reason: str = "Claude SDK tool permission required"
-    permission_wait_seconds: float | None = Field(default=None, ge=0, le=TOOL_PERMISSION_REQUEST_TTL_SECONDS)
-
-    @field_validator("session_id", "run_id", "attempt_id", "callback_token_id")
-    @classmethod
-    def validate_ids(cls, value: str, info):
-        return assert_safe_id(value, info.field_name)
-
-    @field_validator("sdk_session_id")
-    @classmethod
-    def validate_optional_sdk_session_id(cls, value: str | None):
-        return assert_safe_id(value, "sdk_session_id") if value else value

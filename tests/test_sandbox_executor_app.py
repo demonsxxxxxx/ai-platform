@@ -49,7 +49,6 @@ from app.runtime.sandbox.executor_app import (
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
 )
-from app.tool_permission_lifecycle import tool_permission_budget
 from app.validation import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
 
 EXECUTOR_AUTH_TOKEN = "executor-secret"
@@ -1721,7 +1720,7 @@ async def test_default_non_permission_callback_fails_fast(monkeypatch):
     assert await _default_callback_sender("https://control-plane.test/event", {"status": "running"}, "token-a") == {
         "accepted": True
     }
-    assert observed["timeout"] == tool_permission_budget(120.0).non_permission_callback_timeout_seconds
+    assert observed["timeout"] == 10.0
 
 
 def test_executor_runtime_identity_requires_lease_credential_and_returns_only_effective_ids(tmp_path, monkeypatch):

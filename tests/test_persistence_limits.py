@@ -1,6 +1,7 @@
 import pytest
 
 from app import repositories, run_event_repository
+from app.bootstrap.run_lifecycle import build_run_lifecycle_service
 from app.persistence_limits import (
     ARTIFACT_MANIFEST_MAX_BYTES,
     AUDIT_PAYLOAD_MAX_BYTES,
@@ -62,7 +63,7 @@ async def test_run_input_and_result_reject_oversize_before_database_access():
             input_json=oversized_json(RUN_INPUT_MAX_BYTES),
         )
     with pytest.raises(repositories.RepositoryConflictError, match="run_result_too_large"):
-        await repositories.complete_run(
+        await build_run_lifecycle_service().complete_run(
             conn,
             tenant_id="default",
             run_id="run-a",

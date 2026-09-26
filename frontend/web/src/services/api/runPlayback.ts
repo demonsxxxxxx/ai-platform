@@ -213,8 +213,6 @@ const PUBLIC_CONTEXT_SOURCE_VALUES = new Set([
   "chat_stream",
   "copy_run",
   "manual_context_snapshot",
-  "multi_agent_dispatch_handoff",
-  "multi_agent_dispatch_tick",
   "resume_run",
   "retry_run",
   "runs_api",

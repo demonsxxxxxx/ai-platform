@@ -26,6 +26,7 @@ from app.runs.domain.terminalization import (
     RunTerminalEventFact,
     RunTerminalizationProgress,
 )
+from app.runs.infrastructure.lifecycle_postgres import stage_run_terminalization
 
 
 _RUN_ATTEMPT_STATE_COLUMNS = (
@@ -1096,74 +1097,6 @@ async def get_run_identity(
     return await cursor.fetchone()
 
 
-async def _stage_run_tool_permission_terminalization(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
-    target_status: str,
-    terminal_reason: str,
-    result_json: dict[str, Any] | None = None,
-    error_code: str | None = None,
-    error_message: str | None = None,
-) -> dict[str, Any] | None:
-    """Persist the first terminal intent while holding the owning run row first."""
-
-    if target_status not in {"failed", "cancel_requested", "cancelled"}:
-        raise ValueError("invalid_run_tool_permission_terminal_target")
-    cursor = await conn.execute(
-        """
-        update runs
-        set permission_terminalization_target = case
-              when permission_terminalization_target = 'cancel_requested'
-                   and %s = 'cancelled' then 'cancelled'
-              else coalesce(permission_terminalization_target, %s)
-            end,
-            permission_terminalization_reason = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
-              else permission_terminalization_reason
-            end,
-            permission_terminalization_result_json = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s::jsonb
-              else permission_terminalization_result_json
-            end,
-            permission_terminalization_error_code = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
-              else permission_terminalization_error_code
-            end,
-            permission_terminalization_error_message = case
-              when permission_terminalization_target is null
-                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
-              else permission_terminalization_error_message
-            end
-        where tenant_id = %s
-          and id = %s
-          and status not in ('succeeded', 'failed', 'cancelled')
-        returning id, trace_id, permission_terminalization_target,
-                  permission_terminalization_reason, permission_terminalization_result_json,
-                  permission_terminalization_error_code, permission_terminalization_error_message
-        """,
-        (
-            target_status,
-            target_status,
-            target_status,
-            terminal_reason,
-            target_status,
-            _dumps_json(result_json or {}),
-            target_status,
-            error_code,
-            target_status,
-            error_message,
-            tenant_id,
-            run_id,
-        ),
-    )
-    return await cursor.fetchone()
-
-
 async def load_run_model_snapshot(
     conn: AsyncConnection,
     *,
@@ -1473,7 +1406,7 @@ class PostgresRunCancellationPersistence:
                 run_id=run_id,
                 attempt_id=attempt_id,
             )
-        await _stage_run_tool_permission_terminalization(
+        await stage_run_terminalization(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -1571,7 +1504,7 @@ class PostgresRunCancellationPersistence:
                 run_id=run_id,
                 attempt_id=attempt_id,
             )
-        await _stage_run_tool_permission_terminalization(
+        await stage_run_terminalization(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
