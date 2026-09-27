@@ -35,7 +35,7 @@ from app.bootstrap.run_lifecycle import build_run_lifecycle_service
 from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
-    maintenance_until_done,
+    maintenance_phase_until_done,
     run_maintenance_phases,
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
 )
@@ -79,6 +79,8 @@ from app.streaming.api import (
 _next_memory_cleanup_at = 0.0
 logger = logging.getLogger(__name__)
 _CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS = 5
+_BULK_MAINTENANCE_PHASE_BUDGET_SECONDS = 30.0
+_CRITICAL_MAINTENANCE_PHASE_BUDGET_SECONDS = 10.0
 
 
 class ReconciliationFenceLost(RuntimeError):
@@ -565,18 +567,23 @@ async def cleanup_expired_file_upload_sessions() -> int:
 
 
 
-async def run_worker_cleanup_maintenance(
+def _worker_cleanup_phases(settings: object) -> dict[str, Callable[[], Any]]:
+    return {
+        "sandbox_cleanup": cleanup_expired_sandbox_leases,
+        "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
+        "data_retention": lambda: run_data_retention_maintenance(settings),
+        "file_upload_session_cleanup": cleanup_expired_file_upload_sessions,
+    }
+
+
+def _worker_recovery_phases(
     settings: object,
     *,
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
-) -> None:
-    phases = {
-        "sandbox_cleanup": cleanup_expired_sandbox_leases,
-        "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
-        "data_retention": lambda: run_data_retention_maintenance(settings),
-        "file_upload_session_cleanup": cleanup_expired_file_upload_sessions,
+) -> dict[str, Callable[[], Any]]:
+    return {
         "queue_reclaim": lambda: queue.reclaim_expired_leases(
             visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
         ),
@@ -587,24 +594,23 @@ async def run_worker_cleanup_maintenance(
             lifecycle=lifecycle,
         ),
     }
-    await run_maintenance_phases(phases, logger=logger)
 
 
-async def run_worker_maintenance(
-    settings: object | None = None,
+async def run_worker_recovery_maintenance(
+    settings: object,
     *,
-    v4_capabilities: WorkerV4Capabilities | None = None,
+    v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
 ) -> None:
-    settings = settings or get_settings()
-    if v4_capabilities is None:
-        raise RuntimeError("worker_v4_capabilities_unavailable")
-    await run_worker_cleanup_maintenance(
+    phases = _worker_recovery_phases(
         settings,
         v4_capabilities=v4_capabilities,
         attempt_lifecycle=attempt_lifecycle,
         lifecycle=lifecycle,
+    )
+    await run_maintenance_phases(
+        phases, logger=logger, phase_budget_seconds=_CRITICAL_MAINTENANCE_PHASE_BUDGET_SECONDS
     )
 
 
@@ -614,18 +620,42 @@ async def _maintenance_until_done(
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
+    *,
+    recovery_already_ran: bool = False,
 ) -> None:
-    await maintenance_until_done(
+    operations = _worker_cleanup_phases(settings)
+    operations.update(_worker_recovery_phases(
         settings,
-        interval_seconds,
-        lambda current_settings: run_worker_cleanup_maintenance(
-            current_settings,
-            v4_capabilities=v4_capabilities,
-            attempt_lifecycle=attempt_lifecycle,
-            lifecycle=lifecycle,
-        ),
-        logger=logger,
-    )
+        v4_capabilities=v4_capabilities,
+        attempt_lifecycle=attempt_lifecycle,
+        lifecycle=lifecycle,
+    ))
+    phase_tasks = [
+        asyncio.create_task(
+            maintenance_phase_until_done(
+                name,
+                operation,
+                interval_seconds,
+                _CRITICAL_MAINTENANCE_PHASE_BUDGET_SECONDS
+                if name in {"queue_reclaim", "stale_run_reconciliation"}
+                else _BULK_MAINTENANCE_PHASE_BUDGET_SECONDS,
+                logger=logger,
+                run_immediately=(
+                    not recovery_already_ran
+                    or name not in {"queue_reclaim", "stale_run_reconciliation"}
+                ),
+            ),
+            name=f"ai-platform-worker-maintenance-{name}",
+        )
+        for name, operation in operations.items()
+    ]
+    try:
+        await asyncio.gather(*phase_tasks)
+    finally:
+        for task in phase_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*phase_tasks, return_exceptions=True)
 
 
 
@@ -836,40 +866,12 @@ async def run_once(
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
     if run_initial_maintenance:
-        await run_worker_maintenance(
+        await run_worker_recovery_maintenance(
             settings,
             v4_capabilities=v4_capabilities,
             attempt_lifecycle=attempt_lifecycle,
             lifecycle=lifecycle,
         )
-    message = await queue.lease_run(
-        timeout_seconds=timeout_seconds,
-        worker_id=resolved_worker_id,
-        max_processing_runs=settings.max_active_worker_runs,
-        tenant_processing_limit=getattr(settings, "queue_tenant_processing_limit", 0),
-        user_processing_limit=getattr(settings, "queue_user_processing_limit", 0),
-        lease_scan_limit=getattr(settings, "queue_lease_scan_limit", 50),
-    )
-    if message is None:
-        return WorkerOutcome(status="idle", run_id=None)
-    durable_queue_lease = _durable_queue_lease(
-        message,
-        visibility_timeout_seconds=int(
-            getattr(settings, "queue_lease_visibility_timeout_seconds", 900)
-        ),
-    )
-
-    ownership_lost = asyncio.Event()
-    heartbeat_task = asyncio.create_task(
-        _heartbeat_until_done(
-            message,
-            resolved_worker_id,
-            heartbeat_interval_seconds,
-            int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900)),
-            ownership_lost,
-            attempt_lifecycle=attempt_lifecycle,
-        )
-    )
     maintenance_task = (
         asyncio.create_task(
             _maintenance_until_done(
@@ -878,98 +880,130 @@ async def run_once(
                 v4_capabilities,
                 attempt_lifecycle,
                 lifecycle,
-            )
+                recovery_already_ran=run_initial_maintenance,
+            ),
+            name="ai-platform-worker-maintenance",
         )
         if run_background_maintenance
         else None
     )
+    try:
+        message = await queue.lease_run(
+            timeout_seconds=timeout_seconds,
+            worker_id=resolved_worker_id,
+            max_processing_runs=settings.max_active_worker_runs,
+            tenant_processing_limit=getattr(settings, "queue_tenant_processing_limit", 0),
+            user_processing_limit=getattr(settings, "queue_user_processing_limit", 0),
+            lease_scan_limit=getattr(settings, "queue_lease_scan_limit", 50),
+        )
+        if message is None:
+            return WorkerOutcome(status="idle", run_id=None)
+        durable_queue_lease = _durable_queue_lease(
+            message,
+            visibility_timeout_seconds=int(
+                getattr(settings, "queue_lease_visibility_timeout_seconds", 900)
+            ),
+        )
 
-    async def process_leased_message() -> WorkerOutcome:
-        try:
-            process_kwargs = {
-                "registry": registry,
-                "worker_id": resolved_worker_id,
-                "v4_capabilities": v4_capabilities,
-                "run_attempt_lifecycle": attempt_lifecycle,
-                "run_lifecycle": lifecycle,
-            }
-            if durable_queue_lease is not None:
-                process_kwargs["queue_lease"] = durable_queue_lease
-            return await process_run_payload(message.payload, **process_kwargs)
-        except Exception as exc:
-            logger.exception(
-                "Worker payload processing escaped its terminal path",
-                extra={"run_id": message.payload.get("run_id")},
+        ownership_lost = asyncio.Event()
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_until_done(
+                message,
+                resolved_worker_id,
+                heartbeat_interval_seconds,
+                int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900)),
+                ownership_lost,
+                attempt_lifecycle=attempt_lifecycle,
             )
+        )
+        async def process_leased_message() -> WorkerOutcome:
             try:
-                return await _terminalize_escaped_process_exception(
-                    message,
-                    resolved_worker_id,
-                    exc,
-                    v4_capabilities=v4_capabilities,
-                    attempt_lifecycle=attempt_lifecycle,
-                    lifecycle=lifecycle,
-                    run_diagnostics=build_run_diagnostics_service(),
-                )
-            except Exception:
+                process_kwargs = {
+                    "registry": registry,
+                    "worker_id": resolved_worker_id,
+                    "v4_capabilities": v4_capabilities,
+                    "run_attempt_lifecycle": attempt_lifecycle,
+                    "run_lifecycle": lifecycle,
+                }
+                if durable_queue_lease is not None:
+                    process_kwargs["queue_lease"] = durable_queue_lease
+                return await process_run_payload(message.payload, **process_kwargs)
+            except Exception as exc:
                 logger.exception(
-                    "Worker process exception terminalization failed",
+                    "Worker payload processing escaped its terminal path",
                     extra={"run_id": message.payload.get("run_id")},
                 )
-                return WorkerOutcome(
-                    status="dead_letter",
-                    run_id=message.payload.get("run_id"),
-                    error_code="worker_process_exception",
-                    error_message=sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly.",
-                )
+                try:
+                    return await _terminalize_escaped_process_exception(
+                        message,
+                        resolved_worker_id,
+                        exc,
+                        v4_capabilities=v4_capabilities,
+                        attempt_lifecycle=attempt_lifecycle,
+                        lifecycle=lifecycle,
+                        run_diagnostics=build_run_diagnostics_service(),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Worker process exception terminalization failed",
+                        extra={"run_id": message.payload.get("run_id")},
+                    )
+                    return WorkerOutcome(
+                        status="dead_letter",
+                        run_id=message.payload.get("run_id"),
+                        error_code="worker_process_exception",
+                        error_message=sanitize_public_text(str(exc)) or "Worker processing failed unexpectedly.",
+                    )
 
-    processing_task = asyncio.create_task(process_leased_message())
-    ownership_task = asyncio.create_task(ownership_lost.wait())
-    try:
-        await asyncio.wait(
-            {processing_task, ownership_task, heartbeat_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if heartbeat_task.done() and not heartbeat_task.cancelled():
-            # A heartbeat loop only terminates after ownership loss or a fail-closed IO error.
-            heartbeat_task.exception()
-            ownership_lost.set()
-        if ownership_lost.is_set():
-            processing_task.cancel()
-            await asyncio.gather(processing_task, return_exceptions=True)
-            return _queue_ownership_lost_outcome(message.payload.get("run_id"))
-        outcome = processing_task.result()
-    finally:
-        tasks = [heartbeat_task, ownership_task, processing_task]
-        if maintenance_task is not None:
-            tasks.append(maintenance_task)
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-    if ownership_lost.is_set():
-        return _queue_ownership_lost_outcome(message.payload.get("run_id"))
-    if outcome.status == "ownership_lost":
-        return outcome
-    if outcome.status in {"running", "succeeded", "failed", "skipped", "cancelled"}:
+        processing_task = asyncio.create_task(process_leased_message())
+        ownership_task = asyncio.create_task(ownership_lost.wait())
         try:
-            mutation = await queue.ack_run(message.raw, message_id=message.message_id)
-        except Exception:
-            return _queue_ownership_lost_outcome(message.payload.get("run_id"))
-    else:
-        try:
-            mutation = await queue.fail_leased_run(
-                message.raw,
-                error_code=outcome.error_code or "worker_unhandled",
-                error_message=outcome.error_message or "Worker could not process leased payload",
-                message_id=message.message_id,
-                worker_id=resolved_worker_id,
+            await asyncio.wait(
+                {processing_task, ownership_task, heartbeat_task},
+                return_when=asyncio.FIRST_COMPLETED,
             )
-        except Exception:
+            if heartbeat_task.done() and not heartbeat_task.cancelled():
+                # A heartbeat loop only terminates after ownership loss or a fail-closed IO error.
+                heartbeat_task.exception()
+                ownership_lost.set()
+            if ownership_lost.is_set():
+                processing_task.cancel()
+                await asyncio.gather(processing_task, return_exceptions=True)
+                return _queue_ownership_lost_outcome(message.payload.get("run_id"))
+            outcome = processing_task.result()
+        finally:
+            tasks = [heartbeat_task, ownership_task, processing_task]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if ownership_lost.is_set():
             return _queue_ownership_lost_outcome(message.payload.get("run_id"))
-    if not isinstance(mutation, queue.LeaseMutationOutcome) or not mutation.succeeded:
-        return _queue_ownership_lost_outcome(message.payload.get("run_id"))
-    return outcome
+        if outcome.status == "ownership_lost":
+            return outcome
+        if outcome.status in {"running", "succeeded", "failed", "skipped", "cancelled"}:
+            try:
+                mutation = await queue.ack_run(message.raw, message_id=message.message_id)
+            except Exception:
+                return _queue_ownership_lost_outcome(message.payload.get("run_id"))
+        else:
+            try:
+                mutation = await queue.fail_leased_run(
+                    message.raw,
+                    error_code=outcome.error_code or "worker_unhandled",
+                    error_message=outcome.error_message or "Worker could not process leased payload",
+                    message_id=message.message_id,
+                    worker_id=resolved_worker_id,
+                )
+            except Exception:
+                return _queue_ownership_lost_outcome(message.payload.get("run_id"))
+        if not isinstance(mutation, queue.LeaseMutationOutcome) or not mutation.succeeded:
+            return _queue_ownership_lost_outcome(message.payload.get("run_id"))
+        return outcome
+    finally:
+        if maintenance_task is not None:
+            maintenance_task.cancel()
+            await asyncio.gather(maintenance_task, return_exceptions=True)
 
 
 def _raise_if_background_task_stopped(task: asyncio.Task[None]) -> None:
@@ -997,12 +1031,6 @@ async def run_forever(
     registry = AdapterRegistry()
     worker_id = default_worker_id()
     settings = get_settings()
-    await run_worker_maintenance(
-        settings,
-        v4_capabilities=worker_runtime.capabilities,
-        attempt_lifecycle=attempt_lifecycle,
-        lifecycle=lifecycle,
-    )
     reconciler_stop = asyncio.Event()
     reconciler_task = asyncio.create_task(
         run_executor_terminal_reconciler(
@@ -1028,7 +1056,7 @@ async def run_forever(
             attempt_lifecycle,
             lifecycle,
         ),
-        name="ai-platform-worker-cleanup-maintenance",
+        name="ai-platform-worker-maintenance",
     )
     background_tasks = (
         reconciler_task,
@@ -1122,12 +1150,6 @@ async def run_worker_pool(
     settings = get_settings()
     process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
     worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
-    await run_worker_maintenance(
-        settings,
-        v4_capabilities=worker_runtime.capabilities,
-        attempt_lifecycle=attempt_lifecycle,
-        lifecycle=lifecycle,
-    )
     reconciler_stop = asyncio.Event()
     reconciler_task = asyncio.create_task(
         run_executor_terminal_reconciler(
@@ -1149,7 +1171,7 @@ async def run_worker_pool(
             attempt_lifecycle,
             lifecycle,
         ),
-        name="ai-platform-worker-cleanup-maintenance",
+        name="ai-platform-worker-maintenance",
     )
     heartbeat_task = asyncio.create_task(
         _worker_runtime_heartbeat_until_done(process_worker_id),

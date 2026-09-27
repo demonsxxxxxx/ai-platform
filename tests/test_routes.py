@@ -47,7 +47,7 @@ from app.routes import lambchat_compat as lambchat_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
 from app.routes.files import (
-    _discard_profile_drive_import,
+    _reconcile_profile_drive_import,
     _download_profile_drive_file,
     _put_profile_drive_import,
     download_artifact,
@@ -2006,6 +2006,193 @@ def test_profile_drive_abandoned_put_removes_object_and_worker_owned_temp_file(t
     assert not source.exists()
 
 
+def _configure_profile_drive_commit_failure(monkeypatch, tmp_path, outcome):
+    raw = b"profile import commit outcome"
+    source = tmp_path / "profile-drive-commit.tmp"
+    source.write_bytes(raw)
+    state = {"reservation": "pending", "file": None, "objects": set(), "deleted": []}
+    import_state = state
+    transactions = 0
+    reservation_reads = 0
+
+    @asynccontextmanager
+    async def transaction_with_outcome():
+        nonlocal transactions
+        transactions += 1
+        try:
+            yield object()
+        except BaseException:
+            raise
+        else:
+            if transactions != 3:
+                return
+            if outcome in {"commit_ack_lost", "commit_cancelled", "probe_failure"}:
+                if outcome != "commit_cancelled":
+                    raise RuntimeError("commit response lost")
+                raise asyncio.CancelledError
+            if outcome == "rolled_back":
+                state["reservation"] = "pending"
+                state["file"] = None
+                raise RuntimeError("commit rolled back")
+
+    async def fake_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id, "workspace_id": "workspace-a"}
+
+    async def fake_usage(conn, **kwargs):
+        return {"stored_bytes": 0, "reserved_bytes": 0, "active_uploads": 0}
+
+    async def fake_claim(conn, **kwargs):
+        state["reservation_row"] = {
+            **kwargs,
+            "state": "pending",
+        }
+        return True
+
+    async def fake_reservation(conn, **kwargs):
+        nonlocal reservation_reads
+        reservation_reads += 1
+        if outcome == "probe_failure" and reservation_reads > 1:
+            raise RuntimeError("commit state unavailable")
+        return {**state["reservation_row"], "state": state["reservation"]}
+
+    async def fake_create_file(conn, **kwargs):
+        state["file"] = {
+            "id": kwargs["file_id"],
+            "tenant_id": kwargs["tenant_id"],
+            "user_id": kwargs["user_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "session_id": kwargs["session_id"],
+            "original_name": kwargs["original_name"],
+            "content_type": kwargs["content_type"],
+            "size_bytes": kwargs["size_bytes"],
+            "storage_key": kwargs["storage_key"],
+            "sha256": kwargs["sha256"],
+            "lifecycle_state": "active",
+        }
+
+    async def fake_complete(conn, *, upload_session_id):
+        state["reservation"] = "completed"
+
+    async def fake_get_file(conn, *, tenant_id, file_id):
+        return state["file"]
+
+    async def fake_abort_upload(conn, *, upload_session_id, state: str):
+        import_state["reservation"] = state
+
+    async def fake_retry(conn, *, upload_session_id, delay_seconds=60):
+        assert delay_seconds == 60
+
+    async def fake_delete_expired(conn, *, upload_session_id):
+        state["reservation"] = "deleted"
+
+    async def closeable():
+        return None
+
+    async def fake_open_profile_drive_file(**kwargs):
+        return SimpleNamespace(aclose=closeable), SimpleNamespace(aclose=closeable), len(raw), "text/plain"
+
+    async def fake_download(**kwargs):
+        return str(source), hashlib.sha256(raw).hexdigest(), len(raw)
+
+    class Storage:
+        def put_file(self, *, storage_key, source_path, content_type):
+            state["objects"].add(storage_key)
+            return SimpleNamespace(
+                storage_key=storage_key,
+                sha256=hashlib.sha256(raw).hexdigest(),
+                size_bytes=len(raw),
+            )
+
+        def delete_object(self, *, storage_key):
+            state["deleted"].append(storage_key)
+            state["objects"].discard(storage_key)
+
+    async def fake_run_storage(operation, *args, **kwargs):
+        kwargs.pop("timeout_seconds", None)
+        kwargs.pop("on_abandoned", None)
+        return operation(*args, **kwargs)
+
+    async def noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.files.transaction", transaction_with_outcome)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_session)
+    monkeypatch.setattr("app.routes.files.get_file_storage_usage", fake_usage)
+    monkeypatch.setattr("app.routes.files.claim_direct_file_upload_session", fake_claim)
+    monkeypatch.setattr("app.routes.files.get_authorized_file_upload_session", fake_reservation)
+    monkeypatch.setattr("app.routes.files.create_file", fake_create_file)
+    monkeypatch.setattr("app.routes.files.complete_file_upload_session", fake_complete)
+    monkeypatch.setattr("app.routes.files.get_file", fake_get_file)
+    monkeypatch.setattr("app.routes.files.abort_file_upload_session", fake_abort_upload)
+    monkeypatch.setattr("app.routes.files.retry_expired_file_upload_session", fake_retry)
+    monkeypatch.setattr("app.routes.files.delete_expired_file_upload_session", fake_delete_expired)
+    monkeypatch.setattr("app.routes.files.append_audit_log", noop)
+    monkeypatch.setattr("app.routes.files._cleanup_expired_upload_sessions", noop)
+    monkeypatch.setattr("app.routes.files._open_profile_drive_file", fake_open_profile_drive_file)
+    monkeypatch.setattr("app.routes.files._download_profile_drive_file", fake_download)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", Storage)
+    monkeypatch.setattr("app.routes.files.run_storage_io", fake_run_storage)
+    monkeypatch.setattr(
+        "app.routes.files.get_settings",
+        lambda: SimpleNamespace(file_upload_max_active_sessions=3, file_storage_quota_bytes=1024),
+    )
+    ids = iter(("file_profile", "upload_profile", "upload_owner_profile"))
+    monkeypatch.setattr("app.routes.files.new_id", lambda _prefix: next(ids))
+    return state
+
+
+@pytest.mark.parametrize(
+    ("outcome", "raises_cancellation", "retains_object"),
+    [
+        ("commit_ack_lost", False, True),
+        ("commit_cancelled", True, True),
+        ("probe_failure", False, True),
+        ("rolled_back", False, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_profile_drive_import_reconciles_commit_before_compensating(
+    monkeypatch,
+    tmp_path,
+    outcome,
+    raises_cancellation,
+    retains_object,
+):
+    state = _configure_profile_drive_commit_failure(monkeypatch, tmp_path, outcome)
+    request = ProfileDriveFileImportRequest(path="reports/report.txt")
+
+    if raises_cancellation:
+        with pytest.raises(asyncio.CancelledError):
+            await import_profile_drive_file(
+                "session-a",
+                request,
+                principal=principal(permissions=["file:upload", "file:upload:document"]),
+            )
+    elif outcome == "commit_ack_lost":
+        response = await import_profile_drive_file(
+            "session-a",
+            request,
+            principal=principal(permissions=["file:upload", "file:upload:document"]),
+        )
+        assert response.file_id == "file_profile"
+    else:
+        with pytest.raises(HTTPException) as exc_info:
+            await import_profile_drive_file(
+                "session-a",
+                request,
+                principal=principal(permissions=["file:upload", "file:upload:document"]),
+            )
+        assert exc_info.value.status_code == 503
+
+    assert bool(state["objects"]) is retains_object
+    if outcome in {"commit_ack_lost", "commit_cancelled", "probe_failure"}:
+        assert state["reservation"] == "completed"
+        assert state["deleted"] == []
+    else:
+        assert state["reservation"] == "deleted"
+        assert len(state["deleted"]) == 1
+
+
 @pytest.mark.asyncio
 async def test_profile_drive_import_cancellation_retains_in_flight_cleanup(
     monkeypatch,
@@ -2054,7 +2241,7 @@ async def test_profile_drive_import_cancellation_retains_in_flight_cleanup(
     monkeypatch.setattr("app.routes.files.claim_direct_file_upload_session", fake_claim)
     monkeypatch.setattr("app.routes.files._run_storage", fake_run_storage)
     monkeypatch.setattr("app.routes.files.run_storage_io", cancel_put)
-    monkeypatch.setattr("app.routes.files._discard_profile_drive_import", fake_discard)
+    monkeypatch.setattr("app.routes.files._reconcile_profile_drive_import", fake_discard)
     monkeypatch.setattr("app.routes.files.ObjectStorage", object)
     monkeypatch.setattr(
         "app.routes.files.get_settings",
@@ -2099,11 +2286,13 @@ async def test_profile_drive_in_flight_discard_retains_expired_cleanup_record(mo
     monkeypatch.setattr("app.routes.files.retry_expired_file_upload_session", fake_retry)
     monkeypatch.setattr("app.routes.files.delete_expired_file_upload_session", forbidden_delete)
 
-    await _discard_profile_drive_import(
+    await _reconcile_profile_drive_import(
         upload_session_id="upload-profile",
         storage=Storage(),
         storage_key="private/profile-import",
         object_created=False,
+        tenant_id="tenant-a",
+        user_id="user-a",
         object_write_in_flight=True,
     )
 
