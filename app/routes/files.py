@@ -512,14 +512,16 @@ def _put_profile_drive_import(
         Path(source_path).unlink(missing_ok=True)
 
 
-async def _discard_profile_drive_import(
+async def _reconcile_profile_drive_import(
     *,
     upload_session_id: str,
     storage: ObjectStorage,
     storage_key: str,
     object_created: bool,
+    tenant_id: str,
+    user_id: str,
     object_write_in_flight: bool = False,
-) -> None:
+) -> dict[str, object] | None:
     if object_write_in_flight:
         async with transaction() as conn:
             await abort_file_upload_session(
@@ -532,32 +534,46 @@ async def _discard_profile_drive_import(
                 upload_session_id=upload_session_id,
                 delay_seconds=86_400,
             )
-        return
+        return None
+
+    async with transaction() as conn:
+        reservation = await get_authorized_file_upload_session(
+            conn,
+            upload_session_id=upload_session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            for_update=True,
+        )
+        if reservation is None or str(reservation.get("storage_key") or "") != storage_key:
+            return None
+        if reservation.get("state") == "completed":
+            return await _completed_upload_file(conn, reservation)
+
+        if reservation.get("state") not in {"pending", "expired"}:
+            return None
+        if reservation.get("state") == "pending":
+            await abort_file_upload_session(
+                conn,
+                upload_session_id=upload_session_id,
+                state="expired",
+            )
+        await retry_expired_file_upload_session(
+            conn,
+            upload_session_id=upload_session_id,
+            delay_seconds=60,
+        )
+
     if object_created:
         try:
             await _run_storage(storage.delete_object, storage_key=storage_key)
         except Exception:
-            async with transaction() as conn:
-                await abort_file_upload_session(
-                    conn,
-                    upload_session_id=upload_session_id,
-                    state="expired",
-                )
-                await retry_expired_file_upload_session(
-                    conn,
-                    upload_session_id=upload_session_id,
-                )
-            return
+            return None
     async with transaction() as conn:
-        await abort_file_upload_session(
-            conn,
-            upload_session_id=upload_session_id,
-            state="expired",
-        )
         await delete_expired_file_upload_session(
             conn,
             upload_session_id=upload_session_id,
         )
+    return None
 
 
 def _put_direct_upload(
@@ -594,7 +610,7 @@ def _create_multipart_upload(
     return upload_id
 
 
-async def _completed_upload_response(conn, row: dict[str, object]) -> UploadFileResponse:
+async def _completed_upload_file(conn, row: dict[str, object]) -> dict[str, object]:
     file_row = await get_file(
         conn,
         tenant_id=str(row["tenant_id"]),
@@ -608,6 +624,11 @@ async def _completed_upload_response(conn, row: dict[str, object]) -> UploadFile
         or str(file_row.get("storage_key") or "") != str(row["storage_key"])
     ):
         raise HTTPException(status_code=409, detail="upload_session_result_invalid")
+    return dict(file_row)
+
+
+async def _completed_upload_response(conn, row: dict[str, object]) -> UploadFileResponse:
+    file_row = await _completed_upload_file(conn, row)
     return UploadFileResponse(
         file_id=str(file_row["id"]),
         name=str(file_row["original_name"]),
@@ -971,53 +992,46 @@ async def _store_profile_drive_file(
         return dict(file_row)
     except asyncio.CancelledError:
         if not committed:
-            await asyncio.shield(
-                _discard_profile_drive_import(
+            try:
+                await asyncio.shield(
+                    _reconcile_profile_drive_import(
+                        upload_session_id=upload_session_id,
+                        storage=storage,
+                        storage_key=storage_key,
+                        object_created=object_created,
+                        tenant_id=tenant_id,
+                        user_id=principal.user_id,
+                        object_write_in_flight=(
+                            abandoned_put is not None and abandoned_put.is_set()
+                        ),
+                    )
+                )
+            except Exception:
+                pass
+        raise
+    except Exception as exc:
+        reconciled_file: dict[str, object] | None = None
+        if not committed:
+            try:
+                reconciled_file = await _reconcile_profile_drive_import(
                     upload_session_id=upload_session_id,
                     storage=storage,
                     storage_key=storage_key,
                     object_created=object_created,
+                    tenant_id=tenant_id,
+                    user_id=principal.user_id,
                     object_write_in_flight=(
                         abandoned_put is not None and abandoned_put.is_set()
                     ),
                 )
-            )
-        raise
-    except (StorageIOBusyError, StorageIOTimeoutError) as exc:
-        if not committed:
-            await _discard_profile_drive_import(
-                upload_session_id=upload_session_id,
-                storage=storage,
-                storage_key=storage_key,
-                object_created=object_created,
-                object_write_in_flight=(
-                    abandoned_put is not None and abandoned_put.is_set()
-                ),
-            )
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except HTTPException:
-        if not committed:
-            await _discard_profile_drive_import(
-                upload_session_id=upload_session_id,
-                storage=storage,
-                storage_key=storage_key,
-                object_created=object_created,
-                object_write_in_flight=(
-                    abandoned_put is not None and abandoned_put.is_set()
-                ),
-            )
-        raise
-    except Exception as exc:
-        if not committed:
-            await _discard_profile_drive_import(
-                upload_session_id=upload_session_id,
-                storage=storage,
-                storage_key=storage_key,
-                object_created=object_created,
-                object_write_in_flight=(
-                    abandoned_put is not None and abandoned_put.is_set()
-                ),
-            )
+            except Exception:
+                reconciled_file = None
+        if reconciled_file is not None:
+            return reconciled_file
+        if isinstance(exc, HTTPException):
+            raise
+        if isinstance(exc, (StorageIOBusyError, StorageIOTimeoutError)):
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         raise HTTPException(status_code=503, detail="profile_drive_import_failed") from exc
     finally:
         if temporary_path and (abandoned_put is None or not abandoned_put.is_set()):

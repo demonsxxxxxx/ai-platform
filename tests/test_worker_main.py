@@ -84,6 +84,10 @@ async def run_once(*args, **kwargs):
     return await _run_once(*args, **kwargs)
 
 
+async def run_bulk_cleanup(settings):
+    await asyncio.gather(*(operation() for operation in worker_main._worker_cleanup_phases(settings).values()))
+
+
 @pytest.mark.asyncio
 async def test_worker_run_once_requires_an_explicit_attempt_lifecycle():
     with pytest.raises(TypeError, match="attempt_lifecycle"):
@@ -621,7 +625,7 @@ def default_sandbox_cleanup(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(monkeypatch):
+async def test_run_worker_recovery_maintenance_uses_configured_queue_visibility_timeout(monkeypatch):
     calls = []
 
     class Settings:
@@ -647,7 +651,7 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
     )
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
 
-    await worker_main.run_worker_maintenance(
+    await worker_main.run_worker_recovery_maintenance(
         Settings(),
         v4_capabilities=_TEST_V4_CAPABILITIES,
         attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
@@ -661,7 +665,7 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
 
 
 @pytest.mark.asyncio
-async def test_run_worker_maintenance_isolates_phase_failures(monkeypatch, caplog):
+async def test_worker_bulk_maintenance_isolates_phase_failures(monkeypatch, caplog):
     calls = []
 
     class Settings:
@@ -677,38 +681,18 @@ async def test_run_worker_maintenance_isolates_phase_failures(monkeypatch, caplo
     async def retain_data(_settings):
         calls.append("data_retention")
 
-    async def reclaim(**_kwargs):
-        calls.append("queue_reclaim")
-
-    async def reconcile_stale(
-        _settings, *, v4_capabilities, attempt_lifecycle, lifecycle
-    ):
-        assert v4_capabilities is _TEST_V4_CAPABILITIES
-        assert attempt_lifecycle is _TEST_ATTEMPT_LIFECYCLE
-        assert lifecycle is _TEST_RUN_LIFECYCLE
-        calls.append("stale_run_reconciliation")
-
     monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_sandbox)
     monkeypatch.setattr("app.worker_main.cleanup_expired_memory_records_for_worker", cleanup_memory)
     monkeypatch.setattr("app.worker_main.run_data_retention_maintenance", retain_data)
-    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim)
-    monkeypatch.setattr("app.worker_main.reconcile_stale_runs_for_worker", reconcile_stale)
 
     with caplog.at_level("ERROR", logger="app.worker_main"):
-        await worker_main.run_worker_maintenance(
-            Settings(),
-            v4_capabilities=_TEST_V4_CAPABILITIES,
-            attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
-            lifecycle=_TEST_RUN_LIFECYCLE,
+        await worker_main.run_maintenance_phases(
+            worker_main._worker_cleanup_phases(Settings()),
+            logger=worker_main.logger,
+            phase_budget_seconds=1.0,
         )
 
-    assert calls == [
-        "sandbox_cleanup",
-        "memory_cleanup",
-        "data_retention",
-        "queue_reclaim",
-        "stale_run_reconciliation",
-    ]
+    assert set(calls) == {"sandbox_cleanup", "memory_cleanup", "data_retention"}
     failure = next(
         record
         for record in caplog.records
@@ -2433,16 +2417,6 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
         calls.append(("run_once", timeout_seconds, worker_id is not None))
         raise asyncio.CancelledError()
 
-    async def fake_run_worker_maintenance(
-        _settings,
-        *,
-        v4_capabilities,
-        attempt_lifecycle,
-        lifecycle,
-    ):
-        assert v4_capabilities is _TEST_V4_CAPABILITIES
-        assert attempt_lifecycle is not None
-        assert lifecycle is _TEST_RUN_LIFECYCLE
 
     async def fake_close_pool():
         calls.append(("close_pool",))
@@ -2451,7 +2425,6 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
-    monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
@@ -2497,16 +2470,6 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
         continued.set()
         raise asyncio.CancelledError()
 
-    async def fake_run_worker_maintenance(
-        _settings,
-        *,
-        v4_capabilities,
-        attempt_lifecycle,
-        lifecycle,
-    ):
-        assert v4_capabilities is _TEST_V4_CAPABILITIES
-        assert attempt_lifecycle is not None
-        assert lifecycle is _TEST_RUN_LIFECYCLE
 
     async def fake_sleep(seconds):
         calls.append(("sleep", seconds))
@@ -2518,7 +2481,6 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
         calls.append(("close_redis_client",))
 
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
-    monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main._maintenance_until_done", _controlled_maintenance)
     monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
@@ -2552,17 +2514,6 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
         database_url = "postgresql+asyncpg://fixture:fixture@127.0.0.1:5432/fixture"
         worker_maintenance_interval_seconds = 60.0
 
-    async def fake_run_worker_maintenance(
-        settings,
-        *,
-        v4_capabilities=None,
-        attempt_lifecycle=None,
-        lifecycle=None,
-    ):
-        assert v4_capabilities is _TEST_V4_CAPABILITIES
-        assert attempt_lifecycle is not None
-        assert lifecycle is _TEST_RUN_LIFECYCLE
-        calls.append(("maintenance", settings.worker_maintenance_interval_seconds))
 
     async def fake_run_worker_slot(
         *,
@@ -2582,7 +2533,6 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
         await asyncio.Event().wait()
 
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
-    monkeypatch.setattr("app.worker_main.run_worker_maintenance", fake_run_worker_maintenance)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main._run_worker_slot", fake_run_worker_slot)
 
@@ -2595,11 +2545,94 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
             await task
 
     assert calls == [
-        ("maintenance", 60.0),
         ("slot", True, 2, 0.25),
         ("slot", True, 2, 0.25),
         ("slot", True, 2, 0.25),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_count", [1, 3])
+async def test_worker_startup_does_not_wait_for_blocked_bulk_cleanup(monkeypatch, worker_count):
+    cleanup_started = asyncio.Event()
+    cleanup_cancelled = asyncio.Event()
+    recovery_started = asyncio.Event()
+    terminal_reconciler_started = asyncio.Event()
+    slots_started = asyncio.Event()
+    slot_count = 0
+
+    class Settings:
+        worker_maintenance_interval_seconds = 60.0
+        queue_lease_visibility_timeout_seconds = 12
+        max_active_worker_runs = 3
+        memory_retention_worker_cleanup_enabled = False
+
+    async def blocked_cleanup():
+        cleanup_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_cancelled.set()
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def reclaim(**_kwargs):
+        recovery_started.set()
+
+    async def reconcile(*_args, **_kwargs):
+        recovery_started.set()
+        return []
+
+    async def terminal_reconciler(stop_event, **_kwargs):
+        terminal_reconciler_started.set()
+        await stop_event.wait()
+
+    async def run_once(*_args, **_kwargs):
+        slots_started.set()
+        await asyncio.Event().wait()
+
+    async def run_worker_slot(**_kwargs):
+        nonlocal slot_count
+        slot_count += 1
+        if slot_count == worker_count:
+            slots_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", blocked_cleanup)
+    monkeypatch.setattr("app.worker_main.cleanup_expired_memory_records_for_worker", noop)
+    monkeypatch.setattr("app.worker_main.run_data_retention_maintenance", noop)
+    monkeypatch.setattr("app.worker_main.cleanup_expired_file_upload_sessions", noop)
+    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim)
+    monkeypatch.setattr("app.worker_main.reconcile_stale_runs_for_worker", reconcile)
+    monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", terminal_reconciler)
+    monkeypatch.setattr("app.worker_main.run_once", run_once)
+    monkeypatch.setattr("app.worker_main._run_worker_slot", run_worker_slot)
+
+    task = asyncio.create_task(
+        worker_main.run_worker_pool(
+            worker_count=worker_count,
+            poll_timeout_seconds=1,
+            idle_sleep_seconds=0.01,
+        )
+    )
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                cleanup_started.wait(),
+                recovery_started.wait(),
+                terminal_reconciler_started.wait(),
+                slots_started.wait(),
+            ),
+            timeout=1.0,
+        )
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert cleanup_cancelled.is_set()
 
 
 @pytest.mark.asyncio
@@ -2774,32 +2807,21 @@ async def test_runtime_close_still_closes_database_when_redis_close_fails(monkey
 
 
 @pytest.mark.asyncio
-async def test_run_once_cleans_expired_sandbox_leases_before_leasing_queue(monkeypatch):
+async def test_worker_bulk_cleanup_runs_expired_sandbox_cleanup(monkeypatch):
     calls = []
 
     async def cleanup_expired_sandbox_leases():
         calls.append(("sandbox_cleanup",))
         return []
 
-    async def reclaim_expired_leases(**_kwargs):
-        calls.append(("queue_reclaim",))
-
-    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        calls.append(("lease", worker_id))
-        return None
-
     monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
-    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
-    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    await run_bulk_cleanup(SimpleNamespace())
 
-    outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
-
-    assert outcome.status == "idle"
-    assert calls == [("sandbox_cleanup",), ("queue_reclaim",), ("lease", "worker-a")]
+    assert calls == [("sandbox_cleanup",)]
 
 
 @pytest.mark.asyncio
-async def test_run_once_cleans_expired_memory_records_across_tenant_workspaces(monkeypatch):
+async def test_worker_memory_cleanup_covers_tenant_workspaces(monkeypatch):
     calls = []
 
     class Settings:
@@ -2820,8 +2842,6 @@ async def test_run_once_cleans_expired_memory_records_across_tenant_workspaces(m
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-    async def cleanup_expired_sandbox_leases():
-        calls.append(("sandbox_cleanup",))
 
     async def cleanup_expired_memory_records(conn, **_kwargs):
         raise AssertionError("worker must use all-scope memory cleanup")
@@ -2851,12 +2871,6 @@ async def test_run_once_cleans_expired_memory_records_across_tenant_workspaces(m
         calls.append(("audit", kwargs))
         return "audit-id"
 
-    async def reclaim_expired_leases(**_kwargs):
-        calls.append(("queue_reclaim",))
-
-    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        calls.append(("lease", worker_id, max_processing_runs))
-        return None
 
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_memory_records_for_worker",
@@ -2865,7 +2879,6 @@ async def test_run_once_cleans_expired_memory_records_across_tenant_workspaces(m
     monkeypatch.setattr("app.worker_main._next_memory_cleanup_at", 0.0, raising=False)
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
-    monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
     monkeypatch.setattr("app.context.infrastructure.postgres.cleanup_expired_memory_records", cleanup_expired_memory_records)
     monkeypatch.setattr(
         "app.context.infrastructure.postgres.cleanup_expired_memory_records_across_scopes",
@@ -2873,14 +2886,12 @@ async def test_run_once_cleans_expired_memory_records_across_tenant_workspaces(m
         raising=False,
     )
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
-    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
 
-    outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
+    rows = await _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER(Settings())
 
-    assert outcome.status == "idle"
-    assert calls[0] == ("sandbox_cleanup",)
-    assert calls[1] == ("memory_cleanup_all_scopes", "conn", 25)
+    assert len(rows) == 2
+    assert calls[0] == ("memory_cleanup_all_scopes", "conn", 25)
+    assert ("sandbox_cleanup",) not in calls
     audit_calls = [call[1] for call in calls if call[0] == "audit"]
     assert [audit["tenant_id"] for audit in audit_calls] == ["tenant-a", "tenant-b"]
     assert [audit["target_id"] for audit in audit_calls] == ["workspace-a", "workspace-b"]
@@ -2903,14 +2914,13 @@ async def test_run_once_cleans_expired_memory_records_across_tenant_workspaces(m
         "reason": "retention_expired",
         "source": "worker",
     }
-    assert calls[-2:] == [("queue_reclaim",), ("lease", "worker-a", 3)]
     assert "secret content" not in str(audit_calls)
     assert "api_key" not in str(audit_calls)
     assert "private_payload" not in str(audit_calls)
 
 
 @pytest.mark.asyncio
-async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
+async def test_worker_memory_cleanup_audits_expired_records(monkeypatch):
     calls = []
 
     class Settings:
@@ -2927,8 +2937,6 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-    async def cleanup_expired_sandbox_leases():
-        calls.append(("sandbox_cleanup",))
 
     async def cleanup_expired_memory_records_across_scopes(conn, *, limit):
         calls.append(("memory_cleanup", conn, limit))
@@ -2947,12 +2955,6 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
         calls.append(("audit", kwargs))
         return "audit-a"
 
-    async def reclaim_expired_leases(**_kwargs):
-        calls.append(("queue_reclaim",))
-
-    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        calls.append(("lease", worker_id, max_processing_runs))
-        return None
 
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_memory_records_for_worker",
@@ -2961,26 +2963,21 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
     monkeypatch.setattr("app.worker_main._next_memory_cleanup_at", 0.0, raising=False)
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
-    monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", cleanup_expired_sandbox_leases, raising=False)
     monkeypatch.setattr(
         "app.context.infrastructure.postgres.cleanup_expired_memory_records_across_scopes",
         cleanup_expired_memory_records_across_scopes,
     )
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
-    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
 
-    outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
+    rows = await _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER(Settings())
 
-    assert outcome.status == "idle"
-    assert calls[0] == ("sandbox_cleanup",)
-    assert calls[1] == ("memory_cleanup", "conn", 25)
-    assert calls[2][0] == "audit"
-    assert calls[2][1]["action"] == "worker.memory.retention.cleanup"
-    assert calls[2][1]["user_id"] is None
-    assert calls[2][1]["target_type"] == "memory_retention"
-    assert calls[2][1]["target_id"] == "workspace-a"
-    assert calls[2][1]["payload_json"] == {
+    assert len(rows) == 1
+    audit = next(call[1] for call in calls if call[0] == "audit")
+    assert audit["action"] == "worker.memory.retention.cleanup"
+    assert audit["user_id"] is None
+    assert audit["target_type"] == "memory_retention"
+    assert audit["target_id"] == "workspace-a"
+    assert audit["payload_json"] == {
         "workspace_id": "workspace-a",
         "deleted_count": 1,
         "memory_record_ids": ["mem-expired"],
@@ -2988,13 +2985,12 @@ async def test_run_once_cleans_expired_memory_records_when_due(monkeypatch):
         "reason": "retention_expired",
         "source": "worker",
     }
-    assert calls[3:] == [("queue_reclaim",), ("lease", "worker-a", 3)]
-    assert "do not audit this secret content" not in str(calls[2])
-    assert "hidden" not in str(calls[2])
+    assert "do not audit this secret content" not in str(audit)
+    assert "hidden" not in str(audit)
 
 
 @pytest.mark.asyncio
-async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(monkeypatch):
+async def test_worker_memory_cleanup_does_not_audit_when_no_records_deleted(monkeypatch):
     calls = []
 
     class Settings:
@@ -3018,13 +3014,6 @@ async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(mo
     async def append_audit_log(conn, **kwargs):
         calls.append(("audit", kwargs))
 
-    async def reclaim_expired_leases(**_kwargs):
-        calls.append(("queue_reclaim",))
-
-    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        calls.append(("lease", worker_id))
-        return None
-
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_memory_records_for_worker",
         _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER,
@@ -3037,17 +3026,14 @@ async def test_run_once_does_not_audit_memory_cleanup_when_no_records_deleted(mo
         cleanup_expired_memory_records_across_scopes,
     )
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
-    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    rows = await _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER(Settings())
 
-    outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
-
-    assert outcome.status == "idle"
-    assert calls == [("memory_cleanup", 25), ("queue_reclaim",), ("lease", "worker-a")]
+    assert rows == []
+    assert calls == [("memory_cleanup", 25)]
 
 
 @pytest.mark.asyncio
-async def test_run_once_skips_memory_cleanup_until_interval_elapsed(monkeypatch):
+async def test_worker_memory_cleanup_skips_until_interval_elapsed(monkeypatch):
     calls = []
 
     class Settings:
@@ -3071,13 +3057,6 @@ async def test_run_once_skips_memory_cleanup_until_interval_elapsed(monkeypatch)
     async def append_audit_log(conn, **kwargs):
         calls.append(("audit", kwargs))
 
-    async def reclaim_expired_leases(**_kwargs):
-        calls.append(("queue_reclaim",))
-
-    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        calls.append(("lease", worker_id))
-        return None
-
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_memory_records_for_worker",
         _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER,
@@ -3090,25 +3069,16 @@ async def test_run_once_skips_memory_cleanup_until_interval_elapsed(monkeypatch)
         cleanup_expired_memory_records_across_scopes,
     )
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
-    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    first = await _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER(Settings(), now=0)
+    second = await _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER(Settings(), now=1)
 
-    first = await run_once(timeout_seconds=1, worker_id="worker-a")
-    second = await run_once(timeout_seconds=1, worker_id="worker-a")
-
-    assert first.status == "idle"
-    assert second.status == "idle"
-    assert calls == [
-        ("memory_cleanup",),
-        ("queue_reclaim",),
-        ("lease", "worker-a"),
-        ("queue_reclaim",),
-        ("lease", "worker-a"),
-    ]
+    assert first == []
+    assert second == []
+    assert calls == [("memory_cleanup",)]
 
 
 @pytest.mark.asyncio
-async def test_run_once_skips_memory_cleanup_when_disabled(monkeypatch):
+async def test_worker_memory_cleanup_skips_when_disabled(monkeypatch):
     calls = []
 
     class Settings:
@@ -3128,13 +3098,6 @@ async def test_run_once_skips_memory_cleanup_when_disabled(monkeypatch):
     async def cleanup_expired_memory_records(conn, **kwargs):
         raise AssertionError("disabled memory cleanup must not scan memory records")
 
-    async def reclaim_expired_leases(**_kwargs):
-        calls.append(("queue_reclaim",))
-
-    async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
-        calls.append(("lease", worker_id))
-        return None
-
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_memory_records_for_worker",
         _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER,
@@ -3143,67 +3106,56 @@ async def test_run_once_skips_memory_cleanup_when_disabled(monkeypatch):
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.transaction", lambda: Transaction())
     monkeypatch.setattr("app.context.infrastructure.postgres.cleanup_expired_memory_records", cleanup_expired_memory_records)
-    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
-    monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    rows = await _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER(Settings())
 
-    outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
-
-    assert outcome.status == "idle"
-    assert calls == [("queue_reclaim",), ("lease", "worker-a")]
+    assert rows == []
+    assert calls == []
 
 
 @pytest.mark.asyncio
-async def test_run_once_reclaims_queue_when_sandbox_runtime_cleanup_fails(monkeypatch, caplog):
+async def test_run_once_progresses_critical_recovery_while_cleanup_is_blocked(monkeypatch):
     calls = []
+    cleanup_started = asyncio.Event()
+    cleanup_cancelled = asyncio.Event()
+    critical_recovered = asyncio.Event()
 
-    class Transaction:
-        async def __aenter__(self):
-            return object()
+    class Settings:
+        max_active_worker_runs = 2
+        worker_maintenance_interval_seconds = 60.0
+        queue_lease_visibility_timeout_seconds = 12
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
+    async def blocked_cleanup():
+        cleanup_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_cancelled.set()
 
-    async def cleanup_expired_sandbox_runtime_leases(**_kwargs):
-        calls.append(("sandbox_runtime_cleanup",))
-        raise worker_main.SandboxRuntimeCleanupError(
-            [{"lease_id": "lease-a", "error": "provider_failed"}]
-        )
-
-    async def cleanup_expired_sandbox_leases(_conn):
-        calls.append(("sandbox_lease_cleanup",))
+    async def reconcile_stale_runs(*_args, **_kwargs):
+        calls.append(("stale_recovery",))
 
     async def reclaim_expired_leases(**_kwargs):
         calls.append(("queue_reclaim",))
+        critical_recovered.set()
 
     async def lease_run(timeout_seconds=5, worker_id="worker", max_processing_runs=None, **_quota_kwargs):
+        await asyncio.wait_for(cleanup_started.wait(), timeout=0.5)
+        assert critical_recovered.is_set()
         calls.append(("lease", worker_id))
         return None
 
-    monkeypatch.setattr("app.worker_main.transaction", Transaction)
-    monkeypatch.setattr(
-        "app.worker_main.cleanup_expired_sandbox_leases", _ORIGINAL_SANDBOX_CLEANUP
-    )
-    monkeypatch.setattr(
-        "app.worker_main.cleanup_expired_sandbox_runtime_leases",
-        cleanup_expired_sandbox_runtime_leases,
-    )
-    monkeypatch.setattr(
-        "app.worker_main._cleanup_expired_sandbox_lease_records",
-        cleanup_expired_sandbox_leases,
-    )
+    monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", blocked_cleanup)
+    monkeypatch.setattr("app.worker_main.reconcile_stale_runs_for_worker", reconcile_stale_runs)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
 
     outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
 
     assert outcome.status == "idle"
-    assert calls == [
-        ("sandbox_runtime_cleanup",),
-        ("sandbox_lease_cleanup",),
-        ("queue_reclaim",),
-        ("lease", "worker-a"),
-    ]
-    assert "Sandbox runtime cleanup maintenance failed" in caplog.text
+    assert calls[:2] == [("queue_reclaim",), ("stale_recovery",)]
+    assert calls[-1] == ("lease", "worker-a")
+    assert cleanup_cancelled.is_set()
 
 
 @pytest.mark.asyncio

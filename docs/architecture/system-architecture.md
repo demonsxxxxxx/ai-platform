@@ -22,12 +22,12 @@ contracts remain authoritative. This overview links rather than reproduces them.
 | Process/resource | Observed entry or boundary | Responsibility | Current limitation to verify |
 | --- | --- | --- | --- |
 | API | `app/main.py`, `app/routes/chat.py` | Authenticated admission, queries and public transport | Submission orchestration remains in route code |
-| Worker | `app/worker_main.py`, `app/worker.py` | Queue lease, reauthorization, execution preparation and dispatch | Single/pool supervisor paths and maintenance coupling remain |
+| Worker | `app/worker_main.py`, `app/worker.py` | Queue lease, reauthorization, execution preparation and dispatch | Single/pool supervisors remain separate; maintenance phases run independently |
 | Sandbox controller | `app/runtime/sandbox/runtime.py` | Resource acquire, stage, validate, dispatch and cleanup | Provider calls also exist in routes/reconciler |
 | Executor | `app/runtime/sandbox/executor_app.py` | One scoped Engine execution and callback delivery | Callback admission and durable acknowledgement need clear internal semantics |
 | Engine | `app/executors/claude_agent_sdk_runner.py` | SDK-specific model/tool loop and event normalization | SDK types must not become public protocol authority |
 | Reconciler | `app/executor_reconciler.py` | Collect asynchronous results, finalize Runs and release resources | Eligible backlog must not wait for a new notification |
-| Maintenance | Worker-owned scheduling | Retry, reclaim, cleanup and retention scheduling | Exception isolation alone does not bound phase duration |
+| Maintenance | Worker-owned scheduling | Retry, reclaim, cleanup and retention scheduling | Per-phase cancellation budgets are cooperative; provider stop is not a hard deadline |
 | Model/callback egress | Governed OpenSandbox proxy plus API | Scope-bound proxying without long-lived model keys in governed Executor | Test-profile exceptions are not production permissions |
 | Browser | `useAgent`, SSE adapter, message projection | Submit, observe and display authorized state | Message and accepted cursor ownership is still dispersed |
 

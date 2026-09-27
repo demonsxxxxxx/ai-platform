@@ -31,6 +31,13 @@ file/object lifecycle boundary for confirmed compensation and explicitly track
 pre-record orphan work. Public access still re-proves exact scope and eligibility.
 Acceptance: IO-01, IO-02, DATA-01.
 
+Implemented ProfileDrive compensation now locks and reloads the exact authorized
+upload reservation after an uncertain metadata commit. A completed reservation
+uses the same persisted-file validation as ordinary upload retries. Unknown
+state retains the object and reservation; confirmed incomplete imports enter
+expired-session cleanup before object deletion outside the transaction.
+Cancellation preserves this reconciliation and still propagates to the caller.
+
 ## 3. External side effects and transactions
 
 Target sequence: a short owning transaction validates and records a claim/intent;
@@ -69,6 +76,24 @@ Avoid startup waiting for all bulk cleanup before useful Worker slots start.
 Use one supervised lifecycle for count 1 and count N. Initially reuse the Worker
 process; independently deployed maintenance is a later packaging decision.
 Acceptance: RCV-01, RCV-02, RCV-03, RCV-04.
+
+Implemented Worker scheduling starts the terminal reconciler, execution slots,
+and independent maintenance phases without an initial bulk-cleanup prerequisite
+for both single and multiple slots. Queue reclaim and stale-Run recovery have
+separate schedules from Sandbox, memory, retention and upload cleanup. Each
+phase retains one attempt: recovery receives a 10-second cancellation budget and
+cleanup 30 seconds, followed by the existing configured repeat interval. A phase
+that delays cancellation remains owned until it ends; it cannot spawn overlapping
+replacements. Synchronous storage workers continue holding their existing slots
+until their actual I/O ends. Shutdown joins owned phase tasks; these cooperative
+budgets are not a hard process-kill or provider-stop guarantee.
+
+The one-shot entry performs a bounded critical recovery pass before leasing,
+then keeps cleanup and periodic recovery alive throughout that invocation. It
+cancels and joins maintenance on idle return, invalid lease, failure, or normal
+completion. A nonpositive repeat interval permits the initial background pass
+and disables repeats. The single-slot and pool supervisors remain distinct
+implementations; consolidating them is outside this repair.
 
 ## 5. Attempt and Sandbox ownership
 

@@ -147,6 +147,7 @@ jobs:
               tests/test_run_attempt_repository.py
               tests/test_legacy_context_checkpoint.py
               tests/test_worker_main.py
+              tests/test_worker_maintenance.py
               tests/test_sandbox_cleanup_postgres.py
               tests/test_s0a_schema_postgres.py::test_expired_terminal_receipt_survives_cleanup_and_historical_release
               tests/test_worker_heartbeat_postgres_redis_integration.py

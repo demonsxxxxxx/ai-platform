@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
 
 from app.db import close_pool
 from app.redis_client import close_redis_client
@@ -26,37 +25,67 @@ def worker_maintenance_interval_seconds(settings: object) -> float:
     return max(interval, 0.0)
 
 
-async def maintenance_until_done(
-    settings: object,
+async def maintenance_phase_until_done(
+    name: str,
+    operation: Callable[[], Awaitable[object]],
     interval_seconds: float,
-    operation: Callable[[object], Awaitable[Any]],
+    phase_budget_seconds: float,
     *,
     logger: logging.Logger,
+    run_immediately: bool = True,
 ) -> None:
-    if interval_seconds <= 0:
-        return
-    while True:
+    """Run one maintenance phase at a time and supervise slow attempts."""
+
+    if not run_immediately:
+        if interval_seconds <= 0:
+            await asyncio.Event().wait()
         await asyncio.sleep(interval_seconds)
+    while True:
+        phase_task = asyncio.create_task(operation(), name=f"worker-maintenance-phase-{name}")
         try:
-            await operation(settings)
+            done, _pending = await asyncio.wait(
+                {phase_task},
+                timeout=max(float(phase_budget_seconds), 0.0),
+            )
+            if not done:
+                logger.warning(
+                    "Worker maintenance phase exceeded its time budget",
+                    extra={"maintenance_phase": name, "budget_seconds": phase_budget_seconds},
+                )
+                phase_task.cancel()
+            # A cancellation-resistant operation remains the sole attempt for
+            # this phase until it really ends. Storage threads retain their slots.
+            result = (await asyncio.gather(phase_task, return_exceptions=True))[0]
+            if isinstance(result, asyncio.CancelledError):
+                if done:
+                    raise result
+            elif isinstance(result, BaseException):
+                raise result
         except asyncio.CancelledError:
+            if not phase_task.done():
+                phase_task.cancel()
+            await asyncio.gather(phase_task, return_exceptions=True)
             raise
-        except Exception:
-            logger.exception("Worker background maintenance failed")
-
-
-
-
+        except Exception:  # noqa: BLE001 - phases fail independently.
+            logger.exception(
+                "Worker background maintenance phase failed",
+                extra={"maintenance_phase": name},
+            )
+        if interval_seconds <= 0:
+            await asyncio.Event().wait()
+        await asyncio.sleep(interval_seconds)
 
 
 async def run_maintenance_phases(
     phases: Mapping[str, Callable[[], Awaitable[object]]],
     *,
     logger: logging.Logger,
+    phase_budget_seconds: float,
 ) -> None:
     for name, operation in phases.items():
         try:
-            await operation()
+            async with asyncio.timeout(phase_budget_seconds):
+                await operation()
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - maintenance phases must be failure-isolated.
