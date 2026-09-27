@@ -52,16 +52,12 @@ export function MessageWorkActivity({
   return parts.map((part, index) => {
     const isWorkActivity = isWorkActivityPart(part);
     const renderedPart = renderPart(part, index, isWorkActivity);
-    const answerFollowsWork =
-      part.type === "text" &&
-      parts.slice(0, index).some(isWorkActivityPart);
     return (
       <Fragment key={partKeys[index] ?? `${messageId}:${index}`}>
         {index === firstWorkActivityIndex && (
           <button
             type="button"
             data-message-work-details-toggle
-            data-message-work-activity
             aria-expanded={expanded}
             aria-controls={controlledWorkActivityIds}
             title={t(
@@ -102,13 +98,6 @@ export function MessageWorkActivity({
         )}
         {isWorkActivity ? (
           <div id={workActivityRegionIds[index]} hidden={!expanded}>
-            {renderedPart}
-          </div>
-        ) : part.type === "text" ? (
-          <div
-            data-message-answer-content
-            className={clsx("min-w-0", answerFollowsWork && "pt-2")}
-          >
             {renderedPart}
           </div>
         ) : (

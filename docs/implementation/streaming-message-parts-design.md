@@ -89,7 +89,7 @@ flowchart LR
 5. typed TextBlock 用于补足未观察到的安全后缀，并和已流出的前缀对账；如果它在同一 open indexed text source 的首个 raw delta 前到达，其 body 建立该 source 的 coverage/digest/published state，后续匹配的 raw body 只作 replay no-op；ToolUseBlock 只登记工具身份和公开生命周期。
 6. `ResultMessage.result` 是终态补充观察。它只补充同一 source 尚未公开的后缀；如果 identity、framing 或已观察正文冲突，保留已经显示的安全文字并 fail closed，不用 Result 覆盖或另造无依据的正文来源。
 7. 同一文本先由 raw delta、后由 typed TextBlock 或 Result 观察时，只发布一次。不同来源即使文字相同也不做全局字符串去重。
-8. raw observation binding、closed-source identity 和 tombstone 只保留最近的有界窗口；窗口淘汰后不能再证明旧 UUID 是重复观察，因此旧 replay 不能获得精确 no-op 结论。当前 source、保留的 digest/length 和仍在窗口内的冲突继续 fail closed；这只是 replay 证据上限，不是公开正文长度上限。
+8. SDK 单次调用按顺序消费；正文来源和最近的 raw/typed 观察使用确定性的有界窗口对账。窗口内的相同观察只处理一次，冲突拒绝追加；窗口外不作重复判定，不使用概率过滤器中断正常新输出。回调重试与 SSE 断线重放由各自的事件序号和回执处理，不在 SDK 适配层重复实现。窗口只限制对账证据，不限制累计公开正文长度。
 9. 没有 `TextBlock` 的非空 typed `AssistantMessage`（例如 Thinking/ToolUse）是新的 turn boundary：它会 retire 当前 answer binding，后续 streamed/Sandbox `ResultMessage` 必须等新的 raw answer source 才能通过；没有既有 answer source 的显式 non-streaming Result-only 兼容仍保留。
 
 所有 Assistant 公开文字统一进入 `message.delta`。后续出现 ToolUseBlock 不把早先正文改写成 `commentary.delta`。

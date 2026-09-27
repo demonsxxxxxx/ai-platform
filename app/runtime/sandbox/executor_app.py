@@ -2408,7 +2408,6 @@ async def _default_executor_runner(
         "status": "completed" if used_sdk and not effective_error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
         "answer_receipt": getattr(sdk_result, "answer_receipt", None),
-        "answer_source_count": getattr(sdk_result, "answer_source_count", None),
         "response_files": list(getattr(sdk_result, "response_files", []) or []),
         "response_file_descriptors": list(
             getattr(sdk_result, "response_file_descriptors", []) or []
@@ -3412,7 +3411,6 @@ def create_executor_app(
         for key in (
             "message",
             "answer_receipt",
-            "answer_source_count",
             "response_files",
             "response_file_descriptors",
             "sdk_usage",

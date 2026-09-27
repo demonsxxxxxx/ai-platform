@@ -40,13 +40,6 @@ class PublicAnswerCoalescer:
         self._closed = False
         self._error: BaseException | None = None
         self._emission_unacknowledged = False
-        self._last_source_identity: object = None
-        self._has_observed_source = False
-        self._source_count = 0
-
-    @property
-    def source_count(self) -> int:
-        return self._source_count
 
     async def push(self, text: object, *, source_identity: object = None) -> bool:
         if not isinstance(text, str) or not text:
@@ -55,13 +48,6 @@ class PublicAnswerCoalescer:
             self._raise_if_failed()
             if self._closed:
                 return False
-            if (
-                not self._has_observed_source
-                or source_identity != self._last_source_identity
-            ):
-                self._last_source_identity = source_identity
-                self._has_observed_source = True
-                self._source_count += 1
             if (
                 self._pending
                 and self._has_source

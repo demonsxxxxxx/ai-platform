@@ -5,7 +5,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.persistence_limits import RUN_RESULT_MAX_BYTES
+from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES
 
 
 _KNOWN_STOP_REASONS = frozenset(
@@ -99,7 +99,6 @@ class _AnswerSource:
     raw_coverage_hasher: Any = field(default=None, repr=False)
     raw_open: bool = False
     raw_closed: bool = False
-    stop_reason: str | None = None
     published_chars: int = 0
     sequence: int = 0
     raw_delta_count: int = 0
@@ -109,8 +108,6 @@ class _AnswerSource:
     typed_body_replay_expected_length: int = 0
     typed_body_replay_expected_digest: str = ""
     typed_body_replay_hasher: Any = field(default=None, repr=False)
-    observation_identities: set[object] = field(default_factory=set)
-    raw_observation_identities: set[object] = field(default_factory=set)
 
 
 @dataclass
@@ -119,40 +116,10 @@ class _RawBlockSource:
     content_type: str
 
 
-@dataclass(frozen=True)
-class _RawObservationTombstone:
-    source_identity: object
-    message_identity: object
-    parent_tool_use_id: str | None
-    observation_scope: object
-    body_length: int
-    body_digest: str
-
-
-@dataclass(frozen=True)
-class _RetiredSource:
-    message_key: object
-    parent_tool_use_id: str | None
-    sequence: int
-    coverage_length: int
-    coverage_digest: str
-
-
 # These bounds cap replay/reconciliation evidence, not the cumulative public text.
 _MAX_RECONCILIATION_BINDINGS = 128
 _MAX_RECONCILIATION_COVERAGE_BYTES = RUN_RESULT_MAX_BYTES
 _MAX_RETAINED_SOURCES = _MAX_RECONCILIATION_BINDINGS
-# This filter is never cleared, so an evicted raw UUID can only become a
-# maybe-seen false positive, never a false-negative fresh observation.
-_RAW_OBSERVATION_FILTER_BITS = 1 << 20
-_RAW_OBSERVATION_FILTER_BYTES = _RAW_OBSERVATION_FILTER_BITS // 8
-_TYPED_OBSERVATION_FILTER_BITS = 1 << 20
-_TYPED_OBSERVATION_FILTER_BYTES = _TYPED_OBSERVATION_FILTER_BITS // 8
-_TYPED_SOURCE_FILTER_BITS = 1 << 20
-_TYPED_SOURCE_FILTER_BYTES = _TYPED_SOURCE_FILTER_BITS // 8
-_RAW_OBSERVATION_FILTER_OFFSETS = (0, 8, 16, 24)
-_TYPED_OBSERVATION_FILTER_OFFSETS = (0, 8, 16, 24)
-_TYPED_SOURCE_FILTER_OFFSETS = (0, 8, 16, 24)
 
 
 class AssistantAnswerTimeline:
@@ -168,7 +135,6 @@ class AssistantAnswerTimeline:
     def __init__(self) -> None:
         self._sources: list[_AnswerSource] = []
         self._sources_by_key: dict[object, _AnswerSource] = {}
-        self._retired_sources: OrderedDict[object, _RetiredSource] = OrderedDict()
         self._next_source_sequence = 0
         self._last_published_message_key: object = None
         self._last_published_sequence = -1
@@ -182,20 +148,12 @@ class AssistantAnswerTimeline:
         self._rendered_length = 0
         self._rendered_hasher = hashlib.sha256()
         self._terminal_identity: object = None
-        self._observation_bindings: dict[
-            tuple[str, str], dict[tuple[object, object], tuple[int, str, object]]
-        ] = {}
-        self._assistant_observation_order: OrderedDict[str, None] = OrderedDict()
-        self._raw_observation_order: OrderedDict[str, None] = OrderedDict()
-        self._raw_observation_evicted: OrderedDict[str, None] = OrderedDict()
-        self._assistant_observation_membership = bytearray(
-            _TYPED_OBSERVATION_FILTER_BYTES
+        # SDK delivery is sequential; exact replay suppression is limited to
+        # this recent window. An evicted identity is treated as a new event.
+        self._recent_raw_observations: OrderedDict[str, tuple[object, ...]] = (
+            OrderedDict()
         )
-        self._typed_source_membership = bytearray(_TYPED_SOURCE_FILTER_BYTES)
-        self._raw_observation_membership = bytearray(_RAW_OBSERVATION_FILTER_BYTES)
-        self._raw_observation_tombstones: OrderedDict[
-            str, _RawObservationTombstone
-        ] = OrderedDict()
+        self._recent_assistant_observations: OrderedDict[tuple[object, object], tuple[object, ...]] = OrderedDict()
         self._answer_binding_retired = False
         self._disabled = False
 
@@ -233,17 +191,12 @@ class AssistantAnswerTimeline:
             source.raw_closed = True
             self._seal_coverage(source)
             self._seal_raw_coverage(source)
-            self._seal_raw_observation_bindings(source)
         self._current = None
         self._answer_binding_retired = had_answer_source
 
     @property
-    def latest_stop_reason(self) -> str | None:
-        return self._current.stop_reason if self._current is not None else None
-
-    @property
     def has_answer_source(self) -> bool:
-        return bool(self._sources)
+        return self._next_source_sequence > 0
 
     @staticmethod
     def _text_size(text: str) -> int:
@@ -307,269 +260,51 @@ class AssistantAnswerTimeline:
                 return
             self._sources.remove(candidate)
             self._sources_by_key.pop(candidate.key, None)
-            self._retired_sources[candidate.key] = _RetiredSource(
-                message_key=candidate.message_key,
-                parent_tool_use_id=candidate.parent_tool_use_id,
-                sequence=candidate.sequence,
-                coverage_length=candidate.coverage_length,
-                coverage_digest=candidate.coverage_digest,
-            )
-            self._retired_sources.move_to_end(candidate.key)
-            while len(self._retired_sources) > _MAX_RETAINED_SOURCES:
-                self._retired_sources.popitem(last=False)
 
-    def _raw_tombstone_status(
+    def _raw_observation_replay_status(
         self,
         observed_identity: object,
         *,
         source_identity: object,
         message_identity: object,
         parent_tool_use_id: str | None,
-        observation_scope: object,
         body: str,
     ) -> bool | None:
-        try:
-            tombstone = self._raw_observation_tombstones.get(observed_identity)
-        except TypeError:
+        if not isinstance(observed_identity, str) or not observed_identity:
             return None
-        if tombstone is None:
+        previous = self._recent_raw_observations.get(observed_identity)
+        if previous is None:
             return None
-        matches = (
-            tombstone.source_identity == source_identity
-            and tombstone.message_identity == message_identity
-            and tombstone.parent_tool_use_id == parent_tool_use_id
-            and tombstone.observation_scope == observation_scope
-            and tombstone.body_length == len(body)
-            and tombstone.body_digest
-            == hashlib.sha256(body.encode("utf-8")).hexdigest()
-        )
-        if matches:
-            self._raw_observation_tombstones.move_to_end(observed_identity)
-        return matches
-
-    def _remember_assistant_observation(
-        self,
-        source: _AnswerSource,
-        observed_identity: str,
-    ) -> None:
-        self._mark_typed_observation_maybe_seen(observed_identity)
-        observation_key = ("assistant", observed_identity)
-        bindings = self._observation_bindings[observation_key]
-        self._assistant_observation_order[observed_identity] = None
-        self._assistant_observation_order.move_to_end(observed_identity)
-        source.observation_identities.add(observed_identity)
-        while len(bindings) > _MAX_RECONCILIATION_BINDINGS:
-            evicted_source_key = next(iter(bindings))
-            del bindings[evicted_source_key]
-            bound_source = self._sources_by_key.get(evicted_source_key[0])
-            if bound_source is not None:
-                bound_source.observation_identities.discard(observed_identity)
-        while len(self._assistant_observation_order) > _MAX_RECONCILIATION_BINDINGS:
-            evicted_identity, _ = self._assistant_observation_order.popitem(
-                last=False
-            )
-            evicted_bindings = self._observation_bindings.pop(
-                ("assistant", evicted_identity), None
-            )
-            if evicted_bindings is not None:
-                for source_key in evicted_bindings:
-                    bound_source = self._sources_by_key.get(source_key[0])
-                    if bound_source is not None:
-                        bound_source.observation_identities.discard(
-                            evicted_identity
-                        )
-
-    @staticmethod
-    def _membership_filter_indexes(
-        value: object,
-        *,
-        namespace: str,
-        bit_count: int,
-        offsets: tuple[int, ...],
-    ) -> tuple[int, ...]:
-        digest = hashlib.sha256(
-            f"{namespace}:{value!r}".encode("utf-8")
-        ).digest()
-        return tuple(
-            int.from_bytes(digest[offset : offset + 4], "big") % bit_count
-            for offset in offsets
-        )
-
-    @classmethod
-    def _mark_membership(
-        cls,
-        membership: bytearray,
-        value: object,
-        *,
-        namespace: str,
-        bit_count: int,
-        offsets: tuple[int, ...],
-    ) -> None:
-        for index in cls._membership_filter_indexes(
-            value,
-            namespace=namespace,
-            bit_count=bit_count,
-            offsets=offsets,
-        ):
-            membership[index >> 3] |= 1 << (index & 7)
-
-    @classmethod
-    def _membership_maybe_seen(
-        cls,
-        membership: bytearray,
-        value: object,
-        *,
-        namespace: str,
-        bit_count: int,
-        offsets: tuple[int, ...],
-    ) -> bool:
-        return all(
-            membership[index >> 3] & (1 << (index & 7))
-            for index in cls._membership_filter_indexes(
-                value,
-                namespace=namespace,
-                bit_count=bit_count,
-                offsets=offsets,
-            )
-        )
-
-    def _mark_typed_observation_maybe_seen(self, observed_identity: str) -> None:
-        self._mark_membership(
-            self._assistant_observation_membership,
-            observed_identity,
-            namespace="typed-observation",
-            bit_count=_TYPED_OBSERVATION_FILTER_BITS,
-            offsets=_TYPED_OBSERVATION_FILTER_OFFSETS,
-        )
-
-    def _typed_observation_maybe_seen(self, observed_identity: str) -> bool:
-        return self._membership_maybe_seen(
-            self._assistant_observation_membership,
-            observed_identity,
-            namespace="typed-observation",
-            bit_count=_TYPED_OBSERVATION_FILTER_BITS,
-            offsets=_TYPED_OBSERVATION_FILTER_OFFSETS,
-        )
-
-    def _mark_typed_source_maybe_seen(self, source_identity: object) -> None:
-        self._mark_membership(
-            self._typed_source_membership,
+        self._recent_raw_observations.move_to_end(observed_identity)
+        return previous == (
             source_identity,
-            namespace="typed-source",
-            bit_count=_TYPED_SOURCE_FILTER_BITS,
-            offsets=_TYPED_SOURCE_FILTER_OFFSETS,
+            message_identity,
+            parent_tool_use_id,
+            len(body),
+            hashlib.sha256(body.encode("utf-8")).hexdigest(),
         )
-
-    def _typed_source_maybe_seen(self, source_identity: object) -> bool:
-        return self._membership_maybe_seen(
-            self._typed_source_membership,
-            source_identity,
-            namespace="typed-source",
-            bit_count=_TYPED_SOURCE_FILTER_BITS,
-            offsets=_TYPED_SOURCE_FILTER_OFFSETS,
-        )
-
-    @staticmethod
-    def _raw_observation_filter_indexes(observed_identity: str) -> tuple[int, ...]:
-        return AssistantAnswerTimeline._membership_filter_indexes(
-            observed_identity,
-            namespace="raw-observation",
-            bit_count=_RAW_OBSERVATION_FILTER_BITS,
-            offsets=_RAW_OBSERVATION_FILTER_OFFSETS,
-        )
-
-    def _mark_raw_observation_maybe_seen(self, observed_identity: str) -> None:
-        for index in self._raw_observation_filter_indexes(observed_identity):
-            self._raw_observation_membership[index >> 3] |= 1 << (index & 7)
-
-    def _raw_observation_maybe_seen(self, observed_identity: str) -> bool:
-        return all(
-            self._raw_observation_membership[index >> 3] & (1 << (index & 7))
-            for index in self._raw_observation_filter_indexes(observed_identity)
-        )
-
-    def _touch_raw_observation(self, observed_identity: str) -> None:
-        if observed_identity in self._raw_observation_order:
-            self._raw_observation_order.move_to_end(observed_identity)
-
-    def _raw_observation_was_evicted(self, observed_identity: str) -> bool:
-        return observed_identity in self._raw_observation_evicted
-
-    def _raw_observation_may_have_been_seen(self, observed_identity: str) -> bool:
-        return self._raw_observation_was_evicted(
-            observed_identity
-        ) or self._raw_observation_maybe_seen(observed_identity)
-
-    def _evict_raw_observation(self, observed_identity: str) -> None:
-        self._raw_observation_order.pop(observed_identity, None)
-        bindings = self._observation_bindings.pop(("raw", observed_identity), None)
-        if bindings is None:
-            return
-        for source_key in bindings:
-            source = self._sources_by_key.get(source_key[0])
-            if source is not None:
-                source.raw_observation_identities.discard(observed_identity)
 
     def _remember_raw_observation(
         self,
-        source: _AnswerSource,
-        observed_identity: str,
-    ) -> None:
-        self._mark_raw_observation_maybe_seen(observed_identity)
-        self._raw_observation_order[observed_identity] = None
-        self._raw_observation_order.move_to_end(observed_identity)
-        source.raw_observation_identities.add(observed_identity)
-        while len(self._raw_observation_order) > _MAX_RECONCILIATION_BINDINGS:
-            evicted_identity, _ = self._raw_observation_order.popitem(last=False)
-            self._raw_observation_evicted[evicted_identity] = None
-            self._raw_observation_evicted.move_to_end(evicted_identity)
-            while len(self._raw_observation_evicted) > _MAX_RECONCILIATION_BINDINGS:
-                self._raw_observation_evicted.popitem(last=False)
-            bindings = self._observation_bindings.pop(
-                ("raw", evicted_identity), None
-            )
-            if bindings is not None:
-                for source_key in bindings:
-                    bound_source = self._sources_by_key.get(source_key[0])
-                    if bound_source is not None:
-                        bound_source.raw_observation_identities.discard(
-                            evicted_identity
-                        )
-
-    def _remember_raw_tombstone(
-        self,
-        observed_identity: str,
-        tombstone: _RawObservationTombstone,
-    ) -> None:
-        self._raw_observation_tombstones[observed_identity] = tombstone
-        self._raw_observation_tombstones.move_to_end(observed_identity)
-        while len(self._raw_observation_tombstones) > _MAX_RECONCILIATION_BINDINGS:
-            self._raw_observation_tombstones.popitem(last=False)
-
-    def _active_raw_observation_is_exact_replay(
-        self,
-        observed_identity: str,
+        observed_identity: object,
         *,
         source_identity: object,
         message_identity: object,
         parent_tool_use_id: str | None,
-        observation_scope: object,
         body: str,
-    ) -> bool:
-        bindings = self._observation_bindings.get(("raw", observed_identity))
-        if bindings is None:
-            return False
-        metadata = bindings.get((source_identity, message_identity))
-        if metadata is None:
-            return False
-        source = self._sources_by_key.get(source_identity)
-        return (
-            source is not None
-            and source.parent_tool_use_id == parent_tool_use_id
-            and metadata[2] == observation_scope
-            and metadata[0] == len(body)
-            and metadata[1] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+    ) -> None:
+        if not isinstance(observed_identity, str) or not observed_identity:
+            return
+        self._recent_raw_observations[observed_identity] = (
+            source_identity,
+            message_identity,
+            parent_tool_use_id,
+            len(body),
+            hashlib.sha256(body.encode("utf-8")).hexdigest(),
         )
+        self._recent_raw_observations.move_to_end(observed_identity)
+        while len(self._recent_raw_observations) > _MAX_RECONCILIATION_BINDINGS:
+            self._recent_raw_observations.popitem(last=False)
 
     def _clear_typed_body_replay(self, source: _AnswerSource) -> None:
         source.typed_body_replay_pending = False
@@ -703,34 +438,17 @@ class AssistantAnswerTimeline:
         ):
             self._fail()
             return ""
-        if observed_identity is not None:
-            tombstone_status = self._raw_tombstone_status(
-                observed_identity,
-                source_identity=source_identity,
-                message_identity=message_identity,
-                parent_tool_use_id=parent_tool_use_id,
-                observation_scope=source_identity,
-                body=text,
-            )
-            if tombstone_status is not None:
-                if tombstone_status:
-                    return ""
-                self._fail()
-                return ""
-        if self._active_raw_observation_is_exact_replay(
+        replay_status = self._raw_observation_replay_status(
             observed_identity,
             source_identity=source_identity,
             message_identity=message_identity,
             parent_tool_use_id=parent_tool_use_id,
-            observation_scope=source_identity,
             body=text,
-        ):
-            self._touch_raw_observation(observed_identity)
-            self._current = self._sources_by_key[source_identity]
+        )
+        if replay_status is True:
+            self._current = self._sources_by_key.get(source_identity)
             return ""
-        if observed_identity is not None and self._raw_observation_may_have_been_seen(
-            observed_identity
-        ):
+        if replay_status is False:
             self._fail()
             return ""
         try:
@@ -738,15 +456,6 @@ class AssistantAnswerTimeline:
         except TypeError:
             existing_source = None
         if existing_source is None and not self._can_create_source(message_identity):
-            self._fail()
-            return ""
-        if observed_identity is not None and not self._observation_capacity_available(
-            kind="raw",
-            source_identity=source_identity,
-            message_identity=message_identity,
-            observed_identity=observed_identity,
-            observation_scope=source_identity,
-        ):
             self._fail()
             return ""
         source = self._bind_source(
@@ -761,20 +470,6 @@ class AssistantAnswerTimeline:
         source.raw_open = True
         if existing_source is None:
             self._answer_binding_retired = False
-        if observed_identity is not None:
-            accepted, duplicate = self._record_observation(
-                source,
-                observed_identity,
-                observation_scope=source_identity,
-                kind="raw",
-                body=text,
-            )
-            if not accepted:
-                self._fail()
-                return ""
-            if duplicate:
-                self._current = source
-                return ""
         source.raw_delta_count += 1
         replay_handled, replay_suffix = self._reconcile_typed_body_replay(
             source, text
@@ -784,6 +479,13 @@ class AssistantAnswerTimeline:
                 self._fail()
                 return ""
             self._append_raw_coverage(source, text)
+            self._remember_raw_observation(
+                observed_identity,
+                source_identity=source_identity,
+                message_identity=message_identity,
+                parent_tool_use_id=parent_tool_use_id,
+                body=text,
+            )
             if not replay_suffix:
                 self._current = source
                 return ""
@@ -795,14 +497,19 @@ class AssistantAnswerTimeline:
             self._fail()
             return ""
         self._append_raw_coverage(source, text)
+        self._remember_raw_observation(
+            observed_identity,
+            source_identity=source_identity,
+            message_identity=message_identity,
+            parent_tool_use_id=parent_tool_use_id,
+            body=text,
+        )
         self._current = source
         return self._publish(source, suffix)
 
     def close_raw_source(
         self,
         source_identity: object,
-        *,
-        stop_reason: str | None = None,
     ) -> None:
         if self._disabled:
             return
@@ -813,12 +520,7 @@ class AssistantAnswerTimeline:
         if source is None:
             self._fail()
             return
-        if stop_reason is not None and not is_known_stop_reason(stop_reason):
-            self._fail()
-            return
         if source.raw_closed:
-            if source.stop_reason != stop_reason and stop_reason is not None:
-                self._fail()
             return
         if source.typed_body_replay_pending and source.raw_delta_count:
             self._fail()
@@ -826,47 +528,9 @@ class AssistantAnswerTimeline:
         source.raw_open = False
         source.raw_closed = True
         self._clear_typed_body_replay(source)
-        if stop_reason is not None:
-            if source.stop_reason not in (None, stop_reason):
-                self._fail()
-                return
-            source.stop_reason = stop_reason
         self._seal_coverage(source)
         self._seal_raw_coverage(source)
-        self._seal_raw_observation_bindings(source)
         self._current = source
-
-    def accept_raw_stop_reason(
-        self,
-        *,
-        message_identity: object,
-        stop_reason: str | None,
-    ) -> bool:
-        """Reconcile the raw message stop with every source in that message."""
-
-        if self._disabled:
-            return False
-        if (
-            not _is_hashable(message_identity)
-            or stop_reason is None
-            or not is_known_stop_reason(stop_reason)
-        ):
-            self._fail()
-            return False
-        matching_sources = [
-            source
-            for source in self._sources
-            if source.message_key == message_identity
-        ]
-        if any(
-            source.stop_reason not in (None, stop_reason)
-            for source in matching_sources
-        ):
-            self._fail()
-            return False
-        for source in matching_sources:
-            source.stop_reason = stop_reason
-        return True
 
     def accept_assistant(
         self,
@@ -875,7 +539,6 @@ class AssistantAnswerTimeline:
         source_identity: object = None,
         message_identity: object = None,
         parent_tool_use_id: str | None = None,
-        stop_reason: str | None = None,
         observed_identity: object = None,
         observation_scope: object = None,
     ) -> str:
@@ -892,23 +555,29 @@ class AssistantAnswerTimeline:
         ):
             self._fail()
             return ""
-        if stop_reason is not None and not is_known_stop_reason(stop_reason):
-            self._fail()
-            return ""
+        observation_key = (observed_identity, source_identity)
+        observation = (
+            observation_scope, message_identity, parent_tool_use_id,
+            len(text), hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        )
+        if isinstance(observed_identity, str) and observed_identity:
+            previous = self._recent_assistant_observations.get(observation_key)
+            if previous is not None:
+                if previous[1:] != observation[1:]:
+                    self._fail()
+                return ""
+            if any(
+                key[0] == observed_identity
+                and (observation_scope is None or value[0] != observation_scope)
+                for key, value in self._recent_assistant_observations.items()
+            ):
+                self._fail()
+                return ""
         try:
             existing_source = self._sources_by_key.get(source_identity)
         except TypeError:
             existing_source = None
         if existing_source is None and not self._can_create_source(message_identity):
-            self._fail()
-            return ""
-        if observed_identity is not None and not self._observation_capacity_available(
-            kind="assistant",
-            source_identity=source_identity,
-            message_identity=message_identity,
-            observed_identity=observed_identity,
-            observation_scope=observation_scope,
-        ):
             self._fail()
             return ""
         source = self._bind_source(
@@ -922,25 +591,6 @@ class AssistantAnswerTimeline:
             return ""
         if existing_source is None:
             self._answer_binding_retired = False
-        if stop_reason is not None:
-            if source.stop_reason not in (None, stop_reason):
-                self._fail()
-                return ""
-            source.stop_reason = stop_reason
-        if observed_identity is not None:
-            accepted, duplicate = self._record_observation(
-                source,
-                observed_identity,
-                observation_scope=observation_scope,
-                kind="assistant",
-                body=text,
-            )
-            if not accepted:
-                self._fail()
-                return ""
-            if duplicate:
-                self._current = source
-                return ""
         suffix = self._reconcile_assistant(source, text)
         if suffix is None or (suffix and self._has_later_published(source)):
             self._fail()
@@ -948,6 +598,10 @@ class AssistantAnswerTimeline:
         if self._current is None or source.sequence >= self._current.sequence:
             self._current = source
         published = self._publish(source, suffix)
+        if isinstance(observed_identity, str) and observed_identity:
+            self._recent_assistant_observations[observation_key] = observation
+            while len(self._recent_assistant_observations) > _MAX_RECONCILIATION_BINDINGS:
+                self._recent_assistant_observations.popitem(last=False)
         self._record_typed_body_replay_target(source, text)
         if not source.raw_open:
             self._seal_coverage(source)
@@ -1079,7 +733,7 @@ class AssistantAnswerTimeline:
         result_identity: object,
         terminal_reason: str | None,
     ) -> str:
-        if self._sources or self._current is not None:
+        if self.has_answer_source or self._current is not None:
             self._fail()
             return ""
         if not isinstance(text, str):
@@ -1115,7 +769,6 @@ class AssistantAnswerTimeline:
         parent_tool_use_id: str | None = None,
         result_identity: object = None,
         terminal_reason: str | None = None,
-        source_stop_reason: str | None = None,
     ) -> str:
         if self._disabled:
             return ""
@@ -1148,14 +801,6 @@ class AssistantAnswerTimeline:
         if source is None:
             self._fail()
             return ""
-        if source_stop_reason is not None:
-            if not is_known_stop_reason(source_stop_reason):
-                self._fail()
-                return ""
-            if source.stop_reason not in (None, source_stop_reason):
-                self._fail()
-                return ""
-            source.stop_reason = source_stop_reason
         result_length = len(text)
         result_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if self._result_seen:
@@ -1250,10 +895,6 @@ class AssistantAnswerTimeline:
             self._current is not None and self._current.raw_open
         ):
             return None
-        if source_identity in self._retired_sources:
-            return None
-        if self._typed_source_maybe_seen(source_identity):
-            return None
         self._prune_closed_sources()
         if len(self._sources) >= _MAX_RETAINED_SOURCES:
             return None
@@ -1269,163 +910,8 @@ class AssistantAnswerTimeline:
 
         self._sources.append(source)
         self._sources_by_key[source_identity] = source
-        self._mark_typed_source_maybe_seen(source_identity)
         self._current = source
         return source
-
-    def _assistant_scope_binding_count(
-        self,
-        message_identity: object,
-        observation_scope: object,
-    ) -> int:
-        return sum(
-            1
-            for observation_key, bindings in self._observation_bindings.items()
-            if observation_key[0] == "assistant"
-            for source_key, metadata in bindings.items()
-            if source_key[1] == message_identity and metadata[2] == observation_scope
-        )
-
-    def _observation_capacity_available(
-        self,
-        *,
-        kind: str,
-        source_identity: object,
-        message_identity: object,
-        observed_identity: object,
-        observation_scope: object,
-    ) -> bool:
-        if not isinstance(observed_identity, str) or not observed_identity:
-            return False
-        source_key = (source_identity, message_identity)
-        previous = self._observation_bindings.get((kind, observed_identity))
-        if previous is not None:
-            if source_key in previous:
-                return True
-            if kind != "assistant" or observation_scope is None:
-                return False
-            if any(
-                existing_source_key[1] != message_identity
-                or existing_metadata[2] != observation_scope
-                for existing_source_key, existing_metadata in previous.items()
-            ):
-                return False
-            return True
-        if kind == "assistant":
-            if previous is None and self._typed_observation_maybe_seen(
-                observed_identity
-            ):
-                return False
-            return True
-        source = self._sources_by_key.get(source_identity)
-        if kind == "raw":
-            return source is not None or source_identity not in self._retired_sources
-        if source is None:
-            return True
-        return True
-
-    def _record_observation(
-        self,
-        source: _AnswerSource,
-        observed_identity: object,
-        *,
-        kind: str,
-        body: str,
-        observation_scope: object = None,
-    ) -> tuple[bool, bool]:
-        if not isinstance(observed_identity, str) or not observed_identity:
-            return False, False
-        if kind == "raw":
-            tombstone_status = self._raw_tombstone_status(
-                observed_identity,
-                source_identity=source.key,
-                message_identity=source.message_key,
-                parent_tool_use_id=source.parent_tool_use_id,
-                observation_scope=observation_scope,
-                body=body,
-            )
-            if tombstone_status is not None:
-                return tombstone_status, tombstone_status
-        source_key = (source.key, source.message_key)
-        observation_key = (kind, observed_identity)
-        previous = self._observation_bindings.get(observation_key)
-        observation_metadata = (
-            len(body),
-            hashlib.sha256(body.encode("utf-8")).hexdigest(),
-            observation_scope,
-        )
-        if previous is None:
-            if not self._observation_capacity_available(
-                kind=kind,
-                source_identity=source.key,
-                message_identity=source.message_key,
-                observed_identity=observed_identity,
-                observation_scope=observation_scope,
-            ):
-                return False, False
-            self._observation_bindings[observation_key] = {
-                source_key: observation_metadata
-            }
-            if kind == "raw":
-                self._remember_raw_observation(source, observed_identity)
-            else:
-                self._remember_assistant_observation(source, observed_identity)
-            return True, False
-        if source_key not in previous:
-            if (
-                kind != "assistant"
-                or observation_scope is None
-                or any(
-                    existing_source_key[1] != source.message_key
-                    or existing_metadata[2] != observation_scope
-                    for existing_source_key, existing_metadata in previous.items()
-                )
-                or not self._observation_capacity_available(
-                    kind=kind,
-                    source_identity=source.key,
-                    message_identity=source.message_key,
-                    observed_identity=observed_identity,
-                    observation_scope=observation_scope,
-                )
-            ):
-                return False, False
-            previous[source_key] = observation_metadata
-            if kind == "raw":
-                self._remember_raw_observation(source, observed_identity)
-            else:
-                self._remember_assistant_observation(source, observed_identity)
-            return True, False
-        if previous[source_key][:2] != observation_metadata[:2] or (
-            kind == "raw" and previous[source_key][2] != observation_scope
-        ):
-            return False, False
-        if kind == "raw":
-            self._touch_raw_observation(observed_identity)
-            source.raw_observation_identities.add(observed_identity)
-        else:
-            self._remember_assistant_observation(source, observed_identity)
-        return True, True
-
-    def _seal_raw_observation_bindings(self, source: _AnswerSource) -> None:
-        source_key = (source.key, source.message_key)
-        for observed_identity in tuple(source.raw_observation_identities):
-            bindings = self._observation_bindings.get(("raw", observed_identity))
-            metadata = bindings.get(source_key) if bindings is not None else None
-            if metadata is None:
-                continue
-            self._remember_raw_tombstone(
-                observed_identity,
-                _RawObservationTombstone(
-                    source_identity=source.key,
-                    message_identity=source.message_key,
-                    parent_tool_use_id=source.parent_tool_use_id,
-                    observation_scope=metadata[2],
-                    body_length=metadata[0],
-                    body_digest=metadata[1],
-                ),
-            )
-            self._evict_raw_observation(observed_identity)
-        source.raw_observation_identities.clear()
 
     def _has_later_published(self, source: _AnswerSource) -> bool:
         return self._last_published_sequence > source.sequence
@@ -1620,7 +1106,6 @@ class ClaudeStreamProjector:
         self._message_id: str | None = None
         self._parent_tool_use_id: str | None = None
         self._message_stop_reason: str | None = None
-        self._typed_stop_reason: str | None = None
         self._typed_lifecycle_observed = False
         self._message_delta_seen = False
         self._message_generation = 0
@@ -1718,25 +1203,15 @@ class ClaudeStreamProjector:
             self._disable()
             return False
         if stop_reason is not None:
-            if self._typed_stop_reason not in (None, stop_reason):
-                self._disable()
-                return False
             if self._message_stop_reason not in (None, stop_reason):
                 self._disable()
                 return False
-            self._typed_stop_reason = stop_reason
+            self._message_stop_reason = stop_reason
         if self._saw_explicit_message:
             if (
                 not self._explicit_message_open
                 or typed_id != self._message_id
                 or parent_tool_use_id != self._parent_tool_use_id
-            ):
-                self._disable()
-                return False
-            if (
-                stop_reason is not None
-                and self._message_stop_reason is not None
-                and stop_reason != self._message_stop_reason
             ):
                 self._disable()
                 return False
@@ -1775,20 +1250,9 @@ class ClaudeStreamProjector:
     def typed_text_source_identity(
         self,
         *,
-        message_id: object = None,
-        uuid: object = None,
-        parent_tool_use_id: object = None,
-        stop_reason: object = None,
         text_source_ordinal: object,
         text_source_count: object = None,
     ) -> tuple[object, ...] | None:
-        if not self.observe_typed(
-            message_id=message_id,
-            uuid=uuid,
-            parent_tool_use_id=parent_tool_use_id,
-            stop_reason=stop_reason,
-        ):
-            return None
         if text_source_count is None:
             text_source_count = (
                 text_source_ordinal + 1
@@ -1899,7 +1363,6 @@ class ClaudeStreamProjector:
         self._saw_explicit_message = True
         self._message_id = message_id
         self._message_stop_reason = None
-        self._typed_stop_reason = None
         self._message_delta_seen = False
         self._message_generation += 1
         self._block_generation = 0
@@ -1921,9 +1384,6 @@ class ClaudeStreamProjector:
             self._disable()
             return ()
         if stop_reason is not None:
-            if self._typed_stop_reason not in (None, stop_reason):
-                self._disable()
-                return ()
             if self._message_stop_reason not in (None, stop_reason):
                 self._disable()
                 return ()

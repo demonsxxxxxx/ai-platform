@@ -22,7 +22,7 @@ from app.conversations.infrastructure import (
     session_queries_postgres as conversations_session_queries,
 )
 from app.db import transaction
-from app.execution.api import list_public_models, verify_answer_materialization
+from app.execution.api import list_public_models
 from app.models import SessionRenameRequest
 from app.projection_redaction import (
     PUBLIC_RETIRED_AGENT_ID,
@@ -966,82 +966,12 @@ def _assistant_delta_projection(
     return typed_product.payload
 
 
-def _materialized_answer_event(
-    run: dict[str, Any],
-    message: dict[str, Any],
-    verified: Any,
-) -> dict[str, Any] | None:
-    proof = message["metadata_json"]["answer_materialization_proof"]
-    event_id = str(verified.event_id)
-    event = {
-        "id": event_id,
-        "tenant_id": run.get("tenant_id"),
-        "run_id": run["id"],
-        "trace_id": run.get("trace_id"),
-        "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
-        "sequence": verified.sequence,
-        "event_type": "message.delta",
-        "stage": "agent_kernel",
-        "message": "",
-        "severity": "info",
-        "visible_to_user": True,
-        "created_at": verified.created_at,
-        "v4_attempt_authorized": True,
-        "payload_json": {
-            "delta": verified.content,
-            "__stream_v4": {
-                "version": 1,
-                "callback_batch_id": "materialized-answer-proof",
-                "callback_index": 0,
-                "batch_index": 0,
-                "attempt_id": proof["attempt_id"],
-                "stream_incarnation": proof["stream_incarnation"],
-                "authorization_epoch": proof.get("authorization_epoch", 1),
-                "execution_lease_id": None,
-                "message_id": proof["message_id"],
-                "trace_ref": run.get("trace_id"),
-                "causation_event_id": None,
-                "source_event_id": proof["last_delta_event_id"],
-                "source_run_id": run["id"],
-                "lease_fence": "not_required",
-                "cancellation_fence": "not_requested",
-            },
-        },
-    }
-    return event if _persisted_v4_assistant_delta(run, event) is not None else None
-
-
-def _verified_history_answer(
-    run: dict[str, Any],
-    assistant_messages: list[dict[str, Any]],
-    authority: Any,
-) -> tuple[dict[str, Any], Any] | None:
-    if _platform_status(str(run.get("status") or "")) != "succeeded":
-        return None
-    candidates = [
-        message
-        for message in assistant_messages
-        if str(message.get("run_id") or "") == str(run["id"])
-    ]
-    if len(candidates) != 1:
-        return None
-    message = candidates[0]
-    verified = verify_answer_materialization(
-        message.get("metadata_json"),
-        content=message.get("content"),
-        tenant_id=str(run.get("tenant_id") or ""),
-        run_id=str(run["id"]),
-        status=str(run.get("status") or ""),
-        authority=authority,
-        terminal_proof=(
-            run.get("result_json", {}).get("answer_materialization_proof")
-            if isinstance(run.get("result_json"), dict)
-            else None
-        ),
-    )
-    if verified is None:
-        return None
-    return message, verified
+def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int, int]:
+    """Keep persisted compatibility playback monotonic even with malformed rows."""
+    try:
+        return (int(event.get("sequence")), position)
+    except (TypeError, ValueError):
+        return (2**63 - 1, position)
 
 
 def _artifact_delivery_sort_key(row: dict[str, Any]) -> tuple[int, str, str]:
@@ -1098,12 +1028,6 @@ def _visible_assistant_artifacts(
     return visible
 
 
-def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int, int]:
-    """Keep persisted compatibility playback monotonic even with malformed rows."""
-    try:
-        return (int(event.get("sequence")), position)
-    except (TypeError, ValueError):
-        return (2**63 - 1, position)
 def _answer_source_for_run(
     run: dict[str, Any],
     run_events: list[dict[str, Any]],
@@ -1128,7 +1052,6 @@ def _compatibility_events_for_run(
     principal: AuthPrincipal,
     *,
     user_messages: list[dict[str, Any]] | None = None,
-    assistant_messages: list[dict[str, Any]] | None = None,
     include_terminal: bool = True,
     compact_answer_deltas: bool = False,
 ) -> list[_CompatibilityWireEvent]:
@@ -1144,7 +1067,6 @@ def _compatibility_events_for_run(
             _answer_source_for_run(run, run_events, principal),
         ),
         user_messages=user_messages,
-        assistant_messages=assistant_messages,
         include_terminal=include_terminal,
         compact_answer_deltas=compact_answer_deltas,
     )
@@ -1159,7 +1081,6 @@ def _compatibility_events_for_run_page(
     *,
     fold_state: _CompatibilityFoldState,
     user_messages: list[dict[str, Any]] | None = None,
-    assistant_messages: list[dict[str, Any]] | None = None,
     include_terminal: bool = True,
     compact_answer_deltas: bool = False,
 ) -> tuple[list[_CompatibilityWireEvent], _CompatibilityFoldState]:
@@ -1920,77 +1841,18 @@ async def session_events(
                 run_ids=target_run_ids,
             )
         )
-        if compact_message_chunks:
-            try:
-                authorized_assistant_messages = await conversations_postgres.list_authorized_messages(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    session_id=session_id,
-                    run_ids=target_run_ids,
-                    role="assistant",
-                    limit=201,
-                )
-            except Exception:  # Optional proof read; exact event history remains authoritative.
-                authorized_assistant_messages = []
-        else:
-            authorized_assistant_messages = []
         user_messages_by_run: dict[str, list[dict[str, Any]]] = {
-            target_run_id: [] for target_run_id in target_run_ids
-        }
-        assistant_messages_by_run: dict[str, list[dict[str, Any]]] = {
             target_run_id: [] for target_run_id in target_run_ids
         }
         for message in authorized_user_messages:
             message_run_id = str(message.get("run_id") or "")
             if message_run_id in user_messages_by_run:
                 user_messages_by_run[message_run_id].append(message)
-        for message in authorized_assistant_messages:
-            message_run_id = str(message.get("run_id") or "")
-            if message_run_id in assistant_messages_by_run:
-                assistant_messages_by_run[message_run_id].append(message)
         events = []
         for run in reversed(target_runs):
-            run_id_value = str(run["id"])
-            materialized_answer_event = None
-            if compact_message_chunks:
-                try:
-                    authority = await get_stream_authority(
-                        conn, tenant_id=principal.tenant_id, run_id=run_id_value
-                    )
-                    verified_answer = (
-                        _verified_history_answer(
-                            {**run, "tenant_id": principal.tenant_id},
-                            assistant_messages_by_run.get(run_id_value, []),
-                            authority,
-                        )
-                        if authority is not None
-                        else None
-                    )
-                    if verified_answer is not None:
-                        materialized_answer_event = _materialized_answer_event(
-                            {**run, "tenant_id": principal.tenant_id},
-                            verified_answer[0],
-                            verified_answer[1],
-                        )
-                except Exception:  # Optional proof read; exact event history remains authoritative.
-                    verified_answer = None
-                    materialized_answer_event = None
-            if materialized_answer_event is not None:
-                run_events = await streaming_run_events.list_run_events(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id_value,
-                    excluded_event_types=("message.delta",),
-                )
-            else:
-                run_events = await streaming_run_events.list_run_events(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id_value,
-                )
-            if materialized_answer_event is not None:
-                run_events.append(materialized_answer_event)
+            run_events = await streaming_run_events.list_run_events(
+                conn, tenant_id=principal.tenant_id, run_id=run["id"]
+            )
             artifacts = await artifacts_records.list_run_artifacts(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -2004,7 +1866,6 @@ async def session_events(
                     artifacts,
                     principal,
                     user_messages=user_messages_by_run.get(str(run["id"]), []),
-                    assistant_messages=assistant_messages_by_run.get(str(run["id"]), []),
                     compact_answer_deltas=compact_message_chunks,
                 )
             )

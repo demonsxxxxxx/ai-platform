@@ -371,16 +371,9 @@ export const ChatMessage = memo(function ChatMessage({
             </div>
           )}
           {message.isSynchronizing && (
-            <div className="mt-3 px-2">
-              <CollapsiblePill
-                status="loading"
-                icon={<RefreshCw size={12} className="shrink-0 opacity-50" />}
-                label={t("chat.message.synchronizingResult")}
-                variant="tool"
-                expandable={false}
-                nonInteractive
-                animatedDots
-              />
+            <div role="status" aria-live="polite" className="mt-3 flex items-center gap-2 px-2 text-xs text-stone-500">
+              <RefreshCw size={12} className="animate-spin" aria-hidden="true" />
+              {t("chat.message.synchronizingResult")}
             </div>
           )}
         </div>

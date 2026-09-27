@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -22,18 +21,8 @@ from app.streaming.domain.public_events_v4 import V4ProjectionError, project_pub
 
 
 
-_ANSWER_BODY_DIGEST_DOMAIN = b"ai-platform.answer-body.v1\x00"
 
 
-def canonical_answer_body_digest(chunks: Sequence[str]) -> str:
-    """Digest ordered public answer chunks without ambiguous concatenation."""
-
-    digest = hashlib.sha256(_ANSWER_BODY_DIGEST_DOMAIN)
-    for chunk in chunks:
-        encoded = chunk.encode("utf-8")
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
-    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,17 +30,6 @@ class ReconstructedAssistantAnswer:
     """Complete public answer reconstructed from durable v4 deltas."""
 
     text: str
-    stream_answer_digest: str
-    message_id: str
-    last_delta_event_id: str
-    delta_count: int
-    text_length: int
-    last_delta_sequence: int
-    last_delta_created_at: str | None
-    last_delta_row_id: str
-    stream_incarnation: int
-    authorization_epoch: int
-    interleaved: bool
 
 
 class AssistantAnswerReceiptError(ValueError):

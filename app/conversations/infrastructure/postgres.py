@@ -429,26 +429,9 @@ async def list_authorized_messages(
     session_id: str,
     cursor: tuple[Any, str] | None = None,
     limit: int = 101,
-    run_ids: list[str] | None = None,
-    role: str | None = None,
 ) -> list[dict[str, Any]]:
     cursor_filter = ""
-    run_filter = ""
-    role_filter = ""
     params: list[Any] = [tenant_id, session_id, user_id]
-    if run_ids is not None:
-        target_run_ids = list(
-            dict.fromkeys(value.strip() for value in run_ids if value.strip())
-        )
-        if not target_run_ids:
-            return []
-        run_filter = "and messages.run_id = any(%s::text[])"
-        params.append(target_run_ids)
-    if role is not None:
-        if role not in {"assistant", "user"}:
-            raise ValueError("message_role_filter_invalid")
-        role_filter = "and messages.role = %s"
-        params.append(role)
     if cursor is not None:
         cursor_filter = "and (messages.created_at, messages.id) > (%s, %s)"
         params.extend(cursor)
@@ -462,8 +445,6 @@ async def list_authorized_messages(
         where messages.tenant_id = %s
           and messages.session_id = %s
           and sessions.user_id = %s
-          {run_filter}
-          {role_filter}
           {cursor_filter}
         order by messages.created_at asc, messages.id asc
         limit %s

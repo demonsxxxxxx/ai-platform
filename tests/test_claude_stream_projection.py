@@ -1,6 +1,6 @@
 import pytest
 
-from app.persistence_limits import RUN_RESULT_MAX_BYTES
+from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
     ClaudeStreamProjector,
@@ -395,7 +395,7 @@ def test_answer_timeline_rejects_reversed_typed_source_order():
     assert timeline.disabled is True
 
 
-def test_answer_timeline_bounds_assistant_observation_bindings():
+def test_answer_timeline_bounds_recent_assistant_observations():
     timeline = AssistantAnswerTimeline()
     message = ("message-many-assistant", None)
     for index in range(129):
@@ -407,58 +407,43 @@ def test_answer_timeline_bounds_assistant_observation_bindings():
             message_identity=message,
             observed_identity=f"assistant-observation-{index}",
         ) == body
-    assert len(
-        [key for key in timeline._observation_bindings if key[0] == "assistant"]
-    ) == 128
+    assert len(timeline._recent_assistant_observations) == 128
     assert timeline.disabled is False
     assert len(timeline._sources) == 128
 
 
-def test_answer_timeline_rejects_typed_source_uuid_replay_after_multiple_rollovers():
+def test_answer_timeline_treats_evicted_typed_observation_as_new_output():
     timeline = AssistantAnswerTimeline()
     message = ("message-typed-rollovers", None)
-    for index in range(257):
-        source = ("message-typed-rollovers", index)
+    source = ("message-typed-rollovers", 0)
+    body = ""
+    for index in range(129):
+        body += f"typed-{index}"
         assert timeline.accept_assistant(
-            f"typed-{index}",
+            body,
             source_identity=source,
             message_identity=message,
             observed_identity=f"typed-observation-{index}",
+            observation_scope="typed-message-1",
         ) == f"typed-{index}"
 
-    before_replay = timeline.text
+    expanded = body + "after observation window"
     assert timeline.accept_assistant(
-        "typed-0",
-        source_identity=("message-typed-rollovers", 0),
+        expanded,
+        source_identity=source,
         message_identity=message,
         observed_identity="typed-observation-0",
-    ) == ""
-    assert timeline.disabled is True
-    assert timeline.text == before_replay
-
-    fresh = AssistantAnswerTimeline()
-    for index in range(257):
-        source = ("message-fresh-typed", index)
-        assert fresh.accept_assistant(
-            f"fresh-{index}",
-            source_identity=source,
-            message_identity=("message-fresh-typed", None),
-            observed_identity=f"fresh-observation-{index}",
-        ) == f"fresh-{index}"
-    assert fresh.accept_assistant(
-        "fresh-257",
-        source_identity=("message-fresh-typed", 257),
-        message_identity=("message-fresh-typed", None),
-        observed_identity="fresh-observation-257",
-    ) == "fresh-257"
-    assert fresh.disabled is False
+        observation_scope="typed-message-1",
+    ) == "after observation window"
+    assert timeline.text == expanded
+    assert timeline.disabled is False
 
 
-def test_answer_timeline_allows_one_assistant_uuid_across_more_than_128_sources():
+def test_answer_timeline_allows_one_assistant_uuid_for_multiple_blocks_in_scope():
     timeline = AssistantAnswerTimeline()
     message = ("message-one-assistant", None)
-    scope = 1
-    for index in range(129):
+    scope = "typed-message-1"
+    for index in range(3):
         source = ("message-one-assistant", index)
         assert timeline.accept_assistant(
             f"body-{index}",
@@ -467,11 +452,9 @@ def test_answer_timeline_allows_one_assistant_uuid_across_more_than_128_sources(
             observed_identity="assistant-one-observation",
             observation_scope=scope,
         ) == f"body-{index}"
-    assert len(
-        timeline._observation_bindings[("assistant", "assistant-one-observation")]
-    ) == 128
+    assert len(timeline._recent_assistant_observations) == 3
     assert timeline.disabled is False
-    assert len(timeline._sources) == 128
+    assert timeline.text == "body-0body-1body-2"
 
 
 def test_answer_timeline_prunes_closed_sources_across_multiple_messages():
@@ -489,13 +472,12 @@ def test_answer_timeline_prunes_closed_sources_across_multiple_messages():
     assert len(timeline._sources) == 128
     assert len(timeline._sources_by_key) == 128
     assert ("message-total-0", 0) not in timeline._sources_by_key
-    assert ("message-total-0", 0) in timeline._retired_sources
     assert timeline.accept_assistant(
         "late source",
         source_identity=("message-total-0", 0),
         message_identity=("message-total-0", None),
-    ) == ""
-    assert timeline.disabled is True
+    ) == "\n\nlate source"
+    assert timeline.disabled is False
 
 
 def test_answer_timeline_allows_long_answers_with_bounded_reconciliation_coverage():
@@ -612,7 +594,7 @@ def test_answer_timeline_allows_more_than_128_adjacent_raw_deltas():
     source = ("message-raw-long", 0)
     message = ("message-raw-long", None)
     chunks = []
-    for index in range(129):
+    for index in range(257):
         chunk = f"chunk-{index}"
         chunks.append(chunk)
         assert timeline.accept_delta(
@@ -622,18 +604,19 @@ def test_answer_timeline_allows_more_than_128_adjacent_raw_deltas():
             observed_identity=f"raw-long-{index}",
         ) == chunk
     assert timeline.disabled is False
-    assert timeline._sources[0].raw_delta_count == 129
+    assert timeline._sources[0].raw_delta_count == 257
     assert timeline.text == "".join(chunks)
+    assert len(timeline._recent_raw_observations) == 128
     timeline.close_raw_source(source)
     assert timeline.disabled is False
-    assert len(timeline._raw_observation_tombstones) == 128
     assert timeline.accept_delta(
         chunks[-1],
         source_identity=source,
         message_identity=message,
-        observed_identity="raw-long-128",
+        observed_identity="raw-long-256",
     ) == ""
     assert timeline.disabled is False
+    assert timeline.text == "".join(chunks)
 
     timeline = AssistantAnswerTimeline()
     source = ("message-bounded", 0)
@@ -647,7 +630,7 @@ def test_answer_timeline_allows_more_than_128_adjacent_raw_deltas():
     assert len(stored.coverage_digest) == 64
 
 
-def test_answer_timeline_rejects_evicted_raw_uuid_replay_without_duplicate_text():
+def test_answer_timeline_treats_evicted_raw_uuid_as_new_output():
     timeline = AssistantAnswerTimeline()
     source = ("message-raw-replay", 0)
     message = ("message-raw-replay", None)
@@ -668,9 +651,9 @@ def test_answer_timeline_rejects_evicted_raw_uuid_replay_without_duplicate_text(
         source_identity=source,
         message_identity=message,
         observed_identity="raw-replay-0",
-    ) == ""
-    assert timeline.disabled is True
-    assert timeline.text == before_replay
+    ) == chunks[0]
+    assert timeline.disabled is False
+    assert timeline.text == before_replay + chunks[0]
 
 
 def test_answer_timeline_retires_binding_before_foreign_result():
@@ -843,9 +826,8 @@ def test_projector_reconciles_typed_extension_after_raw_prefix_once():
         observed_identity="r1",
     ) == "Hello"
 
+    assert projector.observe_typed(message_id="sdk-message", uuid="a1") is True
     assert projector.typed_text_source_identity(
-        message_id="sdk-message",
-        uuid="a1",
         text_source_ordinal=0,
     ) == source
 
@@ -978,7 +960,7 @@ def test_answer_timeline_reconciles_truncated_result_for_current_source_only():
     assert conflicting.disabled is True
 
 
-def test_answer_timeline_rejects_raw_uuid_replay_after_multiple_rollovers():
+def test_answer_timeline_long_raw_stream_survives_multiple_observation_windows():
     timeline = AssistantAnswerTimeline()
     source = ("message-raw-rollovers", 0)
     message = ("message-raw-rollovers", None)
@@ -991,45 +973,20 @@ def test_answer_timeline_rejects_raw_uuid_replay_after_multiple_rollovers():
             observed_identity=f"raw-rollover-{index}",
         ) == chunk
 
-    before_replay = timeline.text
+    complete_stream = "".join(f"chunk-{index}" for index in range(257))
+    assert timeline.text == complete_stream
+    assert len(timeline._recent_raw_observations) == 128
     assert timeline.accept_delta(
         "chunk-0",
         source_identity=source,
         message_identity=message,
         observed_identity="raw-rollover-0",
-    ) == ""
-    assert timeline.disabled is True
-    assert timeline.text == before_replay
-
-    fresh = AssistantAnswerTimeline()
-    for index in range(257):
-        assert fresh.accept_delta(
-            f"fresh-{index}",
-            source_identity=source,
-            message_identity=message,
-            observed_identity=f"raw-fresh-{index}",
-        ) == f"fresh-{index}"
-    assert fresh.disabled is False
+    ) == "chunk-0"
+    assert timeline.disabled is False
+    assert timeline.text == complete_stream + "chunk-0"
 
 
-def test_answer_timeline_reconciles_raw_stop_reason_with_typed_source():
-    timeline = AssistantAnswerTimeline()
-    source = ("message-stop-conflict", 0)
-    message = ("message-stop-conflict", None)
-    assert timeline.accept_assistant(
-        "safe answer",
-        source_identity=source,
-        message_identity=message,
-        stop_reason="end_turn",
-    ) == "safe answer"
-    assert timeline.accept_raw_stop_reason(
-        message_identity=message,
-        stop_reason="tool_use",
-    ) is False
-    assert timeline.disabled is True
-
-
-def test_answer_timeline_discards_raw_observation_bindings_after_close():
+def test_answer_timeline_keeps_bounded_raw_observations_after_close():
     timeline = AssistantAnswerTimeline()
     source = ("message-many-raw", 0)
     message = ("message-many-raw", None)
@@ -1041,20 +998,16 @@ def test_answer_timeline_discards_raw_observation_bindings_after_close():
             observed_identity=f"raw-observation-{index}",
         ) == str(index)
     timeline.close_raw_source(source)
-    assert not any(
-        key[0] == "raw" for key in timeline._observation_bindings
-    )
+    assert len(timeline._recent_raw_observations) == 128
     stored = timeline._sources[0]
-    assert stored.raw_observation_identities == set()
-    assert stored.observation_identities == set()
     assert stored.coverage == ""
     expected_length = sum(len(str(index)) for index in range(128))
     assert stored.coverage_length == expected_length
     assert len(stored.coverage_digest) == 64
-    assert len(timeline._raw_observation_tombstones) == 128
+    assert stored.raw_coverage == ""
 
 
-def test_answer_timeline_retains_raw_uuid_tombstone_after_close():
+def test_answer_timeline_keeps_recent_raw_replay_guard_after_close():
     timeline = AssistantAnswerTimeline()
     source = ("message-tombstone", 0)
     message = ("message-tombstone", None)
@@ -1125,7 +1078,7 @@ def test_answer_timeline_retains_raw_uuid_tombstone_after_close():
     assert reused.disabled is True
 
 
-def test_answer_timeline_evicts_old_raw_tombstones_without_disabling_stream():
+def test_answer_timeline_recent_raw_window_spans_sources():
     timeline = AssistantAnswerTimeline()
     message = ("message-tombstone-cap", None)
     source = ("message-tombstone-cap", 0)
@@ -1137,8 +1090,6 @@ def test_answer_timeline_evicts_old_raw_tombstones_without_disabling_stream():
             observed_identity=f"raw-tombstone-cap-{index}",
         ) == str(index)
     timeline.close_raw_source(source)
-    assert len(timeline._raw_observation_tombstones) == 128
-
     second_source = ("message-tombstone-cap", 1)
     assert timeline.accept_delta(
         "new",
@@ -1146,12 +1097,18 @@ def test_answer_timeline_evicts_old_raw_tombstones_without_disabling_stream():
         message_identity=message,
         observed_identity="raw-tombstone-cap-overflow",
     ) == "new"
-    timeline.close_raw_source(second_source)
-    assert timeline.disabled is False
-    assert len(timeline._raw_observation_tombstones) == 128
+    assert len(timeline._recent_raw_observations) == 128
+    assert timeline.accept_delta(
+        "0",
+        source_identity=source,
+        message_identity=message,
+        observed_identity="raw-tombstone-cap-0",
+    ) == ""
+    assert timeline.disabled is True
+    assert timeline.text.endswith("new")
 
 
-def test_answer_timeline_evicts_old_raw_observation_bindings_without_disabling():
+def test_answer_timeline_bounds_recent_raw_observations_without_disabling():
     timeline = AssistantAnswerTimeline()
     source = ("message-raw-cap", 0)
     message = ("message-raw-cap", None)
@@ -1163,10 +1120,16 @@ def test_answer_timeline_evicts_old_raw_observation_bindings_without_disabling()
             observed_identity=f"raw-cap-{index}",
         ) == f"chunk-{index}"
     assert timeline.disabled is False
-    assert len(
-        [key for key in timeline._observation_bindings if key[0] == "raw"]
-    ) == 128
-    assert len(timeline._sources[0].raw_observation_identities) == 128
+    assert len(timeline._recent_raw_observations) == 128
+    assert timeline.text == "".join(f"chunk-{index}" for index in range(129))
+    assert timeline.accept_delta(
+        "new output",
+        source_identity=source,
+        message_identity=message,
+        observed_identity="raw-cap-129",
+    ) == "new output"
+    assert timeline.text.endswith("new output")
+    assert timeline.disabled is False
 
 
 def test_answer_timeline_rejects_result_replay_with_foreign_identity():
@@ -1321,9 +1284,8 @@ def test_projector_binds_typed_text_to_ordered_raw_text_source_after_omitted_non
     assert source is not None
     assert projector.accept(_text_delta("safe text", index=1)) == ("safe text",)
     assert projector.validate_typed_text_source_count(1) is True
+    assert projector.observe_typed(message_id="sdk-message", uuid="typed-observation") is True
     assert projector.typed_text_source_identity(
-        message_id="sdk-message",
-        uuid="typed-observation",
         text_source_ordinal=0,
     ) == source
     assert projector.accept(_stop(1)) == ()
@@ -1353,16 +1315,14 @@ def test_projector_binds_each_per_block_typed_text_to_next_raw_window():
         assert projector.accept(_stop(2)) == ()
 
         assert projector.validate_typed_text_source_count(1) is True
+        assert projector.observe_typed(message_id="sdk-message", uuid="typed-A") is True
         assert projector.typed_text_source_identity(
-            message_id="sdk-message",
-            uuid="typed-A",
             text_source_ordinal=0,
             text_source_count=1,
         ) == first_source
         assert projector.validate_typed_text_source_count(1) is True
+        assert projector.observe_typed(message_id="sdk-message", uuid="typed-B") is True
         assert projector.typed_text_source_identity(
-            message_id="sdk-message",
-            uuid="typed-B",
             text_source_ordinal=0,
             text_source_count=1,
         ) == second_source
@@ -1541,9 +1501,8 @@ def test_projector_rejects_typed_text_for_thinking_or_tool_sources():
         projector = _projector()
         assert projector.accept(_message_start()) == ()
         assert projector.accept(_start(0, content_type)) == ()
+        assert projector.observe_typed(message_id="sdk-message", uuid="sdk-observation") is True
         assert projector.typed_text_source_identity(
-            message_id="sdk-message",
-            uuid="sdk-observation",
             text_source_ordinal=0,
         ) is None
 
@@ -1563,7 +1522,7 @@ def test_projector_requires_role_and_typed_message_identity():
     missing_identity = _projector()
     assert missing_identity.accept(_message_start()) == ()
     assert missing_identity.accept(_start()) == ()
-    assert missing_identity.typed_text_source_identity(text_source_ordinal=0) is None
+    assert missing_identity.observe_typed() is False
 
     assert missing_identity.disabled is True
 

@@ -599,7 +599,6 @@ class ExecutorTerminalResult(BaseModel):
     run_id: str
     message: str = Field(default="", max_length=200_000)
     answer_receipt: AssistantAnswerReceipt | None = None
-    answer_source_count: int | None = Field(default=None, ge=1, le=64, strict=True)
     response_files: list[str] = Field(default_factory=list, max_length=128)
     response_file_descriptors: list[ResponseFileDescriptor] | None = Field(
         default=None,
@@ -652,8 +651,6 @@ class ExecutorTerminalResult(BaseModel):
                 raise ValueError(
                     "successful terminal result must contain either a message or answer receipt"
                 )
-            if self.answer_source_count is not None and self.answer_receipt is None:
-                raise ValueError("answer source count requires an answer receipt")
             if self.response_file_descriptors and [
                 item.source_path for item in self.response_file_descriptors
             ] != self.response_files:
@@ -661,9 +658,9 @@ class ExecutorTerminalResult(BaseModel):
                     "response file descriptors must match response files"
                 )
         else:
-            if self.answer_receipt is not None or self.answer_source_count is not None:
+            if self.answer_receipt is not None:
                 raise ValueError(
-                    "failed or cancelled terminal result must not contain answer evidence"
+                    "failed or cancelled terminal result must not contain an answer receipt"
                 )
             if self.response_files:
                 raise ValueError(
@@ -684,7 +681,6 @@ _EXECUTOR_TERMINAL_RECEIPT_FIELDS = frozenset(
         "run_id",
         "message",
         "answer_receipt",
-        "answer_source_count",
         "response_files",
         "response_file_descriptors",
         "provider_session_final_sequence",

@@ -255,7 +255,6 @@ class ClaudeAgentSdkRunResult:
     used_sdk: bool
     message: str = ""
     answer_receipt: dict[str, Any] | None = None
-    answer_source_count: int | None = None
     session_id: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
@@ -3314,11 +3313,6 @@ async def run_claude_agent_sdk(
             used_sdk=True,
             message=message,
             answer_receipt=answer_receipt,
-            answer_source_count=(
-                answer_coalescer.source_count
-                if answer_receipt is not None and answer_coalescer is not None
-                else None
-            ),
             session_id=result_session_id,
             usage=usage,
             error=error,
@@ -3550,20 +3544,6 @@ async def run_claude_agent_sdk(
                     else:
                         if (
                             isinstance(raw_stream_event, dict)
-                            and raw_stream_event.get("type") == "message_delta"
-                            and stream_projector.last_stop_reason is not None
-                            and not answer_timeline.accept_raw_stop_reason(
-                                message_identity=(
-                                    stream_projector.message_id,
-                                    stream_projector.parent_tool_use_id,
-                                ),
-                                stop_reason=stream_projector.last_stop_reason,
-                            )
-                        ):
-                            fail_stream_projection()
-                            continue
-                        if (
-                            isinstance(raw_stream_event, dict)
                             and raw_stream_event.get("type") == "content_block_start"
                             and isinstance(raw_stream_event.get("content_block"), dict)
                             and raw_stream_event["content_block"].get("type") == "text"
@@ -3710,10 +3690,6 @@ async def run_claude_agent_sdk(
                         _block,
                     ) in typed_text_blocks:
                         source_identity = stream_projector.typed_text_source_identity(
-                            message_id=message_id_value,
-                            uuid=uuid_value,
-                            parent_tool_use_id=parent_tool_use_id,
-                            stop_reason=typed_stop_reason,
                             text_source_ordinal=text_source_ordinal,
                             text_source_count=len(typed_text_blocks),
                         )
@@ -3766,7 +3742,6 @@ async def run_claude_agent_sdk(
                             source_identity=source_identity,
                             message_identity=message_identity,
                             parent_tool_use_id=parent_tool_use_id,
-                            stop_reason=typed_stop_reason,
                             observed_identity=assistant_observation_id,
                             observation_scope=assistant_observation_scope,
                         )
@@ -3988,11 +3963,6 @@ async def run_claude_agent_sdk(
                             ),
                             result_identity=result_identity,
                             terminal_reason=stop_reason,
-                            source_stop_reason=(
-                                stream_projector.last_stop_reason
-                                if stream_projector is not None
-                                else None
-                            ),
                         )
                     if answer_timeline.disabled:
                         fail_stream_projection()

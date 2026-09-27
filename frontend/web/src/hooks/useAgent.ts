@@ -812,6 +812,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // One owner covers concurrent online/visibility/history/transport recovery
   // for the same session/run/generation.
   const reconcileOwnerRef = useRef<ReconcileOwner | null>(null);
+  const reconcileCurrentRunRef = useRef<(() => Promise<void>) | null>(null);
   const terminalHydrationOwnerRef = useRef<TerminalHydrationOwner | null>(null);
   const replayGapRecoveryRef = useRef<ReplayGapRecoveryOwner | null>(null);
 
@@ -1255,6 +1256,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       replayGapRecoveryRef.current = null;
       clearReconnectTimeout(reconnectTimeoutRef);
       streamingMessageIdRef.current = null;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      isConnectingRef.current = false;
       isReconnectFromHistoryRef.current = false;
       retryCountRef.current = 0;
       statusRetryCountRef.current = 0;
@@ -1264,7 +1268,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setConnectionStatus("disconnected");
       setIsInitializingSandbox(false);
       setSandboxError(null);
-      options?.onClearApprovals?.();
       setMessageSnapshot({ messagesRef, setMessages }, (previous) =>
         previous.map((message) =>
           message.id === fallbackMessageId ||
@@ -1280,7 +1283,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       );
       return true;
     },
-    [options],
+    [],
   );
 
   const resumeRunAfterRejectedTerminalSynchronization = useCallback(
@@ -1313,8 +1316,23 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             : message,
         ),
       );
+      clearReconnectTimeout(reconnectTimeoutRef);
+      reconnectTimeoutRef.current = setTimeout(() => {
+        reconnectTimeoutRef.current = null;
+        if (
+          !isMountedRef.current ||
+          sessionIdRef.current !== targetSessionId ||
+          currentRunIdRef.current !== targetRunId ||
+          streamVersionRef.current !== streamVersion
+        ) return;
+        void reconcileCurrentRunRef.current?.().catch(() => {
+          if (currentRunIdRef.current === targetRunId && streamVersionRef.current === streamVersion) {
+            finalizeRunStatusUnavailable(targetRunId, fallbackMessageId);
+          }
+        });
+      }, 0);
     },
-    [],
+    [finalizeRunStatusUnavailable],
   );
 
   const hydrateTerminalRun = useCallback(
@@ -1484,7 +1502,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       return promise;
     },
     [
-      options,
       beginTerminalSynchronization,
       finalizeTerminalRun,
       finalizeTerminalResultUnavailable,
@@ -1694,6 +1711,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     reconcileOwnerRef.current = owner;
     return promise;
   }, [createSSEContext]);
+
+  useLayoutEffect(() => {
+    reconcileCurrentRunRef.current = reconcileCurrentRun;
+  }, [reconcileCurrentRun]);
 
   useEffect(() => {
     const terminalReservations = v4TerminalReservationsRef.current;
