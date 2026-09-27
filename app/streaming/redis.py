@@ -409,6 +409,25 @@ async def get_stream_authority(
     return _authority(row) if row is not None else None
 
 
+async def get_stream_authorities(
+    conn: AsyncConnection[dict[str, object]],
+    *,
+    tenant_id: str,
+    run_ids: list[str],
+) -> dict[str, StreamAuthority]:
+    target_run_ids = list(
+        dict.fromkeys(run_id.strip() for run_id in run_ids if run_id.strip())
+    )
+    if not target_run_ids:
+        return {}
+    result = await conn.execute(
+        "select * from sse_stream_authorities where tenant_id=%s and run_id=any(%s::text[])",
+        (tenant_id, target_run_ids),
+    )
+    authorities = (_authority(row) for row in await result.fetchall())
+    return {authority.run_id: authority for authority in authorities}
+
+
 async def acquire_sse_authority_lease(
     conn: AsyncConnection[dict[str, object]],
     *,

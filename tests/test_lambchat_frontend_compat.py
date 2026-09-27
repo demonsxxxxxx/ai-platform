@@ -1,6 +1,7 @@
 import app.conversations.infrastructure.postgres as _owner_conversations_infrastructure_postgres
 import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 import json
 from pathlib import Path
 import re
@@ -1242,6 +1243,33 @@ def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate
     else:
         assert event_type == "message:chunk"
         assert payload["content"] == expected_content
+
+
+def test_materialized_answer_event_requires_strict_v4_projection():
+    from app.routes.lambchat_compat import _materialized_answer_event
+
+    event = _materialized_answer_event(
+        {"id": "run-a", "tenant_id": "tenant-a", "trace_id": "trace-a"},
+        {
+            "metadata_json": {
+                "answer_materialization_proof": {
+                    "attempt_id": "attempt-a",
+                    "stream_incarnation": 2,
+                    "authorization_epoch": 3,
+                    "message_id": "msg-a",
+                    "last_delta_event_id": "source-a",
+                }
+            }
+        },
+        SimpleNamespace(
+            event_id="evt4_materialized",
+            sequence=9,
+            content="answer",
+            created_at=None,
+        ),
+    )
+
+    assert event is None
 
 
 def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):

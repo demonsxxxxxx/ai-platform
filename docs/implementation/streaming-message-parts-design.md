@@ -84,11 +84,13 @@ flowchart LR
    它在精确的 text block 内立即返回 `text_delta`，不保存整轮原文，也不判断“过程”或“最终”。
 2. Thinking、tool input JSON、server tool input 和其他非 text block 只用于排除错误来源，其 delta 不进入公开正文。
 3. raw `message_start`、block index、block stop 和 `message_stop` 执行防御性校验。
-   显式 message 内不能重复使用已关闭的 block index；缺失 envelope 的旧测试/兼容序列仍按串行 block 校验。
+   显式 message 内不能重复使用已关闭的 block index；未携带完整 envelope 或生命周期不完整的旧兼容序列已经退出并拒绝。
 4. typed `AssistantMessage` 不是 raw framing 边界。官方顺序允许它先于对应 `content_block_stop` 到达，因此不能在 typed 消息到达时清空 projector。
-5. typed TextBlock 用于补足未观察到的安全后缀，并和已流出的前缀对账；ToolUseBlock 只登记工具身份和公开生命周期。
-6. `ResultMessage.result` 是终态补充观察。它只补充尚未公开的内容；如果它与已公开前缀不同，已显示文字不能回滚，Result 作为后续正文保留。
+5. typed TextBlock 用于补足未观察到的安全后缀，并和已流出的前缀对账；如果它在同一 open indexed text source 的首个 raw delta 前到达，其 body 建立该 source 的 coverage/digest/published state，后续匹配的 raw body 只作 replay no-op；ToolUseBlock 只登记工具身份和公开生命周期。
+6. `ResultMessage.result` 是终态补充观察。它只补充同一 source 尚未公开的后缀；如果 identity、framing 或已观察正文冲突，保留已经显示的安全文字并 fail closed，不用 Result 覆盖或另造无依据的正文来源。
 7. 同一文本先由 raw delta、后由 typed TextBlock 或 Result 观察时，只发布一次。不同来源即使文字相同也不做全局字符串去重。
+8. raw observation binding、closed-source identity 和 tombstone 只保留最近的有界窗口；窗口淘汰后不能再证明旧 UUID 是重复观察，因此旧 replay 不能获得精确 no-op 结论。当前 source、保留的 digest/length 和仍在窗口内的冲突继续 fail closed；这只是 replay 证据上限，不是公开正文长度上限。
+9. 没有 `TextBlock` 的非空 typed `AssistantMessage`（例如 Thinking/ToolUse）是新的 turn boundary：它会 retire 当前 answer binding，后续 streamed/Sandbox `ResultMessage` 必须等新的 raw answer source 才能通过；没有既有 answer source 的显式 non-streaming Result-only 兼容仍保留。
 
 所有 Assistant 公开文字统一进入 `message.delta`。后续出现 ToolUseBlock 不把早先正文改写成 `commentary.delta`。
 `commentary.delta` 继续保留给明确的、已经脱敏的公共摘要生产者和历史 v4 记录，不由 Claude turn 的工具分类推断产生。
@@ -156,7 +158,7 @@ PR #1562 早期实现曾缓存整个 SDK turn，等 typed fragment、下一 mess
 
 - `ClaudeStreamTurn`、`queue_stream_turn` 和整轮文本缓冲；
 - 因 stop reason 或 ToolUseBlock 把 Claude Assistant 文字重新分类成 commentary；
-- 等 Result 才公开已经通过 raw framing 和脱敏 gate 的文字。
+- 跨 source 的字符串前缀/相等判断、Result 冲突追加和不完整 framing 后的 typed fallback；这些路径不再作为兼容行为保留。
 
 ## 7. 验收边界
 
@@ -169,7 +171,7 @@ PR #1562 早期实现曾缓存整个 SDK turn，等 typed fragment、下一 mess
 | AssistantMessage 先于 block stop | projector 不被 typed 边界错误关闭，后续 raw 事件仍可校验 |
 | 文字 → 已验证工具 → 文字 | 两段文字在 Result 前有可见前缀；工具状态独立 |
 | private token 跨两个 delta | 前缀有界保留，最终替换后无原 token |
-| Result 相同、扩展或冲突 | 相同不重放；扩展只补后缀；冲突保留已公开前缀并追加终态观察 |
+| Result 相同、扩展或冲突 | 相同不重放；同一 source 的扩展只补后缀；identity/framing 冲突 fail closed 并保留已公开前缀 |
 | 工具失败、Run 失败、取消 | 已提交安全文字保留，终态和附件不伪造成功 |
 | 无附件、多个附件、Skill output 临时文件 | 只有显式 `attach_file` 清单成为附件，顺序稳定 |
 | SSE 断线、重放、hydrate | 正文、公开摘要、工具和附件顺序一致，不重新执行 |

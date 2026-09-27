@@ -1,4 +1,4 @@
-from __future__ import annotations
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,12 +8,17 @@ from app.platform.postgres.limits import (
     json_size_bytes,
 )
 from app.streaming.api import opaque_message_id
-from app.streaming.application.worker_publication_v4 import AssistantAnswerReceiptError
+from app.streaming.application.worker_publication_v4 import (
+    AssistantAnswerReceiptError,
+    canonical_answer_body_digest,
+)
 from app.streaming.infrastructure.v4 import load_answer_by_receipt
 from app.execution.application.worker_answer_persistence import (
     AnswerPersistenceLimits,
     _ANSWER_BODY_REFERENCE,
     _bounded_answer_persistence,
+    build_answer_materialization_proof,
+    verify_answer_materialization,
 )
 from tests.test_streaming_v4_durable import _authority, _row
 
@@ -51,6 +56,11 @@ class _Connection:
         if "from run_events" in normalized:
             return _Cursor(rows=self.rows)
         raise AssertionError(f"unexpected SQL: {statement}")
+
+
+def test_canonical_answer_body_digest_is_length_delimited():
+    assert canonical_answer_body_digest(("ab", "c")) != canonical_answer_body_digest(("a", "bc"))
+    assert canonical_answer_body_digest(("ab", "c")) == canonical_answer_body_digest(("ab", "c"))
 
 
 def _authority_row(*, attempt_id: str = "attempt-a") -> dict[str, object]:
@@ -210,6 +220,73 @@ async def test_load_answer_by_receipt_rejects_invalid_current_attempt_rows(mutat
             attempt_id="attempt-a",
             receipt=receipt,
         )
+
+
+def test_materialization_proof_requires_complete_single_source_body():
+    reconstructed = SimpleNamespace(
+        stream_incarnation=2,
+        authorization_epoch=3,
+        message_id="msg_answer_a",
+        last_delta_event_id="evt4_delta_a",
+        delta_count=1,
+        text_length=12,
+        last_delta_sequence=9,
+        last_delta_created_at="2026-01-01T00:00:00+00:00",
+        last_delta_row_id="evt4_delta_a",
+        stream_answer_digest="a" * 64,
+        interleaved=False,
+        text="short answer",
+    )
+    proof = build_answer_materialization_proof(
+        reconstructed,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        persisted_body="short answer",
+        answer_source_count=1,
+        artifact_count=0,
+    )
+    metadata = {
+        "answer_receipt": {
+            "schema_version": "ai-platform.assistant-answer-receipt.v1",
+            "message_id": "msg_answer_a",
+            "delta_count": 1,
+            "text_length": 12,
+            "last_delta_event_id": "evt4_delta_a",
+        },
+        "answer_materialization_proof": proof,
+    }
+    authority = SimpleNamespace(
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+        authorization_epoch=3,
+        state="terminal",
+    )
+
+    def verify(content: object = "short answer"):
+        return verify_answer_materialization(
+            metadata,
+            content=content,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            status="succeeded",
+            authority=authority,
+            terminal_proof=proof,
+        )
+
+    verified = verify()
+    assert verified is not None
+    proof["authorization_epoch"] = True
+    assert verify() is None
+    proof["authorization_epoch"] = 3
+    proof["last_delta_created_at"] = "not-a-timestamp"
+    assert verify() is None
+    proof["last_delta_created_at"] = "2026-01-01T00:00:00+00:00"
+    assert verify(content=_ANSWER_BODY_REFERENCE) is None
+    proof["answer_source_count"] = 2
+    assert verify() is None
 
 
 def _receipt() -> dict[str, object]:

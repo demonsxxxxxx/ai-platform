@@ -4001,6 +4001,204 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
   }
 });
 
+test("useAgent stops generation while exact terminal history is still synchronizing", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalFetch = dom.window.fetch;
+  let statusCalls = 0;
+  const lifecycle = controlledPublicRunLifecycle(
+    "run-terminal-sync",
+    "succeeded",
+    [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "流式正文" } },
+    ],
+  );
+  let resolveTerminalHistory:
+    | ((value: Awaited<ReturnType<typeof sessionApi.getEvents>>) => void)
+    | null = null;
+  dom.window.fetch = async () => lifecycle.response;
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "终态同步会话",
+    session_id: "session-terminal-sync",
+  });
+  sessionApi.getEvents = (() =>
+    new Promise((resolve) => {
+      resolveTerminalHistory = resolve;
+    })) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-terminal-sync",
+      run_id: "run-terminal-sync",
+      status: "running",
+    };
+  }) as typeof sessionApi.getStatus;
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-terminal-sync",
+    run_id: "run-terminal-sync",
+    trace_id: "trace-terminal-sync",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("等待终态同步");
+    });
+    await settle(harness.act);
+
+    await harness.act(async () => {
+      lifecycle.finish();
+    });
+    await settle(harness.act);
+
+    const synchronizing = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" && message.runId === "run-terminal-sync",
+    );
+    assert.equal(synchronizing?.content, "流式正文");
+    assert.equal(synchronizing?.isStreaming, false);
+    assert.equal(synchronizing?.isSynchronizing, true);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(harness.hook.currentRunId, "run-terminal-sync");
+    assert.ok(resolveTerminalHistory);
+
+    await harness.act(async () => {
+      await harness.hook.reconnectSSE();
+    });
+    assert.equal(statusCalls, 0);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+
+    await harness.act(async () => {
+      resolveTerminalHistory?.({
+        events: [
+          {
+            id: "run-terminal-sync:answer",
+            event_type: "message:chunk",
+            run_id: "run-terminal-sync",
+            timestamp: "2026-08-21T00:00:01Z",
+            data: {
+              projection_version: "ai-platform.chat-public-projection.v1",
+              projection_kind: "assistant_delta",
+              event_id: "run-terminal-sync:answer",
+              run_id: "run-terminal-sync",
+              content: "持久化最终正文",
+            },
+          },
+        ],
+      });
+    });
+    await settle(harness.act);
+
+    const settled = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" && message.runId === "run-terminal-sync",
+    );
+    assert.equal(settled?.content, "持久化最终正文");
+    assert.equal(settled?.isStreaming, false);
+    assert.equal(settled?.isSynchronizing, false);
+    assert.equal(harness.hook.currentRunId, null);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent keeps a succeeded Run terminal when result synchronization fails", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalFetch = dom.window.fetch;
+  const lifecycle = controlledPublicRunLifecycle(
+    "run-terminal-sync-unavailable",
+    "succeeded",
+    [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "已公开正文" } },
+    ],
+  );
+  dom.window.fetch = async () => lifecycle.response;
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "终态同步失败会话",
+    session_id: "session-terminal-sync-unavailable",
+  });
+  sessionApi.getEvents = (async () => {
+    throw Object.assign(new Error("history denied"), { status: 403 });
+  }) as typeof sessionApi.getEvents;
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-terminal-sync-unavailable",
+    run_id: "run-terminal-sync-unavailable",
+    trace_id: "trace-terminal-sync-unavailable",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("终态成功但同步失败");
+    });
+    await settle(harness.act);
+    await harness.act(async () => {
+      lifecycle.finish();
+    });
+    await settle(harness.act);
+
+    const assistant = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" &&
+        message.runId === "run-terminal-sync-unavailable",
+    );
+    const statuses = assistant?.parts?.filter(
+      (part) => part.type === "run_status",
+    ) ?? [];
+    assert.equal(assistant?.content, "已公开正文");
+    assert.equal(assistant?.isStreaming, false);
+    assert.equal(assistant?.isSynchronizing, false);
+    assert.equal(
+      statuses.some(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id ===
+            "terminal-result-unavailable:run-terminal-sync-unavailable",
+      ),
+      true,
+    );
+    assert.equal(
+      statuses.some(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id === "terminal-failure:run-terminal-sync-unavailable",
+      ),
+      false,
+    );
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getEvents = originalGetEvents;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent consumes lambchat's runless error then done fallback exactly once", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");

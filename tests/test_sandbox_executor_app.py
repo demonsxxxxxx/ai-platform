@@ -846,7 +846,7 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
     monkeypatch,
     tmp_path,
 ):
-    answer = ("0123456789abcdef" * ((101 * 8_192 + 15) // 16))[: 101 * 8_192]
+    answer = ("chunk " * ((101 * 8_192 + 5) // 6))[: 101 * 8_192 - 1] + " "
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -882,6 +882,7 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
         num_turns = 1
         duration_ms = 1
         permission_denials = None
+        uuid = "sandbox-terminal-result"
 
     async def query(*, prompt, options):
         del prompt

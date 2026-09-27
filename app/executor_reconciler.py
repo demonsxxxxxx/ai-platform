@@ -31,7 +31,9 @@ from app.runtime.sandbox.contracts import (
 )
 from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
 from app.runtime.sandbox.executor_signals import (
+    ExecutorReconciliationSignalCursor,
     ExecutorSignalUnavailable,
+    initialize_executor_reconciliation_signal_cursor,
     wait_for_executor_reconciliation_signal,
 )
 from app.runtime.sandbox.providers.opensandbox.startup import (
@@ -57,6 +59,7 @@ _RECONCILIATION_BATCH_SIZE = 1
 _RECONCILIATION_CLAIM_STALE_SECONDS = 300
 _RECONCILIATION_WORK_TIMEOUT_SECONDS = 240.0
 _RECONCILIATION_IDLE_SECONDS = 30.0
+_RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS = 5.0
 _EXECUTOR_HEARTBEAT_STALE_SECONDS = 45
 _EXECUTOR_PROBE_FAILURE_LIMIT = 3
 _TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -1049,7 +1052,18 @@ async def run_executor_terminal_reconciler(
     lifecycle: RunLifecycleService,
     run_diagnostics: RunDiagnosticsService | None = None,
 ) -> None:
+    signal_cursor: ExecutorReconciliationSignalCursor | None = None
     while not stop_event.is_set():
+        if signal_cursor is None:
+            try:
+                # Capture the tail before PostgreSQL scan so an interleaved
+                # signal remains visible to the following explicit XREAD.
+                signal_cursor = await asyncio.wait_for(
+                    initialize_executor_reconciliation_signal_cursor(),
+                    timeout=_RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS,
+                )
+            except (ExecutorSignalUnavailable, TimeoutError):
+                signal_cursor = None
         reconciled = 0
         try:
             reconciled = await reconcile_pending_executor_terminals_once(
@@ -1090,14 +1104,24 @@ async def run_executor_terminal_reconciler(
             _logger.exception("executor_suspect_probe_failed")
         if probed:
             continue
+        if signal_cursor is None:
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=_RECONCILIATION_IDLE_SECONDS
+                )
+            except TimeoutError:
+                pass
+            continue
         try:
             await asyncio.wait_for(
                 wait_for_executor_reconciliation_signal(
                     block_ms=int(_RECONCILIATION_IDLE_SECONDS * 1000),
+                    cursor=signal_cursor,
                 ),
                 timeout=_RECONCILIATION_IDLE_SECONDS + 5.0,
             )
         except ExecutorSignalUnavailable:
+            signal_cursor = None
             try:
                 await asyncio.wait_for(
                     stop_event.wait(), timeout=_RECONCILIATION_IDLE_SECONDS

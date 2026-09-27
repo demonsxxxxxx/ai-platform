@@ -1164,6 +1164,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             return {
               ...message,
               isStreaming: false,
+              isSynchronizing: false,
               parts: [...parts, card],
             };
           }
@@ -1175,6 +1176,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             return {
               ...message,
               isStreaming: false,
+              isSynchronizing: false,
               cancelled: true,
               parts: [...parts, { type: "cancelled" as const }],
             };
@@ -1182,6 +1184,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return {
             ...message,
             isStreaming: false,
+            isSynchronizing: false,
             cancelled: outcome === "cancelled" ? true : message.cancelled,
             parts,
           };
@@ -1225,6 +1228,95 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     [convergeRunLifecycle],
   );
 
+  const beginTerminalSynchronization = useCallback(
+    (
+      targetSessionId: string,
+      targetRunId: string,
+      fallbackMessageId: string,
+    ): boolean => {
+      if (
+        !isMountedRef.current ||
+        sessionIdRef.current !== targetSessionId ||
+        currentRunIdRef.current !== targetRunId
+      ) {
+        return false;
+      }
+
+      const presentationMessageId =
+        streamingMessageIdRef.current || fallbackMessageId;
+      publicStreamPresentationRef.current?.flush({
+        sessionId: targetSessionId,
+        runId: targetRunId,
+        assistantMessageId: presentationMessageId,
+        streamVersion: streamVersionRef.current,
+      });
+      publicStreamPresentationRef.current?.invalidate();
+      reconcileOwnerRef.current = null;
+      replayGapRecoveryRef.current = null;
+      clearReconnectTimeout(reconnectTimeoutRef);
+      streamingMessageIdRef.current = null;
+      isReconnectFromHistoryRef.current = false;
+      retryCountRef.current = 0;
+      statusRetryCountRef.current = 0;
+
+      toast.dismiss("chat-queue");
+      setIsLoading(false);
+      setConnectionStatus("disconnected");
+      setIsInitializingSandbox(false);
+      setSandboxError(null);
+      options?.onClearApprovals?.();
+      setMessageSnapshot({ messagesRef, setMessages }, (previous) =>
+        previous.map((message) =>
+          message.id === fallbackMessageId ||
+          (message.role === "assistant" && message.runId === targetRunId)
+            ? {
+                ...message,
+                isStreaming: false,
+                isSynchronizing: true,
+                parts: clearAllLoadingStates(message.parts || []),
+              }
+            : message,
+        ),
+      );
+      return true;
+    },
+    [options],
+  );
+
+  const resumeRunAfterRejectedTerminalSynchronization = useCallback(
+    (
+      targetSessionId: string,
+      targetRunId: string,
+      fallbackMessageId: string,
+      streamVersion: number,
+    ): void => {
+      if (
+        !isMountedRef.current ||
+        sessionIdRef.current !== targetSessionId ||
+        currentRunIdRef.current !== targetRunId ||
+        streamVersionRef.current !== streamVersion
+      ) {
+        return;
+      }
+      streamingMessageIdRef.current = fallbackMessageId;
+      setIsLoading(true);
+      setConnectionStatus("disconnected");
+      setMessageSnapshot({ messagesRef, setMessages }, (previous) =>
+        previous.map((message) =>
+          message.id === fallbackMessageId ||
+          (message.role === "assistant" && message.runId === targetRunId)
+            ? {
+                ...message,
+                isStreaming: true,
+                isSynchronizing: false,
+              }
+            : message,
+        ),
+      );
+    },
+    [],
+  );
+
   const hydrateTerminalRun = useCallback(
     async (
       targetSessionId: string,
@@ -1247,6 +1339,16 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         existing.streamVersion === streamVersion
       ) {
         return existing.promise;
+      }
+      if (
+        !beginTerminalSynchronization(
+          targetSessionId,
+          targetRunId,
+          fallbackMessageId,
+        )
+      ) {
+        onSettled?.(false);
+        return;
       }
 
       terminalHydrationOwnerRef.current?.controller.abort();
@@ -1352,6 +1454,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             targetRunId,
           );
           if (!settle(true)) {
+            resumeRunAfterRejectedTerminalSynchronization(
+              targetSessionId,
+              targetRunId,
+              fallbackMessageId,
+              streamVersion,
+            );
             return;
           }
           setMessageSnapshot({ messagesRef, setMessages }, merged);
@@ -1375,7 +1483,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       terminalHydrationOwnerRef.current = owner;
       return promise;
     },
-    [finalizeTerminalRun, finalizeTerminalResultUnavailable],
+    [
+      options,
+      beginTerminalSynchronization,
+      finalizeTerminalRun,
+      finalizeTerminalResultUnavailable,
+      resumeRunAfterRejectedTerminalSynchronization,
+    ],
   );
 
   const hydrateActiveRun = useCallback(
@@ -1385,6 +1499,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       expectedStreamVersion: number,
       expectedStreamIncarnation: number,
       expectedCursorEventId: string,
+      replayOwner: ReplayGapRecoveryOwner,
     ): Promise<string | null> => {
       const isCurrent = () =>
         isMountedRef.current &&
@@ -1395,7 +1510,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         acceptedStreamCursorRef.current.runId === targetRunId &&
         acceptedStreamCursorRef.current.streamIncarnation ===
           expectedStreamIncarnation &&
-        acceptedStreamCursorRef.current.eventId === expectedCursorEventId;
+        acceptedStreamCursorRef.current.eventId === expectedCursorEventId &&
+        replayGapRecoveryRef.current === replayOwner;
       const eventsData = await sessionApi.getEvents(targetSessionId, {
         run_id: targetRunId,
       });
@@ -1487,9 +1603,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         setConnectionStatus(status as ConnectionStatus),
       setIsInitializingSandbox,
       setSandboxError,
-      // A terminal SSE frame proves only the run state. Rehydrate the exact
-      // run before collapsing its process so late persisted steps cannot be
-      // hidden behind an older running presentation.
+      // A trusted terminal ends generation presentation immediately. Exact
+      // persisted history then reconciles under the same run/generation owner.
       onRunTerminal: (runId, status, messageId, onSettled) => {
         const activeSessionId = sessionIdRef.current;
         if (!activeSessionId) return false;
@@ -1529,6 +1644,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     const targetRunId = currentRunIdRef.current;
     const streamVersion = streamVersionRef.current;
     if (!targetSessionId || !targetRunId) {
+      return;
+    }
+    const terminalHydrationOwner = terminalHydrationOwnerRef.current;
+    if (
+      terminalHydrationOwner &&
+      terminalHydrationOwner.sessionId === targetSessionId &&
+      terminalHydrationOwner.runId === targetRunId &&
+      terminalHydrationOwner.streamVersion === streamVersion
+    ) {
       return;
     }
     const existing = reconcileOwnerRef.current;
@@ -2136,6 +2260,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         });
         setError(statusUnavailable);
         toast.error(statusUnavailable);
+        return { status: "failed" };
+      }
+
+      if (terminalHydrationOwnerRef.current !== null) {
         return { status: "failed" };
       }
 

@@ -23,6 +23,7 @@ from app.streaming.application.callback_events_v4 import (
 from app.streaming.application.worker_publication_v4 import (
     AssistantAnswerReceiptError,
     ReconstructedAssistantAnswer,
+    canonical_answer_body_digest,
 )
 from app.streaming.domain.live import redis_id_tuple as _redis_id_tuple
 from app.streaming.domain.live import stream_key
@@ -551,17 +552,43 @@ async def load_answer_by_receipt(
             or completed_payload.get("text_length") != text_length
         ):
             raise V4ProjectionError("completed_receipt")
-        text = "".join(
+        delta_texts = tuple(
             str(item["payload"]["delta"])
             for item in deltas
             if isinstance(item.get("payload"), Mapping)
             and isinstance(item["payload"].get("delta"), str)
         )
+        text = "".join(delta_texts)
         if len(text) != text_length:
             raise V4ProjectionError("text_length")
+        last_delta_row = rows[-2]
+        last_delta_created_at_value = last_delta_row.get("created_at")
+        last_delta_created_at = (
+            last_delta_created_at_value.isoformat()
+            if hasattr(last_delta_created_at_value, "isoformat")
+            else str(last_delta_created_at_value)
+            if last_delta_created_at_value is not None
+            else None
+        )
     except (KeyError, TypeError, V4ProjectionError) as exc:
         raise AssistantAnswerReceiptError() from exc
-    return ReconstructedAssistantAnswer(text=text)
+    return ReconstructedAssistantAnswer(
+        text=text,
+        stream_answer_digest=canonical_answer_body_digest(delta_texts),
+        message_id=message_id,
+        last_delta_event_id=last_delta_event_id,
+        delta_count=delta_count,
+        text_length=text_length,
+        last_delta_sequence=int(sequences[-2]),
+        last_delta_created_at=last_delta_created_at,
+        last_delta_row_id=str(last_delta_row.get("id")),
+        stream_incarnation=authority.stream_incarnation,
+        authorization_epoch=authority.authorization_epoch,
+        interleaved=any(
+            next_sequence != sequence + 1
+            for sequence, next_sequence in zip(sequences, sequences[1:])
+        ),
+    )
 
 
 class V4RedisStreamBridge:

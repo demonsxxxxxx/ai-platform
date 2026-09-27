@@ -27,6 +27,8 @@ export interface CollapsiblePillProps {
   animatedDots?: boolean;
   /** Preserve label text exactly instead of applying title formatting */
   formatLabel?: boolean;
+  /** Render a non-actionable status element when the pill cannot expand */
+  nonInteractive?: boolean;
 }
 
 // Get spinner color based on variant
@@ -181,6 +183,7 @@ export function CollapsiblePill({
   onPanelOpen,
   animatedDots = false,
   formatLabel = true,
+  nonInteractive = false,
 }: CollapsiblePillProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const hasChildren = children !== undefined;
@@ -197,6 +200,7 @@ export function CollapsiblePill({
   };
 
   const canExpand = expandable || hasChildren;
+  const renderAsStatus = nonInteractive && !canExpand;
 
   // Format label: capitalize first letter and convert underscores to spaces
   const formattedLabel = label
@@ -205,41 +209,54 @@ export function CollapsiblePill({
     .join(" ");
   const displayedLabel = formatLabel ? formattedLabel : label;
 
-  return (
-    <div className="my-1 min-w-0 max-w-full">
-      <button
-        onClick={handleToggle}
-        aria-expanded={canExpand ? isExpanded : undefined}
+  const pillClassName = clsx(
+    "inline-flex items-center gap-2 px-2.5 py-2 rounded-full text-xs font-medium max-w-full",
+    "transition-colors",
+    getButtonStyles(status, variant),
+    canExpand && "cursor-pointer",
+    !canExpand && "cursor-default",
+  );
+  const pillContent = (
+    <>
+      <StatusIndicator status={status} variant={variant} />
+      {icon}
+      <span
         className={clsx(
-          "inline-flex items-center gap-2 px-2.5 py-2 rounded-full text-xs font-medium max-w-full",
-          "transition-colors",
-          getButtonStyles(status, variant),
-          canExpand && "cursor-pointer",
-          !canExpand && "cursor-default",
+          "min-w-0 truncate overflow-hidden",
+          animatedDots && "typing-dots",
         )}
       >
-        <StatusIndicator status={status} variant={variant} />
-        {icon}
-        <span
+        {displayedLabel}
+      </span>
+      {suffix}
+      {canExpand && (
+        <ChevronRight
+          size={12}
           className={clsx(
-            "font-mono min-w-0 truncate overflow-hidden",
-            animatedDots && "typing-dots",
+            "shrink-0 transition-transform duration-200",
+            "text-stone-500 dark:text-stone-400",
+            isExpanded && "rotate-90",
           )}
+        />
+      )}
+    </>
+  );
+
+  return (
+    <div className="my-1 min-w-0 max-w-full">
+      {renderAsStatus ? (
+        <div role="status" aria-live="polite" className={pillClassName}>
+          {pillContent}
+        </div>
+      ) : (
+        <button
+          onClick={handleToggle}
+          aria-expanded={canExpand ? isExpanded : undefined}
+          className={pillClassName}
         >
-          {displayedLabel}
-        </span>
-        {suffix}
-        {canExpand && (
-          <ChevronRight
-            size={12}
-            className={clsx(
-              "shrink-0 transition-transform duration-200",
-              "text-stone-500 dark:text-stone-400",
-              isExpanded && "rotate-90",
-            )}
-          />
-        )}
-      </button>
+          {pillContent}
+        </button>
+      )}
 
       {isExpanded && hasChildren && (
         <div className="mt-1 animate-[fade-in_150ms_ease-out]">{children}</div>

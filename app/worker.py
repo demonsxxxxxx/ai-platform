@@ -2497,7 +2497,7 @@ async def process_run_payload(
                 }
             answer_receipt = result.executor_payload.get("answer_receipt")
             if result.status == "succeeded" and answer_receipt is not None:
-                materialized = await materialize_worker_answer(v4_capabilities, conn, result=result, result_payload=result_payload, artifact_records=artifact_records, tenant_id=payload.tenant_id, run_id=payload.run_id, attempt_id=attempt_id, answer_receipt=answer_receipt, limits=_ANSWER_PERSISTENCE_LIMITS)
+                materialized = await materialize_worker_answer(v4_capabilities, conn, result=result, result_payload=result_payload, artifact_records=artifact_records, tenant_id=payload.tenant_id, run_id=payload.run_id, attempt_id=attempt_id, answer_receipt=answer_receipt, limits=_ANSWER_PERSISTENCE_LIMITS, answer_source_count=result.executor_payload.get("answer_source_count"))
                 result = materialized.result
                 result_payload = materialized.result_payload
                 artifact_records = materialized.artifact_records

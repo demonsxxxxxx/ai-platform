@@ -24,7 +24,10 @@ from app.executor_reconciler import (
 from app.executors.base import ExecutorResult
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runs.application.diagnostics import RunDiagnosticsService
-from app.runtime.sandbox.executor_signals import ExecutorSignalUnavailable
+from app.runtime.sandbox.executor_signals import (
+    ExecutorReconciliationSignalCursor,
+    ExecutorSignalUnavailable,
+)
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
@@ -98,6 +101,17 @@ async def run_executor_terminal_reconciler(*args, **kwargs):
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     return await run_executor_terminal_reconciler_impl(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _fake_executor_signal_cursor(monkeypatch):
+    async def initialize():
+        return ExecutorReconciliationSignalCursor("0-0")
+
+    monkeypatch.setattr(
+        "app.executor_reconciler.initialize_executor_reconciliation_signal_cursor",
+        initialize,
+    )
 
 
 def _lease_row() -> dict[str, object]:
@@ -1509,6 +1523,96 @@ async def test_reconciler_waits_when_no_terminal_or_probe_progress(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reconciler_observes_signal_written_during_empty_database_scan(monkeypatch):
+    from app import executor_reconciler
+    from app.runtime.sandbox import executor_signals
+
+    class SignalRedis:
+        def __init__(self):
+            self.entries = [("4-0", {"wake": "1"})]
+            self.xread_after_ids: list[str] = []
+
+        async def xrevrange(self, _key, *, max, min, count):
+            assert (max, min, count) == ("+", "-", 1)
+            return self.entries[-count:]
+
+        async def xread(self, streams, *, count, block):
+            del block
+            key, after_id = next(iter(streams.items()))
+            self.xread_after_ids.append(after_id)
+            after = tuple(int(part) for part in after_id.split("-"))
+            available = [
+                entry
+                for entry in self.entries
+                if tuple(int(part) for part in entry[0].split("-")) > after
+            ][:count]
+            return [(key, available)] if available else []
+
+        async def aclose(self):
+            return None
+
+    stop_event = asyncio.Event()
+    client = SignalRedis()
+    calls: list[str] = []
+    scan_count = 0
+
+    async def reconcile(**_kwargs):
+        nonlocal scan_count
+        scan_count += 1
+        calls.append(f"reconcile-{scan_count}")
+        if scan_count == 1:
+            client.entries.append(("5-0", {"wake": "1"}))
+            return 0
+        stop_event.set()
+        return 1
+
+    async def no_work(**_kwargs):
+        calls.append("cleanup")
+        return []
+
+    async def no_probe(**_kwargs):
+        calls.append("probe")
+        return 0
+
+    monkeypatch.setattr(executor_signals, "get_redis_client", lambda: client)
+    monkeypatch.setattr(
+        executor_reconciler,
+        "initialize_executor_reconciliation_signal_cursor",
+        executor_signals.initialize_executor_reconciliation_signal_cursor,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "wait_for_executor_reconciliation_signal",
+        executor_signals.wait_for_executor_reconciliation_signal,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "reconcile_pending_executor_terminals_once",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        no_work,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "probe_suspect_executor_tasks_once",
+        no_probe,
+    )
+
+    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+
+    assert client.xread_after_ids == ["4-0"]
+    assert calls == [
+        "reconcile-1",
+        "cleanup",
+        "probe",
+        "reconcile-2",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monkeypatch):
     from app import executor_reconciler
 
@@ -1589,6 +1693,110 @@ async def test_reconciler_scans_postgres_when_redis_wakeup_is_unavailable(monkey
     )
 
     assert calls == ["worker-a", "cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_reconciler_cursor_failure_uses_polling_without_uncursored_xread(
+    monkeypatch,
+):
+    from app import executor_reconciler
+
+    stop_event = asyncio.Event()
+    calls: list[str] = []
+
+    async def unavailable_cursor():
+        calls.append("cursor")
+        raise ExecutorSignalUnavailable("redis unavailable")
+
+    async def reconcile(**_kwargs):
+        calls.append("reconcile")
+        return 0
+
+    async def cleanup(**_kwargs):
+        calls.append("cleanup")
+        stop_event.set()
+        return []
+
+    async def no_probe(**_kwargs):
+        calls.append("probe")
+        return 0
+
+    async def unexpected_wait(**_kwargs):
+        pytest.fail("cursor initialization failure must not fall back to XREAD '$'")
+
+    monkeypatch.setattr(
+        executor_reconciler,
+        "initialize_executor_reconciliation_signal_cursor",
+        unavailable_cursor,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "reconcile_pending_executor_terminals_once",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        cleanup,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "probe_suspect_executor_tasks_once",
+        no_probe,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "wait_for_executor_reconciliation_signal",
+        unexpected_wait,
+    )
+
+    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+
+    assert calls == ["cursor", "reconcile", "cleanup", "probe"]
+
+
+@pytest.mark.asyncio
+async def test_reconciler_bounds_cursor_initialization_before_database_scan(monkeypatch):
+    from app import executor_reconciler
+
+    stop_event = asyncio.Event()
+    cursor_started = asyncio.Event()
+    cursor_cancelled = asyncio.Event()
+    scans: list[str] = []
+
+    async def stalled_cursor():
+        cursor_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cursor_cancelled.set()
+
+    async def reconcile(**_kwargs):
+        scans.append("reconcile")
+        stop_event.set()
+        return 0
+
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "initialize_executor_reconciliation_signal_cursor",
+        stalled_cursor,
+    )
+    monkeypatch.setattr(
+        executor_reconciler,
+        "reconcile_pending_executor_terminals_once",
+        reconcile,
+    )
+
+    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+
+    assert cursor_started.is_set()
+    assert cursor_cancelled.is_set()
+    assert scans == ["reconcile"]
 
 
 @pytest.mark.asyncio

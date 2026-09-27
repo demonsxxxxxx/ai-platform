@@ -342,9 +342,35 @@ def _install_sdk(monkeypatch, query):
         def __init__(self, text: str):
             self.text = text
 
+    assistant_counter = 0
+    raw_counter = 0
+    result_counter = 0
+
     class AssistantMessage:
-        def __init__(self, content: list[Any]):
+        def __init__(
+            self,
+            content: list[Any],
+            *,
+            message_id: str | None = None,
+            uuid: str | None = None,
+            parent_tool_use_id: str | None = None,
+            stop_reason: str | None = "end_turn",
+        ):
+            nonlocal assistant_counter
+            assistant_counter += 1
             self.content = content
+            self.message_id = message_id or f"provider-message-{assistant_counter}"
+            self.uuid = uuid or f"assistant-observation-{assistant_counter}"
+            self.parent_tool_use_id = parent_tool_use_id
+            self.stop_reason = stop_reason
+
+    class StreamEvent:
+        def __init__(self, event):
+            nonlocal raw_counter
+            raw_counter += 1
+            self.event = event
+            self.uuid = f"raw-event-{raw_counter}"
+            self.parent_tool_use_id = None
 
     class ResultMessage:
         def __init__(
@@ -355,7 +381,10 @@ def _install_sdk(monkeypatch, query):
             errors: list[str] | None = None,
             stop_reason: str | None = "end_turn",
             num_turns: int = 1,
+            uuid: str | None = None,
         ):
+            nonlocal result_counter
+            result_counter += 1
             self.session_id = "sdk-session"
             self.usage = {"input_tokens": 1}
             self.model_usage = {}
@@ -364,8 +393,10 @@ def _install_sdk(monkeypatch, query):
             self.subtype = subtype
             self.errors = list(errors or [])
             self.stop_reason = stop_reason
+            self.terminal_reason = "completed"
             self.num_turns = num_turns
             self.permission_denials = []
+            self.uuid = uuid or f"result-event-{result_counter}"
 
     class HookMatcher:
         def __init__(self, matcher=None, hooks=None, timeout=None):
@@ -382,6 +413,7 @@ def _install_sdk(monkeypatch, query):
         ClaudeAgentOptions=ClaudeAgentOptions,
         HookMatcher=HookMatcher,
         ResultMessage=ResultMessage,
+        StreamEvent=StreamEvent,
         TextBlock=TextBlock,
         query=query,
         ClaudeSDKClient=native_client_factory(query),
@@ -733,7 +765,7 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
     sdk_types: dict[str, Any] = {}
 
     async def query(prompt, options):
-        yield sdk_types["AssistantMessage"]([sdk_types["TextBlock"]("working")])
+        yield sdk_types["AssistantMessage"]([sdk_types["TextBlock"]("done")])
         hook_input = {
             "hook_event_name": "PostToolUse",
             "tool_name": "Skill",

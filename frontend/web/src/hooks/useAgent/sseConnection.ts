@@ -68,6 +68,7 @@ export interface SSEConnectionContext extends EventHandlerContext {
     streamVersion: number,
     streamIncarnation: number,
     expectedCursorEventId: string,
+    replayOwner: ReplayGapRecoveryOwner,
   ) => Promise<string | null>;
 }
 
@@ -372,7 +373,7 @@ export async function recoverReplayGap(
   },
   dependencies: ReconnectDependencies = {},
 ): Promise<void> {
-  const isCurrent = () =>
+  const isCurrentTarget = () =>
     isCurrentSSETarget(ctx, sessionId, runId, streamVersion);
   const existing = ctx.replayGapRecoveryRef?.current;
   if (
@@ -384,7 +385,7 @@ export async function recoverReplayGap(
     return existing.promise;
   }
 
-  if (!isCurrent()) {
+  if (!isCurrentTarget()) {
     return;
   }
 
@@ -474,6 +475,9 @@ export async function recoverReplayGap(
     streamVersion,
     promise: Promise.resolve(),
   };
+  const isCurrent = () =>
+    isCurrentTarget() &&
+    (!ctx.replayGapRecoveryRef || ctx.replayGapRecoveryRef.current === owner);
   const settleStatusUnavailable = () => {
     if (!isCurrent()) return;
     ctx.setConnectionStatus("disconnected");
@@ -488,6 +492,9 @@ export async function recoverReplayGap(
     0,
     dependencies.replayGapStatusPollDelayMs ?? REPLAY_GAP_STATUS_POLL_DELAY_MS,
   );
+  if (ctx.replayGapRecoveryRef) {
+    ctx.replayGapRecoveryRef.current = owner;
+  }
   const promise = (async () => {
     try {
       while (isCurrent()) {
@@ -527,6 +534,7 @@ export async function recoverReplayGap(
               streamVersion,
               gap.streamIncarnation,
               expectedCursorEventId,
+              owner,
             );
             if (!isCurrent() || !ownsExpectedCursor()) return;
             if (!hydratedMessageId) {
@@ -590,9 +598,6 @@ export async function recoverReplayGap(
     }
   })();
   owner.promise = promise;
-  if (ctx.replayGapRecoveryRef) {
-    ctx.replayGapRecoveryRef.current = owner;
-  }
   return promise;
 }
 
@@ -696,7 +701,8 @@ export async function connectToSSE(
   });
   const isCurrentStream = () =>
     abortControllerRef.current === streamAbortController &&
-    isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion);
+    isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion) &&
+    streamingMessageIdRef.current === messageId;
   const releasePendingConnection = () => {
     if (abortControllerRef.current !== streamAbortController) return;
     abortControllerRef.current = null;
@@ -960,7 +966,17 @@ export async function connectToSSE(
             if (isRunTerminalEvent || isStreamEndEvent) {
               receivedTerminalEvent = true;
             }
-            if (!isCurrentStream()) return;
+            const terminalSettlementCurrent =
+              (isRunTerminalEvent || isStreamEndEvent) &&
+              pendingTerminalHydration !== null &&
+              abortControllerRef.current === streamAbortController &&
+              isCurrentSSETarget(
+                ctx,
+                targetSessionId,
+                targetRunId,
+                streamVersion,
+              );
+            if (!isCurrentStream() && !terminalSettlementCurrent) return;
             const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
             const ownsAcceptedCursor =
               acceptedCursor?.sessionId === targetSessionId &&
@@ -1245,7 +1261,7 @@ export async function reconnectSSE(
       currentSessId || "",
       currentRId || "",
       reconnectStreamVersion,
-    );
+    ) && streamingMessageIdRef.current === currentMsgId;
   const hasCurrentAssistant = () => Boolean(
     currentMsgId && messagesRef.current.some((message) =>
       message.id === currentMsgId &&

@@ -57,10 +57,13 @@ from app.execution.application.stale_terminalization import (
 )
 from app.execution.application.worker_answer_persistence import (
     AnswerPersistenceLimits,
+    VerifiedAnswerMaterialization,
     WorkerAnswerMaterialization,
     assistant_artifact_metadata,
+    build_answer_materialization_proof,
     materialize_worker_answer,
     sanitize_assistant_message,
+    verify_answer_materialization,
 )
 from app.execution.application.artifact_storage import (
     artifact_content_type,
@@ -106,10 +109,13 @@ __all__ = [
     "ClaudeAgentEventCandidate",
     "ClaudeSdkAgentEventAdapter",
     "AnswerPersistenceLimits",
+    "VerifiedAnswerMaterialization",
     "WorkerAnswerMaterialization",
     "assistant_artifact_metadata",
+    "build_answer_materialization_proof",
     "materialize_worker_answer",
     "sanitize_assistant_message",
+    "verify_answer_materialization",
     "reconciliation_agent_profile_binding_matches",
     "runtime_terminal_payload",
     "RunModelSelection",

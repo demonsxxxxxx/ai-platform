@@ -12,6 +12,8 @@ export interface Message {
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
   isStreaming?: boolean;
+  /** The Run is terminal; exact persisted public history is still reconciling. */
+  isSynchronizing?: boolean;
   // 有序内容块 - 用于按顺序渲染文本和工具调用
   parts?: MessagePart[];
   // Token 使用统计

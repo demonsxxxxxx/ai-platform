@@ -320,7 +320,11 @@ export function ChatView({
     isLoading,
     isLoadingHistory,
   );
-  const canSendInCurrentView = canSendMessage && !isLoadingHistory;
+  const terminalResultSynchronizing = messages.some(
+    (message) => message.role === "assistant" && message.isSynchronizing,
+  );
+  const canSendInCurrentView =
+    canSendMessage && !isLoadingHistory && !terminalResultSynchronizing;
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );

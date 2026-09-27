@@ -8,6 +8,100 @@ import {
   createMessagePartRenderKeys,
   MessagePartRenderer,
 } from "../MessagePartRenderer.tsx";
+import { MessageWorkActivity } from "../MessageWorkActivity.tsx";
+import { CollapsiblePill } from "../../../common/CollapsiblePill.tsx";
+
+test("separates completed work activity from the final answer region", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool",
+      name: "Read",
+      args: {},
+      status: "completed",
+      public_category: "read",
+      public_operation_id: "operation-read",
+    },
+    { type: "text", content: "最终答案" },
+  ];
+  const markup = renderToStaticMarkup(
+    createElement(MessageWorkActivity, {
+      messageId: "message-work-answer",
+      isStreaming: false,
+      parts,
+      partKeys: ["work", "answer"],
+      renderPart: (part: MessagePart) =>
+        createElement("span", { "data-rendered-part": part.type }, part.type),
+    }),
+  );
+
+  assert.match(markup, /data-message-work-activity/);
+  assert.match(markup, /aria-expanded="false"/);
+  assert.match(markup, /hidden=""/);
+  assert.match(markup, /data-message-answer-content/);
+  assert.ok(
+    markup.indexOf("data-message-work-activity") <
+      markup.indexOf("data-message-answer-content"),
+  );
+});
+
+test("keeps active work expanded without merging it into answer content", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool",
+      name: "Read",
+      args: {},
+      status: "started",
+      public_category: "read",
+      public_operation_id: "operation-read-active",
+    },
+    { type: "text", content: "正文" },
+  ];
+  const markup = renderToStaticMarkup(
+    createElement(MessageWorkActivity, {
+      messageId: "message-active-work",
+      isStreaming: true,
+      parts,
+      partKeys: ["work", "answer"],
+      renderPart: (part: MessagePart) =>
+        createElement("span", { "data-rendered-part": part.type }, part.type),
+    }),
+  );
+
+  assert.match(markup, /aria-expanded="true"/);
+  assert.doesNotMatch(markup, /hidden=""/);
+  assert.match(markup, /data-message-answer-content/);
+});
+
+test("uses the natural UI font for localized pill labels", () => {
+  const markup = renderToStaticMarkup(
+    createElement(CollapsiblePill, {
+      status: "loading",
+      icon: createElement("span", null, "icon"),
+      label: "正在同步结果",
+      expandable: false,
+      nonInteractive: true,
+    }),
+  );
+
+  assert.match(markup, /正在同步结果/);
+  assert.match(markup, /role="status"/);
+  assert.doesNotMatch(markup, /<button/);
+  assert.doesNotMatch(markup, /font-mono/);
+});
+
+test("keeps ordinary non-expandable pills as buttons", () => {
+  const markup = renderToStaticMarkup(
+    createElement(CollapsiblePill, {
+      status: "loading",
+      icon: createElement("span", null, "icon"),
+      label: "生成中",
+      expandable: false,
+    }),
+  );
+
+  assert.match(markup, /<button/);
+  assert.doesNotMatch(markup, /role="status"/);
+});
 
 test("keeps streaming text object identity stable without using mutable content as a key", () => {
   const streamingText = {

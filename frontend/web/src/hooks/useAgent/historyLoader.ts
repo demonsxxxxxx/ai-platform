@@ -545,7 +545,7 @@ export function prepareMessagesForRunningRun(
       streamingMessageId: existingAssistant.id,
       messages: messages.map((message) =>
         message.id === existingAssistant.id
-          ? { ...message, isStreaming: true }
+          ? { ...message, isStreaming: true, isSynchronizing: false }
           : message,
       ),
     };

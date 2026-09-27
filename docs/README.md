@@ -83,6 +83,14 @@ with caller retirement, agent exploration scopes, and falsifiable acceptance.
 It is a proposed implementation plan; detailed contracts above remain authoritative
 and execution progress belongs in the active task or PR.
 
+[SSE stream and history optimization](implementation/sse-stream-history-optimization.md)
+records the atomic implementation and acceptance plan for raw/typed-turn public
+projection, terminal synchronization, producer-side pre-identity delta coalescing,
+verified answer materialization, history fast paths, and retention-safe cleanup
+eligibility. It remains subordinate to the active v4 public-projection, receipt,
+terminal-hydration, and callback-transport contracts; it does not authorize
+physical event deletion or change the active v4 wire.
+
 [Run 故障诊断 PRD](implementation/run-diagnostics-prd.md) defines administrator
 self-service diagnosis and redacted export requirements. Its
 [technical proposal](implementation/run-diagnostics-design.md) records the active

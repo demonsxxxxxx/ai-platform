@@ -86,17 +86,38 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             self.text = text
 
     class AssistantMessage:
-        def __init__(self, content):
+        def __init__(
+            self,
+            content,
+            *,
+            message_id="provider-message-sandbox-options",
+            uuid="assistant-observation-sandbox-options",
+            parent_tool_use_id="parent-tool-sandbox-options",
+        ):
             self.content = content
+            self.message_id = message_id
+            self.uuid = uuid
+            self.parent_tool_use_id = parent_tool_use_id
+            self.stop_reason = None
+
+    class StreamEvent:
+        counter = 0
+
+        def __init__(self, event):
+            type(self).counter += 1
+            self.event = event
+            self.uuid = f"raw-event-sandbox-options-{self.counter}"
+            self.parent_tool_use_id = "parent-tool-sandbox-options"
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-sandbox-options"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-sandbox-options"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -145,7 +166,40 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "tool-1",
             {},
         )
-        yield AssistantMessage([TextBlock("ok")])
+        yield StreamEvent(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "provider-message-sandbox-options",
+                    "role": "assistant",
+                    "stop_reason": None,
+                },
+            }
+        )
+        yield StreamEvent(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text"},
+            }
+        )
+        yield StreamEvent(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "ok"},
+            }
+        )
+        yield StreamEvent({"type": "content_block_stop", "index": 0})
+        yield AssistantMessage(
+            [TextBlock("ok")],
+            message_id="provider-message-sandbox-options",
+            uuid="assistant-observation-sandbox-options",
+        )
+        yield StreamEvent(
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+        )
+        yield StreamEvent({"type": "message_stop"})
         yield ResultMessage()
 
     settings = types.SimpleNamespace(
@@ -170,6 +224,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             PermissionResultAllow=PermissionResultAllow,
             PermissionResultDeny=PermissionResultDeny,
             ResultMessage=ResultMessage,
+            StreamEvent=StreamEvent,
             TextBlock=TextBlock,
             query=query,
             ClaudeSDKClient=native_client_factory(query),
@@ -4668,15 +4723,20 @@ async def test_sdk_runner_records_structured_normal_stop_sequence(monkeypatch, t
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-normal-stop"
+            self.uuid = "assistant-observation-normal-stop"
+            self.parent_tool_use_id = "parent-tool-normal-stop"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-normal-stop"
         usage = {"input_tokens": 3}
         model_usage = {}
         result = "completed normally"
         is_error = False
         errors = []
         stop_reason = "stop_sequence"
+        uuid = "result-observation-normal-stop"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -4738,15 +4798,20 @@ async def test_sdk_runner_fails_closed_without_a_normal_structured_terminal(
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-terminal-validation"
+            self.uuid = "assistant-observation-terminal-validation"
+            self.parent_tool_use_id = "parent-tool-terminal-validation"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-terminal-validation"
         usage = {}
         model_usage = {}
         result = ""
         is_error = True
         errors = ["sdk_rejected"]
         stop_reason = "stop_sequence"
+        uuid = "result-observation-terminal-validation"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -4808,15 +4873,20 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-staged-skills"
+            self.uuid = "assistant-observation-staged-skills"
+            self.parent_tool_use_id = "parent-tool-staged-skills"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-staged-skills"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-staged-skills"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -4886,15 +4956,20 @@ async def test_sdk_runner_uses_run_model_override(monkeypatch, tmp_path):
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-model-override"
+            self.uuid = "assistant-observation-model-override"
+            self.parent_tool_use_id = "parent-tool-model-override"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-model-override"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-model-override"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -4955,15 +5030,20 @@ async def test_sdk_runner_keeps_authorized_skill_available_without_forced_invoca
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-authorized-skill"
+            self.uuid = "assistant-observation-authorized-skill"
+            self.parent_tool_use_id = "parent-tool-authorized-skill"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-authorized-skill"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-authorized-skill"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -5046,15 +5126,20 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-no-local-bash"
+            self.uuid = "assistant-observation-no-local-bash"
+            self.parent_tool_use_id = "parent-tool-no-local-bash"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-no-local-bash"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-no-local-bash"
 
     class HookMatcher:
         def __init__(self, matcher=None, hooks=None, timeout=None):
@@ -5135,15 +5220,20 @@ async def test_sdk_runner_removes_project_settings_before_sdk_launch(monkeypatch
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-project-settings"
+            self.uuid = "assistant-observation-project-settings"
+            self.parent_tool_use_id = "parent-tool-project-settings"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-project-settings"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-project-settings"
 
     class HookMatcher:
         def __init__(self, matcher=None, hooks=None, timeout=None):
@@ -5211,19 +5301,24 @@ async def test_sdk_runner_allows_authorized_skill_without_tool_invocation(
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-unused-skill"
+            self.uuid = "assistant-observation-unused-skill"
+            self.parent_tool_use_id = "parent-tool-unused-skill"
+            self.stop_reason = None
 
     class TextBlock:
         def __init__(self, text):
             self.text = text
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-unused-skill"
         usage = {}
         model_usage = {}
         result = "manual answer without using the selected Skill"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-unused-skill"
 
     class HookMatcher:
         def __init__(self, matcher=None, hooks=None, timeout=None):
@@ -5299,15 +5394,20 @@ async def test_sdk_runner_records_skill_use_from_sdk_hook(monkeypatch, tmp_path)
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-skill-hook"
+            self.uuid = "assistant-observation-skill-hook"
+            self.parent_tool_use_id = "parent-tool-skill-hook"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-skill-hook"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-skill-hook"
 
     class HookMatcher:
         def __init__(self, matcher=None, hooks=None, timeout=None):
@@ -5412,15 +5512,20 @@ async def test_sdk_runner_preserves_skill_use_when_query_raises_after_hook(monke
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-query-error"
+            self.uuid = "assistant-observation-query-error"
+            self.parent_tool_use_id = "parent-tool-query-error"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-query-error"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-query-error"
 
     class HookMatcher:
         def __init__(self, matcher=None, hooks=None, timeout=None):
@@ -5507,15 +5612,20 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-timeout"
+            self.uuid = "assistant-observation-timeout"
+            self.parent_tool_use_id = "parent-tool-timeout"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-timeout"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-timeout"
 
     class HookMatcher:
         def __init__(self, matcher=None, hooks=None, timeout=None):
@@ -5621,15 +5731,20 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-cancelled-callback"
+            self.uuid = "assistant-observation-cancelled-callback"
+            self.parent_tool_use_id = "parent-tool-cancelled-callback"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-cancelled-callback"
         usage = {}
         model_usage = {}
         result = "partial"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-cancelled-callback"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):

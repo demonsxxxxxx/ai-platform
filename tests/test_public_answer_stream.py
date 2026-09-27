@@ -1,6 +1,11 @@
+import asyncio
+
 import pytest
 
-from app.executors.public_answer_stream import PublicAnswerStreamGate
+from app.executors.public_answer_stream import (
+    PublicAnswerCoalescer,
+    PublicAnswerStreamGate,
+)
 from app.platform.public_payload import sanitize_public_text
 
 
@@ -716,3 +721,89 @@ def test_multibyte_public_answer_continues_without_byte_cutoff():
     assert "".join((*chunks, *finished.chunks)) == body
     assert len(finished.final_text.encode("utf-8")) > 262_145
     assert gate.failed is False
+
+
+@pytest.mark.asyncio
+async def test_public_answer_coalescer_merges_only_adjacent_same_source_text():
+    emitted: list[str] = []
+
+    async def emit(value: str) -> bool:
+        emitted.append(value)
+        return True
+
+    coalescer = PublicAnswerCoalescer(emit, window_seconds=60)
+    assert await coalescer.push("one ", source_identity=("message-1", 0))
+    assert await coalescer.push("two", source_identity=("message-1", 0))
+    assert emitted == []
+
+    assert await coalescer.push("three", source_identity=("message-1", 1))
+    assert emitted == ["one two"]
+    assert await coalescer.close(flush=True)
+    assert emitted == ["one two", "three"]
+
+
+@pytest.mark.asyncio
+async def test_public_answer_coalescer_flushes_on_window_and_codepoint_limit():
+    emitted: list[str] = []
+
+    async def emit(value: str) -> bool:
+        emitted.append(value)
+        return True
+
+    coalescer = PublicAnswerCoalescer(emit, window_seconds=0)
+    assert await coalescer.push("界" * 8_193, source_identity="source")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert emitted == ["界" * 8_192, "界"]
+    assert all(len(value) <= 8_192 for value in emitted)
+    assert await coalescer.close(flush=True)
+
+
+@pytest.mark.asyncio
+async def test_public_answer_coalescer_seals_after_rejected_emission():
+    emitted: list[str] = []
+
+    async def reject(value: str) -> bool:
+        emitted.append(value)
+        return False
+
+    coalescer = PublicAnswerCoalescer(reject, window_seconds=60)
+    assert not await coalescer.push("x" * 8_192, source_identity="source")
+    assert not await coalescer.push("late", source_identity="source")
+    assert emitted == ["x" * 8_192]
+    assert await coalescer.close(flush=True)
+
+
+@pytest.mark.asyncio
+async def test_public_answer_coalescer_rethrows_timer_emission_failure_at_barrier():
+    async def fail(_value: str) -> bool:
+        raise RuntimeError("synthetic callback failure")
+
+    coalescer = PublicAnswerCoalescer(fail, window_seconds=0)
+    assert await coalescer.push("pending", source_identity="source")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="synthetic callback failure"):
+        await coalescer.close(flush=True)
+
+
+@pytest.mark.asyncio
+async def test_public_answer_coalescer_reports_cancelled_inflight_emission():
+    started = asyncio.Event()
+    never_release = asyncio.Event()
+    emitted: list[str] = []
+
+    async def emit(value: str) -> bool:
+        started.set()
+        await never_release.wait()
+        emitted.append(value)
+        return True
+
+    coalescer = PublicAnswerCoalescer(emit, window_seconds=0)
+    assert await coalescer.push("pending", source_identity="source")
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    assert not await asyncio.wait_for(coalescer.close(flush=True), timeout=1)
+    assert emitted == []
+    assert not await coalescer.push("late", source_identity="source")

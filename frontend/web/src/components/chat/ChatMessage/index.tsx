@@ -1,7 +1,7 @@
 import { clsx } from "clsx";
 import { useEffect, useRef, useState, memo } from "react";
 import toast from "react-hot-toast";
-import { Copy, Info, Sparkles } from "lucide-react";
+import { Copy, Info, RefreshCw, Sparkles } from "lucide-react";
 import type {
   Message,
   MessagePart,
@@ -370,9 +370,22 @@ export const ChatMessage = memo(function ChatMessage({
               />
             </div>
           )}
+          {message.isSynchronizing && (
+            <div className="mt-3 px-2">
+              <CollapsiblePill
+                status="loading"
+                icon={<RefreshCw size={12} className="shrink-0 opacity-50" />}
+                label={t("chat.message.synchronizingResult")}
+                variant="tool"
+                expandable={false}
+                nonInteractive
+                animatedDots
+              />
+            </div>
+          )}
         </div>
         {/* Copy button and Token button - same line at bottom, show on message hover (only after message completes) */}
-        {!message.isStreaming && (
+        {!message.isStreaming && !message.isSynchronizing && (
           <div className="flex items-center gap-1">
             <button
               onClick={() => {
