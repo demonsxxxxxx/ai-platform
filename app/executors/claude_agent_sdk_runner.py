@@ -50,7 +50,7 @@ from app.executors.claude.prompts import (
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
     translation_target_language as _prompt_translation_target_language,
 )
-from app.executors.claude.client_lifecycle import ClaudeClientCloseBoundary
+from app.bootstrap.claude_client import prepare_claude_client_close
 from app.execution.api import ClaudeSdkAgentEventAdapter
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
@@ -4152,7 +4152,7 @@ async def run_claude_agent_sdk(
         try:
             async with mcp_registration.activate(options):
                 client = client_factory(options)
-                close_boundary = ClaudeClientCloseBoundary(client, protocol_closed)
+                close_boundary = prepare_claude_client_close(client, protocol_closed)
                 try:
                     await client.connect()
                     close_boundary.bind()

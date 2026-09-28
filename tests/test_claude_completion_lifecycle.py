@@ -10,7 +10,7 @@ from claude_agent_sdk._internal import transcript_mirror_batcher
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
 
-from app.executors.claude.client_lifecycle import ClaudeClientCloseBoundary
+from app.execution.infrastructure.harness.claude_client_lifecycle import ClaudeClientCloseBoundary
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from tests.test_claude_agent_sdk_runner import _fake_sdk, _settings
 
