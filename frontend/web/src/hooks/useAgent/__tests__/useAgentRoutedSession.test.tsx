@@ -4001,7 +4001,8 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
   }
 });
 
-test("useAgent stops generation while exact terminal history is still synchronizing", async () => {
+for (const admissionOutcome of ["accepted", "rejected", "unknown"] as const) {
+test(`useAgent preserves terminal backfill during next admission: ${admissionOutcome}`, async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -4019,10 +4020,20 @@ test("useAgent stops generation while exact terminal history is still synchroniz
       { eventType: "message.delta", payload: { delta: "流式正文" } },
     ],
   );
+  const nextLifecycle = controlledPublicRunLifecycle(
+    "run-terminal-sync-next",
+    "succeeded",
+    [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "新Run输出" } },
+    ],
+  );
+  let streamResponseIndex = 0;
   let resolveTerminalHistory:
     | ((value: Awaited<ReturnType<typeof sessionApi.getEvents>>) => void)
     | null = null;
-  dom.window.fetch = async () => lifecycle.response;
+  dom.window.fetch = async () =>
+    streamResponseIndex++ === 0 ? lifecycle.response : nextLifecycle.response;
   sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "终态同步会话",
@@ -4040,12 +4051,20 @@ test("useAgent stops generation while exact terminal history is still synchroniz
       status: "running",
     };
   }) as typeof sessionApi.getStatus;
-  sessionApi.submitChat = (async () => ({
+  let submitCount = 0;
+  let rejectNext: ((error: Error) => void) | undefined;
+  sessionApi.submitChat = (async () => {
+    if (submitCount === 1 && admissionOutcome !== "accepted") {
+      submitCount += 1;
+      return new Promise((_resolve, reject) => { rejectNext = reject; });
+    }
+    return ({
     session_id: "session-terminal-sync",
-    run_id: "run-terminal-sync",
+    run_id: submitCount++ === 0 ? "run-terminal-sync" : "run-terminal-sync-next",
     trace_id: "trace-terminal-sync",
     status: "queued",
-  })) as typeof sessionApi.submitChat;
+  });
+  }) as typeof sessionApi.submitChat;
 
   try {
     await harness.act(async () => {
@@ -4058,23 +4077,36 @@ test("useAgent stops generation while exact terminal history is still synchroniz
     });
     await settle(harness.act);
 
-    const synchronizing = harness.hook.messages.find(
+    const terminalAssistant = harness.hook.messages.find(
       (message) =>
         message.role === "assistant" && message.runId === "run-terminal-sync",
     );
-    assert.equal(synchronizing?.content, "流式正文");
-    assert.equal(synchronizing?.isStreaming, false);
-    assert.equal(synchronizing?.isSynchronizing, true);
+    assert.equal(terminalAssistant?.content, "流式正文");
+    assert.equal(terminalAssistant?.isStreaming, false);
+    assert.equal(terminalAssistant?.isSynchronizing, false);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(harness.hook.currentRunId, "run-terminal-sync");
+    assert.equal(harness.hook.currentRunId, null);
     assert.ok(resolveTerminalHistory);
 
+    let nextOutcome: Awaited<ReturnType<typeof harness.hook.sendMessage>> | undefined;
+    let nextSubmission: Promise<Awaited<ReturnType<typeof harness.hook.sendMessage>>>;
     await harness.act(async () => {
-      await harness.hook.reconnectSSE();
+      nextSubmission = harness.hook.sendMessage("继续新的任务");
+      if (admissionOutcome === "accepted") nextOutcome = await nextSubmission;
     });
+    await settle(harness.act);
+    if (admissionOutcome === "accepted") {
+    assert.deepEqual(nextOutcome, { status: "accepted" });
+    const nextAssistantBeforeBackfill = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" && message.runId === "run-terminal-sync-next",
+    );
+    assert.equal(nextAssistantBeforeBackfill?.content, "新Run输出");
+    assert.equal(harness.hook.currentRunId, "run-terminal-sync-next");
+    assert.equal(harness.hook.isLoading, true);
     assert.equal(statusCalls, 0);
-    assert.equal(harness.hook.connectionStatus, "disconnected");
+    }
 
     await harness.act(async () => {
       resolveTerminalHistory?.({
@@ -4103,8 +4135,27 @@ test("useAgent stops generation while exact terminal history is still synchroniz
     );
     assert.equal(settled?.content, "持久化最终正文");
     assert.equal(settled?.isStreaming, false);
-    assert.equal(settled?.isSynchronizing, false);
-    assert.equal(harness.hook.currentRunId, null);
+    assert.notEqual(settled?.isSynchronizing, true);
+    if (admissionOutcome === "accepted") {
+    const nextAssistantAfterBackfill = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" && message.runId === "run-terminal-sync-next",
+    );
+    assert.equal(nextAssistantAfterBackfill?.content, "新Run输出");
+    assert.equal(nextAssistantAfterBackfill?.isStreaming, true);
+    assert.equal(harness.hook.currentRunId, "run-terminal-sync-next");
+    assert.equal(harness.hook.isLoading, true);
+    } else {
+      await harness.act(async () => {
+        rejectNext?.(admissionOutcome === "rejected"
+          ? new ApiRequestError("denied", 403, "capability_not_authorized")
+          : new Error("admission response lost"));
+        await nextSubmission!;
+      });
+      await settle(harness.act);
+      assert.equal(harness.hook.messages.find((message) => message.runId === "run-terminal-sync" && message.role === "assistant")?.content, "持久化最终正文");
+      assert.equal(harness.hook.messages.filter((message) => message.role === "user" && message.content === "继续新的任务").length, admissionOutcome === "unknown" ? 1 : 0);
+    }
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
@@ -4115,6 +4166,8 @@ test("useAgent stops generation while exact terminal history is still synchroniz
     await harness.cleanup();
   }
 });
+
+}
 
 test("useAgent keeps a succeeded Run terminal when result synchronization fails", async () => {
   const harness = await loadReactHarness();
@@ -6183,6 +6236,78 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
   }
 });
 
+for (const initiallyComplete of [true, false]) {
+test(`useAgent requires complete metadata for exact Run history: ${initiallyComplete}`, async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  let eventReads = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-complete-terminal",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async (): Promise<Awaited<ReturnType<typeof sessionApi.getEvents>>> => {
+    eventReads += 1;
+    return {
+      current_run_id: "run-complete-terminal",
+      events: [
+        {
+          id: "complete-terminal:user",
+          event_type: "user:message",
+          run_id: "run-complete-terminal",
+          timestamp: "2026-07-15T00:00:00Z",
+          data: { content: "读取已完成历史" },
+        },
+        {
+          id: "complete-terminal:answer",
+          event_type: "message:chunk",
+          run_id: "run-complete-terminal",
+          timestamp: "2026-07-15T00:00:01Z",
+          data: { content: eventReads === 1 && !initiallyComplete ? "半截正文" : "完整持久化答案" },
+        },
+      ],
+      terminal_run_statuses: initiallyComplete || eventReads > 1 ? { "run-complete-terminal": "succeeded" as const } : {},
+      next_cursor: null,
+    };
+  };
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-complete-terminal",
+    run_id: "run-complete-terminal",
+    status: "succeeded",
+  })) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-complete-terminal", "run-complete-terminal");
+    });
+    await settle(harness.act);
+    assert.equal(eventReads, initiallyComplete ? 1 : 2);
+    assert.equal(harness.hook.isLoadingHistory, false);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(
+      harness.hook.messages.find((message) => message.role === "assistant")?.content,
+      "完整持久化答案",
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
+}
+
 test("useAgent loads an exact old run as one complete deduplicated segment from the first request", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -6217,6 +6342,7 @@ test("useAgent loads an exact old run as one complete deduplicated segment from 
     return {
       run_id: "run-51",
       current_run_id: "run-51",
+      terminal_run_statuses: { "run-51": "succeeded" },
       events: [
         {
           id: "message-run-51",
@@ -6262,7 +6388,7 @@ test("useAgent loads an exact old run as one complete deduplicated segment from 
   sessionApi.getStatus = (async (_sessionId, runId) => ({
     session_id: "session-exact-old",
     run_id: runId,
-    status: "error",
+    status: "completed",
     raw_status: "succeeded",
   })) as typeof sessionApi.getStatus;
 
@@ -6505,7 +6631,9 @@ test("useAgent keeps overlapping run segments separate and trusts latest-created
   }
 });
 
-test("useAgent presents a safe local card when terminal history hydration fails", async () => {
+test("useAgent presents a safe local card when terminal history hydration fails", async (t) => {
+  const schedule = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback: Parameters<typeof setTimeout>[0], delay?: number, ...args: unknown[]) => schedule(callback, Math.min(delay || 0, 10), ...args));
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -6557,6 +6685,12 @@ test("useAgent presents a safe local card when terminal history hydration fails"
     await harness.act(async () => {
       await harness.hook.loadHistory("session-terminal-hydrate-failure");
     });
+    assert.equal(harness.hook.isLoadingHistory, false);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.currentRunId, null);
+    for (let attempt = 0; attempt < 50 && eventQueries < 4; attempt += 1) {
+      await harness.act(() => new Promise<void>((resolve) => schedule(resolve, 10)));
+    }
     await settle(harness.act);
 
     const cards = harness.hook.messages

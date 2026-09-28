@@ -12,13 +12,12 @@ from typing import Any
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker"}
 
 
-async def _resolve_executable_skill(
+async def resolve_skill_identity(
     conn: AsyncConnection,
     *,
     tenant_id: str,
     agent_id: str,
     skill_id: str,
-    require_default_skill: bool,
 ) -> dict[str, Any]:
     cursor = await conn.execute(
         """
@@ -74,6 +73,20 @@ async def _resolve_executable_skill(
         raise RepositoryConflictError("agent_inactive")
     if row["skill_status"] != "active":
         raise RepositoryConflictError("skill_inactive")
+    return row
+
+
+async def _resolve_executable_skill(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+    require_default_skill: bool,
+) -> dict[str, Any]:
+    row = await resolve_skill_identity(
+        conn, tenant_id=tenant_id, agent_id=agent_id, skill_id=skill_id
+    )
     if not is_user_runnable_status(row.get("skill_version_status", "active")):
         raise RepositoryConflictError("skill_version_not_released")
     skill_version = str(row.get("skill_version") or "")

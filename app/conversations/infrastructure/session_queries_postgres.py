@@ -158,6 +158,42 @@ async def list_authorized_session_runs(
     return list(await cursor.fetchall())
 
 
+async def list_authorized_session_runs_by_ids(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    run_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Reload a bounded history snapshot while rechecking its session scope."""
+    target_run_ids = list(dict.fromkeys(run_id for run_id in run_ids if run_id))
+    if not target_run_ids:
+        return []
+    cursor = await conn.execute(
+        """
+        select runs.id, runs.trace_id, runs.schema_version, runs.agent_id,
+               runs.execution_kind, runs.skill_id, runs.status, runs.error_code,
+               runs.error_message, runs.created_at, runs.queued_at, runs.started_at,
+               runs.finished_at, runs.result_json, runs.session_generation
+        from unnest(%s::text[]) with ordinality as requested(run_id, ordinal)
+        join runs on runs.id = requested.run_id
+        join sessions on sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+          and sessions.agent_id = runs.agent_id
+        where runs.tenant_id = %s
+          and runs.user_id = %s
+          and runs.session_id = %s
+          and sessions.status = 'active'
+        order by requested.ordinal
+        """,
+        (target_run_ids, tenant_id, user_id, session_id),
+    )
+    return list(await cursor.fetchall())
+
+
 async def get_latest_authorized_session_run_input(
     conn: AsyncConnection,
     *,

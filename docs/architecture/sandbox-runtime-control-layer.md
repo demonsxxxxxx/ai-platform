@@ -84,13 +84,19 @@ generation, timestamps, and reconciliation ownership in one migration.
    advance the diagnostic revision twice. The receipt is retained for protocol
    protocol recovery; reconciliation may append its bounded `diagnostics` list,
    but cannot replace the first receipt fields. It is not the administrator query store.
-   A nonterminal OpenSandbox heartbeat verifies the exact provider identity before
-   renewing its remote lifetime. The callback records the SDK's absolute
+   A nonterminal OpenSandbox heartbeat captures the current Run/Attempt/lease
+   identity in a short transaction, then verifies and renews the provider outside
+   database locks. A second short transaction rechecks the same immutable lease
+   identity and active owner before recording the receipt. Remote renewal has an
+   eight-second total ceiling, below the executor callback ten-second budget. The callback records the SDK's absolute
    `expires_at` as nullable `sandbox_leases.provider_expires_at`, with
    `provider_renewed_at`, under the same active Run/Attempt/lease fence; these
    are provider observations, not substitutes for the platform lease's
    `expires_at` or an authorization grant. If the SDK provides no valid future
-   receipt, the callback rolls back with the existing disclosure-safe 503.
+   receipt, the callback records no renewal receipt and returns the existing
+   disclosure-safe 503. Empty artifact-validation phases and the redundant
+   running-at-99-percent callback are retired; the actual terminal callback
+   follows the public delivery drain.
    The external renewal and PostgreSQL commit are not atomic: a failed commit
    can leave the provider alive longer than the platform lease.
 4. A real-provider release takes the scoped lease row lock, calls provider stop,

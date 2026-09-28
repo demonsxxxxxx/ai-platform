@@ -1769,12 +1769,12 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
     assert body["run_id"] == "run-a"
     assert isinstance(body["executor_model_latency_ms"], int)
     assert isinstance(body["document_processing_latency_ms"], int)
-    assert [item[1]["status"] for item in callbacks] == ["running", "running"]
+    assert [item[1]["status"] for item in callbacks] == ["running"]
     assert {item[2] for item in callbacks} == {"secret"}
     assert {item[1]["callback_token_id"] for item in callbacks} == {"cbt_run-a"}
     assert callbacks[0][1]["progress"] == 5
-    assert callbacks[1][1]["progress"] == 99
-    assert callbacks[1][1]["state_patch"]["stage"] == "executor_finished"
+    assert all(item[1]["progress"] != 99 for item in callbacks)
+    assert all(item[1]["state_patch"].get("stage") != "executor_finished" for item in callbacks)
 
 
 def test_executor_system_prompt_uses_private_sdk_channel_without_public_leakage(tmp_path, monkeypatch):
@@ -2301,12 +2301,12 @@ def test_executor_active_progress_drains_on_callback_failure_runner_completion_o
         assert response.json()["error_code"] == "stream_delivery_rejected"
         assert finished == []
     else:
-        assert len(finished) == 1
-        assert not any(
-            event["type"] == "execution_progress"
-            for item in callbacks[finished[0] + 1 :]
-            for event in item.get("events", [])
-        )
+        assert finished == []
+    assert all(
+        event.get("payload", {}).get("phase") != "artifact_validation"
+        for item in callbacks
+        for event in item.get("events", [])
+    )
     callback_count = len(callbacks)
     time.sleep(interval_seconds * 3)
     assert len(callbacks) == callback_count
@@ -2761,10 +2761,10 @@ def test_executor_capability_callback_cancellation_poison_seals_run(
     ]
     assert capability_attempts == 2
     assert all(not callback.get("events") for callback in terminal_callbacks)
-    assert terminal_callbacks[-1]["state_patch"] == {
-        "stage": "executor_finished",
-        "error_code": "capability_callback_not_acknowledged",
-    }
+    assert all(
+        callback.get("state_patch", {}).get("stage") != "executor_finished"
+        for callback in terminal_callbacks
+    )
     assert body["status"] == "failed"
     assert body["message"] == ""
     assert body["error_code"] == "capability_callback_not_acknowledged"
@@ -2883,12 +2883,9 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == "claude_agent_sdk_missing_structured_terminal"
-    assert [item["status"] for item in callbacks] == ["running", "running", "running"]
-    assert callbacks[-1]["progress"] == 99
-    assert callbacks[-1]["state_patch"] == {
-        "stage": "executor_finished",
-        "error_code": "claude_agent_sdk_missing_structured_terminal",
-    }
+    assert [item["status"] for item in callbacks] == ["running", "running"]
+    assert all(item["progress"] != 99 for item in callbacks)
+    assert all(item["state_patch"].get("stage") != "executor_finished" for item in callbacks)
 
 
 @pytest.mark.parametrize(
@@ -2987,10 +2984,10 @@ def test_executor_execute_preserves_bounded_sdk_error_codes(
             for loss in diagnostics["normalization_losses"]
         )
     assert diagnostics["sdk"] == {"errors": ["actual SDK failure"]}
-    assert callbacks[-1]["state_patch"] == {
-        "stage": "executor_finished",
-        "error_code": expected_error_code,
-    }
+    assert all(
+        callback["state_patch"].get("stage") != "executor_finished"
+        for callback in callbacks
+    )
 
 
 def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
@@ -3045,7 +3042,6 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
     assert isinstance(body["executor_tool_call_latency_ms"], int)
     assert isinstance(body["artifact_upload_latency_ms"], int)
     assert [item[1]["status"] for item in callbacks] == [
-        "running",
         "running",
         "running",
         "running",
@@ -3808,14 +3804,9 @@ def test_executor_execute_reports_platform_timeout_probe_as_nonterminal_observat
     assert body["error_message"] == "Executor health timeout"
     assert body["requested_max_seconds"] == 0
     assert isinstance(body["timeout_elapsed_ms"], int)
-    assert [item[1]["status"] for item in callbacks] == ["running", "running"]
-    assert callbacks[-1][1]["error_message"] == "Executor health timeout"
-    assert callbacks[-1][1]["state_patch"] == {
-        "stage": "executor_finished",
-        "error_code": "executor_health_timeout",
-        "requested_max_seconds": 0,
-        "timeout_elapsed_ms": body["timeout_elapsed_ms"],
-    }
+    assert [item[1]["status"] for item in callbacks] == ["running"]
+    assert all(item[1]["progress"] != 99 for item in callbacks)
+    assert all(item[1]["state_patch"].get("stage") != "executor_finished" for item in callbacks)
     assert str(tmp_path) not in str(body)
 
 
@@ -3860,13 +3851,9 @@ def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runne
     assert runner_cancelled.wait(timeout=0.1)
     time.sleep(0.1)
     assert not late_side_effect.is_set()
-    assert [item[1]["status"] for item in callbacks] == ["running", "running"]
-    assert callbacks[-1][1]["state_patch"] == {
-        "stage": "executor_finished",
-        "error_code": "executor_deadline_exceeded",
-        "requested_max_seconds": 0.03,
-        "timeout_elapsed_ms": body["timeout_elapsed_ms"],
-    }
+    assert [item[1]["status"] for item in callbacks] == ["running"]
+    assert all(item[1]["progress"] != 99 for item in callbacks)
+    assert all(item[1]["state_patch"].get("stage") != "executor_finished" for item in callbacks)
     assert str(tmp_path) not in str(body)
 
 
@@ -3941,7 +3928,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
             await release_runner.wait()
             try:
                 late_event_attempted.set()
-                await emit_event(AgentEvent(type="assistant_delta", message="late", payload={"delta": "late"}))
+                assert not await emit_event(AgentEvent(type="assistant_delta", message="late", payload={"delta": "late"}))
                 raise RuntimeError("deterministic runner cleanup failure")
             finally:
                 runner_finished.set()
@@ -3988,30 +3975,18 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
         await asyncio.sleep(0)
 
         assert late_event_attempted.is_set()
-        assert [callback["status"] for callback in callbacks] == ["running", "running", "running"]
-        assert callbacks[-1]["state_patch"] == {
-            "stage": "executor_finished",
-            "error_code": "executor_cleanup_failed",
-        }
+        assert [callback["status"] for callback in callbacks] == ["running"]
+        assert all(
+            callback.get("state_patch", {}).get("stage") != "executor_finished"
+            for callback in callbacks
+        )
         late_events = [
             event
-            for callback in callbacks[:-1]
+            for callback in callbacks
             for event in callback.get("events", [])
             if event.get("message") == "late"
         ]
-        assert late_events == [
-            {
-                "type": "assistant_delta",
-                "message": "late",
-                "payload": {"delta": "late"},
-                "admin_only": False,
-                "event_id": None,
-                "run_id": None,
-                "message_id": None,
-                "causation_event_id": None,
-            }
-        ]
-        assert not callbacks[-1].get("events")
+        assert late_events == []
         assert loop_exception_contexts == []
         assert [task for task in asyncio.all_tasks() - initial_tasks if not task.done()] == []
     finally:
@@ -4141,8 +4116,8 @@ def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    assert [item["status"] for item in callbacks] == ["running", "running"]
-    assert callbacks[-1]["state_patch"]["stage"] == "executor_finished"
+    assert [item["status"] for item in callbacks] == ["running"]
+    assert all(item["state_patch"].get("stage") != "executor_finished" for item in callbacks)
 
 
 @pytest.mark.asyncio
@@ -4582,8 +4557,6 @@ def test_executor_execute_fails_when_callback_is_rejected(tmp_path, monkeypatch)
 
     def callback_sender(url, payload, token):
         callbacks.append((payload["status"], payload.get("state_patch", {}).get("stage")))
-        if payload.get("state_patch", {}).get("stage") == "executor_finished":
-            raise RuntimeError("callback failed")
         return callback_ack(payload)
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
@@ -4594,14 +4567,12 @@ def test_executor_execute_fails_when_callback_is_rejected(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "failed"
+    assert body["status"] == "completed"
     assert body["run_id"] == "run-a"
-    assert body["error_code"] == "stream_delivery_rejected"
-    assert body["error_message"] == "Public stream callback delivery failed"
-    assert body["callback_errors"] == ["running"]
+    assert "callback_errors" not in body
     assert isinstance(body["executor_model_latency_ms"], int)
     assert isinstance(body["document_processing_latency_ms"], int)
-    assert callbacks == [("running", "accepted"), ("running", "executor_finished")]
+    assert callbacks == [("running", "accepted")]
 
 
 def test_callback_batch_freezes_content_and_tracks_lifecycle():
@@ -4826,33 +4797,61 @@ async def test_message_delta_buffer_cancel_is_bounded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_waits_for_in_flight_runner_batch(monkeypatch):
-    delivery_started = asyncio.Event()
-    release_delivery = asyncio.Event()
-    delivered: list[str] = []
+async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_terminal(tmp_path):
+    heartbeat_started = asyncio.Event()
+    heartbeat_release = asyncio.Event()
+    heartbeat_acknowledged = asyncio.Event()
+    delta_delivered = asyncio.Event()
+    terminal_started = asyncio.Event()
+    terminal_after_heartbeat_ack: list[bool] = []
 
-    async def deliver(callback):
-        delivered.append("delta" if callback.events else "heartbeat")
-        if callback.events:
-            delivery_started.set()
-            await release_delivery.wait()
-        return True
+    async def executor_runner(_request, _workspace_root, emit_event):
+        await heartbeat_started.wait()
+        await emit_event(message_delta_callback(1, "after heartbeat").events[0])
+        return {"status": "completed", "message": "done"}
 
-    monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
-    buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
-    await buffer.enqueue(message_delta_callback(1, "first"))
-    await delivery_started.wait()
-    heartbeat = message_delta_callback(2, "unused").model_copy(update={"events": []})
-    heartbeat_send = asyncio.create_task(buffer.send(heartbeat))
-    await asyncio.sleep(0)
+    async def callback_sender(_url, payload, _token):
+        state_patch = payload.get("state_patch")
+        if isinstance(state_patch, dict) and state_patch.get("executor_heartbeat") is True:
+            heartbeat_started.set()
+            await heartbeat_release.wait()
+            heartbeat_acknowledged.set()
+        if any(event.get("type") == "message.delta" for event in payload.get("events", [])):
+            delta_delivered.set()
+        if payload.get("terminal_result"):
+            terminal_started.set()
+            terminal_after_heartbeat_ack.append(heartbeat_acknowledged.is_set())
+        return callback_ack(payload)
 
-    assert not heartbeat_send.done()
-    assert delivered == ["delta"]
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        heartbeat_interval_seconds=0.001,
+    )
+    lifespan = app.router.lifespan_context(app)
+    await lifespan.__aenter__()
+    try:
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        await dispatch(
+            ExecutorTaskRequest.model_validate(task_payload()),
+            executor_credential=EXECUTOR_AUTH_TOKEN,
+        )
+        await asyncio.wait_for(delta_delivered.wait(), timeout=1)
+        assert not heartbeat_acknowledged.is_set()
+        assert not terminal_started.is_set()
 
-    release_delivery.set()
-    assert await heartbeat_send is True
-    assert await buffer.close() is True
-    assert delivered == ["delta", "heartbeat"]
+        heartbeat_release.set()
+        await asyncio.wait_for(terminal_started.wait(), timeout=1)
+        assert terminal_after_heartbeat_ack == [True]
+    finally:
+        heartbeat_release.set()
+        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
 
 
 @pytest.mark.asyncio
@@ -5013,12 +5012,11 @@ async def test_executor_consumes_next_delta_while_callback_is_in_flight(tmp_path
         for index, callback in enumerate(callbacks)
         if any(event.get("type") == "message.delta" for event in callback.get("events", []))
     )
-    finished = next(
-        index
-        for index, callback in enumerate(callbacks)
-        if callback.get("state_patch", {}).get("stage") == "executor_finished"
+    assert last_delta == len(callbacks) - 1
+    assert all(
+        callback.get("state_patch", {}).get("stage") != "executor_finished"
+        for callback in callbacks
     )
-    assert last_delta < finished
 
 
 def test_executor_reuses_default_callback_client_for_app_lifespan(tmp_path, monkeypatch):
@@ -5507,7 +5505,7 @@ async def test_exhausted_transport_callback_suppresses_terminal(tmp_path):
             await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
 
 
-def test_executor_finished_observation_marker_path_is_container_path(tmp_path, monkeypatch):
+def test_executor_does_not_emit_redundant_finished_progress_callback(tmp_path, monkeypatch):
     callbacks = []
 
     class StubSettings:
@@ -5527,11 +5525,9 @@ def test_executor_finished_observation_marker_path_is_container_path(tmp_path, m
     response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
-    assert callbacks[-1]["status"] == "running"
-    assert callbacks[-1]["state_patch"]["stage"] == "executor_finished"
-    marker_path = callbacks[-1]["state_patch"]["marker_path"]
-    assert marker_path == "/workspace/runtime/run-a.json"
-    assert str(tmp_path) not in marker_path
+    assert [callback["progress"] for callback in callbacks] == [5]
+    assert all(callback["progress"] != 99 for callback in callbacks)
+    assert all(callback["state_patch"].get("stage") != "executor_finished" for callback in callbacks)
 
 
 def test_executor_execute_rejects_missing_executor_credential(tmp_path):

@@ -1494,9 +1494,9 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     async def get_current(*_args, **_kwargs):
         return row
 
-    async def validate(*_args, **kwargs):
-        calls.append(("validate", kwargs["definition"]))
-        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
+    async def validate(_conn, **kwargs):
+        calls.append(("validate", [item["skill_id"] for item in kwargs["definition"].skill_set]))
+        return ({"skill_id": "general-chat", "skill_version": "version-b"},)
 
     monkeypatch.setattr(
         "app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile",
@@ -1508,6 +1508,15 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     )
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", validate)
+    pinned_skill_set = [{"skill_id": "general-chat", "expected_version": "version-a"}]
+    pinned_manifests = [
+        {
+            "skill_id": "general-chat",
+            "version": "version-a",
+            "content_hash": "version-a",
+            "dependency_ids": [],
+        }
+    ]
 
     admission = await authority.resolve_bound_for_worker_dispatch(
         object(),
@@ -1515,6 +1524,10 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
         agent_id="agt_support",
         revision=7,
         content_hash=str(row["content_hash"]),
+        pinned_skill_set=pinned_skill_set,
+        pinned_manifests=pinned_manifests,
+        pinned_executor_type="claude-agent-worker",
+        execution_kind="skill",
     )
 
     assert admission is not None
@@ -1527,7 +1540,9 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
             {"skill_id": "general-chat", "expected_version": "version-a"}
         ],
     }
+    assert admission.skill["skill_version"] == "version-a"
     assert [name for name, _ in calls] == ["bound", "validate"]
+    assert calls[1] == ("validate", ["general-chat"])
     assert calls[0][1]["for_update"] is True
 
 
@@ -1576,7 +1591,7 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
         get_current,
     )
     authority = AgentProfileAuthority()
-    monkeypatch.setattr(authority, "_validate_definition", validate)
+    monkeypatch.setattr(authority, "_validate_pinned_definition", validate)
 
     admission = await authority.resolve_bound_for_worker_dispatch(
         object(),
@@ -1584,11 +1599,67 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
         agent_id="agt_support",
         revision=7,
         content_hash=expected_hash,
+        pinned_skill_set=[{"skill_id": "general-chat", "expected_version": "version-a"}],
+        pinned_manifests=[
+            {
+                "skill_id": "general-chat",
+                "version": "version-a",
+                "content_hash": "version-a",
+                "dependency_ids": [],
+            }
+        ],
+        pinned_executor_type="claude-agent-worker",
+        execution_kind="skill",
     )
 
     assert admission is None
     assert calls["bound"] == 1
     assert calls["validate"] == (1 if denial == "capability" else 0)
+
+
+@pytest.mark.asyncio
+async def test_worker_harness_profile_keeps_run_pin_without_skill_manifest(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+
+    row = _profile_row()
+
+    async def get_bound(*_args, **_kwargs):
+        return row
+
+    async def get_current(*_args, **_kwargs):
+        return row
+
+    async def validate_current_acl(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-b"},)
+
+    monkeypatch.setattr(
+        "app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile",
+        get_bound,
+    )
+    monkeypatch.setattr(
+        "app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile",
+        get_current,
+    )
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate_current_acl)
+
+    admission = await authority.resolve_bound_for_worker_dispatch(
+        object(),
+        principal=_principal(),
+        agent_id="agt_support",
+        revision=7,
+        content_hash=str(row["content_hash"]),
+        pinned_skill_set=[{"skill_id": "general-chat", "expected_version": "version-a"}],
+        pinned_manifests=[],
+        pinned_executor_type="claude-agent-worker",
+        execution_kind="harness_chat",
+    )
+
+    assert admission is not None
+    assert admission.private_execution_input["skill_set"] == [
+        {"skill_id": "general-chat", "expected_version": "version-a"}
+    ]
+    assert admission.skill["skill_version"] == "version-a"
 
 
 @pytest.mark.asyncio

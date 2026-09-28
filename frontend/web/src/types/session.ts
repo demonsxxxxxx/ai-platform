@@ -63,4 +63,8 @@ export interface SessionEventsResponse {
   events: SSEEventRecord[];
   /** Backend-selected latest-created run for this session projection. */
   current_run_id?: string | null;
+  /** Cursor for the next page in the same fixed event-history snapshot. */
+  next_cursor?: string | null;
+  /** Terminal status is present only when the complete Run history was returned. */
+  terminal_run_statuses?: Record<string, "succeeded" | "failed" | "cancelled">;
 }

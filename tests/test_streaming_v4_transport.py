@@ -290,6 +290,32 @@ async def test_v4_read_stream_rejects_foreign_entry_authority() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_v4_resume_scope_checks_the_exact_cursor_entry() -> None:
+    client = FakeRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    valid = control(
+        "stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+    )
+    foreign = {**valid, "event_id": "evt-foreign", "attempt_id": "attempt-foreign"}
+    client.rows.extend(
+        (
+            ("1-0", {"envelope": canonical_json_bytes(valid).decode()}),
+            ("2-0", {"envelope": canonical_json_bytes(foreign).decode()}),
+            ("3-0", {"envelope": canonical_json_bytes(valid).decode()}),
+        )
+    )
+
+    with pytest.raises(StreamContractError, match="v4_stream_authority_mismatch"):
+        await bridge.resolve_resume(
+            tenant_scope_value="scope-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            current_stream_incarnation=2,
+            last_event_id="run-a:2:2-0",
+        )
+
+
 def test_v4_decode_rejects_malformed_redis_rows_and_fields() -> None:
     bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=FakeRedis()))
     envelope = control(
@@ -728,4 +754,4 @@ async def test_v4_resume_accepts_exact_retained_cursor_after_open_is_trimmed():
         last_event_id="run-a:2:9-0",
     )
 
-    assert resume == ResumeDecision("9-0", None)
+    assert resume == ResumeDecision("9-0", None, "terminal-a", True)

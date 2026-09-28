@@ -41,6 +41,7 @@ from app.streaming.domain.public_events_v4 import (
     _MESSAGE_EVENT_TYPES as _MESSAGE_EVENT_TYPES,
     _RUN_DOMAIN_EVENT_TYPES as _RUN_DOMAIN_EVENT_TYPES,
     _nonempty as _nonempty,
+    _project_validated_internal_envelope_v4 as _project_validated_internal_envelope_v4,
     _safe_ref as _safe_ref,
     _stable_event_id as _stable_event_id,
     _stable_run_event_id as _stable_run_event_id,

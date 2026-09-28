@@ -168,6 +168,14 @@ inconsistent receipt is a conflict; callbacks do not recreate it under an
 existing writer. Scoped locks, current Attempt/lease checks, owner generation,
 and frozen coverage checks apply to every callback.
 
+Execution captures the final provider sequence after the SDK's closing mirror
+flush and after all message/control producers have stopped. The sandbox carries
+that sequence through its terminal result to the existing coverage transaction.
+Physical CLI/MCP teardown may continue under the executor's lifecycle owner;
+it cannot append transcript entries or publish callbacks after this barrier.
+Mirror failures still fail the turn. Process teardown failures after the barrier
+are cleanup diagnostics and cannot replace the business result.
+
 ## Retirement And Compatibility
 
 Removed production surfaces:

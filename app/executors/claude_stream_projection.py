@@ -152,9 +152,8 @@ class AssistantAnswerTimeline:
         self._result_length: int | None = None
         self._result_digest: str | None = None
         self._result_suffix = ""
-        self._rendered_text = ""
-        self._rendered_length = 0
-        self._rendered_hasher = hashlib.sha256()
+        self._rendered_chunks: list[str] = []
+        self._rendered_text_cache: str | None = None
         self._terminal_identity: object = None
         # SDK delivery is sequential; exact replay suppression is limited to
         # this recent window. An evicted identity is treated as a new event.
@@ -173,7 +172,9 @@ class AssistantAnswerTimeline:
 
     @property
     def text(self) -> str:
-        return self._rendered_text + self._result_suffix
+        if self._rendered_text_cache is None:
+            self._rendered_text_cache = "".join(self._rendered_chunks)
+        return self._rendered_text_cache + self._result_suffix
 
     def fail_closed(self) -> None:
         """Preserve already observed text and reject every later observation."""
@@ -1141,9 +1142,8 @@ class AssistantAnswerTimeline:
         prefix = self._publication_prefix(source, source.message_key, suffix)
         published = prefix + suffix
         source.published_chars += len(suffix)
-        self._rendered_text += published
-        self._rendered_length += len(published)
-        self._rendered_hasher.update(published.encode("utf-8"))
+        self._rendered_chunks.append(published)
+        self._rendered_text_cache = None
         self._last_published_message_key = source.message_key
         self._last_published_sequence = source.sequence
         return published

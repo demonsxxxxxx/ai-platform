@@ -43,6 +43,11 @@ is the platform's duplicate full scan of business-message bodies.
 
 Each Run reauthorizes the current Agent Profile, Skills, MCP/native tools,
 model, credentials, files, artifacts, memory references and Run/Attempt/lease.
+Skill dispatch, retry and resume preserve the versions admitted to the Run.
+Current aggregate access and distributions are checked independently of current
+release selection; exact pinned package integrity and revocation remain checked.
+Fixed Skill sets query only their admitted roots and dependency closure. Open
+discovery still queries the available catalog.
 Historical transcript content does not restore those capabilities. The SDK user
 turn contains the current input; current policy and material references use the
 controlled system channel. Claude does not receive `read_session_messages`.

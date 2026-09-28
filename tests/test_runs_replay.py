@@ -15,9 +15,11 @@ from tests.support.repository_fixtures import RecordingConnection
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("historical_status", ["active", "released", "deprecated"])
+@pytest.mark.parametrize("current_status", ["active", "security_revoked", "deprecated"])
 async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2(
     monkeypatch,
     historical_status,
+    current_status,
 ):
     async def resolve_selected(conn, *, tenant_id, agent_id, skill_id):
         return {
@@ -27,7 +29,7 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
             "skill_status": "active",
             "skill_version": "hash-v2",
             "skill_content_hash": "hash-v2",
-            "skill_version_status": "active",
+            "skill_version_status": current_status,
             "release_policy_version": "hash-v2",
             "release_policy_previous_version": "hash-v1",
             "release_policy_rollout_percent": 100,
@@ -42,12 +44,19 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
         assert version == "hash-v1"
         return {"skill_id": skill_id, "version": "hash-v1", "content_hash": "hash-v1", "status": historical_status}
 
-    monkeypatch.setattr(capability_admission_persistence, "resolve_selected_skill", resolve_selected, raising=False)
+    class Cursor:
+        async def fetchone(self):
+            return await resolve_selected(None, tenant_id="tenant-a", agent_id="general-agent", skill_id="department-review")
+
+    class Connection:
+        async def execute(self, _query, _params):
+            return Cursor()
+
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", distribution)
     monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 
     skill = await _repo_owner_app_runs_infrastructure_capability_admission_postgres.authorize_replay_run_capabilities(
-        object(),
+        Connection(),
         tenant_id="tenant-a",
         agent_id="general-agent",
         skill_id="department-review",
@@ -102,7 +111,7 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
     async def historical_version(conn, *, skill_id, version):
         return {"skill_id": skill_id, "version": version, "content_hash": version, "status": historical_status}
 
-    monkeypatch.setattr(capability_admission_persistence, "resolve_selected_skill", resolve_selected, raising=False)
+    monkeypatch.setattr(capability_admission_persistence, "resolve_skill_identity", resolve_selected, raising=False)
     monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", distribution)
     monkeypatch.setattr(skill_persistence, "get_skill_version", historical_version)
 

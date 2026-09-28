@@ -63,6 +63,8 @@ class StreamGap:
 class ResumeDecision:
     after_redis_id: str | None
     gap: StreamGap | None
+    terminal_event_id: str | None = None
+    ended: bool = False
 
 
 def canonical_json_bytes(value: object) -> bytes:

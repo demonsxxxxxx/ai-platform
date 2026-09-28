@@ -54,6 +54,24 @@ def action_headers(*, user_id="user-a", tenant_id="default", roles="user"):
     }
 
 
+def fetch_session_event_pages(client, *, params=None):
+    pages = []
+    request_params = dict(params or {})
+    while True:
+        response = client.get(
+            "/api/sessions/ses_a/events",
+            params=request_params,
+            headers=auth_headers(),
+        )
+        assert response.status_code == 200, response.text
+        page = response.json()
+        pages.append(page)
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return pages
+        request_params["cursor"] = cursor
+
+
 @pytest.fixture(autouse=True)
 def empty_authorized_history_messages(monkeypatch):
     async def empty_messages(conn, *, tenant_id, user_id, session_id):
@@ -71,6 +89,15 @@ def empty_authorized_history_messages(monkeypatch):
     monkeypatch.setattr(
         "app.conversations.infrastructure.postgres.list_authorized_user_messages_for_runs",
         empty_user_messages_for_runs,
+        raising=False,
+    )
+
+    async def max_history_sequence_bounds(conn, *, tenant_id, run_ids):
+        return {run_id: 2**63 - 1 for run_id in run_ids}
+
+    monkeypatch.setattr(
+        "app.streaming.infrastructure.run_events_postgres.list_run_event_sequence_bounds",
+        max_history_sequence_bounds,
         raising=False,
     )
 
@@ -546,7 +573,7 @@ def test_lambchat_session_action_routes_are_thin_service_adapters(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def default_lambchat_stream_projection(monkeypatch):
-    async def empty_run_events(conn, *, tenant_id, run_id):
+    async def empty_run_events(conn, *, tenant_id, run_id, **_kwargs):
         return []
 
     async def empty_run_artifacts(conn, *, tenant_id, run_id):
@@ -1069,7 +1096,7 @@ def test_lambchat_active_history_preserves_every_published_delta(monkeypatch):
             "created_at": "2026-07-30T00:00:00Z",
         }
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **_kwargs):
         return [
             v4_delta("evt4_delta-7", 7, "partial "),
             v4_delta("evt4_delta-8", 8, "answer"),
@@ -2525,7 +2552,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
             }
         ]
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **_kwargs):
         return [
             {
                 "id": "evt_a",
@@ -2710,7 +2737,10 @@ def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(
     response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
 
     assert response.status_code == 200
-    assert message_calls == [("default", "user-a", "ses_a", ["run-new", "run-old"])]
+    assert message_calls == [
+        ("default", "user-a", "ses_a", ["run-old"]),
+        ("default", "user-a", "ses_a", ["run-new"]),
+    ]
     events = response.json()["events"]
     assert [event["event_type"] for event in events] == [
         "user:message",
@@ -2773,7 +2803,7 @@ def test_lambchat_failed_run_projects_only_safe_native_skill_sandbox_stage(monke
             }
         ]
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **_kwargs):
         return []
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
@@ -2867,7 +2897,11 @@ def test_lambchat_default_history_queries_user_messages_for_only_latest_fifty_ru
     )
 
     assert response.status_code == 200
-    assert message_queries == [[f"run-{index:02d}" for index in range(50)]]
+    assert len(message_queries) == 50
+    assert {run_ids[0] for run_ids in message_queries} == {
+        f"run-{index:02d}" for index in range(50)
+    }
+    assert all(len(run_ids) == 1 for run_ids in message_queries)
     assert "run-50" not in str(message_queries)
 
 
@@ -3284,7 +3318,7 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
             }
         ]
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **_kwargs):
         return [
             {
                 "id": "evt4_answer",
@@ -3377,7 +3411,7 @@ def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch)
             }
         ]
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **_kwargs):
         return []
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
@@ -3439,7 +3473,7 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
             }
         ]
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **_kwargs):
         base = {
             "trace_id": "trace_run_a",
             "schema_version": "ai-platform.event-envelope.v1",
@@ -3572,7 +3606,7 @@ def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
             }
         ]
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **_kwargs):
         base = {
             "tenant_id": "default",
             "run_id": "run_a",
@@ -3721,10 +3755,11 @@ def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch
             }
         ]
 
-    async def fake_list_run_events(conn, *, tenant_id, run_id):
+    async def fake_list_run_events(conn, *, tenant_id, run_id, **_kwargs):
         return [
             {
                 "id": "evt_a",
+                "sequence": 1,
                 "trace_id": "trace_run_a",
                 "schema_version": "ai-platform.event-envelope.v1",
                 "event_type": "error",
@@ -3806,3 +3841,294 @@ def test_frontend_public_terminal_catalog_matches_backend_allowlist():
     assert "  terminal_reconciliation_failed:" in presentation_source
     assert 'from "./publicTerminalPresentation"' in event_processor_source
     assert "getPublicTerminalPresentationDefinition" in renderer_source
+
+
+def test_lambchat_session_event_pages_preserve_large_v4_history_and_compaction(
+    monkeypatch,
+):
+    from app.streaming.api import opaque_message_id
+
+    runs = {
+        "run-old": {
+            "id": "run-old",
+            "tenant_id": "default",
+            "trace_id": "trace-run-old",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "status": "running",
+            "result_json": {},
+            "created_at": "2026-08-01T00:00:00Z",
+            "finished_at": None,
+        },
+        "run-new": {
+            "id": "run-new",
+            "tenant_id": "default",
+            "trace_id": "trace-run-new",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "status": "succeeded",
+            "result_json": {},
+            "created_at": "2026-08-02T00:00:00Z",
+            "finished_at": "2026-08-02T00:01:00Z",
+        },
+    }
+    events_by_run = {run_id: [] for run_id in runs}
+    delta_ids_by_run = {run_id: [] for run_id in runs}
+    delta_text_by_run = {run_id: [] for run_id in runs}
+    tool_ids = []
+
+    def event_base(run_id):
+        return {
+            "tenant_id": "default",
+            "run_id": run_id,
+            "trace_id": runs[run_id]["trace_id"],
+            "schema_version": "ai-platform.event-envelope.v1",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "created_at": "2026-08-01T00:00:00Z",
+        }
+
+    def v4_delta(run_id, index, sequence, content):
+        return {
+            **event_base(run_id),
+            "id": f"evt4_{run_id}-delta-{index:03d}",
+            "sequence": sequence,
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
+            "message": "",
+            "payload_json": {
+                "delta": content,
+                "__stream_v4": {
+                    "attempt_id": f"attempt-{run_id}",
+                    "version": 1,
+                    "stream_incarnation": 1,
+                    "authorization_epoch": 1,
+                    "message_id": opaque_message_id("default", run_id),
+                    "publication_state": "published",
+                },
+            },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
+        }
+
+    def v4_tool_started(run_id, index, sequence):
+        event_id = f"evt4_{run_id}-tool-{index:03d}"
+        tool_ids.append(event_id)
+        return {
+            **event_base(run_id),
+            "id": event_id,
+            "sequence": sequence,
+            "event_type": "tool.started",
+            "stage": "tool",
+            "message": "",
+            "payload_json": {
+                "operation_id": f"operation-{run_id}-{index:03d}",
+                "category": "search",
+                "display_name": "Search",
+                "input_summary": "Starting Search",
+                "__stream_v4": {
+                    "attempt_id": f"attempt-{run_id}",
+                    "version": 1,
+                    "stream_incarnation": 1,
+                    "authorization_epoch": 1,
+                    "message_id": opaque_message_id("default", run_id),
+                    "publication_state": "published",
+                },
+            },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
+        }
+
+    for run_id, delta_count in (("run-old", 205), ("run-new", 2)):
+        sequence = 0
+        for index in range(delta_count):
+            sequence += 1
+            content = f"<{run_id}:{index:03d}>"
+            row = v4_delta(run_id, index, sequence, content)
+            events_by_run[run_id].append(row)
+            delta_ids_by_run[run_id].append(row["id"])
+            delta_text_by_run[run_id].append(content)
+            if run_id == "run-old" and index % 25 == 24:
+                sequence += 1
+                events_by_run[run_id].append(
+                    v4_tool_started(run_id, index, sequence)
+                )
+
+    late_event = v4_delta("run-old", 205, 214, "<late-after-snapshot>")
+    append_after_first_page = True
+    message_queries = []
+    reauthorizations = []
+    run_event_queries = []
+
+    async def fake_get_authorized_lambchat_session(
+        _conn, *, tenant_id, user_id, session_id
+    ):
+        assert (tenant_id, user_id) == ("default", "user-a")
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(
+        _conn, *, tenant_id, user_id, session_id, limit
+    ):
+        assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
+        assert limit == 50
+        return [runs["run-new"], runs["run-old"]]
+
+    async def fake_list_authorized_session_runs_by_ids(
+        _conn, *, tenant_id, user_id, session_id, run_ids
+    ):
+        reauthorizations.append(
+            (tenant_id, user_id, session_id, tuple(run_ids))
+        )
+        return [runs[run_id] for run_id in run_ids]
+
+    async def fake_list_run_event_sequence_bounds(_conn, *, tenant_id, run_ids):
+        assert tenant_id == "default"
+        return {
+            run_id: max(
+                (int(event["sequence"]) for event in events_by_run[run_id]),
+                default=0,
+            )
+            for run_id in run_ids
+        }
+
+    async def fake_list_run_events(
+        _conn,
+        *,
+        tenant_id,
+        run_id,
+        after_sequence,
+        limit,
+        through_sequence,
+    ):
+        nonlocal append_after_first_page
+        assert tenant_id == "default"
+        run_event_queries.append((run_id, after_sequence, through_sequence))
+        if run_id == "run-old" and after_sequence == 0 and append_after_first_page:
+            events_by_run[run_id].append(late_event)
+            append_after_first_page = False
+        return [
+            event
+            for event in events_by_run[run_id]
+            if after_sequence < int(event["sequence"]) <= through_sequence
+        ][:limit]
+
+    async def fake_list_authorized_user_messages_for_runs(
+        _conn, *, tenant_id, user_id, session_id, run_ids
+    ):
+        assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
+        assert len(run_ids) == 1
+        run_id = run_ids[0]
+        message_queries.append(run_id)
+        return [
+            {
+                "id": f"message-{run_id}",
+                "run_id": run_id,
+                "content": f"Question for {run_id}",
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    monkeypatch.setattr(
+        "app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs_by_ids",
+        fake_list_authorized_session_runs_by_ids,
+    )
+    monkeypatch.setattr(
+        "app.streaming.infrastructure.run_events_postgres.list_run_event_sequence_bounds",
+        fake_list_run_event_sequence_bounds,
+    )
+    monkeypatch.setattr(
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.conversations.infrastructure.postgres.list_authorized_user_messages_for_runs",
+        fake_list_authorized_user_messages_for_runs,
+    )
+    client = TestClient(create_app())
+
+    uncompressed_pages = fetch_session_event_pages(client)
+    assert len(uncompressed_pages) == 3
+    assert [page["terminal_run_statuses"] for page in uncompressed_pages] == [
+        {},
+        {},
+        {"run-new": "succeeded"},
+    ]
+    assert all(
+        event["event_type"] != "done"
+        for page in uncompressed_pages[:2]
+        for event in page["events"]
+    )
+
+    uncompressed_events = [
+        event for page in uncompressed_pages for event in page["events"]
+    ]
+    uncompressed_chunks = [
+        event
+        for event in uncompressed_events
+        if event["event_type"] == "message:chunk"
+    ]
+    for run_id in runs:
+        run_chunks = [event for event in uncompressed_chunks if event["run_id"] == run_id]
+        assert [event["id"] for event in run_chunks] == delta_ids_by_run[run_id]
+        assert "".join(event["data"]["content"] for event in run_chunks) == "".join(
+            delta_text_by_run[run_id]
+        )
+    assert [event["id"] for event in uncompressed_events if event["id"] in tool_ids] == tool_ids
+    user_messages = [
+        event
+        for event in uncompressed_events
+        if event["event_type"] == "user:message"
+    ]
+    assert [(event["run_id"], event["id"]) for event in user_messages] == [
+        ("run-old", "message-run-old"),
+        ("run-new", "message-run-new"),
+    ]
+    assert message_queries == ["run-old", "run-new"]
+    assert [event["run_id"] for event in uncompressed_events if event["event_type"] == "done"] == [
+        "run-new"
+    ]
+    assert "evt4_run-old-delta-205" not in str(uncompressed_events)
+    assert "<late-after-snapshot>" not in str(uncompressed_events)
+    assert all(through_sequence == 213 for run_id, _, through_sequence in run_event_queries if run_id == "run-old")
+    assert reauthorizations
+    assert all(
+        (tenant_id, user_id, session_id, run_ids)
+        == ("default", "user-a", "ses_a", ("run-old", "run-new"))
+        for tenant_id, user_id, session_id, run_ids in reauthorizations
+    )
+
+    events_by_run["run-old"].remove(late_event)
+    append_after_first_page = True
+    message_queries.clear()
+    run_event_queries.clear()
+    compact_pages = fetch_session_event_pages(
+        client, params={"compact_message_chunks": True}
+    )
+    compact_events = [event for page in compact_pages for event in page["events"]]
+    compact_chunks = [
+        event for event in compact_events if event["event_type"] == "message:chunk"
+    ]
+    for run_id in runs:
+        compact_run_chunks = [
+            event for event in compact_chunks if event["run_id"] == run_id
+        ]
+        assert "".join(event["data"]["content"] for event in compact_run_chunks) == "".join(
+            delta_text_by_run[run_id]
+        )
+    assert [page["terminal_run_statuses"] for page in compact_pages] == [
+        {},
+        {},
+        {"run-new": "succeeded"},
+    ]
+    assert message_queries == ["run-old", "run-new"]
+    assert "<late-after-snapshot>" not in str(compact_events)

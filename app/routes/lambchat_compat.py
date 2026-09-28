@@ -1,6 +1,8 @@
 # ruff: noqa: B008
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import time
@@ -9,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
 from app import session_actions
@@ -57,8 +59,8 @@ from app.streaming.api import (
     V4StreamEntry,
     live_redis_id_is_after,
     project_persisted_message_delta_v4,
-    project_public_envelope_v4,
     validate_public_application_payload_v4,
+    _project_validated_internal_envelope_v4,
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.streaming.redis import (
@@ -113,6 +115,12 @@ _SSE_EXIT_REASONS = frozenset(
         "stream_contract_failure",
         "stream_setup_failure",
     }
+)
+_SESSION_EVENTS_PAGE_SIZE = 100
+_SESSION_EVENTS_CURSOR_VERSION = 1
+_SESSION_EVENTS_CURSOR_MAX_LENGTH = 32768
+_PUBLIC_LIFECYCLE_SINGLETONS = frozenset(
+    {"intent_detected", "capability_selected", "run_started"}
 )
 
 
@@ -996,6 +1004,7 @@ def _compatibility_events_for_run_page(
     fold_state: _CompatibilityFoldState,
     user_messages: list[dict[str, Any]] | None = None,
     include_terminal: bool = True,
+    include_artifacts: bool = True,
     compact_answer_deltas: bool = False,
 ) -> tuple[list[_CompatibilityWireEvent], _CompatibilityFoldState]:
     """Fold one durable page while carrying only public compatibility facts forward."""
@@ -1283,7 +1292,7 @@ def _compatibility_events_for_run_page(
 
     flush_pending_answer_events()
     for artifact in sorted(
-        _visible_assistant_artifacts(run, artifacts),
+        _visible_assistant_artifacts(run, artifacts) if include_artifacts else [],
         key=_artifact_delivery_sort_key,
     ):
         artifact_id = str(artifact["id"])
@@ -1662,11 +1671,116 @@ async def session_runs(
     }
 
 
+def _encode_session_events_cursor(payload: dict[str, Any]) -> str:
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    if len(encoded) > _SESSION_EVENTS_CURSOR_MAX_LENGTH:
+        raise HTTPException(status_code=422, detail="history_cursor_too_large")
+    return encoded
+
+
+def _decode_session_events_cursor(
+    value: str,
+    *,
+    session_id: str,
+    run_id: str | None,
+    compact_message_chunks: bool,
+) -> dict[str, Any]:
+    try:
+        if not value or len(value) > _SESSION_EVENTS_CURSOR_MAX_LENGTH:
+            raise ValueError
+        payload = json.loads(
+            base64.urlsafe_b64decode(f"{value}{'=' * (-len(value) % 4)}").decode(
+                "utf-8"
+            )
+        )
+        if (
+            not isinstance(payload, dict)
+            or payload.get("v") != _SESSION_EVENTS_CURSOR_VERSION
+            or payload.get("session_id") != session_id
+            or payload.get("run_filter") != run_id
+            or payload.get("compact") is not compact_message_chunks
+        ):
+            raise ValueError
+        snapshots = payload.get("runs")
+        if not isinstance(snapshots, list) or len(snapshots) > 50:
+            raise ValueError
+        run_ids: set[str] = set()
+        for snapshot in snapshots:
+            if not isinstance(snapshot, dict):
+                raise ValueError
+            snapshot_run_id = snapshot.get("id")
+            maximum = snapshot.get("max")
+            snapshot_status = snapshot.get("status")
+            if (
+                not isinstance(snapshot_run_id, str)
+                or not snapshot_run_id
+                or len(snapshot_run_id) > 200
+                or snapshot_run_id in run_ids
+                or isinstance(maximum, bool)
+                or not isinstance(maximum, int)
+                or maximum < 0
+                or not isinstance(snapshot_status, str)
+                or not snapshot_status
+                or len(snapshot_status) > 32
+            ):
+                raise ValueError
+            run_ids.add(snapshot_run_id)
+        if run_id is not None and (
+            len(snapshots) != 1 or snapshots[0]["id"] != run_id
+        ):
+            raise ValueError
+        index = payload.get("index")
+        after = payload.get("after")
+        fold = payload.get("fold")
+        messages_sent = payload.get("messages_sent")
+        current_run_id = payload.get("current_run_id")
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not 0 <= index < len(snapshots)
+            or isinstance(after, bool)
+            or not isinstance(after, int)
+            or after < 0
+            or after > snapshots[index]["max"]
+            or not isinstance(fold, dict)
+            or not isinstance(fold.get("strict"), bool)
+            or not isinstance(fold.get("singletons"), list)
+            or any(
+                item not in _PUBLIC_LIFECYCLE_SINGLETONS
+                for item in fold["singletons"]
+            )
+            or not isinstance(messages_sent, bool)
+            or (
+                current_run_id is not None
+                and (
+                    not isinstance(current_run_id, str)
+                    or current_run_id not in run_ids
+                )
+            )
+        ):
+            raise ValueError
+        return payload
+    except (
+        binascii.Error,
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail="history_cursor_invalid") from exc
+
+
 @router.get("/sessions/{session_id}/events")
 async def session_events(
     session_id: str,
     run_id: str | None = None,
     compact_message_chunks: bool = False,
+    cursor: str | None = Query(
+        default=None, max_length=_SESSION_EVENTS_CURSOR_MAX_LENGTH
+    ),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
@@ -1678,80 +1792,238 @@ async def session_events(
         )
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
-        if run_id is not None:
-            target = await runs_creation.get_authorized_run(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
+
+        cursor_payload = (
+            _decode_session_events_cursor(
+                cursor,
+                session_id=session_id,
                 run_id=run_id,
+                compact_message_chunks=compact_message_chunks,
             )
-            if target is None or target.get("session_id") != session_id:
-                raise HTTPException(status_code=404, detail="run_not_found")
-            target_runs = [target]
-            current_run_id = run_id
-        else:
-            # Display ordering is deterministic, but only a generation-bearing
-            # row may be reported as the session's current authority.
-            target_runs = await conversations_session_queries.list_authorized_session_runs(
+            if cursor is not None
+            else None
+        )
+        if cursor_payload is None:
+            if run_id is not None:
+                target = await runs_creation.get_authorized_run(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    run_id=run_id,
+                )
+                if target is None or target.get("session_id") != session_id:
+                    raise HTTPException(status_code=404, detail="run_not_found")
+                target_runs = [target]
+                current_run_id = run_id
+            else:
+                # Display ordering is deterministic, but only a generation-bearing
+                # row may be reported as the session's current authority.
+                target_runs = (
+                    await conversations_session_queries.list_authorized_session_runs(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        session_id=session_id,
+                        limit=50,
+                    )
+                )
+                current = next(
+                    (
+                        row
+                        for row in target_runs
+                        if row.get("session_generation") is not None
+                    ),
+                    None,
+                )
+                current_run_id = str(current["id"]) if current is not None else None
+            target_run_ids = [str(run["id"]) for run in target_runs]
+            sequence_bounds = await streaming_run_events.list_run_event_sequence_bounds(
                 conn,
                 tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                session_id=session_id,
-                limit=50,
-            )
-            current = next(
-                (
-                    row
-                    for row in target_runs
-                    if row.get("session_generation") is not None
-                ),
-                None,
-            )
-            current_run_id = str(current["id"]) if current is not None else None
-        target_run_ids = [str(run["id"]) for run in target_runs]
-        authorized_user_messages = (
-            await conversations_postgres.list_authorized_user_messages_for_runs(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                session_id=session_id,
                 run_ids=target_run_ids,
             )
-        )
-        user_messages_by_run: dict[str, list[dict[str, Any]]] = {
-            target_run_id: [] for target_run_id in target_run_ids
-        }
-        for message in authorized_user_messages:
-            message_run_id = str(message.get("run_id") or "")
-            if message_run_id in user_messages_by_run:
-                user_messages_by_run[message_run_id].append(message)
-        events = []
-        for run in reversed(target_runs):
-            run_events = await streaming_run_events.list_run_events(
-                conn, tenant_id=principal.tenant_id, run_id=run["id"]
-            )
-            artifacts = await artifacts_records.list_run_artifacts(
-                conn,
-                tenant_id=principal.tenant_id,
-                run_id=run["id"],
-            )
-            events.extend(
-                record.history_event
-                for record in _compatibility_events_for_run(
-                    run,
-                    run_events,
-                    artifacts,
-                    principal,
-                    user_messages=user_messages_by_run.get(str(run["id"]), []),
-                    compact_answer_deltas=compact_message_chunks,
+            snapshots = [
+                {
+                    "id": str(run["id"]),
+                    "max": sequence_bounds.get(str(run["id"]), 0),
+                    "status": _platform_status(str(run.get("status") or "")),
+                }
+                for run in reversed(target_runs)
+            ]
+            cursor_payload = {
+                "v": _SESSION_EVENTS_CURSOR_VERSION,
+                "session_id": session_id,
+                "run_filter": run_id,
+                "compact": compact_message_chunks,
+                "current_run_id": current_run_id,
+                "runs": snapshots,
+                "index": 0,
+                "after": 0,
+                "fold": {"strict": False, "singletons": []},
+                "messages_sent": False,
+            }
+            target_runs_by_id = {str(run["id"]): run for run in target_runs}
+        else:
+            snapshots = cursor_payload["runs"]
+            snapshot_run_ids = [snapshot["id"] for snapshot in snapshots]
+            target_runs = (
+                await conversations_session_queries.list_authorized_session_runs_by_ids(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    session_id=session_id,
+                    run_ids=snapshot_run_ids,
                 )
             )
-    return {
-        "session_id": session_id,
-        "run_id": run_id,
-        "current_run_id": current_run_id,
-        "events": events,
-    }
+            if [str(run["id"]) for run in target_runs] != snapshot_run_ids:
+                raise HTTPException(status_code=400, detail="history_cursor_invalid")
+            target_runs_by_id = {str(run["id"]): run for run in target_runs}
+            snapshot = snapshots[cursor_payload["index"]]
+            run = target_runs_by_id[snapshot["id"]]
+            if snapshot["status"] in {"succeeded", "failed", "cancelled"}:
+                if _platform_status(str(run.get("status") or "")) != snapshot["status"]:
+                    raise HTTPException(
+                        status_code=400, detail="history_cursor_invalid"
+                    )
+
+
+        if not cursor_payload["runs"]:
+            return {
+                "session_id": session_id,
+                "run_id": run_id,
+                "current_run_id": cursor_payload["current_run_id"],
+                "events": [],
+                "next_cursor": None,
+                "terminal_run_statuses": {},
+            }
+
+        index = cursor_payload["index"]
+        after_sequence = cursor_payload["after"]
+        fold = cursor_payload["fold"]
+        messages_sent = cursor_payload["messages_sent"]
+        events: list[dict[str, object]] = []
+        terminal_run_statuses: dict[str, str] = {}
+        consumed_run_events = 0
+
+        # Fill one response across empty and small runs. The budget counts only
+        # durable run events; user messages and artifacts are loaded per run.
+        while index < len(cursor_payload["runs"]):
+            snapshot = cursor_payload["runs"][index]
+            run = target_runs_by_id[snapshot["id"]]
+            run["status"] = snapshot["status"]
+            remaining = _SESSION_EVENTS_PAGE_SIZE - consumed_run_events
+            run_events = await streaming_run_events.list_run_events(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=snapshot["id"],
+                after_sequence=after_sequence,
+                limit=max(1, remaining + 1),
+                through_sequence=snapshot["max"],
+            )
+            run_events = [
+                event
+                for event in run_events
+                if after_sequence < int(event.get("sequence") or 0) <= snapshot["max"]
+            ]
+            run_events = [
+                event
+                for _, event in sorted(
+                    enumerate(run_events),
+                    key=lambda item: _event_sequence_sort_key(item[1], item[0]),
+                )
+            ]
+            has_more_events = len(run_events) > remaining
+            page_events = run_events[:remaining]
+            if has_more_events and not page_events:
+                break
+            if has_more_events:
+                next_after_sequence = max(
+                    int(event.get("sequence") or 0) for event in page_events
+                )
+                if next_after_sequence <= after_sequence:
+                    raise HTTPException(
+                        status_code=500, detail="history_cursor_stalled"
+                    )
+            else:
+                next_after_sequence = after_sequence
+            run_is_complete = not has_more_events
+            artifacts = (
+                await artifacts_records.list_run_artifacts(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=snapshot["id"],
+                )
+                if run_is_complete
+                else []
+            )
+            user_messages = []
+            if not messages_sent:
+                user_messages = (
+                    await conversations_postgres.list_authorized_user_messages_for_runs(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        session_id=session_id,
+                        run_ids=[snapshot["id"]],
+                    )
+                )
+            compatibility_events, next_fold = _compatibility_events_for_run_page(
+                run,
+                page_events,
+                artifacts,
+                principal,
+                fold_state=_CompatibilityFoldState(
+                    fold["strict"], frozenset(fold["singletons"])
+                ),
+                user_messages=user_messages,
+                include_terminal=run_is_complete,
+                include_artifacts=run_is_complete,
+                compact_answer_deltas=compact_message_chunks,
+            )
+            events.extend(event.history_event for event in compatibility_events)
+            consumed_run_events += len(page_events)
+            if run_is_complete and snapshot["status"] in {
+                "succeeded",
+                "failed",
+                "cancelled",
+            }:
+                terminal_run_statuses[snapshot["id"]] = snapshot["status"]
+            if has_more_events:
+                after_sequence = next_after_sequence
+                fold = {
+                    "strict": next_fold.has_strict_public_execution,
+                    "singletons": sorted(
+                        next_fold.seen_public_lifecycle_singletons
+                    ),
+                }
+                messages_sent = True
+                break
+            index += 1
+            after_sequence = 0
+            fold = {"strict": False, "singletons": []}
+            messages_sent = False
+            if consumed_run_events >= _SESSION_EVENTS_PAGE_SIZE:
+                break
+
+        next_cursor = None
+        if index < len(cursor_payload["runs"]):
+            next_payload = {
+                **cursor_payload,
+                "index": index,
+                "after": after_sequence,
+                "fold": fold,
+                "messages_sent": messages_sent,
+            }
+            next_cursor = _encode_session_events_cursor(next_payload)
+
+        return {
+            "session_id": session_id,
+            "run_id": run_id,
+            "current_run_id": cursor_payload["current_run_id"],
+            "events": events,
+            "next_cursor": next_cursor,
+            "terminal_run_statuses": terminal_run_statuses,
+        }
 
 
 @router.post("/sessions/{session_id}/generate-title")
@@ -1839,69 +2111,6 @@ async def chat_status(
     }
 
 
-async def _restore_chat_stream_terminal_state(
-    bridge: _V4StreamBridge,
-    *,
-    tenant_scope_value: str,
-    run_id: str,
-    attempt_id: str,
-    stream_incarnation: int,
-    through_redis_id: str,
-) -> tuple[str | None, bool]:
-    """Restore terminal linkage from the retained suffix through the cursor.
-
-    ``resolve_resume`` has already proved that the caller's cursor is an exact
-    retained entry. The original ``stream.open`` may have been trimmed, so the
-    retained suffix is the available boundary for restoring terminal state.
-    """
-    terminal_event_id: str | None = None
-    ended = False
-    if through_redis_id == "0-0":
-        return terminal_event_id, ended
-    after = "0-0"
-    saw_entry = False
-    while after != through_redis_id:
-        previous_after = after
-        entries = await bridge.replay_page(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=stream_incarnation,
-            after_redis_id=after,
-            through_redis_id=through_redis_id,
-        )
-        if not entries:
-            # The cursor can be trimmed after resolve_resume validated it.
-            # Let the caller return a hydration gap for that race.
-            raise StreamContractError("stream_replay_continuity_unproven")
-        for entry in entries:
-            after = entry.cursor.redis_id
-            envelope = entry.envelope
-            event_type = envelope["event_type"]
-            if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
-                terminal_event_id = str(envelope["event_id"])
-            elif event_type == "stream.end":
-                end_terminal_id = envelope["payload"].get("terminal_event_id")
-                if terminal_event_id is None:
-                    # An end can be the first retained row if the terminal
-                    # prefix was trimmed. If any earlier retained rows remain,
-                    # the missing terminal is an inconsistent ordering.
-                    if saw_entry:
-                        raise StreamContractError(
-                            "stream_end_without_observed_terminal"
-                        )
-                    terminal_event_id = str(end_terminal_id)
-                elif end_terminal_id != terminal_event_id:
-                    raise StreamContractError("stream_end_without_observed_terminal")
-                ended = True
-            saw_entry = True
-            if after == through_redis_id:
-                return terminal_event_id, ended
-        if after == previous_after:
-            raise StreamContractError("stream_replay_continuity_unproven")
-    return terminal_event_id, ended
-
-
 @router.get("/chat/sessions/{session_id}/stream")
 async def chat_session_stream(
     session_id: str,
@@ -1951,7 +2160,6 @@ async def chat_session_stream(
         await record_sse_exit("stream_setup_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable")
     bridge = runtime.bridge
-    setup_gap_requested_event_id: str | None = None
     try:
         resume = await bridge.resolve_resume(
             tenant_scope_value=authority.tenant_scope,
@@ -1960,8 +2168,8 @@ async def chat_session_stream(
             current_stream_incarnation=authority.stream_incarnation,
             last_event_id=last_event_id,
         )
-        restored_terminal_event_id: str | None = None
-        resume_already_ended = False
+        restored_terminal_event_id = resume.terminal_event_id
+        resume_already_ended = resume.ended
         replay_tail = resume.after_redis_id or "0-0"
         if resume.gap is None:
             bounds = await bridge.retained_bounds(
@@ -1973,22 +2181,6 @@ async def chat_session_stream(
             if bounds is None:
                 raise StreamContractError("stream_replay_bounds_unavailable")
             replay_tail = bounds[1].cursor.redis_id
-            try:
-                (
-                    restored_terminal_event_id,
-                    resume_already_ended,
-                ) = await _restore_chat_stream_terminal_state(
-                    bridge,
-                    tenant_scope_value=authority.tenant_scope,
-                    run_id=run_id,
-                    attempt_id=authority.attempt_id,
-                    stream_incarnation=authority.stream_incarnation,
-                    through_redis_id=resume.after_redis_id or "0-0",
-                )
-            except StreamContractError as exc:
-                if str(exc) != "stream_replay_continuity_unproven":
-                    raise
-                setup_gap_requested_event_id = resume.after_redis_id or "0-0"
     except StreamContractError as exc:
         await record_sse_exit("stream_contract_failure")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2052,9 +2244,7 @@ async def chat_session_stream(
 
         def project_entry(entry: V4StreamEntry) -> tuple[str | None, bool]:
             nonlocal restored_terminal_event_id
-            envelope = project_public_envelope_v4(entry.envelope)
-            if envelope is None:
-                raise StreamContractError("stream_public_event_unmapped")
+            envelope = _project_validated_internal_envelope_v4(entry.envelope)
             event_type = str(envelope["event_type"])
             if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
                 restored_terminal_event_id = str(envelope["event_id"])
@@ -2083,26 +2273,18 @@ async def chat_session_stream(
                 current_stream_incarnation=authority.stream_incarnation,
                 reason=reason,
             )
-            public_gap = project_public_envelope_v4(gap_envelope)
-            if public_gap is None:
-                raise StreamContractError("stream_gap_public_event_unmapped")
+            public_gap = _project_validated_internal_envelope_v4(gap_envelope)
             return _sse("stream.gap", public_gap, gap_cursor)
 
         try:
-            if resume.gap is not None or setup_gap_requested_event_id is not None:
+            if resume.gap is not None:
                 exit_reason = "stream_contract_failure"
-                if resume.gap is not None:
-                    reason = resume.gap.reason
-                    requested_event_id = resume.gap.requested_event_id
-                    requested_incarnation = resume.gap.requested_stream_incarnation
-                else:
-                    reason = "stream_continuity_unproven"
-                    requested_event_id = setup_gap_requested_event_id
-                    requested_incarnation = authority.stream_incarnation
                 frame = await gap_frame(
-                    reason=reason,
-                    requested_event_id=requested_event_id,
-                    requested_stream_incarnation=requested_incarnation,
+                    reason=resume.gap.reason,
+                    requested_event_id=resume.gap.requested_event_id,
+                    requested_stream_incarnation=(
+                        resume.gap.requested_stream_incarnation
+                    ),
                 )
                 if not await authorize_frame():
                     return

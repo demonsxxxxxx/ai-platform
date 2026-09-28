@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.skills.infrastructure.resolution_postgres import resolve_skill_identity
+
 from app.auth import normalize_roles
 from app.capability_distribution import CapabilityAccessContext
 from app.capability_distribution import CapabilityDistributionSubject
@@ -350,6 +352,13 @@ async def authorize_selected_run_capabilities(
     return {**skill, "skill_version": selected_version, "skill_content_hash": content_hash}
 
 
+async def authorize_skill_access(conn: AsyncConnection, **scope: Any) -> dict[str, Any]:
+    """Authorize current aggregate access independently of release selection."""
+    return await _authorize_run_capabilities(
+        conn, **scope, skill_resolver=resolve_skill_identity
+    )
+
+
 async def authorize_replay_run_capabilities(
     conn: AsyncConnection,
     *,
@@ -386,7 +395,7 @@ async def authorize_replay_run_capabilities(
         principal_roles=principal_roles,
         is_admin=is_admin,
         permissions=permissions,
-        skill_resolver=resolve_selected_skill,
+        skill_resolver=resolve_skill_identity,
     )
     await validate_replay_skill_manifests(
         conn,

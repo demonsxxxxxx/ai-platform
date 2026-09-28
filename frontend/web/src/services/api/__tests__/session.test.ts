@@ -190,6 +190,100 @@ test("history requests encode opaque session ids and opt into compact message ch
   }
 });
 
+test("event history follows cursors and merges events and terminal metadata in page order", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const calls: Array<{ url: string; signal?: AbortSignal }> = [];
+  const pages = [
+    {
+      events: [{ id: "event-1", event_type: "user:message", data: {}, timestamp: "1" }],
+      current_run_id: "run-a",
+      next_cursor: "cursor-2",
+      terminal_run_statuses: {},
+    },
+    {
+      events: [{ id: "event-2", event_type: "done", data: {}, timestamp: "2" }],
+      current_run_id: "run-a",
+      next_cursor: "cursor-3",
+      terminal_run_statuses: { "run-a": "succeeded" },
+    },
+    {
+      events: [{ id: "event-3", event_type: "artifact_card", data: {}, timestamp: "3" }],
+      current_run_id: "run-a",
+      next_cursor: null,
+      terminal_run_statuses: { "run-b": "cancelled" },
+    },
+  ];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), signal: init?.signal as AbortSignal | undefined });
+    const page = pages.shift();
+    if (!page) throw new Error("unexpected extra page");
+    return new Response(JSON.stringify(page), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const response = await sessionApi.getEvents("session/a", {
+      run_id: "run-a",
+      signal: controller.signal,
+    });
+    assert.deepEqual(calls.map(({ url }) => url), [
+      "/api/sessions/session%2Fa/events?run_id=run-a&compact_message_chunks=true",
+      "/api/sessions/session%2Fa/events?run_id=run-a&compact_message_chunks=true&cursor=cursor-2",
+      "/api/sessions/session%2Fa/events?run_id=run-a&compact_message_chunks=true&cursor=cursor-3",
+    ]);
+    assert.ok(calls.every(({ signal }) => signal === controller.signal));
+    assert.deepEqual(response.events.map((event) => event.id), ["event-1", "event-2", "event-3"]);
+    assert.equal(response.current_run_id, "run-a");
+    assert.equal(response.next_cursor, null);
+    assert.deepEqual(response.terminal_run_statuses, {
+      "run-a": "succeeded",
+      "run-b": "cancelled",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("event history uses one abort signal across pages and stops when it is aborted", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const signals: AbortSignal[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    const signal = init?.signal as AbortSignal;
+    signals.push(signal);
+    if (signals.length === 1) {
+      controller.abort();
+      return new Response(JSON.stringify({ events: [], next_cursor: "cursor-2" }), { status: 200 });
+    }
+    signal.throwIfAborted();
+    return new Response(JSON.stringify({ events: [], next_cursor: null }), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(sessionApi.getEvents("session-a", { signal: controller.signal }));
+    assert.equal(signals.length, 2);
+    assert.ok(signals.every((signal) => signal === controller.signal));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("event history rejects a repeated cursor instead of looping", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ events: [], next_cursor: "cursor-repeat" }), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(sessionApi.getEvents("session-a"), /session_events_cursor_loop/);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("authoritative recovery keeps ordinary sessions generic and rejects missing sessions", async () => {
   const originalFetch = globalThis.fetch;
   let status = 200;

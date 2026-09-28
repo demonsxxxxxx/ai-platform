@@ -497,33 +497,53 @@ export const sessionApi = {
   async getEvents(
     sessionId: string,
     options?: {
-      event_types?: string[];
       run_id?: string;
-      exclude_run_id?: string;
       compact_message_chunks?: boolean;
+      cursor?: string;
       signal?: AbortSignal;
     },
   ): Promise<SessionEventsResponse & { run_id?: string }> {
-    const searchParams = new URLSearchParams();
-    if (options?.event_types && options.event_types.length > 0) {
-      searchParams.set("event_types", options.event_types.join(","));
-    }
-    if (options?.run_id) {
-      searchParams.set("run_id", options.run_id);
-    }
-    if (options?.exclude_run_id) {
-      searchParams.set("exclude_run_id", options.exclude_run_id);
-    }
-    if (options?.compact_message_chunks !== false) {
-      searchParams.set("compact_message_chunks", "true");
-    }
+    const events: SessionEventsResponse["events"] = [];
+    const terminalRunStatuses: NonNullable<SessionEventsResponse["terminal_run_statuses"]> = {};
+    const seenCursors = new Set<string>();
+    let cursor = options?.cursor ?? null;
+    let firstPage: (SessionEventsResponse & { run_id?: string }) | null = null;
 
-    const url = `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/events${
-      searchParams.toString() ? `?${searchParams}` : ""
-    }`;
-    return authFetch<SessionEventsResponse & { run_id?: string }>(url, {
-      signal: options?.signal,
-    });
+    while (true) {
+      if (cursor !== null) {
+        if (seenCursors.has(cursor)) {
+          throw new Error("session_events_cursor_loop");
+        }
+        seenCursors.add(cursor);
+      }
+      const searchParams = new URLSearchParams();
+      if (options?.run_id) searchParams.set("run_id", options.run_id);
+      if (options?.compact_message_chunks !== false) {
+        searchParams.set("compact_message_chunks", "true");
+      }
+      if (cursor !== null) searchParams.set("cursor", cursor);
+      const query = searchParams.toString();
+      const url = `${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/events${query ? `?${query}` : ""}`;
+      const page = await authFetch<SessionEventsResponse & { run_id?: string }>(url, {
+        signal: options?.signal,
+      });
+      firstPage ??= page;
+      events.push(...(page.events || []));
+      Object.assign(terminalRunStatuses, page.terminal_run_statuses || {});
+
+      cursor = page.next_cursor ?? null;
+      if (cursor === null) {
+        return {
+          ...firstPage,
+          events,
+          next_cursor: null,
+          terminal_run_statuses: terminalRunStatuses,
+        };
+      }
+      if (seenCursors.has(cursor)) {
+        throw new Error("session_events_cursor_loop");
+      }
+    }
   },
 
   /**

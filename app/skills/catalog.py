@@ -597,9 +597,18 @@ def render_authorized_skill_catalog_prompt(snapshot: AuthorizedSkillCatalogSnaps
     )
 
 
-def _row_lifecycle_status(row: dict[str, Any]) -> str:
+def _row_lifecycle_status(
+    row: dict[str, Any],
+    *,
+    pinned_manifest: dict[str, Any] | None = None,
+) -> str:
     lifecycle_status = str(row.get("lifecycle_status") or row.get("status") or "disabled")
-    return lifecycle_status if is_user_runnable_status(row.get("version_status")) else "disabled"
+    version_status = (
+        pinned_manifest.get("lifecycle_status")
+        if isinstance(pinned_manifest, dict)
+        else row.get("version_status")
+    )
+    return lifecycle_status if is_user_runnable_status(version_status) else "disabled"
 
 
 def _manifest_for_row(
@@ -609,6 +618,7 @@ def _manifest_for_row(
     available_skill_ids: set[str],
 ) -> tuple[dict[str, Any] | None, str]:
     skill_id = str(row.get("skill_id") or "")
+    pinned_manifest = pinned_by_id.get(skill_id)
     raw_version = {
         "skill_id": skill_id,
         "version": str(row.get("version") or ""),
@@ -616,9 +626,13 @@ def _manifest_for_row(
         "description": str(row.get("description") or ""),
         "source": row.get("source") if isinstance(row.get("source"), dict) else {},
         "dependency_ids": row.get("dependency_ids") if isinstance(row.get("dependency_ids"), list) else [],
-        "status": normalize_skill_version_status(row.get("version_status")),
+        "status": normalize_skill_version_status(
+            pinned_manifest.get("lifecycle_status")
+            if pinned_manifest is not None
+            else row.get("version_status")
+        ),
     }
-    manifest_source = pinned_by_id.get(skill_id, raw_version)
+    manifest_source = pinned_manifest or raw_version
     raw_dependency_ids = manifest_source.get("dependency_ids")
     if isinstance(raw_dependency_ids, list) and any(
         isinstance(dependency_id, str) and dependency_id not in available_skill_ids
@@ -627,7 +641,11 @@ def _manifest_for_row(
         return None, UNAVAILABLE_DEPENDENCY
     policy_source = {
         **manifest_source,
-        "status": raw_version["status"],
+        "status": normalize_skill_version_status(
+            manifest_source.get("lifecycle_status")
+            if skill_id in pinned_by_id
+            else raw_version["status"]
+        ),
     }
     try:
         validate_skill_version_dependency_policy(
@@ -694,7 +712,11 @@ def _metadata_candidate_for_row(
             {
                 "skill_id": skill_id,
                 "dependency_ids": raw_dependency_ids,
-                "status": normalize_skill_version_status(row.get("version_status")),
+                "status": normalize_skill_version_status(
+                    manifest_source.get("lifecycle_status")
+                    if pinned_manifest is not None
+                    else row.get("version_status")
+                ),
             },
             available_skill_ids=available_skill_ids,
         )
@@ -713,7 +735,11 @@ def _metadata_candidate_for_row(
                 max_bytes=MAX_AUTHORIZED_SKILL_DESCRIPTION_BYTES,
             ),
             version=version,
-            status=normalize_skill_version_status(row.get("version_status")),
+            status=normalize_skill_version_status(
+                manifest_source.get("lifecycle_status")
+                if pinned_manifest is not None
+                else row.get("version_status")
+            ),
             availability=AVAILABLE,
             invocation_handle=f"Skill({skill_id})",
         ),
@@ -852,6 +878,45 @@ def _selected_materialization_candidates(
     return materialized
 
 
+def _fixed_skill_query_scope(
+    *,
+    binding: AuthorizedSkillCatalogBinding,
+    skill_set: list[dict[str, Any]] | None,
+    pinned_manifests: list[dict[str, Any]] | None,
+) -> list[str] | None:
+    """Return roots and dependencies from the already-validated Run pin set."""
+
+    if skill_set is None:
+        return None
+    roots = tuple(
+        dict.fromkeys(
+            str(item.get("skill_id") or "")
+            for item in skill_set
+            if isinstance(item, dict)
+            and str(item.get("skill_id") or "") != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+            and str(item.get("skill_id") or "") not in INTERNAL_DEPENDENCY_SKILL_IDS
+        )
+    )
+    if not roots and binding.selected_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
+        return []
+    if pinned_manifests is None:
+        return sorted(roots)
+    # Worker dispatch replay-authorizes this complete manifest set before catalog
+    # resolution, so its IDs are the immutable dependency closure for these roots.
+    manifest_ids = {
+        str(manifest.get("skill_id") or "")
+        for manifest in pinned_manifests
+        if isinstance(manifest, dict) and manifest.get("skill_id")
+    }
+    dependency_ids = {
+        dependency_id
+        for manifest in pinned_manifests
+        for dependency_id in manifest.get("dependency_ids", [])
+        if isinstance(dependency_id, str)
+    }
+    return sorted(set(roots) | manifest_ids | dependency_ids)
+
+
 async def resolve_authorized_skill_catalog(
     conn: Any,
     *,
@@ -866,17 +931,25 @@ async def resolve_authorized_skill_catalog(
 
     if not _valid_binding(binding):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_binding_invalid")
+    query_skill_ids = _fixed_skill_query_scope(
+        binding=binding,
+        skill_set=skill_set,
+        pinned_manifests=pinned_manifests,
+    )
     rows = await skills_catalog_postgres.list_public_skill_catalog(
         conn,
         tenant_id=binding.tenant_id,
-        include_disabled=False,
+        include_disabled=query_skill_ids is not None,
         rollout_key=binding.user_id,
+        skill_ids=query_skill_ids,
     )
     distributions = await identity_capability_distributions_postgres.list_capability_distribution_rows(
         conn,
         tenant_id=binding.tenant_id,
         capability_kind="skill",
         include_disabled=True,
+        capability_ids=query_skill_ids,
+        ensure_backfill=False,
     )
     distribution_by_id: dict[str, dict[str, Any]] = {}
     duplicate_distribution_ids: set[str] = set()
@@ -905,7 +978,21 @@ async def resolve_authorized_skill_catalog(
         if (
             SAFE_ID_PATTERN.fullmatch(skill_id) is None
             or skill_id in authorized_rows
-            or _row_lifecycle_status(row) != "active"
+            or _row_lifecycle_status(
+                row,
+                pinned_manifest=(
+                    next(
+                        (
+                            item
+                            for item in pinned_manifests or []
+                            if isinstance(item, dict)
+                            and str(item.get("skill_id") or "") == skill_id
+                        ),
+                        None,
+                    )
+                ),
+            )
+            != "active"
         ):
             continue
         decision = resolve_capability_access(

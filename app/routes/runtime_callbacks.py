@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -115,6 +116,32 @@ def _executor_callback_receipt(
     return receipt
 
 
+def _runtime_lease_identity_fence(lease: dict[str, Any]) -> tuple[str, ...]:
+    """Capture the immutable lease and provider identity across remote renewal."""
+
+    payload = lease.get("lease_payload_json")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
+    try:
+        payload_digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409, detail="sandbox_runtime_attempt_inactive"
+        ) from exc
+    return (
+        str(lease.get("id") or ""),
+        str(lease.get("attempt_id") or ""),
+        str(lease.get("provider") or "").strip().lower(),
+        str(lease.get("runtime_container_id") or ""),
+        str(lease.get("runtime_container_name") or ""),
+        str(lease.get("runtime_executor_url") or ""),
+        str(lease.get("runtime_workspace_container_path") or ""),
+        payload_digest,
+    )
+
+
 async def record_executor_callback(
     callback: ExecutorCallbackEvent,
     *,
@@ -140,101 +167,102 @@ async def record_executor_callback(
     committed_rows = ()
     authority = None
     callback_deduplicated = False
-    tenant_id = ""
-    lease_id = ""
-    async with transaction() as conn:
-        run_identity, lease = await _lock_current_runtime_attempt_then_run(
-            conn,
-            run_id=callback.run_id,
-            attempt_id=callback.attempt_id,
-            callback_token_id=callback.callback_token_id,
-            session_id=callback.session_id,
+    source_digest = hashlib.sha256(
+        json.dumps(
+            callback_for_events.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    event_batch: list[dict[str, Any]] = [
+        {
+            "event_type": "executor_callback",
+            "stage": "executor",
+            "message": f"Executor callback: {callback.status}",
+            "payload": {
+                "callback_status": callback.status,
+                "attempt_id": callback.attempt_id,
+                "batch_id": callback.batch_id,
+                "progress": callback.progress,
+                "source_digest": source_digest,
+                "visible_to_user": False,
+            },
+        }
+    ]
+    for item_index, event in enumerate(events):
+        thinking_items = callback_thinking_summary_to_v4(
+            event.model_dump(mode="python"),
+            callback_index=item_index,
+            first_batch_index=len(v4_items),
+            callback_batch_id=str(callback.batch_id or ""),
+            expected_event_type=CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+            sanitizer=sanitize_public_reasoning_text,
         )
-        tenant_id = str(run_identity["tenant_id"])
-        source_digest = hashlib.sha256(
-            json.dumps(
-                callback_for_events.model_dump(mode="json"),
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-        event_batch: list[dict[str, Any]] = [
-            {
-                "event_type": "executor_callback",
-                "stage": "executor",
-                "message": f"Executor callback: {callback.status}",
-                "payload": {
-                    "callback_status": callback.status,
-                    "attempt_id": callback.attempt_id,
-                    "batch_id": callback.batch_id,
-                    "progress": callback.progress,
-                    "source_digest": source_digest,
-                    "visible_to_user": False,
-                },
-            }
-        ]
-        lease_id = str(lease.get("id") or "") if isinstance(lease, dict) else ""
-        for item_index, event in enumerate(events):
-            thinking_items = callback_thinking_summary_to_v4(
-                event.model_dump(mode="python"),
-                callback_index=item_index,
-                first_batch_index=len(v4_items),
-                callback_batch_id=str(callback.batch_id or ""),
-                expected_event_type=CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
-                sanitizer=sanitize_public_reasoning_text,
-            )
-            if thinking_items:
-                v4_items.extend(thinking_items)
-                event_batch.append(
-                    {
-                        "event_type": "executor_private_event",
-                        "stage": "executor",
-                        "message": "Executor event projected to v4",
-                        "payload": {
-                            "source": "executor_callback",
-                            "source_event_type": event.type,
-                            "source_class": "public_v4",
-                            "visible_to_user": False,
-                        },
-                    }
-                )
-                continue
-            executor_event = agent_event_to_executor_event(event)
-            item = callback_item_to_v4(
-                executor_event,
-                callback_index=item_index,
-                batch_index=len(v4_items),
-                message_id=executor_event.get("message_id"),
-            )
-            if item is not None and item.source_run_id == callback.run_id:
-                v4_items.append(item)
-                event_batch.append(
-                    {
-                        "event_type": "executor_private_event",
-                        "stage": "executor",
-                        "message": "Executor event projected to v4",
-                        "payload": {
-                            "source": "executor_callback",
-                            "source_event_type": item.event_type,
-                            "source_class": "public_v4",
-                            "visible_to_user": False,
-                        },
-                    }
-                )
-                continue
+        if thinking_items:
+            v4_items.extend(thinking_items)
             event_batch.append(
                 {
                     "event_type": "executor_private_event",
                     "stage": "executor",
-                    "message": "Executor event withheld from public projection",
+                    "message": "Executor event projected to v4",
                     "payload": {
                         "source": "executor_callback",
                         "source_event_type": event.type,
-                        "source_class": "rejected",
+                        "source_class": "public_v4",
                         "visible_to_user": False,
                     },
                 }
             )
+            continue
+        executor_event = agent_event_to_executor_event(event)
+        item = callback_item_to_v4(
+            executor_event,
+            callback_index=item_index,
+            batch_index=len(v4_items),
+            message_id=executor_event.get("message_id"),
+        )
+        if item is not None and item.source_run_id == callback.run_id:
+            v4_items.append(item)
+            event_batch.append(
+                {
+                    "event_type": "executor_private_event",
+                    "stage": "executor",
+                    "message": "Executor event projected to v4",
+                    "payload": {
+                        "source": "executor_callback",
+                        "source_event_type": item.event_type,
+                        "source_class": "public_v4",
+                        "visible_to_user": False,
+                    },
+                }
+            )
+            continue
+        event_batch.append(
+            {
+                "event_type": "executor_private_event",
+                "stage": "executor",
+                "message": "Executor event withheld from public projection",
+                "payload": {
+                    "source": "executor_callback",
+                    "source_event_type": event.type,
+                    "source_class": "rejected",
+                    "visible_to_user": False,
+                },
+            }
+        )
+
+    async def persist_callback(
+        conn,
+        run_identity: dict[str, Any],
+        lease: dict[str, Any],
+        *,
+        provider_expires_at=None,
+    ) -> tuple[tuple[Any, ...], Any, bool]:
+        tenant_id = str(run_identity["tenant_id"])
+        lease_id = str(lease.get("id") or "")
+        committed_rows: tuple[Any, ...] = ()
+        authority = None
+        callback_deduplicated = False
         if v4_items:
             if not callback.batch_id:
                 raise HTTPException(
@@ -288,7 +316,6 @@ async def record_executor_callback(
                     run_id=callback.run_id,
                     **event,
                 )
-        lease_id = str(lease.get("id") or "") if isinstance(lease, dict) else ""
         if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
             if callback.terminal_result is None:
                 raise HTTPException(
@@ -348,16 +375,14 @@ async def record_executor_callback(
                 )
         elif lease_id:
             settings = get_settings()
-            heartbeat = (
-                await sandbox_lease_repository.record_sandbox_executor_heartbeat(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=callback.run_id,
-                    attempt_id=callback.attempt_id,
-                    lease_id=lease_id,
-                    executor_status="running",
-                    ttl_seconds=settings.sandbox_lease_ttl_seconds,
-                )
+            heartbeat = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
+                conn,
+                tenant_id=tenant_id,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+                lease_id=lease_id,
+                executor_status="running",
+                ttl_seconds=settings.sandbox_lease_ttl_seconds,
             )
             if heartbeat is None:
                 raise HTTPException(
@@ -370,25 +395,11 @@ async def record_executor_callback(
                 and str(heartbeat.get("provider") or "").strip().lower()
                 == "opensandbox"
             ):
-                try:
-                    persisted_lease = container_lease_from_persisted_row(heartbeat)
-                    if (
-                        persisted_lease is None
-                        or persisted_lease.provider != "opensandbox"
-                    ):
-                        raise ValueError("sandbox_runtime_renewal_lease_unavailable")
-                    provider = create_container_provider(persisted_lease.provider)
-                    provider_expires_at = await renew_opensandbox_lifetime(
-                        provider,
-                        persisted_lease,
-                        settings,
-                        ttl_seconds=settings.sandbox_lease_ttl_seconds,
-                    )
-                except Exception as exc:  # noqa: BLE001 - renewal is one disclosure-safe failure boundary.
+                if provider_expires_at is None:
                     raise HTTPException(
                         status_code=503,
                         detail="sandbox_runtime_renewal_failed",
-                    ) from exc
+                    )
                 receipt = await sandbox_lease_repository.record_opensandbox_renewal_receipt(
                     conn,
                     tenant_id=tenant_id,
@@ -398,7 +409,10 @@ async def record_executor_callback(
                     provider_expires_at=provider_expires_at,
                 )
                 if receipt is None:
-                    raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
+                    raise HTTPException(
+                        status_code=409,
+                        detail="sandbox_runtime_attempt_inactive",
+                    )
         await _require_current_runtime_attempt(
             conn,
             tenant_id=tenant_id,
@@ -406,6 +420,98 @@ async def record_executor_callback(
             attempt_id=callback.attempt_id,
             callback_token_id=callback.callback_token_id,
         )
+        return committed_rows, authority, callback_deduplicated
+
+    heartbeat_requested = (
+        callback.status not in _TERMINAL_EXECUTOR_CALLBACK_STATUSES
+        and callback.state_patch.get("executor_heartbeat") is True
+    )
+    renewal_fence: tuple[str, ...] | None = None
+    renewal_tenant_id = ""
+    renewal_row: dict[str, Any] | None = None
+    renewal_settings = None
+    if heartbeat_requested:
+        async with transaction() as conn:
+            run_identity, lease = await _lock_current_runtime_attempt_then_run(
+                conn,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+                callback_token_id=callback.callback_token_id,
+                session_id=callback.session_id,
+            )
+            if str(lease.get("provider") or "").strip().lower() == "opensandbox":
+                if lease.get("executor_terminal_json") is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="sandbox_runtime_attempt_inactive",
+                    )
+                renewal_fence = _runtime_lease_identity_fence(lease)
+                renewal_tenant_id = str(run_identity["tenant_id"])
+                renewal_row = dict(lease)
+                renewal_settings = get_settings()
+            else:
+                committed_rows, authority, callback_deduplicated = await persist_callback(
+                    conn, run_identity, lease
+                )
+
+    if renewal_fence is not None:
+        try:
+            persisted_lease = container_lease_from_persisted_row(renewal_row or {})
+            if persisted_lease is None or persisted_lease.provider != "opensandbox":
+                raise ValueError("sandbox_runtime_renewal_lease_unavailable")
+            provider = create_container_provider(persisted_lease.provider)
+            provider_expires_at = await renew_opensandbox_lifetime(
+                provider,
+                persisted_lease,
+                renewal_settings,
+                ttl_seconds=renewal_settings.sandbox_lease_ttl_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - keep renewal failures disclosure-safe.
+            raise HTTPException(
+                status_code=503,
+                detail="sandbox_runtime_renewal_failed",
+            ) from exc
+        async with transaction() as conn:
+            run_identity, lease = await _lock_current_runtime_attempt_then_run(
+                conn,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+                callback_token_id=callback.callback_token_id,
+                session_id=callback.session_id,
+            )
+            if lease.get("executor_terminal_json") is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="sandbox_runtime_attempt_inactive",
+                )
+            if (
+                str(run_identity.get("tenant_id") or "") != renewal_tenant_id
+                or _runtime_lease_identity_fence(lease) != renewal_fence
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="sandbox_runtime_owner_generation_stale",
+                )
+            committed_rows, authority, callback_deduplicated = await persist_callback(
+                conn,
+                run_identity,
+                lease,
+                provider_expires_at=provider_expires_at,
+            )
+    elif not heartbeat_requested:
+        async with transaction() as conn:
+            run_identity, lease = await _lock_current_runtime_attempt_then_run(
+                conn,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+                callback_token_id=callback.callback_token_id,
+                session_id=callback.session_id,
+            )
+            committed_rows, authority, callback_deduplicated = await persist_callback(
+                conn, run_identity, lease
+            )
     if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
         try:
             await publish_executor_terminal_signal()

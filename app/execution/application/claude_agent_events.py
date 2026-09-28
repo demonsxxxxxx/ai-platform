@@ -294,7 +294,7 @@ class ClaudeAgentEventCandidate:
                 raise ValueError("public event candidate contains private text")
         else:
             delta = self.payload.get("delta")
-            if text_sanitizer(delta) != delta:
+            if self.event_type == "thinking.delta" and text_sanitizer(delta) != delta:
                 raise ValueError("public event candidate contains private text")
             structured_payload = {
                 key: value for key, value in self.payload.items() if key != "delta"
@@ -607,27 +607,11 @@ class ClaudeSdkAgentEventAdapter:
             self._commit_candidate(identity, candidate)
         return candidate
 
-    def accept_answer_text(self, value: object, *, already_gated: bool = False) -> tuple[ClaudeAgentEventCandidate, ...]:
+    def accept_answer_text(self, value: object) -> tuple[ClaudeAgentEventCandidate, ...]:
+        """Build answer candidates for chunks already emitted by the run gate."""
+
         if self._sealed or not isinstance(value, str) or not value:
             return ()
-        if not already_gated:
-            try:
-                sanitized = self._sanitizer(value)
-                if (
-                    not isinstance(sanitized, str)
-                    or sanitized != value
-                    or _safe_text(
-                        value,
-                        maximum=len(value),
-                        sanitizer=self._sanitizer,
-                    )
-                    is None
-                ):
-                    self._omit_public_projection()
-                    return ()
-            except Exception:  # noqa: BLE001 - projection faults omit only this text.
-                self._omit_public_projection()
-                return ()
 
         next_delta_count = self._answer_delta_count
         next_text_length = self._answer_text_length
@@ -678,31 +662,23 @@ class ClaudeSdkAgentEventAdapter:
         value: object,
         *,
         commentary_identity: object,
-        already_gated: bool = False,
     ) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed or not isinstance(value, str) or not value:
             return ()
         identity = _safe_private_identity(commentary_identity)
         if identity is None:
             return ()
-        if not already_gated:
-            try:
-                sanitized = self._sanitizer(value)
-                if (
-                    not isinstance(sanitized, str)
-                    or sanitized != value
-                    or _safe_text(
-                        value,
-                        maximum=len(value),
-                        sanitizer=self._sanitizer,
-                    )
-                    is None
-                ):
-                    self._omit_public_projection()
-                    return ()
-            except Exception:  # noqa: BLE001 - projection faults omit only this text.
+        try:
+            if _safe_text(
+                value,
+                maximum=len(value),
+                sanitizer=self._sanitizer,
+            ) is None:
                 self._omit_public_projection()
                 return ()
+        except Exception:  # noqa: BLE001 - projection faults omit only this text.
+            self._omit_public_projection()
+            return ()
 
         summary_id = _opaque(
             "summary",

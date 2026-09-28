@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,7 @@ class OpenSandboxStartupStage(str, Enum):
 _SDK_ERROR_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}")
 _REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _ACTIVE_STATUSES = frozenset({"running"})
+_RENEWAL_REQUEST_MAX_SECONDS = 8.0
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,27 @@ def _renewal_timeout(settings: Any, *, ttl_seconds: int) -> timedelta:
     )
 
 
+def _renewal_request_deadline_seconds(settings: Any) -> float:
+    try:
+        timeout = float(
+            getattr(settings, "opensandbox_request_timeout_seconds", 30.0) or 30.0
+        )
+    except (TypeError, ValueError):
+        timeout = 30.0
+    if not math.isfinite(timeout) or timeout <= 0:
+        timeout = 30.0
+    return min(timeout, _RENEWAL_REQUEST_MAX_SECONDS)
+
+
+async def _call_renewal_remote_step(operation: Any, *args: Any) -> Any:
+    """Call sync SDK reads away from the event loop and await async SDK calls."""
+
+    if inspect.iscoroutinefunction(operation):
+        return await _maybe_await(operation(*args))
+    result = await asyncio.to_thread(operation, *args)
+    return await _maybe_await(result)
+
+
 async def renew_opensandbox_lifetime(
     provider: Any,
     lease: ContainerLease,
@@ -260,44 +283,54 @@ async def renew_opensandbox_lifetime(
 
     if lease.provider != "opensandbox" or getattr(provider, "provider_name", None) != "opensandbox":
         raise ContainerStartFailedError("OpenSandbox renewal provider mismatch")
-    sandbox = provider._sandboxes.get(lease.container_id)
-    if sandbox is None:
-        sandbox = await provider._connect(
-            lease.container_id,
-            provider._connection_config(settings),
-            skip_health_check=True,
-        )
-    get_info = getattr(sandbox, "get_info", None)
-    if not callable(get_info):
-        raise ContainerStartFailedError("OpenSandbox sandbox identity unavailable")
-    status = opensandbox_status_from_info(await _maybe_await(get_info()))
-    if (
-        status is None
-        or status.container_id != lease.container_id
-        or status.provider != lease.provider
-        or status.status not in _ACTIVE_STATUSES
-        or not opensandbox_renewal_identity_is_authorized(
-            status,
-            lease,
-            settings,
-            now=datetime.now(timezone.utc),
-        )
-    ):
-        raise ContainerStartFailedError("OpenSandbox sandbox identity mismatch")
-    renew = getattr(sandbox, "renew", None)
-    if not callable(renew):
-        raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal is unavailable")
-    receipt = await _maybe_await(renew(_renewal_timeout(settings, ttl_seconds=ttl_seconds)))
-    expires_at = getattr(receipt, "expires_at", None)
-    if (
-        not isinstance(expires_at, datetime)
-        or expires_at.tzinfo is None
-        or expires_at.utcoffset() is None
-        or expires_at <= datetime.now(timezone.utc)
-    ):
-        raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal receipt is invalid")
-    provider._sandboxes[lease.container_id] = sandbox
-    return expires_at
+    try:
+        async with asyncio.timeout(_renewal_request_deadline_seconds(settings)):
+            sandbox = provider._sandboxes.get(lease.container_id)
+            if sandbox is None:
+                sandbox = await _maybe_await(
+                    provider._connect(
+                        lease.container_id,
+                        provider._connection_config(settings),
+                        skip_health_check=True,
+                    )
+                )
+            get_info = getattr(sandbox, "get_info", None)
+            if not callable(get_info):
+                raise ContainerStartFailedError("OpenSandbox sandbox identity unavailable")
+            status = opensandbox_status_from_info(
+                await _call_renewal_remote_step(get_info)
+            )
+            if (
+                status is None
+                or status.container_id != lease.container_id
+                or status.provider != lease.provider
+                or status.status not in _ACTIVE_STATUSES
+                or not opensandbox_renewal_identity_is_authorized(
+                    status,
+                    lease,
+                    settings,
+                    now=datetime.now(timezone.utc),
+                )
+            ):
+                raise ContainerStartFailedError("OpenSandbox sandbox identity mismatch")
+            renew = getattr(sandbox, "renew", None)
+            if not callable(renew):
+                raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal is unavailable")
+            receipt = await _call_renewal_remote_step(
+                renew, _renewal_timeout(settings, ttl_seconds=ttl_seconds)
+            )
+            expires_at = getattr(receipt, "expires_at", None)
+            if (
+                not isinstance(expires_at, datetime)
+                or expires_at.tzinfo is None
+                or expires_at.utcoffset() is None
+                or expires_at <= datetime.now(timezone.utc)
+            ):
+                raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal receipt is invalid")
+            provider._sandboxes[lease.container_id] = sandbox
+            return expires_at
+    except TimeoutError:
+        raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal timed out") from None
 
 
 async def cleanup_started_sandbox(

@@ -273,9 +273,51 @@ async def list_run_events(
     run_id: str,
     after_sequence: int | None = None,
     limit: int | None = None,
+    through_sequence: int | None = None,
 ) -> list[dict[str, Any]]:
+    if through_sequence is not None and (
+        isinstance(through_sequence, bool)
+        or not isinstance(through_sequence, int)
+        or through_sequence < 0
+    ):
+        raise ValueError("run_event_page_through_sequence_invalid")
     cursor = RunCursor(run_id=run_id, sequence=0 if after_sequence is None else int(after_sequence))
     rows = await _ledger.read_event_rows(
         conn, tenant_id=tenant_id, cursor=cursor, limit=limit
     )
-    return [dict(row) for row in rows]
+    return [
+        dict(row)
+        for row in rows
+        if through_sequence is None
+        or int(row.get("sequence") or 0) <= through_sequence
+    ]
+
+
+async def list_run_event_sequence_bounds(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_ids: list[str],
+) -> dict[str, int]:
+    """Capture one fixed upper sequence per run for paged history reads."""
+    target_run_ids = list(dict.fromkeys(run_id for run_id in run_ids if run_id))
+    if not target_run_ids:
+        return {}
+    cursor = await conn.execute(
+        """
+        select requested.run_id, latest.sequence as max_sequence
+        from unnest(%s::text[]) as requested(run_id)
+        cross join lateral (
+          select sequence from run_events
+          where tenant_id = %s and run_id = requested.run_id
+          order by sequence desc limit 1
+        ) latest
+        """,
+        (target_run_ids, tenant_id),
+    )
+    rows = await cursor.fetchall()
+    return {
+        str(row["run_id"]): int(row["max_sequence"])
+        for row in rows
+        if row.get("run_id") is not None and row.get("max_sequence") is not None
+    }

@@ -103,8 +103,7 @@ return {1, rows}
 """
 
 
-async def append_application_v4_row(
-    conn: Any,
+def _prepare_application_v4_row(
     *,
     tenant_id: str,
     run_id: str,
@@ -122,8 +121,8 @@ async def append_application_v4_row(
     causation_event_id: str | None = None,
     source_event_id: str | None = None,
     source_run_id: str | None = None,
-) -> Mapping[str, object]:
-    """Append one idempotent application row without touching Redis."""
+) -> tuple[str, postgres.LedgerEvent]:
+    """Validate one application row and derive its durable identity."""
 
     if not isinstance(event_type, str) or event_type not in _APPLICATION_EVENT_TYPES:
         raise V4ProjectionError("v4_callback_item_invalid")
@@ -217,40 +216,125 @@ async def append_application_v4_row(
     event_id = event_id or _stable_event_id(
         tenant_id, run_id, attempt_id, batch_id, callback_index, batch_index
     )
-    existing_result = await conn.execute(
-        "select id, tenant_id, run_id, sequence, event_type, visible_to_user, payload_json, created_at from run_events where id = %s for update",
-        (event_id,),
-    )
-    existing = await existing_result.fetchone()
-    if existing is not None:
-        if not isinstance(existing, Mapping) or any(
+    return event_id, event
+
+
+async def _append_prepared_application_v4_rows(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    prepared: Sequence[tuple[str, postgres.LedgerEvent]],
+) -> tuple[Mapping[str, object], ...]:
+    """Resolve existing identities once, then insert all missing rows together."""
+
+    unique: dict[str, postgres.LedgerEvent] = {}
+    for event_id, event in prepared:
+        prior = unique.get(event_id)
+        if prior is not None and (
+            prior.event_type != event.event_type or prior.payload != event.payload
+        ):
+            raise V4ProjectionError("v4_callback_existing_row_conflict")
+        unique.setdefault(event_id, event)
+
+    existing_by_id: dict[str, Mapping[str, object]] = {}
+    if unique:
+        result = await conn.execute(
+            """
+            select id, tenant_id, run_id, sequence, event_type, visible_to_user,
+                   payload_json, created_at
+            from run_events
+            where id = any(%s::text[])
+            for update
+            """,
+            (list(unique),),
+        )
+        existing_by_id = {
+            str(row["id"]): row for row in await result.fetchall()
+        }
+    for event_id, existing in existing_by_id.items():
+        event = unique[event_id]
+        if any(
             (
                 existing.get("tenant_id") != tenant_id,
                 existing.get("run_id") != run_id,
-                existing.get("event_type") != event_type,
+                existing.get("event_type") != event.event_type,
                 existing.get("visible_to_user") is not True,
-                existing.get("payload_json") != expected_payload,
+                existing.get("payload_json") != dict(event.payload),
             )
         ):
             raise V4ProjectionError("v4_callback_existing_row_conflict")
-        return existing
-    receipt = await postgres.append_event(
-        conn,
+
+    missing_ids = tuple(event_id for event_id in unique if event_id not in existing_by_id)
+    if missing_ids:
+        receipts = await postgres.append_events(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            events=tuple(unique[event_id] for event_id in missing_ids),
+            event_ids=missing_ids,
+        )
+        for event_id, event, receipt in zip(
+            missing_ids, (unique[item] for item in missing_ids), receipts, strict=True
+        ):
+            existing_by_id[event_id] = {
+                "id": receipt.event_id,
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+                "sequence": receipt.cursor.sequence,
+                "event_type": event.event_type,
+                "visible_to_user": True,
+                "payload_json": dict(event.payload),
+                "created_at": receipt.created_at,
+            }
+    return tuple(existing_by_id[event_id] for event_id, _event in prepared)
+
+
+async def append_application_v4_row(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    batch_id: str,
+    callback_index: int,
+    batch_index: int,
+    event_type: str,
+    payload: Mapping[str, object],
+    authority: StreamAuthority,
+    execution_lease_id: str | None,
+    event_id: str | None = None,
+    message_id: str | None = None,
+    trace_ref: str | None = None,
+    causation_event_id: str | None = None,
+    source_event_id: str | None = None,
+    source_run_id: str | None = None,
+) -> Mapping[str, object]:
+    """Append one idempotent application row without touching Redis."""
+
+    prepared = _prepare_application_v4_row(
         tenant_id=tenant_id,
         run_id=run_id,
-        event=event,
+        attempt_id=attempt_id,
+        batch_id=batch_id,
+        callback_index=callback_index,
+        batch_index=batch_index,
+        event_type=event_type,
+        payload=payload,
+        authority=authority,
+        execution_lease_id=execution_lease_id,
         event_id=event_id,
+        message_id=message_id,
+        trace_ref=trace_ref,
+        causation_event_id=causation_event_id,
+        source_event_id=source_event_id,
+        source_run_id=source_run_id,
     )
-    return {
-        "id": receipt.event_id,
-        "tenant_id": tenant_id,
-        "run_id": run_id,
-        "sequence": receipt.cursor.sequence,
-        "event_type": event_type,
-        "visible_to_user": True,
-        "payload_json": dict(event.payload),
-        "created_at": receipt.created_at,
-    }
+    return (
+        await _append_prepared_application_v4_rows(
+            conn, tenant_id=tenant_id, run_id=run_id, prepared=(prepared,)
+        )
+    )[0]
 
 
 async def append_run_v4_row(
@@ -399,13 +483,12 @@ async def append_callback_v4_rows(
 ) -> tuple[Mapping[str, object], ...]:
     """Append callback-derived v4 rows in the callback receipt transaction."""
 
-    rows: list[Mapping[str, object]] = []
+    prepared: list[tuple[str, postgres.LedgerEvent]] = []
     for item in items:
         if item.source_run_id is not None and item.source_run_id != run_id:
             raise V4ProjectionError("v4_callback_source_run_mismatch")
-        rows.append(
-            await append_application_v4_row(
-                conn,
+        prepared.append(
+            _prepare_application_v4_row(
                 tenant_id=tenant_id,
                 run_id=run_id,
                 attempt_id=attempt_id,
@@ -423,7 +506,9 @@ async def append_callback_v4_rows(
                 source_run_id=item.source_run_id,
             )
         )
-    return tuple(rows)
+    return await _append_prepared_application_v4_rows(
+        conn, tenant_id=tenant_id, run_id=run_id, prepared=prepared
+    )
 
 
 async def load_answer_by_receipt(
@@ -866,7 +951,37 @@ class V4RedisStreamBridge:
             exact = await self._bridge._publish_client.xrange(key, min=cursor.redis_id, max=cursor.redis_id, count=1)
         except Exception as exc:
             raise StreamTransportUnavailable("v4_stream_cursor_lookup_unavailable") from exc
-        return ResumeDecision(cursor.redis_id if exact else None, None if exact else StreamGap("stream_continuity_unproven", cursor.event_id, cursor.stream_incarnation, current_stream_incarnation, first.cursor.event_id, last.cursor.event_id))
+        if not exact:
+            return ResumeDecision(
+                None,
+                StreamGap(
+                    "stream_continuity_unproven",
+                    cursor.event_id,
+                    cursor.stream_incarnation,
+                    current_stream_incarnation,
+                    first.cursor.event_id,
+                    last.cursor.event_id,
+                ),
+            )
+        entry = self._decode(
+            exact[0],
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=current_stream_incarnation,
+        )
+        event_type = entry.envelope["event_type"]
+        if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
+            terminal_event_id = _nonempty(entry.envelope["event_id"], "event_id")
+            return ResumeDecision(cursor.redis_id, None, terminal_event_id, False)
+        if event_type == "stream.end":
+            payload = entry.envelope.get("payload")
+            terminal_event_id = _nonempty(
+                payload.get("terminal_event_id") if isinstance(payload, Mapping) else None,
+                "terminal_event_id",
+            )
+            return ResumeDecision(cursor.redis_id, None, terminal_event_id, True)
+        return ResumeDecision(cursor.redis_id, None)
 
     async def replay_page(
         self,

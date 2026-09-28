@@ -152,6 +152,9 @@ def _callback_conn():
         async def fetchone(self):
             return self.row
 
+        async def fetchall(self):
+            return self.row if isinstance(self.row, list) else ([self.row] if self.row else [])
+
     class Connection:
         def __init__(self):
             self.rows = {}
@@ -161,7 +164,8 @@ def _callback_conn():
             self.statements.append((statement, params))
             normalized = " ".join(statement.lower().split())
             event_id = params[-1]
-            row = self.rows.get(event_id)
+            row = ([self.rows[key] for key in event_id if key in self.rows]
+                   if isinstance(event_id, list) else self.rows.get(event_id))
             if normalized.startswith("select id"):
                 return Cursor(row)
             raise AssertionError(statement)
@@ -183,7 +187,13 @@ async def test_callback_rows_do_not_enqueue_or_notify_a_publisher(monkeypatch):
     async def append_event(conn, *, tenant_id, run_id, event, event_id):
         return EventReceipt(event_id, RunCursor(run_id, 9), "2026-01-01T00:00:00Z")
 
-    monkeypatch.setattr(v4.postgres, "append_event", append_event)
+    async def append_events(conn, *, tenant_id, run_id, events, event_ids):
+        return tuple([
+            await append_event(conn, tenant_id=tenant_id, run_id=run_id, event=event, event_id=event_id)
+            for event, event_id in zip(events, event_ids, strict=True)
+        ])
+
+    monkeypatch.setattr(v4.postgres, "append_events", append_events)
     rows = await v4.append_callback_v4_rows(
         conn, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a",
         batch_id="batch-direct", items=(item,), authority=authority,
@@ -214,7 +224,13 @@ async def test_callback_v4_rows_are_atomic_and_idempotent_per_batch_item(monkeyp
         }
         return EventReceipt(event_id, RunCursor(run_id, 9), "2026-01-01T00:00:00Z")
 
-    monkeypatch.setattr(v4.postgres, "append_event", append_event)
+    async def append_events(conn, *, tenant_id, run_id, events, event_ids):
+        return tuple([
+            await append_event(conn, tenant_id=tenant_id, run_id=run_id, event=event, event_id=event_id)
+            for event, event_id in zip(events, event_ids, strict=True)
+        ])
+
+    monkeypatch.setattr(v4.postgres, "append_events", append_events)
     authority = _authority()
     item = v4.V4CallbackItem(
         callback_index=0,
@@ -306,7 +322,13 @@ async def test_callback_v4_existing_row_rejects_each_immutable_callback_fact(
         }
         return EventReceipt(event_id, RunCursor(run_id, 9), "2026-01-01T00:00:00Z")
 
-    monkeypatch.setattr(v4.postgres, "append_event", append_event)
+    async def append_events(conn, *, tenant_id, run_id, events, event_ids):
+        return tuple([
+            await append_event(conn, tenant_id=tenant_id, run_id=run_id, event=event, event_id=event_id)
+            for event, event_id in zip(events, event_ids, strict=True)
+        ])
+
+    monkeypatch.setattr(v4.postgres, "append_events", append_events)
     authority = _authority()
     item = v4.V4CallbackItem(
         callback_index=0,
@@ -831,7 +853,13 @@ async def test_run_terminal_fact_needs_no_execution_lease_or_publication_state(
         return EventReceipt(event_id, RunCursor(run_id, 21), "2026-01-01T00:00:00Z")
 
     monkeypatch.setattr(v4, "get_stream_authority", authority)
-    monkeypatch.setattr(v4.postgres, "append_event", append_event)
+    async def append_events(conn, *, tenant_id, run_id, events, event_ids):
+        return tuple([
+            await append_event(conn, tenant_id=tenant_id, run_id=run_id, event=event, event_id=event_id)
+            for event, event_id in zip(events, event_ids, strict=True)
+        ])
+
+    monkeypatch.setattr(v4.postgres, "append_events", append_events)
     terminal_id = f"evt4_run_{'a' * 64}"
     row = await v4.append_run_terminal_v4_row(
         conn,

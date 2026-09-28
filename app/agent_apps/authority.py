@@ -232,7 +232,15 @@ async def _authorize_current_profile_skill(
     principal_roles: list[str] | None,
     is_admin: bool,
     permissions: list[str] | None,
+    pinned_version: str | None = None,
 ) -> dict[str, Any]:
+    if pinned_version is not None:
+        skill = await runs_capability_admission_postgres.authorize_skill_access(
+            conn, tenant_id=tenant_id, agent_id=agent_id, skill_id=skill_id,
+            normalized_input={}, principal_department_id=principal_department_id,
+            principal_roles=principal_roles, is_admin=is_admin, permissions=permissions,
+        )
+        return {**skill, "skill_version": pinned_version, "skill_content_hash": pinned_version}
     skill = await skills_resolution_postgres.resolve_selected_skill(
         conn,
         tenant_id=tenant_id,
@@ -510,6 +518,7 @@ class AgentProfileAuthority:
         principal: AuthPrincipal,
         agent_id: str,
         definition: AgentProfileDraftRequest,
+        skill_pins: dict[str, str] | None = None,
     ) -> tuple[dict[str, Any], ...]:
         """Revalidate current Skill and MCP authorization for a definition."""
 
@@ -536,6 +545,7 @@ class AgentProfileAuthority:
                         principal_roles=principal.roles,
                         is_admin=is_ai_admin(principal),
                         permissions=principal.permissions,
+                        pinned_version=(skill_pins.get(selected_skill["skill_id"]) if skill_pins else None),
                     )
                     for selected_skill in definition.skill_set
                 ]
@@ -556,6 +566,64 @@ class AgentProfileAuthority:
         except platform_errors.RepositoryAuthorizationError as exc:
             raise HTTPException(status_code=403, detail="agent_profile_capability_not_available") from exc
         return skills
+
+    async def _validate_pinned_definition(
+        self,
+        conn,
+        *,
+        principal: AuthPrincipal,
+        agent_id: str,
+        definition: AgentProfileDraftRequest,
+        pinned_skill_set: list[dict[str, Any]],
+        pinned_manifests: list[dict[str, Any]],
+        pinned_executor_type: str,
+        execution_kind: str,
+    ) -> tuple[dict[str, Any], ...]:
+        """Reauthorize the exact Skill pins admitted to this Run."""
+
+        expected_skill_ids = [str(item["skill_id"]) for item in definition.skill_set]
+        if not isinstance(pinned_skill_set, list) or not pinned_skill_set:
+            raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid")
+        try:
+            run_skill_set = [normalize_agent_skill_reference(item) for item in pinned_skill_set]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid") from exc
+        if (
+            [item["skill_id"] for item in run_skill_set] != expected_skill_ids
+            or any(not item.get("expected_version") for item in run_skill_set)
+            or not isinstance(pinned_manifests, list)
+            or not pinned_executor_type
+        ):
+            raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid")
+
+        if execution_kind == "harness_chat":
+            if (
+                pinned_manifests
+                or len(run_skill_set) != 1
+                or run_skill_set[0]["skill_id"] != "general-chat"
+            ):
+                raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid")
+        elif execution_kind != "skill" or not pinned_manifests:
+            raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid")
+
+        # Current capability ACLs are resolved from the published Profile. The worker
+        # subsequently validates the materialized Run pins with the replay authority.
+        current_skills = await self._validate_definition(
+            conn,
+            principal=principal,
+            agent_id=agent_id,
+            definition=definition,
+            skill_pins={item["skill_id"]: item["expected_version"] for item in run_skill_set},
+        )
+        return tuple(
+            {
+                **skill,
+                "executor_type": pinned_executor_type,
+                "skill_version": run_skill_set[index]["expected_version"],
+                "skill_content_hash": run_skill_set[index]["expected_version"],
+            }
+            for index, skill in enumerate(current_skills)
+        )
 
     async def save_draft(
         self,
@@ -1090,6 +1158,10 @@ class AgentProfileAuthority:
         agent_id: str,
         revision: int,
         content_hash: str,
+        pinned_skill_set: list[dict[str, Any]] | None = None,
+        pinned_manifests: list[dict[str, Any]] | None = None,
+        pinned_executor_type: str | None = None,
+        execution_kind: str | None = None,
         submitted_request: ChatStreamRequest | None = None,
         query_agent_id: str | None = None,
     ) -> AgentProfileAdmission:
@@ -1117,6 +1189,10 @@ class AgentProfileAuthority:
             principal=principal,
             row=row,
             acl_row=current_row,
+            pinned_skill_set=pinned_skill_set,
+            pinned_manifests=pinned_manifests,
+            pinned_executor_type=pinned_executor_type,
+            execution_kind=execution_kind,
         )
         if submitted_request is not None:
             self.reject_profile_selector_conflicts(
@@ -1135,9 +1211,20 @@ class AgentProfileAuthority:
         agent_id: str,
         revision: int,
         content_hash: str,
+        pinned_skill_set: list[dict[str, Any]] | None = None,
+        pinned_manifests: list[dict[str, Any]] | None = None,
+        pinned_executor_type: str | None = None,
+        execution_kind: str | None = None,
     ) -> AgentProfileAdmission | None:
         """Reauthorize a pinned Profile for dispatch without leaking HTTP errors."""
 
+        if (
+            pinned_skill_set is None
+            or pinned_manifests is None
+            or not pinned_executor_type
+            or not execution_kind
+        ):
+            return None
         try:
             row = await agent_profile_repository.get_bound_published_agent_profile(
                 conn,
@@ -1161,6 +1248,10 @@ class AgentProfileAuthority:
                 principal=principal,
                 row=row,
                 acl_row=current_row,
+                pinned_skill_set=pinned_skill_set,
+                pinned_manifests=pinned_manifests,
+                pinned_executor_type=pinned_executor_type,
+                execution_kind=execution_kind,
             )
         except (HTTPException, KeyError, TypeError, ValueError):
             return None
@@ -1172,6 +1263,10 @@ class AgentProfileAuthority:
         principal: AuthPrincipal,
         row: dict[str, Any],
         acl_row: dict[str, Any] | None = None,
+        pinned_skill_set: list[dict[str, Any]] | None = None,
+        pinned_manifests: list[dict[str, Any]] | None = None,
+        pinned_executor_type: str | None = None,
+        execution_kind: str | None = None,
     ) -> AgentProfileAdmission:
         """Reauthorize current capabilities and build private/public admission views."""
 
@@ -1181,12 +1276,32 @@ class AgentProfileAuthority:
             self._require_revision_integrity(current_acl_row)
         if not profile_acl_allows(current_acl_row, principal=principal):
             raise HTTPException(status_code=403, detail="agent_profile_not_authorized")
-        validated_skills = await self._validate_definition(
-            conn,
-            principal=principal,
-            agent_id=str(row["agent_id"]),
-            definition=_draft_from_row(row),
-        )
+        definition = _draft_from_row(row)
+        if pinned_skill_set is None and pinned_manifests is None:
+            validated_skills = await self._validate_definition(
+                conn,
+                principal=principal,
+                agent_id=str(row["agent_id"]),
+                definition=definition,
+            )
+        elif (
+            pinned_skill_set is None
+            or pinned_manifests is None
+            or not pinned_executor_type
+            or not execution_kind
+        ):
+            raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid")
+        else:
+            validated_skills = await self._validate_pinned_definition(
+                conn,
+                principal=principal,
+                agent_id=str(row["agent_id"]),
+                definition=definition,
+                pinned_skill_set=pinned_skill_set,
+                pinned_manifests=pinned_manifests,
+                pinned_executor_type=pinned_executor_type,
+                execution_kind=execution_kind,
+            )
         skills = (
             validated_skills
             if isinstance(validated_skills, tuple)
@@ -1258,14 +1373,30 @@ class AgentProfileAuthority:
         revision, content_hash = runs_replay_postgres.admitted_agent_profile_pins_for_copy(run, snapshot)
         if revision is None:
             return
-        admission = await self.resolve_bound_for_submission(
-            conn,
-            principal=principal,
-            agent_id=str(run.get("agent_id") or ""),
-            revision=revision,
-            content_hash=str(content_hash or ""),
-        )
         profile_snapshot = snapshot.get("agent_profile")
+        pinned_skill_set = (
+            profile_snapshot.get("skill_set") if isinstance(profile_snapshot, dict) else None
+        )
+        skill_manifests = None
+        if isinstance(pinned_skill_set, list):
+            try:
+                skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
+                    conn, tenant_id=principal.tenant_id, run_id=run_id,
+                    skill_manifest_refs=snapshot.get("skill_manifests", []),
+                )
+            except platform_errors.RepositoryConflictError as exc:
+                raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
+        execution_kind = str(snapshot.get("execution_kind") or run.get("execution_kind") or (
+            "skill" if skill_manifests else "harness_chat"
+        ))
+        admission = await self.resolve_bound_for_submission(
+            conn, principal=principal, agent_id=str(run.get("agent_id") or ""),
+            revision=revision, content_hash=str(content_hash or ""),
+            pinned_skill_set=pinned_skill_set,
+            pinned_manifests=skill_manifests,
+            pinned_executor_type=str(snapshot.get("executor_type") or ""),
+            execution_kind=execution_kind,
+        )
         execution_input = snapshot.get("input") if isinstance(snapshot.get("input"), dict) else {}
         try:
             execution_mcp_tool_ids = tuple(runs_capability_admission_postgres.extract_run_mcp_tool_ids(execution_input))
@@ -1282,23 +1413,25 @@ class AgentProfileAuthority:
             or "required_skill_id" in profile_snapshot
             or "required_skill_version" in profile_snapshot
         )
+        skill_identity_matches = str(run.get("skill_id") or "") == authority_skill_id
         governed_mcp_tool_ids: tuple[str, ...] | None = None
-        if governed_profile_snapshot:
-            try:
-                skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=run_id,
-                    skill_manifest_refs=(
-                        snapshot["skill_manifests"]
-                        if "skill_manifests" in snapshot
-                        else []
-                    ),
-                )
-            except platform_errors.RepositoryConflictError as exc:
-                raise platform_errors.RepositoryConflictError(
-                    "agent_profile_snapshot_invalid"
-                ) from exc
+        if governed_profile_snapshot and execution_kind != "harness_chat":
+            if skill_manifests is None:
+                try:
+                    skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        run_id=run_id,
+                        skill_manifest_refs=(
+                            snapshot["skill_manifests"]
+                            if "skill_manifests" in snapshot
+                            else []
+                        ),
+                    )
+                except platform_errors.RepositoryConflictError as exc:
+                    raise platform_errors.RepositoryConflictError(
+                        "agent_profile_snapshot_invalid"
+                    ) from exc
             if isinstance(profile_snapshot, dict) and (
                 "required_skill_id" in profile_snapshot
                 or "required_skill_version" in profile_snapshot
@@ -1382,13 +1515,20 @@ class AgentProfileAuthority:
                 )
                 and governed_mcp_tool_ids == admission.mcp_tool_ids
             )
+        elif execution_kind == "harness_chat":
+            skill_identity_matches = run.get("skill_id") is None
+            skill_version_matches = (
+                snapshot.get("skill_version") is None
+                and not snapshot.get("skill_manifests")
+                and not snapshot.get("release_decision")
+            )
         else:
             skill_version_matches = snapshot_skill_version == str(
                 admission.skill.get("skill_version") or ""
             )
         if (
             profile_snapshot != expected_profile_snapshot
-            or str(run.get("skill_id") or "") != str(admission.skill.get("skill_id") or "")
+            or not skill_identity_matches
             or not skill_version_matches
             or str(snapshot.get("executor_type") or "")
             != str(admission.skill.get("executor_type") or "")
