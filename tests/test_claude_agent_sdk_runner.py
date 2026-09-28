@@ -244,7 +244,7 @@ def _client_sdk(module, captured):
             assert session_id
             self.responses = module.query(prompt=prompt, options=self.options)
 
-        async def receive_response(self):
+        async def receive_messages(self):
             async for message in self.responses:
                 yield message
 
@@ -7336,7 +7336,7 @@ async def test_native_client_delegates_compaction_to_cli_without_session_open_qu
             captured["query_session_id"] = session_id
             self.responses = sdk.query(prompt=prompt, options=self.options)
 
-        async def receive_response(self):
+        async def receive_messages(self):
             async for message in self.responses:
                 yield message
 

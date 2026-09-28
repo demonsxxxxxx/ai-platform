@@ -3928,7 +3928,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
             await release_runner.wait()
             try:
                 late_event_attempted.set()
-                await emit_event(AgentEvent(type="assistant_delta", message="late", payload={"delta": "late"}))
+                assert not await emit_event(AgentEvent(type="assistant_delta", message="late", payload={"delta": "late"}))
                 raise RuntimeError("deterministic runner cleanup failure")
             finally:
                 runner_finished.set()
@@ -3975,7 +3975,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
         await asyncio.sleep(0)
 
         assert late_event_attempted.is_set()
-        assert [callback["status"] for callback in callbacks] == ["running", "running"]
+        assert [callback["status"] for callback in callbacks] == ["running"]
         assert all(
             callback.get("state_patch", {}).get("stage") != "executor_finished"
             for callback in callbacks
@@ -3986,18 +3986,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
             for event in callback.get("events", [])
             if event.get("message") == "late"
         ]
-        assert late_events == [
-            {
-                "type": "assistant_delta",
-                "message": "late",
-                "payload": {"delta": "late"},
-                "admin_only": False,
-                "event_id": None,
-                "run_id": None,
-                "message_id": None,
-                "causation_event_id": None,
-            }
-        ]
+        assert late_events == []
         assert loop_exception_contexts == []
         assert [task for task in asyncio.all_tasks() - initial_tasks if not task.done()] == []
     finally:

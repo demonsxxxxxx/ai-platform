@@ -109,7 +109,8 @@ flowchart LR
 `message.completed` 关闭公开正文，不代表工具或 Run 成功。Worker 继续校验当前 Attempt 的 `AssistantAnswerReceipt`、工具证据和 terminal fence 后才能持久化成功结果。
 answer receipt 覆盖本次 v4 回复中实际提交的完整 Assistant 正文，包括公开过程说明和最终回答。
 正文时间线保存片段，只在需要完整文本时合并，避免每次 delta 都复制累计正文。
-SDK 的 Result 与 Run 终态仍是不同边界：原生 SDK 会先刷新 SessionStore，再等待 CLI 关闭。平台保留这段资源回收等待；它不能由假终态替代。
+SDK 的 Result 与 Run 终态仍是不同边界：有在途的本地 Agent/Workflow 时继续消费，直到后续 Result。关闭阶段先完成 SessionStore 的最终刷新、停止消息读取并等待工具控制回调结束，再校验最终回执和记录序号、交付业务结果。最后一次 mirror 写入失败仍然阻止成功。
+CLI 进程退出、临时会话目录和 MCP 连接回收由原生命周期任务继续完成，不占用业务完成等待或执行期限；执行器持有清理任务并在关闭时收敛，资源清理另有 30 秒期限。关闭前后的 MCP 生命周期始终由同一任务持有，清理错误只记录诊断，不能产生第二个相反的 Run 结果。此边界适配固定的 SDK 0.2.130，使用已安装 SDK 的 Query/Client 测试验证顺序。
 
 ## 4. 前端展示
 

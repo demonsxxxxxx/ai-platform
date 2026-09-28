@@ -16,7 +16,7 @@ def native_client_factory(message_source):
             assert session_id
             self._messages = message_source(prompt=prompt, options=self._options)
 
-        async def receive_response(self):
+        async def receive_messages(self):
             async for message in self._messages:
                 yield message
 

@@ -32,10 +32,14 @@ def _wait_for_status(client: TestClient, expected: str) -> dict[str, object]:
             "/v2/tasks/run-a/qat-attempt-a",
             headers=auth_headers(),
         )
-        if response.status_code == 200 and response.json().get("status") == expected:
+        if (
+            response.status_code == 200
+            and response.json().get("status") == expected
+            and "terminal_result" in response.json()
+        ):
             return response.json()
         time.sleep(0.01)
-    raise AssertionError(f"executor task did not reach {expected}")
+    raise AssertionError(f"executor task did not reach {expected}: {response.json()}")
 
 
 def _wait_for_terminal_callback(
@@ -143,7 +147,7 @@ def test_v2_status_retains_completed_result_when_terminal_callback_is_unavailabl
     assert terminal_result["message"] == "done"
 
 
-def test_v2_delivery_exhaustion_still_delivers_failed_terminal_callback(tmp_path):
+def test_v2_delivery_exhaustion_preserves_failure_without_uncertain_terminal(tmp_path):
     callbacks: list[dict[str, object]] = []
     assistant_attempts: list[dict[str, object]] = []
 
@@ -181,23 +185,22 @@ def test_v2_delivery_exhaustion_still_delivers_failed_terminal_callback(tmp_path
     with TestClient(app) as client:
         response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
         assert response.status_code == 202
-        status_payload = _wait_for_status(client, "failed")
+        status_payload = _wait_for_status(client, "callback_failed")
+        assert status_payload["error_message"] == "executor_callback_delivery_uncertain"
         assert status_payload["terminal_result"]["error_code"] == "stream_delivery_exhausted"
-
-        terminal = _wait_for_terminal_callback(callbacks, "failed")
-        assert len(terminal) == 1
-        assert terminal[0]["terminal_result"]["error_code"] == "stream_delivery_exhausted"
+        assert not [item for item in callbacks if item.get("status") == "failed"]
 
     assert len(assistant_attempts) == 2
     assert assistant_attempts[0] == assistant_attempts[1]
 
 
-def test_v2_cancel_during_callback_retry_cancels_batch_and_blocks_next(tmp_path, caplog):
+def test_v2_cancel_during_callback_retry_cancels_batch_and_blocks_next(tmp_path, caplog, monkeypatch):
     callbacks: list[dict[str, object]] = []
     assistant_attempts: list[dict[str, object]] = []
     post_cancel_results: list[bool] = []
     retry_started = threading.Event()
     caplog.set_level("INFO", logger=executor_app.__name__)
+    monkeypatch.setattr(executor_app, "_EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS", 0.05)
 
     async def executor_runner(_request, _workspace_root, emit_event):
         try:
@@ -254,13 +257,14 @@ def test_v2_cancel_during_callback_retry_cancels_batch_and_blocks_next(tmp_path,
             headers=auth_headers(),
         )
         assert cancelled.status_code == 202
-        assert _wait_for_status(client, "cancelled")["terminal_result"]["status"] == "cancelled"
-        assert len(_wait_for_terminal_callback(callbacks, "cancelled")) == 1
+        status_payload = _wait_for_status(client, "callback_failed")
+        assert status_payload["error_message"] == "executor_shutdown_delivery_uncertain"
+        assert status_payload["terminal_result"]["status"] == "cancelled"
 
     cancelled_terminal_callbacks = [
         payload for payload in callbacks if payload.get("status") == "cancelled"
     ]
-    assert len(cancelled_terminal_callbacks) == 1
+    assert cancelled_terminal_callbacks == []
     assert len(assistant_attempts) == 1
     assert assistant_attempts[0]["events"][0]["payload"]["delta"] == "first"
     assert post_cancel_results == [False]

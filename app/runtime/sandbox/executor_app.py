@@ -1886,6 +1886,7 @@ async def _default_executor_runner(
     emit_event: ExecutorEventEmitter,
     *,
     callback_sender: CallbackSender = _default_callback_sender,
+    sdk_cleanup_tasks: set[asyncio.Task[Any]] | None = None,
 ) -> dict[str, Any]:
     callback_batch_ids = _CallbackBatchIdFactory()
     try:
@@ -2316,6 +2317,7 @@ async def _default_executor_runner(
             provider_session_id=request.sdk_session_id,
         )
         sdk_kwargs = {
+            "cleanup_tasks": sdk_cleanup_tasks,
             "prompt": request.prompt,
             "cwd": workspace_root,
             "skill_id": skill_ids[0] if skill_ids else None,
@@ -2525,6 +2527,7 @@ def create_executor_app(
     }
     uncertain_delivery_tasks: set[asyncio.Task[Any]] = set()
     callback_delivery_tasks: set[asyncio.Task[Any]] = set()
+    sdk_cleanup_tasks: set[asyncio.Task[Any]] = set()
 
     def mark_delivery_uncertain(
         error_code: str,
@@ -2696,6 +2699,14 @@ def create_executor_app(
                 else:
                     close_task.cancel()
                     _observe_detached_task(close_task)
+            # SDK protocol callbacks are already quiet before terminal delivery.
+            # Keep ownership of process/MCP teardown until application shutdown.
+            if sdk_cleanup_tasks:
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                _, pending = await asyncio.wait(set(sdk_cleanup_tasks), timeout=remaining)
+                for cleanup_task in pending:
+                    cleanup_task.cancel()
+                    _observe_detached_task(cleanup_task)
 
     app = FastAPI(
         title="AI Platform Sandbox Executor",
@@ -2722,6 +2733,7 @@ def create_executor_app(
             runtime_workspace_root,
             emit_event,
             callback_sender=resolved_callback_sender,
+            sdk_cleanup_tasks=sdk_cleanup_tasks,
         )
 
     resolved_executor_runner = executor_runner or default_executor_runner
@@ -3240,7 +3252,7 @@ def create_executor_app(
                                 raw_runner_result, timed_out = await _await_with_deadline(
                                     raw_runner_result,
                                     timeout_seconds=max_seconds,
-                                    on_timeout=lambda: None,
+                                    on_timeout=seal_runner_events_after_delivery_cancellation,
                                 )
                             else:
                                 raw_runner_result = await raw_runner_result
@@ -3399,6 +3411,7 @@ def create_executor_app(
             "response_files",
             "response_file_descriptors",
             "sdk_usage",
+            "provider_session_final_sequence",
             "sdk_used",
             "sdk_received_structured_terminal",
             "sdk_terminal_reason",

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import shlex
@@ -8,7 +9,7 @@ import sys
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from inspect import isawaitable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -49,6 +50,7 @@ from app.executors.claude.prompts import (
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
     translation_target_language as _prompt_translation_target_language,
 )
+from app.executors.claude.client_lifecycle import ClaudeClientCloseBoundary
 from app.execution.api import ClaudeSdkAgentEventAdapter
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
@@ -229,6 +231,8 @@ _DELIVERY_MANIFEST_MAX_FILES = 128
 _DELIVERY_MANIFEST_MAX_PATH_CHARS = 1_024
 _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS = 255
 _DELIVERY_MANIFEST_MAX_DESCRIPTION_CHARS = 2_000
+_SDK_CLEANUP_TIMEOUT_SECONDS = 30.0
+_logger = logging.getLogger(__name__)
 
 
 def _sdk_run_timeout_seconds(
@@ -1623,6 +1627,7 @@ async def run_claude_agent_sdk(
     execution_policy: str = "worker_local_legacy",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
     thinking_effort: str = "auto",
+    cleanup_tasks: set[asyncio.Task[Any]] | None = None,
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
     if (model_max_input_tokens is None) != (model_max_output_tokens is None) or any(
@@ -3455,20 +3460,25 @@ async def run_claude_agent_sdk(
                 await callback_result
         return True
 
-    async def _client_messages() -> AsyncIterator[Any]:
-        if client_factory is None:
-            raise RuntimeError("sdk_client_unavailable")
-        client = client_factory(options)
-        try:
-            await client.connect()
-            await client.query(
-                _sdk_user_prompt_stream(sdk_prompt, session_id=session_id),
-                session_id=session_id or "default",
-            )
-            async for message in client.receive_response():
+    async def _client_messages(client: Any) -> AsyncIterator[Any]:
+        pending_tasks: set[str] = set()
+        async with aclosing(client.receive_messages()) as responses:
+            async for message in responses:
+                if isinstance(message, TaskStartedMessage):
+                    if message.task_type in {"local_agent", "local_workflow"}:
+                        pending_tasks.add(message.task_id)
+                elif isinstance(message, TaskNotificationMessage):
+                    pending_tasks.discard(message.task_id)
+                elif isinstance(message, TaskUpdatedMessage):
+                    if message.patch.get("status") in {"completed", "failed", "stopped", "killed"}:
+                        pending_tasks.discard(message.task_id)
+                elif isinstance(message, ResultMessage) and pending_tasks and not message.is_error:
+                    # A background agent may wake a follow-up turn. Its first
+                    # Result is not the completion of the platform Run.
+                    continue
                 yield message
-        finally:
-            await client.disconnect()
+                if isinstance(message, ResultMessage):
+                    return
 
     async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
@@ -3875,19 +3885,6 @@ async def run_claude_agent_sdk(
                             )
                         ),
                     )
-                if (provider_session_store is not None
-                    and (not provider_session_store.main_append_acknowledged
-                         or provider_session_store.final_sequence is None
-                         or result_session_id != session_id)):
-
-                    close_failed_terminal("provider_session_append_not_acknowledged")
-                    error_code = mcp_execution_receipt_error() or _SDK_PROVIDER_SESSION_FAILED
-                    return assemble_run_result(
-                        message="",
-                        error=error_code,
-                        terminal_reason=resolved_terminal_reason,
-                        received_structured_terminal=False,
-                    )
                 final_answer = str(message.result or "")
                 terminal_answer_empty = not final_answer.strip()
                 try:
@@ -3993,29 +3990,6 @@ async def run_claude_agent_sdk(
             if not received_structured_terminal
             else None
         )
-        if terminal_error is None and agent_event_callback_failed:
-            terminal_error = (
-                mcp_execution_receipt_error()
-                or "agent_event_callback_not_acknowledged"
-            )
-        if terminal_error is None and (
-            read_only_lifecycle_rejected
-            or "started" in observed_read_only_invocation_states.values()
-        ):
-            terminal_error = _SDK_TOOL_ADMISSION_FAILED
-        if terminal_error is None and capability_evidence_rejected:
-            terminal_error = (
-                mcp_execution_receipt_error()
-                or "required_tool_completion_evidence_mismatch"
-            )
-        if terminal_error is None and mcp_execution_conflict_observed():
-            terminal_error = MCP_EXECUTION_OUTCOME_UNKNOWN
-        if terminal_error is None:
-            terminal_error = skill_hook_error()
-        if terminal_error is None:
-            completion_error = capability_completion_error()
-            if completion_error is not None:
-                terminal_error = mcp_execution_receipt_error() or completion_error
         if terminal_error is None and stream_projection_failed:
             terminal_error = _SDK_UPSTREAM_ERROR
         if terminal_error is None and terminal_answer_empty and not answer_timeline.text.strip():
@@ -4116,23 +4090,119 @@ async def run_claude_agent_sdk(
         )
 
     consume_cancellation: asyncio.CancelledError | None = None
+    pending_result: ClaudeAgentSdkRunResult | None = None
+    result_ready: asyncio.Future[ClaudeAgentSdkRunResult] = asyncio.get_running_loop().create_future()
+    cleanup_deadline: asyncio.TimerHandle | None = None
+
+    async def protocol_closed(mirror_failed: bool) -> None:
+        nonlocal cleanup_deadline
+        if pending_result is None or result_ready.done():
+            return
+        # All SDK producers have stopped. Validate mutable callback/store
+        # observations once here, not against an earlier Result snapshot.
+        error = None if pending_result.received_structured_terminal else pending_result.error
+        if error is None and provider_session_store is not None and (
+            mirror_failed
+            or not provider_session_store.main_append_acknowledged
+            or provider_session_store.final_sequence is None
+            or result_session_id != session_id
+        ):
+            error = _SDK_PROVIDER_SESSION_FAILED
+        if error is None and agent_event_callback_failed:
+            error = "agent_event_callback_not_acknowledged"
+        if error is None and (
+            read_only_lifecycle_rejected
+            or "started" in observed_read_only_invocation_states.values()
+        ):
+            error = _SDK_TOOL_ADMISSION_FAILED
+        if error is None and mcp_execution_conflict_observed():
+            error = MCP_EXECUTION_OUTCOME_UNKNOWN
+        if error is None:
+            error = skill_hook_error() or capability_completion_error()
+        error = error or pending_result.error
+        if error is not None:
+            error = mcp_execution_receipt_error() or error
+            seal_agent_candidates(error)
+            result = assemble_run_result(
+                error=error,
+                message=("" if error in {_SDK_PROVIDER_SESSION_FAILED, "agent_event_callback_not_acknowledged"}
+                         else pending_result.message),
+                terminal_reason=pending_result.terminal_reason,
+                received_structured_terminal=pending_result.received_structured_terminal,
+                runtime_diagnostics_snapshot=lambda: (
+                    pending_result.runtime_diagnostics if error == pending_result.error
+                    else runtime_diagnostics(error, failure_source="terminal_validation")
+                ),
+            )
+        else:
+            result = replace(
+                pending_result,
+                capability_evidence=list(capability_evidence),
+                provider_final_sequence=(
+                    provider_session_store.final_sequence if provider_session_store is not None else None
+                ),
+            )
+        result_ready.set_result(result)
+        cleanup_deadline = asyncio.get_running_loop().call_later(
+            _SDK_CLEANUP_TIMEOUT_SECONDS, consume_task.cancel
+        )
 
     async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
-        nonlocal consume_cancellation
+        nonlocal consume_cancellation, pending_result
         try:
             async with mcp_registration.activate(options):
-                async with aclosing(_client_messages()) as messages:
-                    return await consume(messages)
+                client = client_factory(options)
+                close_boundary = ClaudeClientCloseBoundary(client, protocol_closed)
+                try:
+                    await client.connect()
+                    close_boundary.bind()
+                    await client.query(
+                        _sdk_user_prompt_stream(sdk_prompt, session_id=session_id),
+                        session_id=session_id or "default",
+                    )
+                    async with aclosing(_client_messages(client)) as messages:
+                        pending_result = await consume(messages)
+                finally:
+                    await close_boundary.disconnect()
+            return pending_result
         except asyncio.CancelledError as exc:
             consume_cancellation = exc
             raise
 
     consume_task = asyncio.create_task(consume_with_cancellation_identity())
+
+    def lifecycle_done(task: asyncio.Task[Any]) -> None:
+        if cleanup_deadline is not None:
+            cleanup_deadline.cancel()
+        if cleanup_tasks is not None:
+            cleanup_tasks.discard(task)
+        try:
+            task.result()
+        except BaseException as exc:
+            if not result_ready.done():
+                result_ready.set_exception(exc)
+            else:
+                # Only resource teardown remains after result_ready. Never
+                # turn its failure into a second, contradictory Run result.
+                _logger.warning("Claude SDK resource cleanup failed: %s", type(exc).__name__)
+        else:
+            if not result_ready.done():
+                result_ready.set_exception(RuntimeError("sdk_protocol_close_missing"))
+
+    consume_task.add_done_callback(lifecycle_done)
+    if cleanup_tasks is not None:
+        cleanup_tasks.add(consume_task)
     try:
-        return await asyncio.wait_for(
-            asyncio.shield(consume_task), timeout=timeout_seconds
+        result = await asyncio.wait_for(
+            asyncio.shield(result_ready), timeout=timeout_seconds
         )
+        if cleanup_tasks is None:
+            # Direct callers own the whole lifetime; sandbox callers transfer
+            # resource teardown to their application lifespan.
+            await asyncio.wait({consume_task})
+        return result
     except asyncio.CancelledError:
+        result_ready.cancel()
         consume_task.cancel()
         try:
             await consume_task
@@ -4149,6 +4219,7 @@ async def run_claude_agent_sdk(
             raise consume_cancellation
         raise
     except TimeoutError:
+        result_ready.cancel()
         consume_task.cancel()
         try:
             await consume_task
