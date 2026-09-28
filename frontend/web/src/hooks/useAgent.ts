@@ -89,6 +89,7 @@ import {
   isNonRetryableSSEAuthenticationError,
   isNonRetryableSSEConnectionError,
   queryAuthoritativeRunStatus,
+  type ReconcileOwner,
   type ReplayGapRecoveryOwner,
   type SSEConnectionContext,
 } from "./useAgent/sseConnection";
@@ -427,13 +428,6 @@ function resetAcceptedStreamState(
     eventId: null,
     streamIncarnation: null,
   };
-}
-
-interface ReconcileOwner {
-  sessionId: string;
-  runId: string;
-  streamVersion: number;
-  promise: Promise<void>;
 }
 
 type TerminalHydrationOwner = ReconcileOwner & { controller: AbortController };
@@ -1645,6 +1639,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       isConnectingRef,
       streamingMessageIdRef,
       reconnectTimeoutRef,
+      reconcileOwnerRef,
       retryCountRef,
       statusRetryCountRef,
       replayGapRecoveryRef,
@@ -1674,40 +1669,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     ) {
       return;
     }
-    const existing = reconcileOwnerRef.current;
-    if (
-      existing &&
-      existing.sessionId === targetSessionId &&
-      existing.runId === targetRunId &&
-      existing.streamVersion === streamVersion
-    ) {
-      return existing.promise;
-    }
-    if (reconnectTimeoutRef.current !== null) {
-      return;
-    }
-    const ctx = {
+    return reconnectSSE({
       ...createSSEContext(),
       sessionIdRef,
       currentRunIdRef,
       isReconnectFromHistoryRef,
-    };
-    const owner: ReconcileOwner = {
-      sessionId: targetSessionId,
-      runId: targetRunId,
-      streamVersion,
-      promise: Promise.resolve(),
-    };
-    const promise = reconnectSSE(ctx).finally(() => {
-      // The timer owns a scheduled attempt; this owner covers only the
-      // in-flight reconciliation. Old completions cannot clear a replacement.
-      if (reconcileOwnerRef.current === owner) {
-        reconcileOwnerRef.current = null;
-      }
     });
-    owner.promise = promise;
-    reconcileOwnerRef.current = owner;
-    return promise;
   }, [createSSEContext]);
 
   useLayoutEffect(() => {

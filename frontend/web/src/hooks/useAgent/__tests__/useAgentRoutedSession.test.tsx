@@ -4592,7 +4592,8 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
   }
 });
 
-test("useAgent shares one generation-bound reconciliation owner across concurrent recovery callers", async () => {
+for (const recoveryEntry of ["initial", "timer retry"]) {
+test(`useAgent shares one reconciliation owner across online callers during ${recoveryEntry}`, async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -4619,6 +4620,14 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
   })) as typeof sessionApi.submitChat;
   sessionApi.getStatus = (async () => {
     statusCalls += 1;
+    if (recoveryEntry === "timer retry" && statusCalls === 1) {
+      return {
+        session_id: "session-reconcile-owner",
+        run_id: "run-reconcile-owner",
+        status: "running",
+        raw_status: "running",
+      };
+    }
     return new Promise((resolve) => {
       resolveStatus = resolve;
     });
@@ -4640,15 +4649,21 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
       await harness.hook.sendMessage("并发状态恢复");
     });
     await settle(harness.act);
-    assert.equal(statusCalls, 1);
+    const expectedStatusCalls = recoveryEntry === "timer retry" ? 2 : 1;
+    for (let attempt = 0; attempt < 300 && statusCalls < expectedStatusCalls; attempt += 1) {
+      await harness.act(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+    }
+    assert.equal(statusCalls, expectedStatusCalls);
+    await settle(harness.act);
 
     let firstReconnect!: Promise<void>;
     let secondReconnect!: Promise<void>;
     await harness.act(async () => {
+      dom.window.dispatchEvent({ type: "online" });
       firstReconnect = harness.hook.reconnectSSE();
       secondReconnect = harness.hook.reconnectSSE();
     });
-    assert.equal(statusCalls, 1);
+    assert.equal(statusCalls, expectedStatusCalls);
 
     resolveStatus({
       session_id: "session-reconcile-owner",
@@ -4661,7 +4676,7 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
     });
     await settle(harness.act);
 
-    assert.equal(statusCalls, 1);
+    assert.equal(statusCalls, expectedStatusCalls);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(
       harness.hook.messages
@@ -4683,6 +4698,7 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
     await harness.cleanup();
   }
 });
+}
 
 for (const sessionMarker of [null, "present"]) {
 test(`useAgent expires cookie-session stream ownership with ${sessionMarker ? "a marker" : "no marker"}`, async () => {

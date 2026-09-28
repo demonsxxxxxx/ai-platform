@@ -389,6 +389,9 @@ observe authoritative status and terminal history instead of inventing that
 identity. Active and terminal history requests share cancellation and bounded
 timeouts. Transient exhaustion releases recovery ownership for a later retry;
 authorization failure stops access, and session changes cancel stale requests.
+Browser recovery and failed timed reconnects share one reconciliation owner.
+The status query releases that owner by identity when it settles, and a consumed
+timer clears its own reference before starting the connection attempt.
 
 ## Required focused tests
 

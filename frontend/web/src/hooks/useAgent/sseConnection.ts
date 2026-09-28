@@ -36,12 +36,15 @@ import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 /**
  * SSE Connection context
  */
-export interface ReplayGapRecoveryOwner {
+export interface ReconcileOwner {
   sessionId: string;
   runId: string;
   streamVersion: number;
-  controller: AbortController;
   promise: Promise<void>;
+}
+
+export interface ReplayGapRecoveryOwner extends ReconcileOwner {
+  controller: AbortController;
 }
 
 export interface SSEConnectionContext extends EventHandlerContext {
@@ -52,6 +55,7 @@ export interface SSEConnectionContext extends EventHandlerContext {
   reconnectTimeoutRef: React.MutableRefObject<ReturnType<
     typeof setTimeout
   > | null>;
+  reconcileOwnerRef: React.MutableRefObject<ReconcileOwner | null>;
   retryCountRef: React.MutableRefObject<number>;
   statusRetryCountRef?: React.MutableRefObject<number>;
   replayGapRecoveryRef?: React.MutableRefObject<ReplayGapRecoveryOwner | null>;
@@ -1236,16 +1240,47 @@ export async function connectToSSE(
   }
 }
 
-/**
- * Smart reconnect with exponential backoff
- */
+type ReconnectContext = SSEConnectionContext & {
+  sessionIdRef: React.MutableRefObject<string | null>;
+  currentRunIdRef: React.MutableRefObject<string | null>;
+  isReconnectFromHistoryRef: React.MutableRefObject<boolean>;
+};
+
+/** Share status reconciliation across browser events and timed retries. */
 export async function reconnectSSE(
-  ctx: SSEConnectionContext & {
-    sessionIdRef: React.MutableRefObject<string | null>;
-    currentRunIdRef: React.MutableRefObject<string | null>;
-    isReconnectFromHistoryRef: React.MutableRefObject<boolean>;
-  },
+  ctx: ReconnectContext,
   dependencies: ReconnectDependencies = {},
+): Promise<void> {
+  const sessionId = ctx.sessionIdRef.current;
+  const runId = ctx.currentRunIdRef.current;
+  const streamVersion = ctx.streamVersionRef.current;
+  if (!sessionId || !runId) return;
+  const existing = ctx.reconcileOwnerRef.current;
+  if (
+    existing && existing.sessionId === sessionId &&
+    existing.runId === runId && existing.streamVersion === streamVersion
+  ) {
+    return existing.promise;
+  }
+  if (ctx.reconnectTimeoutRef.current !== null) return;
+  const owner: ReconcileOwner = {
+    sessionId, runId, streamVersion, promise: Promise.resolve(),
+  };
+  ctx.reconcileOwnerRef.current = owner;
+  const promise = performReconnectSSE(ctx, dependencies).finally(() => {
+    // A scheduled timer owns the next attempt; this owner covers only the
+    // in-flight status query. Stale completion cannot clear a replacement.
+    if (ctx.reconcileOwnerRef.current === owner) {
+      ctx.reconcileOwnerRef.current = null;
+    }
+  });
+  owner.promise = promise;
+  return promise;
+}
+
+async function performReconnectSSE(
+  ctx: ReconnectContext,
+  dependencies: ReconnectDependencies,
 ): Promise<void> {
   const {
     sessionIdRef,
