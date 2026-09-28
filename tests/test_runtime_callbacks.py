@@ -1349,7 +1349,6 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
             *adapter.accept_commentary_text(
                 "working",
                 commentary_identity="assistant-a",
-                already_gated=True,
             ),
             *adapter.accept_answer_text("answer"),
         )
@@ -1538,13 +1537,7 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
         return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
 
     async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
-        return [
-            {
-                "id": "lease-attempt-a",
-                "provider": "opensandbox",
-                "lease_payload_json": {"attempt_id": attempt_id},
-            }
-        ]
+        return []
 
     async def fake_heartbeat(conn, **kwargs):
         heartbeat_calls.append(kwargs)
@@ -1587,26 +1580,33 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
 
     assert response.status_code == 409
     assert response.json() == {"detail": "sandbox_runtime_attempt_inactive"}
-    assert heartbeat_calls
+    assert heartbeat_calls == []
     assert reconstruction_calls == []
     assert provider_calls == []
 
 
-def test_opensandbox_callback_renews_after_heartbeat_in_same_transaction(monkeypatch):
+def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_receipt(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret", lease_ttl_seconds=731))
     order = []
+    transaction_state = {"active": False}
     heartbeat_row = {
         "id": "lease-attempt-a",
         "provider": "opensandbox",
-        "lease_payload_json": {"attempt_id": "attempt-a"},
+        "lease_payload_json": {
+            "attempt_id": "attempt-a",
+            "owner_generation": "7",
+            "callback_token_id": "cbt:run-a:attempt-a",
+        },
     }
 
     class FakeTransaction:
         async def __aenter__(self):
+            transaction_state["active"] = True
             order.append("begin")
             return object()
 
         async def __aexit__(self, exc_type, exc, traceback):
+            transaction_state["active"] = False
             order.append("commit" if exc_type is None else "rollback")
             return None
 
@@ -1614,13 +1614,16 @@ def test_opensandbox_callback_renews_after_heartbeat_in_same_transaction(monkeyp
         return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
 
     async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
-        return [{**heartbeat_row, "provider": "docker"}]
+        return [heartbeat_row]
 
     async def fake_heartbeat(conn, **kwargs):
+        assert transaction_state["active"] is True
         order.append("heartbeat")
         return heartbeat_row
 
     async def fake_append(conn, **kwargs):
+        assert transaction_state["active"] is True
+        order.append("event")
         return "evt-a"
 
     class FakeProvider:
@@ -1629,10 +1632,12 @@ def test_opensandbox_callback_renews_after_heartbeat_in_same_transaction(monkeyp
     provider_expires_at = datetime.now(timezone.utc) + timedelta(minutes=35)
 
     async def fake_renew(_provider, lease, _settings, *, ttl_seconds):
+        assert transaction_state["active"] is False
         order.append(("renew", lease, ttl_seconds))
         return provider_expires_at
 
     async def fake_receipt(conn, **kwargs):
+        assert transaction_state["active"] is True
         order.append(("receipt", kwargs))
         return heartbeat_row
 
@@ -1673,27 +1678,31 @@ def test_opensandbox_callback_renews_after_heartbeat_in_same_transaction(monkeyp
 
     assert response.status_code == 200
     assert order[0] == "begin"
-    assert order[1] == "heartbeat"
+    assert order[1] == "commit"
     assert order[2] == ("renew", persisted_lease, 731)
-    assert order[3] == ("receipt", {
+    assert order[3:6] == ["begin", "event", "heartbeat"]
+    assert order[6] == ("receipt", {
         "tenant_id": "tenant-a",
         "run_id": "run-a",
         "attempt_id": "attempt-a",
         "lease_id": "lease-attempt-a",
         "provider_expires_at": provider_expires_at,
     })
-    assert order[4] == "commit"
+    assert order[7] == "commit"
 
 
-def test_opensandbox_callback_renewal_failure_rolls_back_and_hides_provider_error(monkeypatch):
-    from fastapi import HTTPException
-
+def test_opensandbox_callback_renewal_failure_leaves_callback_unpersisted(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     transaction_exit = []
+    persistence_calls = []
     heartbeat_row = {
         "id": "lease-attempt-a",
         "provider": "opensandbox",
-        "lease_payload_json": {"attempt_id": "attempt-a"},
+        "lease_payload_json": {
+            "attempt_id": "attempt-a",
+            "owner_generation": "7",
+            "callback_token_id": "cbt:run-a:attempt-a",
+        },
     }
 
     class FakeTransaction:
@@ -1708,12 +1717,14 @@ def test_opensandbox_callback_renewal_failure_rolls_back_and_hides_provider_erro
         return {"tenant_id": "tenant-a", "session_id": "session-a", "status": "running"}
 
     async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
-        return [{**heartbeat_row, "provider": "docker"}]
+        return [heartbeat_row]
 
     async def fake_heartbeat(conn, **kwargs):
+        persistence_calls.append("heartbeat")
         return heartbeat_row
 
     async def fake_append(conn, **kwargs):
+        persistence_calls.append("event")
         return "evt-a"
 
     class FakeProvider:
@@ -1753,8 +1764,106 @@ def test_opensandbox_callback_renewal_failure_rolls_back_and_hides_provider_erro
 
     assert response.status_code == 503
     assert response.json() == {"detail": "sandbox_runtime_renewal_failed"}
-    assert transaction_exit == [HTTPException]
+    assert transaction_exit == [None]
+    assert persistence_calls == []
     assert "provider secret" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "race", ["owner_generation", "terminal_run", "terminal_lease"]
+)
+async def test_opensandbox_old_renewal_receipt_is_rejected_after_owner_or_terminal_change(
+    monkeypatch, race
+):
+    from app.routes import runtime_callbacks
+
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    state = {"transaction": 0, "active": False, "writes": []}
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            state["transaction"] += 1
+            state["active"] = True
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            state["active"] = False
+            return None
+
+    async def get_run_identity(conn, *, run_id, for_update=False):
+        terminal = race == "terminal_run" and state["transaction"] > 1
+        return {
+            "tenant_id": "tenant-a",
+            "session_id": "session-a",
+            "status": "succeeded" if terminal else "running",
+        }
+
+    async def exact_lease(conn, *, tenant_id, run_id, attempt_id):
+        generation = "7" if state["transaction"] == 1 else "8"
+        return [
+            {
+                "id": "lease-attempt-a",
+                "attempt_id": "attempt-a",
+                "provider": "opensandbox",
+                "runtime_container_id": "sandbox-a",
+                "runtime_container_name": "executor-a",
+                "runtime_executor_url": "http://sandbox-a.test",
+                "runtime_workspace_container_path": "/workspace",
+                "executor_terminal_json": (
+                    {"status": "completed"}
+                    if race == "terminal_lease" and state["transaction"] > 1
+                    else None
+                ),
+                "lease_payload_json": {
+                    "attempt_id": "attempt-a",
+                    "owner_generation": generation,
+                    "callback_token_id": "cbt:run-a:attempt-a",
+                },
+            }
+        ]
+
+    async def fake_renew(_provider, _lease, _settings, *, ttl_seconds):
+        assert state["active"] is False
+        return datetime.now(timezone.utc) + timedelta(minutes=35)
+
+    async def unexpected_write(*_args, **_kwargs):
+        state["writes"].append(True)
+        raise AssertionError("stale renewal must not persist callback state")
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run_identity", get_run_identity)
+    monkeypatch.setattr(
+        _owner_sandbox_infrastructure_leases_postgres,
+        "list_current_sandbox_runtime_leases_for_attempt",
+        exact_lease,
+    )
+    monkeypatch.setattr(runtime_callbacks, "container_lease_from_persisted_row", lambda _row: SimpleNamespace(provider="opensandbox"))
+    monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: object())
+    monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", unexpected_write)
+    monkeypatch.setattr(runtime_callbacks.sandbox_lease_repository, "record_sandbox_executor_heartbeat", unexpected_write)
+    monkeypatch.setattr(runtime_callbacks.sandbox_lease_repository, "record_opensandbox_renewal_receipt", unexpected_write)
+
+    callback = ExecutorCallbackEvent.model_validate(
+        callback_payload(new_message=None, state_patch={"executor_heartbeat": True})
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await runtime_callbacks.record_executor_callback(
+            callback,
+            capabilities=callback_event_capabilities(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == (
+        "run_already_terminal"
+        if race == "terminal_run"
+        else "sandbox_runtime_attempt_inactive"
+        if race == "terminal_lease"
+        else "sandbox_runtime_owner_generation_stale"
+    )
+    assert state["active"] is False
+    assert state["writes"] == []
 
 
 def test_executor_callback_publishes_real_adapter_lifecycle_and_platform_progress(monkeypatch):

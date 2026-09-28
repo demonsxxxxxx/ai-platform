@@ -3393,6 +3393,7 @@ async def run_claude_agent_sdk(
         return None
 
     async def emit_coalesced_answer_text(value: str) -> bool:
+        nonlocal agent_event_callback_failed
         if agent_event_adapter is None:
             return True
         accepted_chunks: list[str] = []
@@ -3400,10 +3401,10 @@ async def run_claude_agent_sdk(
             chunk = value[offset : offset + 8_192]
             candidates = agent_event_adapter.accept_answer_text(
                 chunk,
-                already_gated=True,
             )
             if not candidates:
-                continue
+                agent_event_callback_failed = True
+                return False
             if not await publish_agent_candidates(candidates):
                 return False
             accepted_chunks.append(chunk)

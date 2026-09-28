@@ -288,6 +288,37 @@ async def test_capability_distribution_backfill_lock_recheck_observes_concurrent
 
 
 @pytest.mark.asyncio
+async def test_list_capability_distributions_supports_bounded_skill_scope_without_backfill_check():
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params=()):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+    rows = await distribution_persistence.list_capability_distribution_rows(
+        conn,
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        include_disabled=True,
+        capability_ids=["skill-b", "skill-a", "skill-b"],
+        ensure_backfill=False,
+    )
+
+    assert rows == []
+    assert "capability_id = any(%s)" in conn.sql
+    assert conn.params == ("tenant-a", "skill", True, ["skill-a", "skill-b"])
+
+
+@pytest.mark.asyncio
 async def test_capability_distribution_list_and_get_normalize_array_and_json_projections():
     list_rows = _repo_owner_app_identity_infrastructure_capability_distributions_postgres.list_capability_distribution_rows
     get_row = _repo_owner_app_identity_infrastructure_capability_distributions_postgres.get_capability_distribution_row

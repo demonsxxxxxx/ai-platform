@@ -1180,7 +1180,7 @@ async def _reauthorize_worker_capabilities(
     skill: dict[str, Any] = {}
     skill_lifecycle_status = "disabled"
     try:
-        skill = await skills_resolution_postgres.resolve_selected_skill(
+        skill = await skills_resolution_postgres.resolve_skill_identity(
             conn,
             tenant_id=run_identity["tenant_id"],
             agent_id=run_identity["agent_id"],
@@ -1906,6 +1906,26 @@ async def process_run_payload(
                     v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
+            try:
+                materialized_skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
+                    conn,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    skill_manifest_refs=locked_payload.skill_manifests,
+                )
+            except platform_errors.RepositoryConflictError:
+                terminal_after_transaction = await _fail_locked_run_snapshot(
+                    conn,
+                    payload=locked_payload,
+                    locked_run=locked,
+                    run_identity=run_identity,
+                    trace_id=trace_id,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
+                )
+                return terminal_after_transaction.outcome
+            locked_payload = locked_payload.model_copy(
+                update={"skill_manifests": materialized_skill_manifests}
+            )
             if locked_payload.agent_profile and current_principal is not None:
                 pinned_revision = int(locked_payload.agent_profile["revision"])
                 pinned_hash = str(locked_payload.agent_profile["content_hash"])
@@ -1915,6 +1935,12 @@ async def process_run_payload(
                     agent_id=run_identity["agent_id"],
                     revision=pinned_revision,
                     content_hash=pinned_hash,
+                    pinned_skill_set=locked_payload.agent_profile.get("skill_set"),
+                    pinned_manifests=locked_payload.skill_manifests,
+                    pinned_executor_type=(
+                        locked_payload.executor_type or "claude-agent-worker"
+                    ),
+                    execution_kind=locked_payload.execution_kind,
                 )
                 profile_denial_reason = None
                 if profile_admission is None:
@@ -1946,26 +1972,6 @@ async def process_run_payload(
                     )
                     return terminal_after_transaction.outcome
             payload = locked_payload
-            try:
-                materialized_skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
-                    conn,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    skill_manifest_refs=payload.skill_manifests,
-                )
-            except platform_errors.RepositoryConflictError:
-                terminal_after_transaction = await _fail_locked_run_snapshot(
-                    conn,
-                    payload=payload,
-                    locked_run=locked,
-                    run_identity=run_identity,
-                    trace_id=trace_id,
-                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
-                )
-                return terminal_after_transaction.outcome
-            payload = payload.model_copy(
-                update={"skill_manifests": materialized_skill_manifests}
-            )
             capability_authorization = await _reauthorize_worker_capabilities(
                 conn,
                 payload=payload,

@@ -11,6 +11,7 @@ from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
 )
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
+from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.platform.public_payload import (
     sanitize_public_answer_text,
     sanitize_public_event_candidate,
@@ -42,6 +43,20 @@ def _adapter():
             "mcp__server__search": ("mcp", "Tenant search"),
             "qa-review": ("skill", "QA review"),
         },
+    )
+
+
+def _accept_gated_answer(adapter, value):
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=sanitize_public_answer_text,
+    )
+    public_chunks = [*gate.accept(value)]
+    public_chunks.extend(gate.finish(final_text=value, release=True).chunks)
+    return tuple(
+        candidate
+        for chunk in public_chunks
+        for candidate in adapter.accept_answer_text(chunk)
     )
 
 
@@ -256,7 +271,7 @@ def test_v4_callback_bridge_rejects_admin_only_event_even_when_schema_valid():
     assert agent_event_to_executor_event(admin_only)["event_type"] == "executor_private_event"
 
 
-def test_v4_candidate_allows_answer_paths_but_rejects_structured_paths_and_secrets():
+def test_v4_candidate_validates_answer_shape_while_structured_fields_remain_sanitized():
     answer = (
         r"Use C:\Users\Alice\result.txt, /tmp/result.py, output/report.md, "
         "storage_key, ResultParser.parse(), and ordinary_identifier."
@@ -286,33 +301,38 @@ def test_v4_candidate_allows_answer_paths_but_rejects_structured_paths_and_secre
             },
             payload_sanitizer=sanitize_public_event_candidate,
         )
-    with pytest.raises(ValueError, match="private text"):
-        ClaudeAgentEventCandidate(
-            run_id="run-1187",
-            event_id="event-secret",
-            event_type="message.delta",
-            message_id="message-1",
-            causation_event_id=None,
-            payload={"delta": 'client_secret="opaque12345"'},
-            payload_sanitizer=sanitize_public_event_candidate,
-        )
+    # The run's PublicAnswerStreamGate owns answer-body redaction. Candidate
+    # validation checks only its schema, identities, and size.
+    partial_answer_candidate = ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="event-partial",
+        event_type="message.delta",
+        message_id="message-1",
+        causation_event_id=None,
+        payload={"delta": "token-cou"},
+        payload_sanitizer=sanitize_public_event_candidate,
+    )
+    assert partial_answer_candidate.payload["delta"] == "token-cou"
 
 
-def test_answer_candidates_are_gated_and_have_one_stable_message_identity():
+def test_answer_candidates_follow_the_public_gate_and_have_one_stable_message_identity():
     adapter = _adapter()
 
-    events = adapter.accept_answer_text("safe answer", already_gated=True)
+    events = _accept_gated_answer(adapter, "safe answer")
     events += adapter.complete_answer("safe answer")
 
-    assert [event.event_type for event in events] == [
-        "message.started",
-        "message.delta",
-        "message.completed",
-    ]
+    assert events[0].event_type == "message.started"
+    assert events[-1].event_type == "message.completed"
+    delta_events = [event for event in events if event.event_type == "message.delta"]
+    assert delta_events
+    assert len(delta_events) == len(events) - 2
     assert len({event.message_id for event in events}) == 1
     assert all("attempt-1" not in str(event.as_dict()["payload"]) for event in events)
-    assert events[-1].payload == {"delta_count": 1, "text_length": len("safe answer")}
-    assert events[-1].causation_event_id == events[1].event_id
+    assert events[-1].payload == {
+        "delta_count": len(delta_events),
+        "text_length": len("safe answer"),
+    }
+    assert events[-1].causation_event_id == delta_events[-1].event_id
 
 
 def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
@@ -321,12 +341,10 @@ def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
     events = adapter.accept_commentary_text(
         "正在检查授权输入。",
         commentary_identity="assistant_1",
-        already_gated=True,
     )
     continued = adapter.accept_commentary_text(
         "正在继续处理。",
         commentary_identity="assistant_1",
-        already_gated=True,
     )
 
     assert [event.event_type for event in (*events, *continued)] == [
@@ -386,8 +404,8 @@ def test_answer_candidate_failure_does_not_advance_receipt_state():
         payload_sanitizer=fail_one_delta,
     )
 
-    assert adapter.accept_answer_text("omitted", already_gated=True) == ()
-    accepted = adapter.accept_answer_text("kept", already_gated=True)
+    assert _accept_gated_answer(adapter, "omitted") == ()
+    accepted = _accept_gated_answer(adapter, "kept")
     completed = adapter.complete_answer("kept")
 
     assert [event.event_type for event in (*accepted, *completed)] == [
@@ -419,7 +437,7 @@ def test_result_completion_candidate_failure_does_not_create_answer_receipt():
         sanitizer=sanitize_public_answer_text,
         payload_sanitizer=fail_completion,
     )
-    accepted = adapter.accept_answer_text("kept", already_gated=True)
+    accepted = _accept_gated_answer(adapter, "kept")
 
     terminal = adapter.accept_result(
         SimpleNamespace(
@@ -673,19 +691,19 @@ def test_task_events_are_opaque_parented_and_terminal_status_is_bounded():
 
 def test_result_and_cancel_seal_late_candidates():
     adapter = _adapter()
-    adapter.accept_answer_text("safe", already_gated=True)
+    _accept_gated_answer(adapter, "safe")
     result = SimpleNamespace(duration_ms=10, num_turns=2, is_error=False, stop_reason="end_turn")
     completed = adapter.accept_result(result, final_content="safe")
     assert completed[-1].payload["stop_category"] == "completed"
 
     adapter.seal("timeout")
-    assert adapter.accept_answer_text("late", already_gated=True) == ()
+    assert _accept_gated_answer(adapter, "late") == ()
     assert adapter.accept_content_block(SimpleNamespace()) == ()
     assert adapter.accept_result(result, final_content="late") == ()
 
 
 def test_bridge_requires_candidate_identity_and_rejects_private_payload_fields():
-    event = _adapter().accept_answer_text("safe", already_gated=True)[1]
+    event = _accept_gated_answer(_adapter(), "safe")[1]
     bridged = agent_event_to_executor_event(AgentEvent(**event.as_agent_event_fields()))
     assert bridged["event_type"] == "message.delta"
     assert bridged["payload"] == {"delta": "safe"}
@@ -719,6 +737,44 @@ def test_bridge_requires_candidate_identity_and_rejects_private_payload_fields()
         payload_sanitizer=sanitize_public_payload,
     )
     assert agent_event_to_executor_event(AgentEvent(**cancelled.as_agent_event_fields()))["event_type"] == "run.cancelled"
+
+
+def test_gate_redacts_split_secret_and_event_bridge_preserves_published_answer():
+    adapter = _adapter()
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=sanitize_public_answer_text,
+    )
+    answer_parts = ('Before client_secret="opaque', '12345" after.')
+    raw_answer = "".join(answer_parts)
+    public_chunks = []
+    candidates = []
+
+    for part in answer_parts:
+        chunks = gate.accept(part)
+        public_chunks.extend(chunks)
+        for chunk in chunks:
+            candidates.extend(adapter.accept_answer_text(chunk))
+    final = gate.finish(final_text=raw_answer, release=True)
+    public_chunks.extend(final.chunks)
+    for chunk in final.chunks:
+        candidates.extend(adapter.accept_answer_text(chunk))
+
+    bridged = [
+        agent_event_to_executor_event(
+            AgentEvent(**candidate.as_agent_event_fields())
+        )
+        for candidate in candidates
+    ]
+    published_body = "".join(public_chunks)
+    bridged_body = "".join(
+        str(event["payload"]["delta"])
+        for event in bridged
+        if event["event_type"] == "message.delta"
+    )
+    assert "opaque12345" not in published_body
+    assert bridged_body == published_body == final.final_text
+    assert all(event["event_type"] != "executor_private_event" for event in bridged)
 
 
 

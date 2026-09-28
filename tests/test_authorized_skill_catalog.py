@@ -213,11 +213,21 @@ async def _resolve(
 
     async def list_catalog(_conn, **kwargs):
         observed["catalog"] = kwargs
-        return rows
+        skill_ids = kwargs.get("skill_ids")
+        return rows if skill_ids is None else [row for row in rows if row["skill_id"] in skill_ids]
 
     async def list_distributions(_conn, **kwargs):
         observed["distributions"] = kwargs
-        return distributions
+        capability_ids = kwargs.get("capability_ids")
+        return (
+            distributions
+            if capability_ids is None
+            else [
+                row
+                for row in distributions
+                if row["capability_id"] in capability_ids
+            ]
+        )
 
     monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'list_public_skill_catalog', list_catalog)
     monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', list_distributions)
@@ -266,6 +276,7 @@ async def test_catalog_exposes_exact_authorized_metadata_without_general_chat_ma
         "tenant_id": "tenant-a",
         "include_disabled": False,
         "rollout_key": "user-a",
+        "skill_ids": None,
     }
     assert observed["distributions"]["tenant_id"] == "tenant-a"
     assert observed["distributions"]["include_disabled"] is True
@@ -296,7 +307,7 @@ async def test_catalog_question_does_not_decode_any_full_skill_package(monkeypat
 
     monkeypatch.setattr(catalog, "_validated_manifest", track_manifest_decode)
 
-    resolution, _ = await _resolve(
+    resolution, observed = await _resolve(
         monkeypatch,
         rows=rows,
         distributions=[_distribution(str(row["skill_id"])) for row in rows],
@@ -388,7 +399,7 @@ async def test_agent_skill_set_catalog_excludes_other_discoverable_skills(monkey
         {"skill_id": "skill-y", "expected_version": rows_by_id["skill-y"]["version"]},
     ]
 
-    resolution, _ = await _resolve(
+    resolution, observed = await _resolve(
         monkeypatch,
         rows=rows,
         distributions=[_distribution(str(row["skill_id"])) for row in rows],
@@ -405,6 +416,62 @@ async def test_agent_skill_set_catalog_excludes_other_discoverable_skills(monkey
     assert resolution.snapshot.omitted_count == 0
     assert resolution.snapshot.entry("skill-a") is None
     assert resolution.snapshot.materialized_skill_ids == ("skill-z", "skill-y")
+    assert observed["catalog"]["skill_ids"] == ["skill-y", "skill-z"]
+    assert observed["catalog"]["include_disabled"] is True
+    assert observed["distributions"]["capability_ids"] == ["skill-y", "skill-z"]
+    assert observed["distributions"]["ensure_backfill"] is False
+
+
+@pytest.mark.asyncio
+async def test_fixed_multiskill_catalog_queries_pinned_dependency_closure_and_keeps_run_versions(
+    monkeypatch,
+):
+    current_a = _skill_row("skill-a", dependency_ids=["minimax-docx"], body_marker="release-b")
+    current_b = _skill_row("skill-b", dependency_ids=["reference-fact-extraction"], body_marker="release-b")
+    current_shared = _skill_row("reference-fact-extraction", body_marker="release-b")
+    current_dep = _skill_row("minimax-docx")
+    noise = _skill_row("unselected-skill")
+    pinned_a = _skill_row("skill-a", dependency_ids=["reference-fact-extraction"], body_marker="run-a")
+    pinned_b = _skill_row("skill-b", dependency_ids=["reference-fact-extraction"], body_marker="run-b")
+    pinned_shared = _skill_row("reference-fact-extraction", body_marker="run-shared")
+    pinned_manifests = [
+        _manifest_from_row(pinned_a),
+        _manifest_from_row(pinned_b),
+        _manifest_from_row(pinned_shared),
+    ]
+    skill_set = [
+        {"skill_id": "skill-a", "expected_version": pinned_a["version"]},
+        {"skill_id": "skill-b", "expected_version": pinned_b["version"]},
+    ]
+
+    resolution, observed = await _resolve(
+        monkeypatch,
+        rows=[current_a, current_b, current_shared, current_dep, noise],
+        distributions=[
+            _distribution(str(row["skill_id"]))
+            for row in [current_a, current_b, current_shared, current_dep, noise]
+        ],
+        binding=_binding(selected_skill_id="skill-a"),
+        pinned_manifests=pinned_manifests,
+        skill_set=skill_set,
+    )
+
+    assert observed["catalog"]["skill_ids"] == ["reference-fact-extraction", "skill-a", "skill-b"]
+    assert observed["distributions"]["capability_ids"] == [
+        "reference-fact-extraction",
+        "skill-a",
+        "skill-b",
+    ]
+    assert set(resolution.snapshot.available_skill_ids) == {"skill-a", "skill-b"}
+    assert resolution.snapshot.entry("skill-a").version == pinned_a["version"]
+    assert resolution.snapshot.entry("skill-b").version == pinned_b["version"]
+    assert set(resolution.snapshot.materialized_skill_ids) == {
+        "skill-a",
+        "skill-b",
+        "reference-fact-extraction",
+    }
+    assert "minimax-docx" not in resolution.snapshot.available_skill_ids
+    assert "unselected-skill" not in resolution.snapshot.available_skill_ids
 
 
 @pytest.mark.asyncio
@@ -670,7 +737,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
     monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'list_capability_distribution_rows', list_distributions)
     monkeypatch.setattr(_owner_skills_infrastructure_run_snapshots_postgres, 'validate_run_skill_snapshots_for_dispatch', validate_snapshots)
     monkeypatch.setattr(_owner_skills_infrastructure_postgres, 'validate_replay_skill_manifests', validate_replay)
-    monkeypatch.setattr(_owner_skills_infrastructure_resolution_postgres, 'resolve_selected_skill', resolve_selected)
+    monkeypatch.setattr(_owner_skills_infrastructure_resolution_postgres, 'resolve_skill_identity', resolve_selected)
     monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'get_capability_distribution_row', get_distribution)
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'run_mcp_tool_ids_for_skill', lambda *_args, **_kwargs: [])
     monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", resolve_catalog_with_current_authority)
@@ -941,7 +1008,7 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
     monkeypatch.setattr("app.worker.resolve_current_principal", unavailable_current_principal)
     monkeypatch.setattr("app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch", forbidden)
     monkeypatch.setattr("app.skills.infrastructure.postgres.validate_replay_skill_manifests", forbidden)
-    monkeypatch.setattr("app.skills.infrastructure.resolution_postgres.resolve_selected_skill", forbidden)
+    monkeypatch.setattr("app.skills.infrastructure.resolution_postgres.resolve_skill_identity", forbidden)
     monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", forbidden)
     monkeypatch.setattr("app.worker.materialize_queued_worker_context_snapshot", forbidden)
     monkeypatch.setattr("app.worker._create_worker_runtime_sandbox_lease", forbidden)
@@ -1025,7 +1092,7 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
     monkeypatch.setattr("app.worker.resolve_current_principal", current_principal)
     monkeypatch.setattr("app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch", validate_snapshots)
     monkeypatch.setattr("app.skills.infrastructure.postgres.validate_replay_skill_manifests", validate_replay)
-    monkeypatch.setattr("app.skills.infrastructure.resolution_postgres.resolve_selected_skill", resolve_selected)
+    monkeypatch.setattr("app.skills.infrastructure.resolution_postgres.resolve_skill_identity", resolve_selected)
     monkeypatch.setattr("app.identity.infrastructure.capability_distributions_postgres.get_capability_distribution_row", get_distribution)
 
     outcome = await process_run_payload(

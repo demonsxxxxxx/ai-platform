@@ -5502,7 +5502,7 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_active_retry_for_source_run', no_active_run)
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_active_resume_for_source_run', no_active_run)
     monkeypatch.setattr(_owner_runs_infrastructure_replay_postgres, '_completed_steps_for_resume', completed_steps)
-    monkeypatch.setattr("app.runs.infrastructure.capability_admission_postgres.resolve_selected_skill", reject_selector)
+    monkeypatch.setattr("app.runs.infrastructure.capability_admission_postgres.resolve_skill_identity", reject_selector)
     monkeypatch.setattr(
         _owner_skills_infrastructure_run_snapshots_postgres,
         'validate_run_skill_snapshots_for_dispatch',

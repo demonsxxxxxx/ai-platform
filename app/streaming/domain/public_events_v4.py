@@ -667,15 +667,11 @@ def project_public_v4(
         return None
 
 
-def project_public_envelope_v4(
-    envelope: Mapping[str, object],
-) -> dict[str, object] | None:
-    """Strip internal authority fields only at the public gateway boundary."""
+def _project_validated_internal_envelope_v4(
+    internal: Mapping[str, object],
+) -> dict[str, object]:
+    """Project fields after the caller has applied the internal envelope contract."""
 
-    try:
-        internal = validate_internal_envelope_v4(envelope)
-    except V4ProjectionError:
-        return None
     return {
         "schema": _CONTROL_SCHEMA
         if internal["event_type"] in _CONTROL_EVENT_TYPES
@@ -692,6 +688,18 @@ def project_public_envelope_v4(
         "emitted_at": internal["emitted_at"],
         "payload": internal["payload"],
     }
+
+
+def project_public_envelope_v4(
+    envelope: Mapping[str, object],
+) -> dict[str, object] | None:
+    """Validate an untrusted envelope, then strip its internal authority fields."""
+
+    try:
+        internal = validate_internal_envelope_v4(envelope)
+    except V4ProjectionError:
+        return None
+    return _project_validated_internal_envelope_v4(internal)
 
 
 def project_persisted_message_delta_v4(
@@ -729,7 +737,9 @@ def project_persisted_message_delta_v4(
         )
         projected = project_public_v4(row, authority=authority)
         public = (
-            project_public_envelope_v4(projected) if projected is not None else None
+            _project_validated_internal_envelope_v4(projected)
+            if projected is not None
+            else None
         )
         return (
             public

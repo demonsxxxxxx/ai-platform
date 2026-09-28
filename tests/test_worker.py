@@ -1055,10 +1055,20 @@ def default_cancel_not_requested(monkeypatch):
         agent_id,
         revision,
         content_hash,
+        pinned_skill_set,
+        pinned_manifests,
+        pinned_executor_type,
+        execution_kind,
     ):
         queue_payload = _CURRENT_QUEUE_PAYLOAD or {}
         profile = dict(queue_payload.get("agent_profile") or {})
         skill_set = list(profile.get("skill_set") or [])
+        assert pinned_skill_set == skill_set
+        assert isinstance(pinned_manifests, list)
+        assert pinned_executor_type == (
+            queue_payload.get("executor_type") or "claude-agent-worker"
+        )
+        assert execution_kind == queue_payload.get("execution_kind", "skill")
         primary = skill_set[0] if skill_set else {}
         return types.SimpleNamespace(
             private_execution_input=profile,
@@ -1443,7 +1453,7 @@ def default_cancel_not_requested(monkeypatch):
         return "audit-default"
 
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', resolve_agent_skill, raising=False)
-    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_selected_skill', resolve_agent_skill, raising=False)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_skill_identity', resolve_agent_skill, raising=False)
     monkeypatch.setattr(
         'app.identity.infrastructure.capability_distributions_postgres.get_capability_distribution_row',
         get_capability_distribution_row,
@@ -2128,6 +2138,10 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         "agent_id": "agt_support",
         "revision": 7,
         "content_hash": "a" * 64,
+        "pinned_skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
+        "pinned_manifests": [],
+        "pinned_executor_type": "claude-agent-worker",
+        "execution_kind": "harness_chat",
     }]
     assert not any(
         call == ("event", "capability_not_authorized") for call in terminal_calls
@@ -2381,6 +2395,76 @@ def test_agent_profile_snapshot_rejects_authority_skill_version_mismatch():
     )
 
     assert worker_module._agent_profile_snapshot_matches_authority(payload, admission) is False
+
+
+@pytest.mark.parametrize(
+    ("execution_kind", "skill_id", "skill_version", "skill_set"),
+    [
+        (
+            "skill",
+            "skill-a",
+            "version-a",
+            [
+                {"skill_id": "skill-a", "expected_version": "version-a"},
+                {"skill_id": "skill-b", "expected_version": "version-b"},
+            ],
+        ),
+        (
+            "harness_chat",
+            None,
+            None,
+            [{"skill_id": "general-chat", "expected_version": "version-a"}],
+        ),
+    ],
+    ids=["multi-skill-pins", "harness-without-skill-override"],
+)
+def test_agent_profile_snapshot_matches_run_pins_for_multiskill_and_harness(
+    execution_kind,
+    skill_id,
+    skill_version,
+    skill_set,
+):
+    profile = {
+        "agent_id": "agt_support",
+        "revision": 7,
+        "content_hash": "a" * 64,
+        "instructions": "Use the fixed enterprise expert policy.",
+        "skill_set": skill_set,
+    }
+    payload_values = base_payload(
+        _leased=False,
+        agent_id="agt_support",
+        execution_kind=execution_kind,
+        executor_type="claude-agent-worker",
+        skill_id=skill_id,
+        skill_version=skill_version,
+        release_decision=(
+            release_decision(skill_version)
+            if execution_kind == "skill"
+            else {}
+        ),
+        skill_manifests=(
+            [primary_manifest(skill_id, skill_version)]
+            if execution_kind == "skill"
+            else []
+        ),
+        file_ids=[],
+        input={"message": "hello"},
+        agent_profile=profile,
+        schema_version="ai-platform.run-payload.v2",
+    )
+    payload = parse_queue_payload(payload_values)
+    admission = types.SimpleNamespace(
+        private_execution_input=profile,
+        skill={"skill_id": skill_set[0]["skill_id"], "skill_version": skill_set[0]["expected_version"]},
+        mcp_tool_ids=tuple(
+            _owner_runs_infrastructure_capability_admission_postgres.extract_run_mcp_tool_ids(
+                payload.input
+            )
+        ),
+    )
+
+    assert worker_module._agent_profile_snapshot_matches_authority(payload, admission) is True
 
 
 def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeypatch):
@@ -9001,7 +9085,7 @@ def _install_task6_worker_fakes(
     )
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', resolve_agent_skill, raising=False)
-    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_selected_skill', resolve_agent_skill, raising=False)
+    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_skill_identity', resolve_agent_skill, raising=False)
     monkeypatch.setattr(
         'app.identity.infrastructure.capability_distributions_postgres.get_capability_distribution_row',
         get_capability_distribution_row,

@@ -1324,6 +1324,59 @@ async def test_opensandbox_renew_rejects_identity_drift_before_remote_renewal(mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_stage", ["connect", "get_info", "renew"])
+async def test_opensandbox_renew_remote_steps_share_request_deadline(monkeypatch, blocked_stage):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    lifecycle = importlib.import_module("app.runtime.sandbox.providers.opensandbox.startup")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    class DeadlineSettings(OpenSandboxSettings):
+        opensandbox_request_timeout_seconds = 0.02
+
+    settings = DeadlineSettings()
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+
+    async def blocked(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    if blocked_stage == "connect":
+        provider._sandboxes.clear()
+        monkeypatch.setattr(provider, "_connect", blocked)
+    elif blocked_stage == "get_info":
+        monkeypatch.setattr(sandbox, "get_info", blocked)
+    else:
+        monkeypatch.setattr(sandbox, "renew", blocked)
+
+    with pytest.raises(container_provider.OpenSandboxUnavailableError, match="timed out"):
+        await lifecycle.renew_opensandbox_lifetime(
+            provider,
+            lease,
+            settings,
+            ttl_seconds=1801,
+        )
+
+    assert sandbox.renew_calls == []
+
+
+@pytest.mark.parametrize(
+    ("configured_timeout", "expected_timeout"),
+    [(None, 8.0), (30.0, 8.0), (8.0, 8.0), (3.0, 3.0), (0.02, 0.02)],
+)
+def test_opensandbox_renewal_deadline_caps_default_and_preserves_smaller_setting(
+    configured_timeout,
+    expected_timeout,
+):
+    lifecycle = importlib.import_module("app.runtime.sandbox.providers.opensandbox.startup")
+
+    assert lifecycle._renewal_request_deadline_seconds(
+        SimpleNamespace(opensandbox_request_timeout_seconds=configured_timeout)
+    ) == expected_timeout
+
+
+@pytest.mark.asyncio
 async def test_opensandbox_create_mounts_only_the_exact_attempt_workspace(monkeypatch, tmp_path):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()

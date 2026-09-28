@@ -6029,6 +6029,99 @@ async def test_sdk_projects_answer_candidates_before_turn_boundary(
 
 
 @pytest.mark.asyncio
+async def test_sdk_preserves_gate_output_across_8192_candidate_boundary(
+    monkeypatch, tmp_path
+):
+    answer = "a" * 8_182 + " token-count "
+    captured, candidates, deltas = {}, [], []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _stream_steps(answer),
+            result_text=answer,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-8192-boundary",
+        attempt_id="attempt-8192-boundary",
+    )
+
+    answer_deltas = [
+        event.payload["delta"]
+        for event in candidates
+        if event.event_type == "message.delta"
+    ]
+    assert len(answer) == 8_195
+    assert result.error is None
+    assert "".join(deltas) == answer
+    assert "".join(answer_deltas) == answer
+    assert answer_deltas and all(len(chunk) <= 8_192 for chunk in answer_deltas)
+    assert result.answer_receipt is not None
+    assert result.answer_receipt["text_length"] == len(answer)
+    assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sdk_candidate_omission_cannot_be_reported_as_success(
+    monkeypatch, tmp_path
+):
+    captured, candidates, deltas = {}, [], []
+
+    def reject_answer_delta(value):
+        if isinstance(value, dict) and value.get("event_type") == "message.delta":
+            raise RuntimeError("synthetic answer candidate failure")
+        return sanitize_public_event_candidate(value)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _stream_steps("Delivered body"),
+            result_text="Delivered body",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.sanitize_public_event_candidate",
+        reject_answer_delta,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-answer-candidate-failure",
+        attempt_id="attempt-answer-candidate-failure",
+    )
+
+    assert result.error is not None
+    assert result.answer_receipt is None
+    assert not any(event.event_type == "message.delta" for event in candidates)
+    assert deltas == []
+    assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
+
+
+@pytest.mark.asyncio
 async def test_sdk_completion_projection_failure_keeps_delivered_text_without_receipt(
     monkeypatch, tmp_path
 ):

@@ -125,12 +125,19 @@ async def list_public_skill_catalog(
     tenant_id: str,
     include_disabled: bool = False,
     rollout_key: str | None = None,
+    skill_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return tenant-visible public Skills/Marketplace catalog rows."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    skill_scope = ""
+    params: list[Any] = [tenant_id, tenant_id, sorted(PUBLIC_WORKBENCH_SKILL_IDS)]
+    if skill_ids is not None:
+        skill_scope = "and skills.id = any(%s)"
+        params.append(sorted(set(skill_ids)))
+    params.append(LEGACY_SYNTHETIC_CHAT_SKILL_ID)
     cursor = await conn.execute(
-        """
+        f"""
         select
           skills.id as skill_id,
           skills.name,
@@ -143,7 +150,7 @@ async def list_public_skill_catalog(
           coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user,
           coalesce(tenant_capability_distributions.department_ids, array[]::text[]) as department_ids,
           coalesce(tenant_capability_distributions.allowed_roles, '[]'::jsonb) as allowed_roles,
-          coalesce(tenant_capability_distributions.metadata_json, '{}'::jsonb) as distribution_metadata_json,
+          coalesce(tenant_capability_distributions.metadata_json, '{{}}'::jsonb) as distribution_metadata_json,
           coalesce(skill_versions.status, 'active') as version_status,
           skill_release_policies.current_version as release_policy_version,
           skill_release_policies.previous_version as release_policy_previous_version,
@@ -155,7 +162,7 @@ async def list_public_skill_catalog(
           previous_skill_versions.dependency_ids as release_policy_previous_dependency_ids,
           previous_skill_versions.created_by as release_policy_previous_created_by,
           previous_skill_versions.created_at as release_policy_previous_created_at,
-          coalesce(skill_versions.source_json, '{}'::jsonb) as source_json,
+          coalesce(skill_versions.source_json, '{{}}'::jsonb) as source_json,
           coalesce(skill_versions.dependency_ids, '[]'::jsonb) as dependency_ids,
           skill_versions.created_by,
           skill_versions.created_at,
@@ -177,16 +184,12 @@ async def list_public_skill_catalog(
           on previous_skill_versions.skill_id = skills.id
          and previous_skill_versions.version = skill_release_policies.previous_version
         where (skills.id = any(%s) or tenant_capability_distributions.capability_id is not null)
+          {skill_scope}
           and skills.id <> %s
           and skills.status = 'active'
         order by skills.name asc, skills.id asc
         """,
-        (
-            tenant_id,
-            tenant_id,
-            sorted(PUBLIC_WORKBENCH_SKILL_IDS),
-            LEGACY_SYNTHETIC_CHAT_SKILL_ID,
-        ),
+        tuple(params),
     )
     rows = []
     for row in list(await cursor.fetchall()):

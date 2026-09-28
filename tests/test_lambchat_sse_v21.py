@@ -405,85 +405,17 @@ def terminal_rows():
 
 
 @pytest.mark.asyncio
-async def test_terminal_state_restore_preserves_a_valid_terminal_resume(monkeypatch):
+async def test_end_cursor_uses_resume_state_without_historical_scan(monkeypatch):
     patch_authority(monkeypatch)
     bridge = FakeBridge(
         terminal_rows(),
-        resume=ResumeDecision("4-0", None),
+        resume=ResumeDecision("4-0", None, "sev-terminal", True),
     )
 
     _, body = await connect(bridge, last_event_id="run-a:1:4-0")
 
     assert body == ""
-    assert "replay:0-0:4-0" in bridge.calls
-
-
-@pytest.mark.asyncio
-async def test_terminal_state_restore_accepts_trimmed_prefix_and_checks_end_linkage():
-    trimmed_prefix = FakeBridge(
-        [entry("8-0", "sev-delta", "message.delta", {"delta": "retained"})]
-    )
-    restored = await route._restore_chat_stream_terminal_state(
-        trimmed_prefix,
-        tenant_scope_value="scope-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        stream_incarnation=1,
-        through_redis_id="8-0",
-    )
-    assert restored == (None, False)
-
-    missing_terminal = FakeBridge(
-        [
-            entry("8-0", "sev-delta", "message.delta", {"delta": "retained"}),
-            entry(
-                "9-0",
-                "sev-end",
-                "stream.end",
-                {"terminal_event_id": "sev-terminal"},
-            ),
-        ]
-    )
-    with pytest.raises(
-        StreamContractError, match="stream_end_without_observed_terminal"
-    ):
-        await route._restore_chat_stream_terminal_state(
-            missing_terminal,
-            tenant_scope_value="scope-a",
-            run_id="run-a",
-            attempt_id="attempt-a",
-            stream_incarnation=1,
-            through_redis_id="9-0",
-        )
-
-    mismatched_end = FakeBridge(
-        [
-            open_entry(),
-            entry(
-                "2-0",
-                "sev-terminal",
-                "run.succeeded",
-                {"terminal_event_id": "sev-terminal", "hydrate_required": True},
-            ),
-            entry(
-                "3-0",
-                "sev-end",
-                "stream.end",
-                {"terminal_event_id": "wrong-terminal"},
-            ),
-        ]
-    )
-    with pytest.raises(
-        StreamContractError, match="stream_end_without_observed_terminal"
-    ):
-        await route._restore_chat_stream_terminal_state(
-            mismatched_end,
-            tenant_scope_value="scope-a",
-            run_id="run-a",
-            attempt_id="attempt-a",
-            stream_incarnation=1,
-            through_redis_id="3-0",
-        )
+    assert not any(call.startswith("replay:") for call in bridge.calls)
 
 
 @pytest.mark.asyncio
@@ -556,13 +488,16 @@ async def test_v4_terminal_resume_survives_trimmed_open(monkeypatch):
                 {"terminal_event_id": "sev-terminal"},
             ),
         ],
-        resume=ResumeDecision("8-0", None),
+        resume=ResumeDecision("8-0", None, "sev-terminal", False),
     )
 
     _, body = await connect(bridge, last_event_id="run-a:1:8-0")
 
     assert "event: stream.gap\n" not in body
     assert "event: stream.end\n" in body
+    assert "event: run.succeeded\n" not in body
+    assert "replay:0-0:8-0" not in bridge.calls
+    assert "replay:8-0:9-0" in bridge.calls
 
 
 @pytest.mark.asyncio
@@ -577,13 +512,13 @@ async def test_v4_end_cursor_is_accepted_when_trimmed_suffix_starts_at_end(monke
                 {"terminal_event_id": "sev-terminal"},
             )
         ],
-        resume=ResumeDecision("9-0", None),
+        resume=ResumeDecision("9-0", None, "sev-terminal", True),
     )
 
     _, body = await connect(bridge, last_event_id="run-a:1:9-0")
 
     assert body == ""
-    assert "replay:0-0:9-0" in bridge.calls
+    assert not any(call.startswith("replay:") for call in bridge.calls)
 
 
 async def connect_expect_conflict():

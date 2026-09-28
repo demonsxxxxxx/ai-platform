@@ -99,6 +99,7 @@ flowchart LR
 ### 3.2 脱敏、失败和终态
 
 `PublicAnswerStreamGate` 仍负责跨 chunk 私有 token、SDK call ID 和敏感后缀的有界处理。
+它是答案内容的唯一过滤入口；分片后的候选和回调接收端只检查结构、长度、身份，不再次按片段判断私有 token。候选构造失败必须中止交付，不能跳过正文后返回成功。
 工具参数和原始结果从未成为输入候选；对普通技术回答不能按代码围栏、JSON 或路径形式整体删除。
 
 一旦安全前缀已经提交到公共事件，就不能在工具失败、Run 失败或 Result 不一致时撤回。
@@ -107,6 +108,8 @@ flowchart LR
 
 `message.completed` 关闭公开正文，不代表工具或 Run 成功。Worker 继续校验当前 Attempt 的 `AssistantAnswerReceipt`、工具证据和 terminal fence 后才能持久化成功结果。
 answer receipt 覆盖本次 v4 回复中实际提交的完整 Assistant 正文，包括公开过程说明和最终回答。
+正文时间线保存片段，只在需要完整文本时合并，避免每次 delta 都复制累计正文。
+SDK 的 Result 与 Run 终态仍是不同边界：原生 SDK 会先刷新 SessionStore，再等待 CLI 关闭。平台保留这段资源回收等待；它不能由假终态替代。
 
 ## 4. 前端展示
 
@@ -119,7 +122,8 @@ answer receipt 覆盖本次 v4 回复中实际提交的完整 Assistant 正文�
 - artifact 卡片按消息顺序显示在回复末尾，下载仍走授权接口。
 
 实时、Redis 重放、PostgreSQL history 和 terminal hydrate 使用同一 v4 语义 reducer。
-浏览器断线只恢复公共事件和水位，不重新执行 Agent；旧 hydrate 不得覆盖更高水位的 text、tool 状态或附件。
+浏览器断线只恢复公共事件和水位，不重新执行 Agent；旧 hydrate 只合并其所属 Run，不得覆盖下一轮的正文、状态或游标。可信 Run 终态立即结束生成展示并允许续聊，历史回填不占用下一轮发送。
+历史接口按固定 Run 集合和事件水位分页，前端沿 `next_cursor` 读取并保持同一取消信号。完整终态历史带 `terminal_run_statuses`，可避免重复读取。
 
 公开正文在首次发布前完成脱敏；历史准入后直接保留已发布的 delta，不再累计扫描全文、替换 Agent 名称或扣留后缀。
 终态历史可合并同一消息、同一流实例内的连续正文，遇到公开活动事件先提交该组，保持文字与活动的原始顺序。

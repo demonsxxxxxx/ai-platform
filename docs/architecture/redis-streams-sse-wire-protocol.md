@@ -333,8 +333,9 @@ Validation results:
 - valid current incarnation whose exact entry was trimmed/missing or whose
   continuity cannot be proven: emit strict `stream.gap`;
 - valid retained cursor: resume from it even when the original `stream.open`
-  has been trimmed. Restore terminal linkage from the retained suffix; an end
-  that is itself the first retained row carries the validated terminal reference;
+  has been trimmed. The exact cursor row carries terminal/end linkage; no
+  preceding history scan is needed. Producer ordering forbids body rows after a
+  Run terminal and binds `stream.end` to that terminal.
 - no header: read from the earliest retained entry only when exact current
   `stream.open` is still the origin; otherwise emit `stream.gap`.
 
@@ -372,16 +373,28 @@ processing order is:
 3. classify semantic duplicates as transport-only acceptance while preserving
    chat state;
 4. apply the one public-event adapter and reducer;
-5. store the cursor only after reducer acceptance. Run-terminal and an
-   immediately matching `stream.end` both wait for successful terminal hydrate.
+5. store the cursor only after reducer acceptance. A trusted Run terminal
+   releases generation and admission immediately; its matching `stream.end`
+   shares that accepted terminal fence. Required history hydration runs separately.
 
-Reducer or hydrate failure leaves the previous cursor unchanged so reconnect
-replays the event. Missing IDs fail closed; no UUID transport fallback exists.
+Reducer failure leaves the previous cursor unchanged so reconnect replays the
+event. Terminal history failure displays a result-unavailable card for that Run;
+it does not reopen an accepted terminal. Missing IDs fail closed; no UUID transport fallback exists.
 Durable PostgreSQL sequence/history/status values cannot become a Redis cursor,
 reset a reconnect budget, or enter the live reducer. Reconnect sends only the
 last accepted cursor in `Last-Event-ID`. Terminal hydrate reconciles the same
 Run segment and accepted source identities; it does not append duplicate answer
 text or replace unrelated narration, Tool, process, or actionable status parts.
+A new submission may proceed while the previous terminal history is loading;
+late history and admission rollback modify only their own Run or optimistic messages.
+
+The events endpoint returns at most 100 durable Run events per page, with
+`next_cursor` fixing the Run set and sequence ceilings for that read. Each page
+reauthorizes the session and Runs. User messages appear once before their Run;
+artifacts and terminal events appear after its last page.
+`terminal_run_statuses` identifies fully delivered terminal Runs; a matching
+status and assistant segment avoid a second exact history request. An active
+snapshot still requires reconciliation if the Run completes during the read.
 
 An active gap with no observed `message.started` may lack the protocol message
 owner needed to resume. Apply the durable history and preserve the Run, then

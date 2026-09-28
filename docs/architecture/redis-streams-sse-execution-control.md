@@ -139,7 +139,9 @@ terminal ownership, or executor truth.
 The authenticated executor callback route validates the exact active Attempt
 and runtime lease before receipt. The platform adapter validates the complete
 batch, assigns deterministic public identities, and commits canonical public
-`run_events` plus the callback receipt in one transaction. Unknown, private, or
+`run_events` plus the callback receipt in one transaction. Each private/public
+group reserves one contiguous sequence range and uses one bulk insert; existing
+public event identities are looked up together for exact retry validation. Unknown, private, or
 malformed SDK values do not become public rows.
 
 Publication occurs after that transaction commits. The callback route appends
@@ -147,8 +149,11 @@ the complete canonical batch directly to Redis Stream before acknowledging the
 callback. Callback rows do not enter a PostgreSQL publication queue and have no
 publication claim, retry counter, or pending/published disposition.
 
-The existing executor callback buffer serializes batches and waits for an exact
-acknowledgement before sending the next batch. Redis appends each batch and its
+The executor callback buffer serializes public/capability batches and waits for
+an exact acknowledgement before the next ordered batch. A pure supervisor
+heartbeat uses a separate single-flight sender, so remote renewal does not block
+body delivery. Executor finalization drains any in-flight heartbeat; failed or
+unknown delivery still prevents success. Redis appends each batch and its
 bounded idempotency receipt in one script. A repeated batch reuses its committed
 semantic IDs and bytes without appending duplicate records. A Redis outage
 returns a retryable callback error through the existing callback delivery policy;

@@ -347,6 +347,45 @@ async def _allocate_cursor(
         raise RunEventLedgerConflictError("run_event_cursor_unavailable") from exc
 
 
+async def _allocate_cursor_range(
+    conn: AsyncConnection[dict[str, object]],
+    *,
+    tenant_id: str,
+    run_id: str,
+    count: int,
+) -> RunCursor:
+    """Atomically reserve one contiguous cursor range for a batch."""
+
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("run_event_cursor_range_invalid")
+    await conn.execute(
+        """
+        insert into run_event_cursors(tenant_id, run_id, next_sequence)
+        select %s, %s, coalesce(max(sequence), 0) + 1
+        from run_events
+        where tenant_id = %s and run_id = %s
+        on conflict (tenant_id, run_id) do nothing
+        """,
+        (tenant_id, run_id, tenant_id, run_id),
+    )
+    result = await conn.execute(
+        """
+        update run_event_cursors
+        set next_sequence = next_sequence + %s, updated_at = now()
+        where tenant_id = %s and run_id = %s
+        returning next_sequence - %s as sequence
+        """,
+        (count, tenant_id, run_id, count),
+    )
+    row = await result.fetchone()
+    if row is None:
+        raise RunEventLedgerConflictError("run_event_cursor_unavailable")
+    try:
+        return RunCursor(run_id=run_id, sequence=int(row["sequence"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RunEventLedgerConflictError("run_event_cursor_unavailable") from exc
+
+
 async def append_event(
     conn: AsyncConnection[dict[str, object]],
     *,
@@ -409,6 +448,110 @@ async def append_event(
             row.get("created_at"), error="run_event_receipt_unavailable"
         ),
     )
+
+
+async def append_events(
+    conn: AsyncConnection[dict[str, object]],
+    *,
+    tenant_id: str,
+    run_id: str,
+    events: Sequence[LedgerEvent],
+    event_ids: Sequence[str],
+) -> tuple[EventReceipt, ...]:
+    """Insert ordered events in one SQL statement after reserving one range."""
+
+    _require_nonempty(tenant_id, field_name="tenant_id")
+    _require_nonempty(run_id, field_name="run_id")
+    if len(events) != len(event_ids):
+        raise ValueError("run_event_batch_identity_invalid")
+    for event_id in event_ids:
+        _require_nonempty(event_id, field_name="id")
+    if len(set(event_ids)) != len(event_ids):
+        raise RunEventLedgerConflictError("run_event_event_id_conflict")
+    if not events:
+        return ()
+
+    for event, event_id in zip(events, event_ids, strict=True):
+        _require_nonempty(event.event_type, field_name="type")
+        _require_nonempty(event.stage, field_name="stage")
+
+    if len(events) == 1:
+        return (
+            await append_event(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                event=events[0],
+                event_id=event_ids[0],
+            ),
+        )
+
+    first_cursor = await _allocate_cursor_range(
+        conn, tenant_id=tenant_id, run_id=run_id, count=len(events)
+    )
+    columns = (
+        "id, tenant_id, run_id, trace_id, schema_version, sequence, event_type, "
+        "stage, message, severity, visible_to_user, error_code, latency_ms, "
+        "input_token_count, output_token_count, total_token_count, "
+        "estimated_cost_minor, payload_json"
+    )
+    row_placeholders = "(" + ", ".join(["%s"] * 17 + ["%s::jsonb"]) + ")"
+    values_sql = ", ".join(row_placeholders for _ in events)
+    params: list[object] = []
+    for index, (event_id, event) in enumerate(zip(event_ids, events, strict=True)):
+        params.extend(
+            (
+                event_id,
+                tenant_id,
+                run_id,
+                event.trace_id or standard_trace_id(run_id),
+                EVENT_ENVELOPE_SCHEMA_VERSION,
+                first_cursor.sequence + index,
+                event.event_type,
+                event.stage,
+                event.message,
+                _severity(event),
+                _visible(event),
+                _error_code(event),
+                event.latency_ms,
+                int(event.input_token_count or 0),
+                int(event.output_token_count or 0),
+                int(event.total_token_count or 0),
+                int(event.estimated_cost_minor or 0),
+                _json(dict(event.payload)),
+            )
+        )
+    inserted = await conn.execute(
+        f"""
+        insert into run_events({columns})
+        values {values_sql}
+        returning id, sequence, created_at
+        """,
+        tuple(params),
+    )
+    rows = await inserted.fetchall()
+    by_id = {str(row.get("id")): row for row in rows}
+    if len(rows) != len(events) or any(event_id not in by_id for event_id in event_ids):
+        raise RunEventLedgerConflictError("run_event_receipt_unavailable")
+    receipts: list[EventReceipt] = []
+    for index, event_id in enumerate(event_ids):
+        row = by_id[event_id]
+        try:
+            sequence = int(row["sequence"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RunEventLedgerConflictError("run_event_receipt_unavailable") from exc
+        if sequence != first_cursor.sequence + index:
+            raise RunEventLedgerConflictError("run_event_cursor_unavailable")
+        receipts.append(
+            EventReceipt(
+                event_id=event_id,
+                cursor=RunCursor(run_id=run_id, sequence=sequence),
+                created_at=_timestamp(
+                    row.get("created_at"), error="run_event_receipt_unavailable"
+                ),
+            )
+        )
+    return tuple(receipts)
 
 
 async def append_batch(
@@ -483,18 +626,19 @@ async def append_batch(
             raise RunEventLedgerConflictError("run_event_batch_conflict")
         return _batch_receipt(row, run_id=run_id, duplicate=True)
 
-    receipts = [
-        await append_event(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            event=event,
-            event_id=_stable_batch_event_id(
-                tenant_id, run_id, attempt_id, batch_id, index, projection_version
-            ),
+    event_ids = tuple(
+        _stable_batch_event_id(
+            tenant_id, run_id, attempt_id, batch_id, index, projection_version
         )
-        for index, event in enumerate(events)
-    ]
+        for index in range(item_count)
+    )
+    receipts = await append_events(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        events=events,
+        event_ids=event_ids,
+    )
     first_sequence = min(
         (receipt.cursor.sequence for receipt in receipts), default=None
     )

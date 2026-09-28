@@ -179,7 +179,10 @@ def _v4_agent_event_to_executor_event(event: AgentEvent) -> dict[str, object]:
         }
         if (
             not isinstance(delta, str)
-            or sanitize_public_answer_text(delta) != delta
+            or (
+                event.type == "thinking.delta"
+                and sanitize_public_answer_text(delta) != delta
+            )
             or sanitize_public_payload(structured_payload)
             != _without_none_public_values(structured_payload)
         ):

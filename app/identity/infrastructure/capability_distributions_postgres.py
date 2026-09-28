@@ -376,15 +376,21 @@ async def list_capability_distribution_rows(
     tenant_id: str,
     capability_kind: str | None = None,
     include_disabled: bool = True,
+    capability_ids: list[str] | None = None,
+    ensure_backfill: bool = True,
 ) -> list[dict[str, Any]]:
     """List the authoritative distribution rows for one tenant."""
 
-    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    if ensure_backfill:
+        await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
     filters = ["tenant_id = %s", "(%s or status = 'active')"]
     params: list[Any] = [tenant_id, include_disabled]
     if capability_kind is not None:
         filters.insert(1, "capability_kind = %s")
         params.insert(1, capability_kind)
+    if capability_ids is not None:
+        filters.append("capability_id = any(%s)")
+        params.append(sorted(set(capability_ids)))
     cursor = await conn.execute(
         f"""
         select id, tenant_id, capability_kind, capability_id, status, visible_to_user,

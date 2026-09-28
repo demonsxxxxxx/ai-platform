@@ -60,6 +60,44 @@ async def test_list_public_skill_catalog_hides_archived_but_keeps_disabled_distr
 
 
 @pytest.mark.asyncio
+async def test_list_public_skill_catalog_applies_fixed_skill_id_scope(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return Cursor()
+
+    monkeypatch.setattr(
+        skill_catalog_persistence,
+        "ensure_tenant_capability_distribution_backfill",
+        no_backfill,
+    )
+    conn = Connection()
+
+    rows = await _repo_owner_app_skills_infrastructure_catalog_postgres.list_public_skill_catalog(
+        conn,
+        tenant_id="tenant-a",
+        include_disabled=True,
+        skill_ids=["skill-b", "skill-a", "skill-b"],
+    )
+
+    assert rows == []
+    assert "and skills.id = any(%s)" in conn.sql
+    assert conn.params[3] == ["skill-a", "skill-b"]
+
+
+@pytest.mark.asyncio
 async def test_list_public_skill_catalog_projects_public_source_without_internal_dependencies(monkeypatch):
     async def no_backfill(conn, *, tenant_id):
         return None

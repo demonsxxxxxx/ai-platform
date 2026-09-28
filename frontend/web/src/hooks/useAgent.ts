@@ -142,6 +142,31 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
   );
 }
 
+function removeOwnedOptimisticMessages(
+  messages: Message[],
+  owned: OwnedOptimisticMessageIds,
+): Message[] {
+  return messages.filter(
+    (message) =>
+      message.id !== owned.userMessageId &&
+      message.id !== owned.assistantMessageId,
+  );
+}
+
+function messagesAfterSubmissionRejection(
+  currentMessages: Message[],
+  uncertainty: SubmissionUncertainty,
+): Message[] {
+  if (uncertainty.suppressMessageProjection) return currentMessages;
+  if (uncertainty.ownedOptimisticMessages) {
+    return removeOwnedOptimisticMessages(
+      currentMessages,
+      uncertainty.ownedOptimisticMessages,
+    );
+  }
+  return uncertainty.previousMessages || [];
+}
+
 type HistoryLoadFailurePhase =
   | "session_projection"
   | "identity_validation"
@@ -430,7 +455,13 @@ function resetAcceptedStreamState(
   };
 }
 
-type TerminalHydrationOwner = ReconcileOwner & { controller: AbortController };
+type TerminalHydrationOwner = ReconcileOwner & {
+  controller: AbortController;
+  mountedGeneration: number;
+  sessionGeneration: number;
+  authScopeGeneration: number;
+  authScope: AuthScope | null;
+};
 
 type AuthScope = readonly [tenantId: string, userId: string];
 
@@ -439,7 +470,13 @@ interface SubmissionUncertainty {
   submissionId: string;
   owner: AuthScope;
   previousMessages?: Message[];
+  ownedOptimisticMessages?: OwnedOptimisticMessageIds;
   suppressMessageProjection?: boolean;
+}
+
+interface OwnedOptimisticMessageIds {
+  userMessageId: string;
+  assistantMessageId: string;
 }
 
 interface ActivePreAdmissionSubmission {
@@ -447,6 +484,7 @@ interface ActivePreAdmissionSubmission {
   submissionId: string;
   sessionId: string | null;
   previousMessages: Message[];
+  ownedOptimisticMessages: OwnedOptimisticMessageIds;
   token: number;
 }
 
@@ -803,11 +841,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   if (publicStreamPresentationRef.current === null) {
     publicStreamPresentationRef.current = new PublicStreamPresentation();
   }
-  // One owner covers concurrent online/visibility/history/transport recovery
-  // for the same session/run/generation.
+  // Current-run reconnect and replay recovery share one owner. Terminal history
+  // backfills are keyed separately so older Runs can finish within their scope.
   const reconcileOwnerRef = useRef<ReconcileOwner | null>(null);
   const reconcileCurrentRunRef = useRef<(() => Promise<void>) | null>(null);
-  const terminalHydrationOwnerRef = useRef<TerminalHydrationOwner | null>(null);
+  const terminalHydrationOwnersRef = useRef(new Map<string, TerminalHydrationOwner>());
   const replayGapRecoveryRef = useRef<ReplayGapRecoveryOwner | null>(null);
 
   // Keep sessionId/runId in ref for closure access
@@ -869,7 +907,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       ) {
         return false;
       }
-      const recoveryMessages = messages ?? active.previousMessages;
+      const recoveryMessages =
+        messages ??
+        removeOwnedOptimisticMessages(
+          messagesRef.current,
+          active.ownedOptimisticMessages,
+        );
       if (projectMessages) {
         messagesRef.current = recoveryMessages;
         setMessages(recoveryMessages);
@@ -879,6 +922,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         submissionId: active.submissionId,
         owner: active.owner,
         previousMessages: active.previousMessages,
+        ownedOptimisticMessages: active.ownedOptimisticMessages,
         suppressMessageProjection: !projectMessages,
       };
       setPendingSubmissionId(active.submissionId);
@@ -935,15 +979,26 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     [runControlLifecycle],
   );
 
-  const clearReconcileOwners = useCallback(() => {
-    reconcileOwnerRef.current = null;
-    terminalHydrationOwnerRef.current?.controller.abort();
-    terminalHydrationOwnerRef.current = null;
-    replayGapRecoveryRef.current?.controller.abort();
-    replayGapRecoveryRef.current = null;
-    v4MessageOwnerRef.current = null;
-    v4MessageCandidateRef.current = null;
-  }, []);
+  const clearReconcileOwners = useCallback(
+    (
+      { preserveTerminalHydrations = false }: {
+        preserveTerminalHydrations?: boolean;
+      } = {},
+    ) => {
+      reconcileOwnerRef.current = null;
+      if (!preserveTerminalHydrations) {
+        for (const owner of terminalHydrationOwnersRef.current.values()) {
+          owner.controller.abort();
+        }
+        terminalHydrationOwnersRef.current.clear();
+      }
+      replayGapRecoveryRef.current?.controller.abort();
+      replayGapRecoveryRef.current = null;
+      v4MessageOwnerRef.current = null;
+      v4MessageCandidateRef.current = null;
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     const handleAuthIncarnationChange = (event: Event) => {
@@ -1043,7 +1098,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       currentRunIdRef.current = null;
       setCanStopGeneration(false);
-      clearReconcileOwners();
+      clearReconcileOwners({ preserveTerminalHydrations: true });
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
       v4TerminalReservationsRef.current.clear();
@@ -1271,7 +1326,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             ? {
                 ...message,
                 isStreaming: false,
-                isSynchronizing: true,
+                isSynchronizing: false,
                 parts: clearAllLoadingStates(message.parts || []),
               }
             : message,
@@ -1340,20 +1395,26 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       onSettled?: (accepted: boolean) => boolean,
     ): Promise<void> => {
       const streamVersion = streamVersionRef.current;
-      const isCurrentTerminalHydration = () =>
-        isMountedRef.current &&
-        sessionIdRef.current === targetSessionId &&
-        currentRunIdRef.current === targetRunId &&
-        streamVersionRef.current === streamVersion;
-      const existing = terminalHydrationOwnerRef.current;
-      if (
-        existing &&
-        existing.sessionId === targetSessionId &&
-        existing.runId === targetRunId &&
-        existing.streamVersion === streamVersion
-      ) {
+      const ownerKey = JSON.stringify([targetSessionId, targetRunId]);
+      const existing = terminalHydrationOwnersRef.current.get(ownerKey);
+      if (existing && !existing.controller.signal.aborted) {
         return existing.promise;
       }
+      if (existing) terminalHydrationOwnersRef.current.delete(ownerKey);
+      const mountedGeneration = mountedGenerationRef.current;
+      const sessionGeneration = sessionGenerationRef.current;
+      const authScopeGeneration = authScopeGenerationRef.current;
+      const authScope = authScopeRef.current;
+      const streamIncarnation = acceptedStreamCursorRef.current.streamIncarnation;
+      const terminalMessageOwner = v4MessageOwnerRef.current;
+      const hydratedRootTextOwnerId =
+        terminalMessageOwner &&
+        terminalMessageOwner.sessionId === targetSessionId &&
+        terminalMessageOwner.runId === targetRunId &&
+        terminalMessageOwner.streamVersion === streamVersion &&
+        terminalMessageOwner.streamIncarnation === streamIncarnation
+          ? terminalMessageOwner.protocolMessageId
+          : fallbackMessageId;
       if (
         !beginTerminalSynchronization(
           targetSessionId,
@@ -1365,35 +1426,96 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return;
       }
 
-      terminalHydrationOwnerRef.current?.controller.abort();
+      // A trusted Run terminal ends admission and the active presentation now.
+      // hydrate_required still governs whether its exact persisted body is backfilled.
+      if (onSettled?.(true) === false) {
+        resumeRunAfterRejectedTerminalSynchronization(
+          targetSessionId,
+          targetRunId,
+          fallbackMessageId,
+          streamVersion,
+        );
+        return;
+      }
+      finalizeTerminalRun(targetRunId, status, fallbackMessageId);
+
       const owner: TerminalHydrationOwner = {
         controller: new AbortController(),
         sessionId: targetSessionId,
         runId: targetRunId,
         streamVersion,
+        mountedGeneration,
+        sessionGeneration,
+        authScopeGeneration,
+        authScope,
         promise: Promise.resolve(),
       };
-      const promise = (async () => {
-        let receiptSent = false;
-        const settle = (accepted: boolean): boolean => {
-          if (receiptSent) return false;
-          receiptSent = true;
-          return onSettled?.(accepted) !== false;
+      const isCurrentTerminalHydration = () =>
+        isMountedRef.current &&
+        mountedGenerationRef.current === owner.mountedGeneration &&
+        sessionIdRef.current === owner.sessionId &&
+        sessionGenerationRef.current === owner.sessionGeneration &&
+        authScopeGenerationRef.current === owner.authScopeGeneration &&
+        authScopeRef.current === owner.authScope &&
+        terminalHydrationOwnersRef.current.get(ownerKey) === owner &&
+        !owner.controller.signal.aborted;
+      const markTerminalResultUnavailable = () => {
+        const card: MessagePart = {
+          type: "run_status",
+          event_id: `terminal-result-unavailable:${targetRunId}`,
+          event_type: "terminal_result_unavailable",
+          stage: "agent",
+          message: i18n.t("chat.runTerminal.terminalResultUnavailable", {
+            defaultValue: "任务终态已确认，但结果暂时无法加载。请刷新当前会话。",
+          }),
+          severity: "warning",
         };
+        setMessageSnapshot({ messagesRef, setMessages }, (previous) => {
+          let matched = false;
+          const updated = previous.map((message) => {
+            if (
+              message.id !== fallbackMessageId &&
+              !(message.role === "assistant" && message.runId === targetRunId)
+            ) return message;
+            matched = true;
+            const parts = clearAllLoadingStates(message.parts || []);
+            return {
+              ...message,
+              isStreaming: false,
+              isSynchronizing: false,
+              parts: parts.some((part) => part.type === "run_status" && part.event_id === card.event_id)
+                ? parts
+                : [...parts, card],
+            };
+          });
+          return matched
+            ? updated
+            : [
+                ...updated,
+                {
+                  id: fallbackMessageId || targetRunId,
+                  runId: targetRunId,
+                  role: "assistant",
+                  content: "",
+                  timestamp: new Date(),
+                  isStreaming: false,
+                  parts: [card],
+                },
+              ];
+        });
+      };
+      const promise = Promise.resolve().then(async () => {
         try {
           const eventsData = await recoverRunHistory(
             (signal) => sessionApi.getEvents(targetSessionId, { run_id: targetRunId, signal }),
             owner.controller.signal,
           );
-          if (!isCurrentTerminalHydration()) {
-            settle(false);
-            return;
-          }
+          if (!isCurrentTerminalHydration()) return;
           const events = (eventsData.events || []) as HistoryEvent[];
           let hydratedMessages = reconstructMessagesFromEvents(
             events,
-            processedEventIdsRef.current,
-            { activeSubagentStack: activeSubagentStackRef.current },
+            new Set<string>(),
+            { activeSubagentStack: [] },
           );
           let hydratedAssistant = [...hydratedMessages]
             .reverse()
@@ -1402,8 +1524,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 message.role === "assistant" && message.runId === targetRunId,
             );
           if (!hydratedAssistant && status !== "cancelled") {
-            settle(false);
-            finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId);
+            markTerminalResultUnavailable();
             return;
           }
           if (!hydratedAssistant) {
@@ -1417,17 +1538,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 message.role === "assistant" && message.runId === targetRunId,
             );
           }
-          const streamIncarnation =
-            acceptedStreamCursorRef.current.streamIncarnation;
-          const acceptedV4Owner = v4MessageOwnerRef.current;
-          const hydratedRootTextOwnerId =
-            acceptedV4Owner &&
-            acceptedV4Owner.sessionId === targetSessionId &&
-            acceptedV4Owner.runId === targetRunId &&
-            acceptedV4Owner.streamVersion === streamVersion &&
-            acceptedV4Owner.streamIncarnation === streamIncarnation
-              ? acceptedV4Owner.protocolMessageId
-              : fallbackMessageId;
           hydratedMessages = hydratedMessages.map((message) =>
             normalizeMessageTextLogicalIds(
               message,
@@ -1442,65 +1552,64 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               (message) =>
                 message.role === "assistant" && message.runId === targetRunId,
             );
-          if (
-            hydratedAssistant &&
-            typeof streamIncarnation === "number" &&
-            Number.isSafeInteger(streamIncarnation)
-          ) {
-            rebindV4MessageOwner(
-              v4MessageOwnerRef,
-              {
-                sessionId: targetSessionId,
-                runId: targetRunId,
-                streamVersion,
-                streamIncarnation,
-              },
-              hydratedAssistant.id,
-            );
-          }
-          if (!isCurrentTerminalHydration()) {
-            settle(false);
-            return;
-          }
+          if (!isCurrentTerminalHydration()) return;
           const merged = mergeHydratedRunSegment(
             messagesRef.current,
             hydratedMessages,
             targetRunId,
-          );
-          if (!settle(true)) {
-            resumeRunAfterRejectedTerminalSynchronization(
-              targetSessionId,
-              targetRunId,
-              fallbackMessageId,
-              streamVersion,
+          ).map((message) => {
+            if (message.role !== "assistant" || message.runId !== targetRunId) {
+              return message;
+            }
+            const parts = clearAllLoadingStates(message.parts || []);
+            const hasFailedPresentation = parts.some(
+              (part) =>
+                part.type === "run_status" &&
+                (part.event_id === `terminal-failure:${targetRunId}` ||
+                  getPublicTerminalPresentationDefinition(part.event_type)?.detailKind === "failed"),
             );
-            return;
-          }
+            const hasCancelledPresentation = parts.some(
+              (part) =>
+                part.type === "cancelled" ||
+                (part.type === "run_status" &&
+                  getPublicTerminalPresentationDefinition(part.event_type)?.detailKind === "cancelled"),
+            );
+            if (status === "failed" && !hasFailedPresentation) {
+              parts.push({
+                type: "run_status",
+                event_id: `terminal-failure:${targetRunId}`,
+                event_type: "run_failed",
+                stage: "agent",
+                message: i18n.t("chat.runTerminal.failed"),
+                severity: "error",
+              });
+            } else if (status === "cancelled" && !hasCancelledPresentation) {
+              parts.push({ type: "cancelled" });
+            }
+            return {
+              ...message,
+              isStreaming: false,
+              isSynchronizing: false,
+              cancelled: status === "cancelled" ? true : message.cancelled,
+              parts,
+            };
+          });
           setMessageSnapshot({ messagesRef, setMessages }, merged);
-          finalizeTerminalRun(
-            targetRunId,
-            status,
-            hydratedAssistant?.id || fallbackMessageId,
-          );
         } catch {
-          if (isCurrentTerminalHydration()) {
-            finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId);
-          }
+          if (isCurrentTerminalHydration()) markTerminalResultUnavailable();
         } finally {
-          settle(false);
-          if (terminalHydrationOwnerRef.current === owner) {
-            terminalHydrationOwnerRef.current = null;
+          if (terminalHydrationOwnersRef.current.get(ownerKey) === owner) {
+            terminalHydrationOwnersRef.current.delete(ownerKey);
           }
         }
-      })();
+      });
       owner.promise = promise;
-      terminalHydrationOwnerRef.current = owner;
+      terminalHydrationOwnersRef.current.set(ownerKey, owner);
       return promise;
     },
     [
       beginTerminalSynchronization,
       finalizeTerminalRun,
-      finalizeTerminalResultUnavailable,
       resumeRunAfterRejectedTerminalSynchronization,
     ],
   );
@@ -1617,7 +1726,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setIsInitializingSandbox,
       setSandboxError,
       // A trusted terminal ends generation presentation immediately. Exact
-      // persisted history then reconciles under the same run/generation owner.
+      // persisted history can then backfill that Run without owning the next one.
       onRunTerminal: (runId, status, messageId, onSettled) => {
         const activeSessionId = sessionIdRef.current;
         if (!activeSessionId) return false;
@@ -1660,11 +1769,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     if (!targetSessionId || !targetRunId) {
       return;
     }
-    const terminalHydrationOwner = terminalHydrationOwnerRef.current;
+    const terminalHydrationOwner = terminalHydrationOwnersRef.current.get(
+      JSON.stringify([targetSessionId, targetRunId]),
+    );
     if (
       terminalHydrationOwner &&
-      terminalHydrationOwner.sessionId === targetSessionId &&
-      terminalHydrationOwner.runId === targetRunId &&
       terminalHydrationOwner.streamVersion === streamVersion
     ) {
       return;
@@ -2004,6 +2113,16 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                     message.role === "assistant",
                 )?.id || historyCurrentRunId)
             : null;
+          const hasCompleteTerminalHistory = Boolean(
+            historyCurrentRunId &&
+            terminalStatus &&
+            eventsData.terminal_run_statuses?.[historyCurrentRunId] === terminalStatus &&
+            reconstructedMessages.some(
+              (message) =>
+                message.role === "assistant" &&
+                message.runId === historyCurrentRunId,
+            ),
+          );
 
           if (statusUnauthorized && historyCurrentRunId) {
             currentRunIdRef.current = historyCurrentRunId;
@@ -2025,12 +2144,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             setIsInitializingSandbox(false);
             setSandboxError(null);
           } else if (terminalStatus && historyCurrentRunId) {
-            // An explicit target already arrived through the exact history
-            // contract. Default history still hydrates that exact run before
-            // terminal convergence can clear presentation.
+            // A matching complete-history status is sufficient only when the
+            // same response also reconstructed the assistant segment.
             currentRunIdRef.current = historyCurrentRunId;
             setCurrentRunId(historyCurrentRunId);
-            if (targetRunId) {
+            if (targetRunId || hasCompleteTerminalHistory) {
               let exactAssistant = reconstructedMessages.find(
                 (message) =>
                   message.role === "assistant" &&
@@ -2063,12 +2181,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 );
               }
             } else {
-              await hydrateTerminalRun(
+              void hydrateTerminalRun(
                 targetSessionId,
                 historyCurrentRunId,
                 terminalStatus,
                 historyMessageId || historyCurrentRunId,
-              );
+              ).catch((error: unknown) => {
+                console.warn("[loadHistory] Terminal result hydration failed", error);
+              });
             }
           } else {
             setCurrentRunId(activeHistoryRunId);
@@ -2249,10 +2369,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return { status: "failed" };
       }
 
-      if (terminalHydrationOwnerRef.current !== null) {
-        return { status: "failed" };
-      }
-
       if (isSendingRef.current) {
         console.log(
           "[sendMessage] Already sending, ignoring duplicate request",
@@ -2295,7 +2411,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       streamVersionRef.current += 1;
       v4TerminalFenceRef.current = null;
       v4TerminalReservationsRef.current.clear();
-      clearReconcileOwners();
+      clearReconcileOwners({ preserveTerminalHydrations: true });
       statusRetryCountRef.current = 0;
       const isCurrentSubmission = () =>
         isMountedRef.current &&
@@ -2344,13 +2460,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         finishCurrentSubmission();
         return { status: "failed" };
       }
-      activePreAdmissionSubmissionRef.current = {
-        owner: submissionOwner,
-        submissionId,
-        sessionId: requestSessionId,
-        previousMessages,
-        token: submissionToken,
-      };
       if (confirmationRecovery !== null) {
         setConfirmationRecovery(null);
       }
@@ -2364,6 +2473,16 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           content,
           attachments,
         });
+
+      const ownedOptimisticMessages = { userMessageId, assistantMessageId };
+      activePreAdmissionSubmissionRef.current = {
+        owner: submissionOwner,
+        submissionId,
+        sessionId: requestSessionId,
+        previousMessages,
+        ownedOptimisticMessages,
+        token: submissionToken,
+      };
 
       messagesRef.current = optimisticMessages;
       setMessages(optimisticMessages);
@@ -2524,6 +2643,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             submissionId,
             owner: submissionOwner,
             previousMessages,
+            ownedOptimisticMessages,
           };
           setPendingSubmissionId(submissionId);
           clearActivePreAdmissionSubmission(submissionToken);
@@ -2724,8 +2844,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           clearActivePreAdmissionSubmission(submissionToken);
           removePersistedSubmissionReference(submissionOwner, submissionId);
           setPendingSubmissionId(null);
-          messagesRef.current = previousMessages;
-          setMessages(previousMessages);
+          const rejectedMessages = removeOwnedOptimisticMessages(
+            messagesRef.current,
+            ownedOptimisticMessages,
+          );
+          messagesRef.current = rejectedMessages;
+          setMessages(rejectedMessages);
           const recoverableCode = selectedSkill
             ? getSelectedSkillRecoverableCode(err)
             : null;
@@ -2761,7 +2885,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
             defaultValue: i18n.t("chat.sendFailed"),
           });
-          const uncertainMessages = optimisticMessages.filter(
+          const uncertainMessages = messagesRef.current.filter(
             (message) => message.id !== assistantMessageId,
           );
           // The request may have committed before its response was lost. Keep
@@ -2957,6 +3081,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           current.submissionId === persisted.submissionId
             ? current.previousMessages
             : undefined,
+        ownedOptimisticMessages:
+          current &&
+          authScopesEqual(current.owner, owner) &&
+          current.submissionId === persisted.submissionId
+            ? current.ownedOptimisticMessages
+            : undefined,
         suppressMessageProjection:
           current &&
           authScopesEqual(current.owner, owner) &&
@@ -3074,6 +3204,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             submissionId,
             owner,
             previousMessages: submissionUncertaintyRef.current?.previousMessages,
+            ownedOptimisticMessages:
+              submissionUncertaintyRef.current?.ownedOptimisticMessages,
             suppressMessageProjection: pending.suppressMessageProjection,
           };
           setPendingSubmissionId(submissionId);
@@ -3081,9 +3213,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return;
         }
         if (isAuthoritativePreLedgerAbsence(resolution)) {
-          const previous = pending.suppressMessageProjection
-            ? []
-            : pending.previousMessages || [];
+          const previous = messagesAfterSubmissionRejection(
+            messagesRef.current,
+            pending,
+          );
           messagesRef.current = previous;
           setMessages(previous);
           setError(null);
@@ -3092,9 +3225,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         }
         const outcome = resolution.outcome;
         if (resolution.state === "rejected_before_persist") {
-          const previous = pending.suppressMessageProjection
-            ? []
-            : pending.previousMessages || [];
+          const previous = messagesAfterSubmissionRejection(
+            messagesRef.current,
+            pending,
+          );
           messagesRef.current = previous;
           setMessages(previous);
           setError(null);
@@ -3102,9 +3236,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return;
         }
         if (resolution.state === "enqueue_failed") {
-          const previous = pending.suppressMessageProjection
-            ? []
-            : pending.previousMessages || [];
+          const previous = messagesAfterSubmissionRejection(
+            messagesRef.current,
+            pending,
+          );
           messagesRef.current = previous;
           setMessages(previous);
           setError(i18n.t("chat.runTerminal.failed"));
@@ -3121,6 +3256,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             submissionId,
             owner,
             previousMessages: pending.previousMessages,
+            ownedOptimisticMessages: pending.ownedOptimisticMessages,
           };
           setPendingSubmissionId(submissionId);
           const historyPromise = loadHistory(outcome.session_id, outcome.run_id);
@@ -3153,6 +3289,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           sessionId: outcome?.session_id || null,
           submissionId,
           owner,
+          previousMessages: pending.previousMessages,
+          ownedOptimisticMessages: pending.ownedOptimisticMessages,
+          suppressMessageProjection: pending.suppressMessageProjection,
         };
         setPendingSubmissionId(submissionId);
         setError(statusUnavailable);
@@ -3165,6 +3304,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             submissionId,
             owner,
             previousMessages: submissionUncertaintyRef.current?.previousMessages,
+            ownedOptimisticMessages:
+              submissionUncertaintyRef.current?.ownedOptimisticMessages,
             suppressMessageProjection: pending.suppressMessageProjection,
           };
           setPendingSubmissionId(submissionId);
@@ -3206,9 +3347,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return;
       }
       if (isAuthoritativePreLedgerAbsence(resolution)) {
-        const previous = pending.suppressMessageProjection
-          ? []
-          : pending.previousMessages || [];
+        const previous = messagesAfterSubmissionRejection(
+          messagesRef.current,
+          pending,
+        );
         messagesRef.current = previous;
         setMessages(previous);
         setError(null);
@@ -3216,9 +3358,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return;
       }
       if (resolution.state === "rejected_before_persist") {
-        const previous = pending.suppressMessageProjection
-          ? []
-          : pending.previousMessages || [];
+        const previous = messagesAfterSubmissionRejection(
+          messagesRef.current,
+          pending,
+        );
         messagesRef.current = previous;
         setMessages(previous);
         setError(null);
@@ -3226,9 +3369,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return;
       }
       if (resolution.state === "enqueue_failed") {
-        const previous = pending.suppressMessageProjection
-          ? []
-          : pending.previousMessages || [];
+        const previous = messagesAfterSubmissionRejection(
+          messagesRef.current,
+          pending,
+        );
         messagesRef.current = previous;
         setMessages(previous);
         setError(i18n.t("chat.runTerminal.failed"));

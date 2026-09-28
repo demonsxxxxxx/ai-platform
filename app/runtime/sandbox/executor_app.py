@@ -2753,7 +2753,7 @@ def create_executor_app(
         started_at = time.monotonic()
         document_started_at = time.monotonic()
         try:
-            marker_path = _write_runtime_marker(resolved_workspace_root, request)
+            _write_runtime_marker(resolved_workspace_root, request)
         except OSError:
             error_message = "Executor runtime marker write failed"
             return {
@@ -2797,6 +2797,7 @@ def create_executor_app(
         capability_callback_failed = {"value": False}
         mcp_invocation_states: dict[str, str] = {}
         stream_delivery_failure: dict[str, str | None] = {"error_code": None}
+        heartbeat_stop = asyncio.Event()
         public_execution_projector = PublicExecutionV2Projector()
         public_execution_phase_publisher = PublicExecutionPhasePublisher()
         runner_event_lock = asyncio.Lock()
@@ -2899,6 +2900,11 @@ def create_executor_app(
                 )
             except asyncio.CancelledError:
                 seal_runner_events_after_delivery_cancellation()
+                if event.state_patch.get("executor_heartbeat") is True:
+                    mark_delivery_uncertain(
+                        "executor_callback_delivery_uncertain",
+                        active_task=asyncio.current_task(),
+                    )
                 raise
             except _CallbackDeliveryError as exc:
                 callback_errors.append(event.status)
@@ -2992,9 +2998,17 @@ def create_executor_app(
 
         async def send_supervisor_heartbeats() -> None:
             while True:
-                await asyncio.sleep(heartbeat_interval_seconds)
                 try:
-                    accepted = await dispatch_callback_event(
+                    await asyncio.wait_for(
+                        heartbeat_stop.wait(), timeout=heartbeat_interval_seconds
+                    )
+                    return
+                except TimeoutError:
+                    pass
+                if heartbeat_stop.is_set():
+                    return
+                try:
+                    accepted = await deliver_callback_event(
                         ExecutorCallbackEvent(
                             session_id=request.session_id,
                             run_id=request.run_id,
@@ -3010,10 +3024,13 @@ def create_executor_app(
                         return
                 except asyncio.CancelledError:
                     raise
+                except _ShutdownDeadlineExceeded:
+                    return
                 except Exception:
-                    # Heartbeats are best-effort liveness hints.
-                    continue
-
+                    callback_errors.append("running")
+                    seal_runner_events_after_delivery_failure("stream_delivery_exhausted")
+                    mark_delivery_uncertain("executor_callback_delivery_uncertain")
+                    return
 
         def apply_stream_delivery_failure(result: dict[str, Any]) -> bool:
             error_code = stream_delivery_failure["error_code"]
@@ -3260,7 +3277,7 @@ def create_executor_app(
             raise
         finally:
             if heartbeat_task is not None:
-                heartbeat_task.cancel()
+                heartbeat_stop.set()
                 await await_shutdown_task(heartbeat_task)
             progress_cleanup = asyncio.create_task(drain_active_progress())
             await await_shutdown_task(progress_cleanup)
@@ -3297,16 +3314,6 @@ def create_executor_app(
             await await_with_callback_buffer_cleanup(
                 emit_runner_event(
                     _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
-                )
-            )
-            await await_with_callback_buffer_cleanup(
-                emit_runner_event(
-                    _PlatformExecutionPhaseFact("artifact_validation", "started")
-                )
-            )
-            await await_with_callback_buffer_cleanup(
-                emit_runner_event(
-                    _PlatformExecutionPhaseFact("artifact_validation", phase_lifecycle)
                 )
             )
         if apply_stream_delivery_failure(runner_result):
@@ -3362,28 +3369,6 @@ def create_executor_app(
             }
             if timed_out
             else {}
-        )
-        execution_observation = ExecutorCallbackEvent(
-            session_id=request.session_id,
-            run_id=request.run_id,
-            attempt_id=request.attempt_id,
-            callback_token_id=request.callback_token_id,
-            batch_id=callback_batch_ids.next_id(),
-            status="running",
-            progress=99,
-            state_patch=(
-                {"stage": "executor_finished", "error_code": error_code, **timeout_observation}
-                if failed
-                else {
-                    "stage": "executor_finished",
-                    "marker_path": f"/workspace/runtime/{marker_path.name}",
-                }
-            ),
-            error_message=error_message,
-        )
-
-        await await_with_callback_buffer_cleanup(
-            dispatch_callback_event(execution_observation)
         )
         await await_with_callback_buffer_cleanup(message_delta_callbacks.close())
         if apply_stream_delivery_failure(runner_result):
