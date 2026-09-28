@@ -419,7 +419,7 @@ timer clears its own reference before starting the connection attempt.
 - terminal/callback commit-to-append race, immutable business facts, partial
   terminal/end retry and final hydration without successful Redis delivery;
 - schema-valid v4 gap, semantic duplicate transport acceptance, accepted cursor
-  only after reducer or terminal-hydrate commit, matching `stream.end` fence,
+  only after reducer acceptance, matching `stream.end` fence,
   incarnation rejection, and terminal-hydrate reconciliation;
 
 ## Change Contract: progressive public Run timeline
