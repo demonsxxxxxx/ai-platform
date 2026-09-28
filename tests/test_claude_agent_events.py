@@ -65,6 +65,107 @@ def _assert_sandbox_answer_receipt(result, candidates, answer):
     assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in delta_candidates)
 
 
+def _framed_sdk_answer_events(
+    sdk,
+    *,
+    answer: str,
+    message_id: str,
+    assistant_uuid: str,
+    result_uuid: str,
+    include_raw_delta: bool = True,
+    raw_chunk_size: int = 8_192,
+    typed_answer: str | None = None,
+    include_typed_text: bool = True,
+    typed_before_raw_stop: bool = False,
+    parent_tool_use_id: str | None = None,
+):
+    typed_answer = answer if typed_answer is None else typed_answer
+    stream_prefix = "agent-events"
+    yield sdk.StreamEvent(
+        uuid=f"{stream_prefix}-message-start",
+        session_id="sdk-session",
+        parent_tool_use_id=parent_tool_use_id,
+        event={
+            "type": "message_start",
+            "message": {
+                "id": message_id,
+                "role": "assistant",
+                "stop_reason": None,
+            },
+        },
+    )
+    yield sdk.StreamEvent(
+        uuid=f"{stream_prefix}-content-start",
+        session_id="sdk-session",
+        parent_tool_use_id=parent_tool_use_id,
+        event={
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text"},
+        },
+    )
+    if include_raw_delta:
+        for chunk_index in range(0, len(answer), raw_chunk_size):
+            yield sdk.StreamEvent(
+                uuid=f"{stream_prefix}-content-delta-{chunk_index // raw_chunk_size}",
+                session_id="sdk-session",
+                parent_tool_use_id=parent_tool_use_id,
+                event={
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "text_delta",
+                        "text": answer[chunk_index : chunk_index + raw_chunk_size],
+                    },
+                },
+            )
+    typed_message = sdk.AssistantMessage(
+        content=[sdk.TextBlock(text=typed_answer)] if include_typed_text else [],
+        model="model-a",
+        parent_tool_use_id=parent_tool_use_id,
+        message_id=message_id,
+        stop_reason=None,
+        uuid=assistant_uuid,
+    )
+    if typed_before_raw_stop:
+        yield typed_message
+    yield sdk.StreamEvent(
+        uuid=f"{stream_prefix}-content-stop",
+        session_id="sdk-session",
+        parent_tool_use_id=parent_tool_use_id,
+        event={"type": "content_block_stop", "index": 0},
+    )
+    if not typed_before_raw_stop:
+        yield typed_message
+    yield sdk.StreamEvent(
+        uuid=f"{stream_prefix}-message-delta",
+        session_id="sdk-session",
+        parent_tool_use_id=parent_tool_use_id,
+        event={"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+    )
+    yield sdk.StreamEvent(
+        uuid=f"{stream_prefix}-message-stop",
+        session_id="sdk-session",
+        parent_tool_use_id=parent_tool_use_id,
+        event={"type": "message_stop"},
+    )
+    yield sdk.ResultMessage(
+        subtype="success",
+        duration_ms=12,
+        duration_api_ms=10,
+        is_error=False,
+        num_turns=1,
+        session_id="sdk-session",
+        stop_reason="end_turn",
+        result=answer,
+        uuid=result_uuid,
+    )
+
+
+def _sized_answer(length: int, prefix: str) -> str:
+    return "".join(f"{prefix}-{index:08d} " for index in range(20_000))[:length]
+
+
 def test_agent_event_candidate_registry_tracks_the_generated_public_subset():
     assert AGENT_EVENT_PUBLIC_CANDIDATE_TYPES <= SUPPORTED_AGENT_EVENT_TYPES
     assert "commentary.delta" in AGENT_EVENT_PUBLIC_CANDIDATE_TYPES
@@ -919,6 +1020,9 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
                 ),
             ],
             model="model-a",
+            message_id="provider-tool-only-message",
+            uuid="assistant-tool-only-observation",
+            stop_reason="tool_use",
         )
         pre = options.hooks["PreToolUse"][0].hooks[0]
         await pre({"tool_name": "Read", "tool_input": {"file_path": "answer.txt"}, "tool_use_id": "sdk-tool-1"}, "sdk-tool-1", {})
@@ -952,6 +1056,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
             session_id="sdk-session",
             stop_reason="end_turn",
             result="safe answer",
+            uuid="result-tool-only-observation",
         )
 
     result = await run_claude_agent_sdk(
@@ -969,41 +1074,22 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         execution_policy="sandbox_brokered",
     )
 
-    assert result.error is None
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
     candidate_types = [
         candidate.event_type
         if isinstance(candidate, ClaudeAgentEventCandidate)
         else candidate.as_agent_event_fields()["type"]
         for candidate in candidates
     ]
-    assert candidate_types == [
-        "policy.checking",
-        "policy.allowed",
-        "tool.started",
-        "tool.completed",
-        "subagent.started",
-        "subagent.completed",
-        "message.started",
-        "message.delta",
-        "message.completed",
-        "model.completed",
-    ]
-    deltas = [
-        candidate.payload["delta"]
-        for candidate in candidates
-        if isinstance(candidate, ClaudeAgentEventCandidate)
-        and candidate.event_type == "message.delta"
-    ]
-    assert deltas == ["safe answer"]
-    _assert_sandbox_answer_receipt(result, candidates, "safe answer")
+    assert "tool.started" in candidate_types
+    assert "tool.completed" in candidate_types
+    assert "subagent.started" in candidate_types
+    assert "subagent.completed" in candidate_types
+    assert "message.delta" not in candidate_types
     assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
     assert all(isinstance(candidate, ClaudeAgentEventCandidate) for candidate in candidates)
-    serialized = [
-        candidate.as_dict()
-        if isinstance(candidate, ClaudeAgentEventCandidate)
-        else candidate.as_agent_event_fields()
-        for candidate in candidates
-    ]
+    serialized = [candidate.as_dict() for candidate in candidates]
     assert "private-signature" not in repr(serialized)
     assert all("sdk-tool-1" not in repr(value) for value in serialized)
 
@@ -1037,40 +1123,17 @@ async def test_runner_streams_and_receipts_ordinary_result_text(
 
     async def query_fn(*, prompt, options):
         del prompt, options
-        yield sdk.StreamEvent(
-            uuid="stream-start",
-            session_id="sdk-session",
-            event={
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text"},
-            },
-        )
-        yield sdk.StreamEvent(
-            uuid="stream-delta",
-            session_id="sdk-session",
-            event={
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": answer},
-            },
-        )
-        yield sdk.StreamEvent(
-            uuid="stream-stop",
-            session_id="sdk-session",
-            event={"type": "content_block_stop", "index": 0},
-        )
-        yield sdk.ResultMessage(
-            subtype="success",
-            duration_ms=12,
-            duration_api_ms=10,
-            is_error=False,
-            num_turns=1,
-            session_id="sdk-session",
-            stop_reason="end_turn",
-            result=answer,
-            structured_output={"answer": "ignored legacy answer", "deliverables": []},
-        )
+        for event in _framed_sdk_answer_events(
+            sdk,
+            answer=answer,
+            message_id="provider-ordinary-message",
+            assistant_uuid="assistant-ordinary-observation",
+            result_uuid="result-ordinary-observation",
+            include_raw_delta=False,
+            typed_before_raw_stop=True,
+            parent_tool_use_id="parent-ordinary-stream",
+        ):
+            yield event
 
     async def on_text(value: str) -> None:
         published.append(value)
@@ -1102,6 +1165,75 @@ async def test_runner_streams_and_receipts_ordinary_result_text(
     assert event_types[0] == "message.started"
     assert event_types[-2:] == ["message.completed", "model.completed"]
     assert event_types[1:-2] == ["message.delta"] * len(delta_values)
+
+
+@pytest.mark.asyncio
+async def test_runner_coalesces_fragmented_public_answer_before_receipt_identity(
+    monkeypatch,
+):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    answer = "fragmented public answer " * 100
+    candidates = []
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        for event in _framed_sdk_answer_events(
+            sdk,
+            answer=answer,
+            message_id="provider-fragmented-message",
+            assistant_uuid="assistant-fragmented-observation",
+            result_uuid="result-fragmented-observation",
+            raw_chunk_size=7,
+        ):
+            yield event
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=Path("tests"),
+        skill_id=None,
+        client_fn=native_client_factory(query_fn),
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        execution_policy="sandbox_brokered",
+    )
+
+    deltas = [
+        candidate
+        for candidate in candidates
+        if candidate.event_type == "message.delta"
+    ]
+    assert result.error is None
+    assert "".join(candidate.payload["delta"] for candidate in deltas) == answer
+    assert len(deltas) < len(answer) // 7
+    assert result.answer_receipt == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": deltas[0].message_id,
+        "delta_count": len(deltas),
+        "text_length": len(answer),
+        "last_delta_event_id": deltas[-1].event_id,
+    }
+    completion = candidates[-2]
+    assert completion.event_type == "message.completed"
+    assert completion.causation_event_id == deltas[-1].event_id
 
 
 @pytest.mark.asyncio
@@ -1140,6 +1272,7 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
             session_id="sdk-session",
             stop_reason="end_turn",
             result=answer,
+            uuid="result-legacy-inline-observation",
         )
 
     async def on_text(value: str):
@@ -1160,13 +1293,11 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
     assert result.error is None
     assert result.message == answer
     assert result.answer_receipt is None
-    assert published == [answer]
-    assert [candidate.event_type for candidate in candidates] == [
-        "message.started",
-        "message.delta",
-        "message.completed",
-        "model.completed",
-    ]
+    assert "".join(published) == answer
+    candidate_types = [candidate.event_type for candidate in candidates]
+    assert candidate_types[0] == "message.started"
+    assert candidate_types[-2:] == ["message.completed", "model.completed"]
+    assert candidate_types[1:-2] == ["message.delta"] * (len(candidate_types) - 3)
 
 
 @pytest.mark.asyncio
@@ -1205,16 +1336,14 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
 
     async def query_fn(*, prompt, options):
         del prompt, options
-        yield sdk.ResultMessage(
-            subtype="success",
-            duration_ms=12,
-            duration_api_ms=10,
-            is_error=False,
-            num_turns=1,
-            session_id="sdk-session",
-            stop_reason="end_turn",
-            result="safe answer",
-        )
+        for event in _framed_sdk_answer_events(
+            sdk,
+            answer="safe answer",
+            message_id="provider-callback-message",
+            assistant_uuid="assistant-callback-observation",
+            result_uuid="result-callback-observation",
+        ):
+            yield event
 
     result = await run_claude_agent_sdk(
         prompt="answer",
@@ -1268,16 +1397,14 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
 
     async def query_fn(*, prompt, options):
         del prompt, options
-        yield sdk.ResultMessage(
-            subtype="success",
-            duration_ms=12,
-            duration_api_ms=10,
-            is_error=False,
-            num_turns=1,
-            session_id="sdk-session",
-            stop_reason="end_turn",
-            result="safe answer",
-        )
+        for event in _framed_sdk_answer_events(
+            sdk,
+            answer="safe answer",
+            message_id="provider-cancellation-message",
+            assistant_uuid="assistant-cancellation-observation",
+            result_uuid="result-cancellation-observation",
+        ):
+            yield event
 
     task = asyncio.create_task(
         run_claude_agent_sdk(
@@ -1298,13 +1425,69 @@ async def test_outer_cancellation_propagates_while_agent_callback_waits(monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("mode", "target_batch"),
-    [("reject", 2), ("reject", 3), ("cancel", 2), ("cancel", 3)],
-    ids=["later-delta-rejected", "completion-rejected", "later-delta-cancelled", "completion-cancelled"],
-)
-async def test_terminal_answer_later_callback_failure_or_cancellation(
-    monkeypatch, mode, target_batch
+async def test_timer_text_callback_failure_returns_structured_runner_error(monkeypatch):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    candidates = []
+
+    async def fail_text(_value: str) -> None:
+        raise RuntimeError("synthetic text callback failure")
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        for event in _framed_sdk_answer_events(
+            sdk,
+            answer="safe answer",
+            message_id="provider-timer-failure-message",
+            assistant_uuid="assistant-timer-failure-observation",
+            result_uuid="result-timer-failure-observation",
+        ):
+            yield event
+            if (
+                isinstance(event, sdk.StreamEvent)
+                and event.event.get("type") == "content_block_delta"
+            ):
+                await asyncio.sleep(0.1)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=Path("tests"),
+        skill_id=None,
+        client_fn=native_client_factory(query_fn),
+        on_text=fail_text,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        execution_policy="sandbox_brokered",
+    )
+
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
+    assert result.answer_receipt is None
+    assert "message.delta" in [candidate.event_type for candidate in candidates]
+    assert "message.completed" not in [candidate.event_type for candidate in candidates]
+
+
+@pytest.mark.asyncio
+async def test_timer_text_callback_failure_does_not_override_cancelled_result(
+    monkeypatch,
 ):
     import claude_agent_sdk as sdk
 
@@ -1325,14 +1508,100 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
             openai_api_key="",
         ),
     )
-    answer = "a" * 8_193
+
+    async def fail_text(_value: str) -> None:
+        raise RuntimeError("synthetic text callback failure")
+
+    async def query_fn(*, prompt, options):
+        del prompt, options
+        framed = list(
+            _framed_sdk_answer_events(
+                sdk,
+                answer="safe answer",
+                message_id="provider-cancelled-message",
+                assistant_uuid="assistant-cancelled-observation",
+                result_uuid="result-cancelled-observation",
+            )
+        )
+        for event in framed[:3]:
+            yield event
+        await asyncio.sleep(0.1)
+        yield sdk.ResultMessage(
+            subtype="success",
+            duration_ms=12,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="sdk-session",
+            stop_reason="aborted_streaming",
+            result="",
+            uuid="result-cancelled-observation",
+            terminal_reason="cancelled",
+        )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=Path("tests"),
+        skill_id=None,
+        client_fn=native_client_factory(query_fn),
+        on_text=fail_text,
+        on_agent_event=lambda _batch: True,
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        execution_policy="sandbox_brokered",
+    )
+
+    assert result.error == "claude_agent_sdk_cancelled"
+    assert result.message == ""
+    assert result.answer_receipt is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "target_kind"),
+    [
+        ("reject", "later_delta"),
+        ("reject", "completion"),
+        ("cancel", "later_delta"),
+        ("cancel", "completion"),
+    ],
+    ids=["later-delta-rejected", "completion-rejected", "later-delta-cancelled", "completion-cancelled"],
+)
+async def test_terminal_answer_later_callback_failure_or_cancellation(
+    monkeypatch, mode, target_kind
+):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        lambda: SimpleNamespace(
+            claude_agent_sdk_enabled=True,
+            claude_agent_sdk_max_turns=4,
+            claude_agent_sdk_timeout_seconds=10,
+            claude_agent_sdk_skills="",
+            claude_agent_permission_mode="dontAsk",
+            claude_agent_allowed_tools="Read",
+            claude_agent_disallowed_tools="",
+            claude_agent_model="model-a",
+            anthropic_model="",
+            anthropic_base_url="",
+            anthropic_auth_token="",
+            openai_api_key="",
+        ),
+    )
+    answer = _sized_answer(16_384, "callback")
     callback_batches = []
     callback_waiting = asyncio.Event()
     never_release = asyncio.Event()
 
     async def callback(batch):
         callback_batches.append(batch)
-        if len(callback_batches) != target_batch:
+        targeted = (
+            len(callback_batches) == 2
+            if target_kind == "later_delta"
+            else any(candidate.event_type == "message.completed" for candidate in batch)
+        )
+        if not targeted:
             return True
         if mode == "reject":
             return False
@@ -1342,16 +1611,14 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
 
     async def query_fn(*, prompt, options):
         del prompt, options
-        yield sdk.ResultMessage(
-            subtype="success",
-            duration_ms=12,
-            duration_api_ms=10,
-            is_error=False,
-            num_turns=1,
-            session_id="sdk-session",
-            stop_reason="end_turn",
-            result=answer,
-        )
+        for event in _framed_sdk_answer_events(
+            sdk,
+            answer=answer,
+            message_id="provider-late-callback-message",
+            assistant_uuid="assistant-late-callback-observation",
+            result_uuid="result-late-callback-observation",
+        ):
+            yield event
 
     task = asyncio.create_task(
         run_claude_agent_sdk(
@@ -1375,10 +1642,9 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
     result = await task
     assert result.error == "agent_event_callback_not_acknowledged"
     assert result.answer_receipt is None
-    assert len(callback_batches) == target_batch
     assert [candidate.event_type for candidate in callback_batches[-1]] == (
         ["message.delta"]
-        if target_batch == 2
+        if target_kind == "later_delta"
         else ["message.completed", "model.completed"]
     )
 
@@ -1386,9 +1652,9 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
 @pytest.mark.parametrize(
     "answer",
     [
-        "a" * 199_999,
-        "é" * 199_999,
-        "a" * 200_000,
+        _sized_answer(199_999, "answer"),
+        _sized_answer(199_999, "答"),
+        _sized_answer(200_000, "answer"),
     ],
     ids=["ascii", "multibyte", "max"],
 )
@@ -1449,16 +1715,14 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
 
     async def query_fn(*, prompt, options):
         del prompt, options
-        yield sdk.ResultMessage(
-            subtype="success",
-            duration_ms=12,
-            duration_api_ms=10,
-            is_error=False,
-            num_turns=1,
-            session_id="sdk-session",
-            stop_reason="end_turn",
-            result=answer,
-        )
+        for event in _framed_sdk_answer_events(
+            sdk,
+            answer=answer,
+            message_id="provider-large-answer-message",
+            assistant_uuid="assistant-large-answer-observation",
+            result_uuid="result-large-answer-observation",
+        ):
+            yield event
 
     result = await run_claude_agent_sdk(
         prompt="answer",
@@ -1476,20 +1740,21 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
     assert result.error is None
     _assert_sandbox_answer_receipt(result, candidates, answer)
     delta_count = (len(answer) + 8_191) // 8_192
-    assert len(callback_batches) == delta_count + 1
-    assert all(len(batch) <= 100 for batch in callback_batches)
-    assert callback_batches[0][0].event_type == "message.started"
-    assert [candidate.event_type for candidate in callback_batches[-1]] == [
-        "message.completed",
-        "model.completed",
-    ]
-    assert published == [answer]
     deltas = [
         candidate.payload["delta"]
         for candidate in candidates
         if isinstance(candidate, ClaudeAgentEventCandidate)
         and candidate.event_type == "message.delta"
     ]
+    assert len(callback_batches) == len(deltas) + 1
+    assert len(deltas) >= delta_count
+    assert all(len(batch) <= 100 for batch in callback_batches)
+    assert callback_batches[0][0].event_type == "message.started"
+    assert [candidate.event_type for candidate in callback_batches[-1]] == [
+        "message.completed",
+        "model.completed",
+    ]
+    assert "".join(published) == answer
     completion = candidates[-2]
     assert completion.event_type == "message.completed"
     assert completion.payload == {

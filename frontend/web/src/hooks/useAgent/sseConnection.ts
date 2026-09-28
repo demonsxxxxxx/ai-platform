@@ -11,14 +11,13 @@ import {
 } from "../../services/api/tokenManager";
 import { getAccessToken, getRefreshToken } from "../../services/api/token";
 import {
-  handlePublicRunStreamFrameV4Result,
+  handlePublicRunStreamEventV4Result,
   setMessageSnapshot,
   type EventHandlerContext,
 } from "./eventHandlers";
 import {
   adaptPublicRunStreamEventV4,
   comparePublicRunStreamCursors,
-  type V4AdapterBinding,
   type V4PublicEvent,
   type V4SseFrame,
 } from "../../components/chat/assistant-ui/publicEventAdapter";
@@ -37,11 +36,15 @@ import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 /**
  * SSE Connection context
  */
-export interface ReplayGapRecoveryOwner {
+export interface ReconcileOwner {
   sessionId: string;
   runId: string;
   streamVersion: number;
   promise: Promise<void>;
+}
+
+export interface ReplayGapRecoveryOwner extends ReconcileOwner {
+  controller: AbortController;
 }
 
 export interface SSEConnectionContext extends EventHandlerContext {
@@ -52,6 +55,7 @@ export interface SSEConnectionContext extends EventHandlerContext {
   reconnectTimeoutRef: React.MutableRefObject<ReturnType<
     typeof setTimeout
   > | null>;
+  reconcileOwnerRef: React.MutableRefObject<ReconcileOwner | null>;
   retryCountRef: React.MutableRefObject<number>;
   statusRetryCountRef?: React.MutableRefObject<number>;
   replayGapRecoveryRef?: React.MutableRefObject<ReplayGapRecoveryOwner | null>;
@@ -68,6 +72,7 @@ export interface SSEConnectionContext extends EventHandlerContext {
     streamVersion: number,
     streamIncarnation: number,
     expectedCursorEventId: string,
+    replayOwner: ReplayGapRecoveryOwner,
   ) => Promise<string | null>;
 }
 
@@ -372,7 +377,7 @@ export async function recoverReplayGap(
   },
   dependencies: ReconnectDependencies = {},
 ): Promise<void> {
-  const isCurrent = () =>
+  const isCurrentTarget = () =>
     isCurrentSSETarget(ctx, sessionId, runId, streamVersion);
   const existing = ctx.replayGapRecoveryRef?.current;
   if (
@@ -384,9 +389,10 @@ export async function recoverReplayGap(
     return existing.promise;
   }
 
-  if (!isCurrent()) {
+  if (!isCurrentTarget()) {
     return;
   }
+  existing?.controller.abort();
 
   const payload = gap.event.payload as Record<string, unknown>;
   const reason = payload.reason;
@@ -469,11 +475,15 @@ export async function recoverReplayGap(
   };
 
   const owner: ReplayGapRecoveryOwner = {
+    controller: new AbortController(),
     sessionId,
     runId,
     streamVersion,
     promise: Promise.resolve(),
   };
+  const isCurrent = () =>
+    isCurrentTarget() &&
+    (!ctx.replayGapRecoveryRef || ctx.replayGapRecoveryRef.current === owner);
   const settleStatusUnavailable = () => {
     if (!isCurrent()) return;
     ctx.setConnectionStatus("disconnected");
@@ -488,6 +498,9 @@ export async function recoverReplayGap(
     0,
     dependencies.replayGapStatusPollDelayMs ?? REPLAY_GAP_STATUS_POLL_DELAY_MS,
   );
+  if (ctx.replayGapRecoveryRef) {
+    ctx.replayGapRecoveryRef.current = owner;
+  }
   const promise = (async () => {
     try {
       while (isCurrent()) {
@@ -515,49 +528,66 @@ export async function recoverReplayGap(
         const terminalStatus = terminalRunStatus(statusResult.status);
         if (!terminalStatus && isActiveRunStatus(statusResult.status)) {
           if (
+            !stoppedForTerminalRecovery &&
             resumeCursor &&
             typeof expectedCursorEventId === "string" &&
             ctx.hydrateActiveRun &&
             ctx.acceptedStreamCursorRef &&
             dependencies.connect
           ) {
-            const hydratedMessageId = await ctx.hydrateActiveRun(
-              sessionId,
-              runId,
-              streamVersion,
-              gap.streamIncarnation,
-              expectedCursorEventId,
-            );
-            if (!isCurrent() || !ownsExpectedCursor()) return;
-            if (!hydratedMessageId) {
-              convergeUnrecoverable();
+            let hydratedMessageId: string | null;
+            try {
+              hydratedMessageId = await ctx.hydrateActiveRun(
+                sessionId,
+                runId,
+                streamVersion,
+                gap.streamIncarnation,
+                expectedCursorEventId,
+                owner,
+              );
+            } catch (error) {
+              if (isCurrent()) {
+                if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
+                  convergeUnrecoverable();
+                } else {
+                  settleStatusUnavailable();
+                }
+              }
               return;
             }
-            ctx.acceptedStreamCursorRef.current = {
-              sessionId,
-              runId,
-              eventId: resumeCursor,
-              streamIncarnation: gap.streamIncarnation,
-            };
-            ctx.streamingMessageIdRef.current = hydratedMessageId;
-            ctx.publicStreamPresentation?.activate({
-              sessionId,
-              runId,
-              assistantMessageId: hydratedMessageId,
-              streamVersion,
-            });
-            ctx.setConnectionStatus("reconnecting");
-            if (ctx.replayGapRecoveryRef?.current === owner) {
-              ctx.replayGapRecoveryRef.current = null;
+            if (!isCurrent() || !ownsExpectedCursor()) return;
+            if (!hydratedMessageId) {
+              // Durable history is useful even when it does not identify the
+              // protocol message owner needed to continue this stream. Keep
+              // the Run and let authoritative status/terminal history settle it.
+              stopForTerminalRecovery();
+            } else {
+              ctx.acceptedStreamCursorRef.current = {
+                sessionId,
+                runId,
+                eventId: resumeCursor,
+                streamIncarnation: gap.streamIncarnation,
+              };
+              ctx.streamingMessageIdRef.current = hydratedMessageId;
+              ctx.publicStreamPresentation?.activate({
+                sessionId,
+                runId,
+                assistantMessageId: hydratedMessageId,
+                streamVersion,
+              });
+              ctx.setConnectionStatus("reconnecting");
+              if (ctx.replayGapRecoveryRef?.current === owner) {
+                ctx.replayGapRecoveryRef.current = null;
+              }
+              await dependencies.connect(
+                sessionId,
+                runId,
+                hydratedMessageId,
+                ctx,
+                true,
+              );
+              return;
             }
-            await dependencies.connect(
-              sessionId,
-              runId,
-              hydratedMessageId,
-              ctx,
-              true,
-            );
-            return;
           }
           stopForTerminalRecovery();
         }
@@ -584,15 +614,13 @@ export async function recoverReplayGap(
         }
       }
     } finally {
+      owner.controller.abort();
       if (ctx.replayGapRecoveryRef?.current === owner) {
         ctx.replayGapRecoveryRef.current = null;
       }
     }
   })();
   owner.promise = promise;
-  if (ctx.replayGapRecoveryRef) {
-    ctx.replayGapRecoveryRef.current = owner;
-  }
   return promise;
 }
 
@@ -696,7 +724,8 @@ export async function connectToSSE(
   });
   const isCurrentStream = () =>
     abortControllerRef.current === streamAbortController &&
-    isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion);
+    isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion) &&
+    streamingMessageIdRef.current === messageId;
   const releasePendingConnection = () => {
     if (abortControllerRef.current !== streamAbortController) return;
     abortControllerRef.current = null;
@@ -910,11 +939,6 @@ export async function connectToSSE(
             streamIncarnation: bindingIncarnation,
             generation: streamVersion,
           };
-          const adapterBinding: V4AdapterBinding = {
-            runId: targetRunId,
-            streamIncarnation: bindingIncarnation,
-            generation: streamVersion,
-          };
           const semanticEventId = adaptedEvent.eventId;
           const payload = (
             adaptedEvent.event as unknown as { payload: Record<string, unknown> }
@@ -960,7 +984,17 @@ export async function connectToSSE(
             if (isRunTerminalEvent || isStreamEndEvent) {
               receivedTerminalEvent = true;
             }
-            if (!isCurrentStream()) return;
+            const terminalSettlementCurrent =
+              (isRunTerminalEvent || isStreamEndEvent) &&
+              pendingTerminalHydration !== null &&
+              abortControllerRef.current === streamAbortController &&
+              isCurrentSSETarget(
+                ctx,
+                targetSessionId,
+                targetRunId,
+                streamVersion,
+              );
+            if (!isCurrentStream() && !terminalSettlementCurrent) return;
             const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
             const ownsAcceptedCursor =
               acceptedCursor?.sessionId === targetSessionId &&
@@ -1002,9 +1036,8 @@ export async function connectToSSE(
             pendingTerminalHydration = null;
             pending.resolve();
           };
-          const handlingResult = handlePublicRunStreamFrameV4Result({
-            frame,
-            adapterBinding,
+          const handlingResult = handlePublicRunStreamEventV4Result({
+            event: adaptedEvent,
             messageId,
             ctx,
             binding,
@@ -1207,16 +1240,47 @@ export async function connectToSSE(
   }
 }
 
-/**
- * Smart reconnect with exponential backoff
- */
+type ReconnectContext = SSEConnectionContext & {
+  sessionIdRef: React.MutableRefObject<string | null>;
+  currentRunIdRef: React.MutableRefObject<string | null>;
+  isReconnectFromHistoryRef: React.MutableRefObject<boolean>;
+};
+
+/** Share status reconciliation across browser events and timed retries. */
 export async function reconnectSSE(
-  ctx: SSEConnectionContext & {
-    sessionIdRef: React.MutableRefObject<string | null>;
-    currentRunIdRef: React.MutableRefObject<string | null>;
-    isReconnectFromHistoryRef: React.MutableRefObject<boolean>;
-  },
+  ctx: ReconnectContext,
   dependencies: ReconnectDependencies = {},
+): Promise<void> {
+  const sessionId = ctx.sessionIdRef.current;
+  const runId = ctx.currentRunIdRef.current;
+  const streamVersion = ctx.streamVersionRef.current;
+  if (!sessionId || !runId) return;
+  const existing = ctx.reconcileOwnerRef.current;
+  if (
+    existing && existing.sessionId === sessionId &&
+    existing.runId === runId && existing.streamVersion === streamVersion
+  ) {
+    return existing.promise;
+  }
+  if (ctx.reconnectTimeoutRef.current !== null) return;
+  const owner: ReconcileOwner = {
+    sessionId, runId, streamVersion, promise: Promise.resolve(),
+  };
+  ctx.reconcileOwnerRef.current = owner;
+  const promise = performReconnectSSE(ctx, dependencies).finally(() => {
+    // A scheduled timer owns the next attempt; this owner covers only the
+    // in-flight status query. Stale completion cannot clear a replacement.
+    if (ctx.reconcileOwnerRef.current === owner) {
+      ctx.reconcileOwnerRef.current = null;
+    }
+  });
+  owner.promise = promise;
+  return promise;
+}
+
+async function performReconnectSSE(
+  ctx: ReconnectContext,
+  dependencies: ReconnectDependencies,
 ): Promise<void> {
   const {
     sessionIdRef,
@@ -1245,7 +1309,7 @@ export async function reconnectSSE(
       currentSessId || "",
       currentRId || "",
       reconnectStreamVersion,
-    );
+    ) && streamingMessageIdRef.current === currentMsgId;
   const hasCurrentAssistant = () => Boolean(
     currentMsgId && messagesRef.current.some((message) =>
       message.id === currentMsgId &&
@@ -1348,7 +1412,9 @@ export async function reconnectSSE(
     `[SSE] Scheduling reconnect in ${delay}ms (retry ${retryCountRef.current})`,
   );
 
-  reconnectTimeoutRef.current = setTimeout(async () => {
+  const reconnectTimer = setTimeout(async () => {
+    if (reconnectTimeoutRef.current !== reconnectTimer) return;
+    reconnectTimeoutRef.current = null;
     if (!isCurrentReconnect()) {
       return;
     }
@@ -1378,6 +1444,7 @@ export async function reconnectSSE(
       }
     }
   }, delay);
+  reconnectTimeoutRef.current = reconnectTimer;
 }
 
 // Import Message type for messagesRef

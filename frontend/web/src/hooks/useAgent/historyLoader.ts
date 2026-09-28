@@ -79,8 +79,6 @@ const DIRECT_HISTORY_PROCESSOR_EVENTS = new Set([
   "thinking",
   "message:chunk",
   "final_detail",
-  "tool:start",
-  "tool:result",
   "sandbox:starting",
   "sandbox:ready",
   "sandbox:error",
@@ -545,7 +543,7 @@ export function prepareMessagesForRunningRun(
       streamingMessageId: existingAssistant.id,
       messages: messages.map((message) =>
         message.id === existingAssistant.id
-          ? { ...message, isStreaming: true }
+          ? { ...message, isStreaming: true, isSynchronizing: false }
           : message,
       ),
     };

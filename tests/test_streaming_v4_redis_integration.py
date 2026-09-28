@@ -18,6 +18,7 @@ from app.streaming.redis import (
     StreamTransportUnavailable,
 )
 from app.streaming.infrastructure.v4 import V4RedisStreamBridge
+from app.routes.lambchat_compat import _restore_chat_stream_terminal_state
 
 
 REDIS_URL_ENV = "AI_PLATFORM_SSE_REDIS_TEST_URL"
@@ -270,6 +271,58 @@ async def test_real_redis_replay_decodes_production_lua_field_value_rows():
         assert [entry.envelope["event_id"] for entry in replayed] == [
             "evt4_replay_second"
         ]
+    finally:
+        await client.delete(key, state_key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_redis_retained_resume_restores_paged_terminal_state_after_trim():
+    client, key, state_key, bridge = await _stream()
+    scope = dict(
+        tenant_scope_value="scope_v4_evidence", run_id="run-v4-evidence",
+        attempt_id="attempt-v4-evidence", stream_incarnation=3,
+    )
+    try:
+        cursors = [await bridge.append(_envelope(event_id=f"evt4_retained_{seq}", seq=seq))
+                   for seq in range(1, 141)]
+        await client.xtrim(key, minid=cursors[2], approximate=False)
+        resume = await bridge.resolve_resume(
+            tenant_scope_value=scope["tenant_scope_value"], run_id=scope["run_id"],
+            attempt_id=scope["attempt_id"], current_stream_incarnation=3,
+            last_event_id=f"run-v4-evidence:3:{cursors[-2]}",
+        )
+        assert resume.gap is None
+        assert await _restore_chat_stream_terminal_state(
+            bridge, **scope, through_redis_id=resume.after_redis_id,
+        ) == (None, False)
+        remaining = await bridge.replay_page(
+            **scope, after_redis_id=resume.after_redis_id, through_redis_id=cursors[-1],
+        )
+        assert [item.cursor.redis_id for item in remaining] == [cursors[-1]]
+
+        await client.xtrim(key, minid=cursors[-1], approximate=False)
+        with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
+            await _restore_chat_stream_terminal_state(
+                bridge, **scope, through_redis_id=resume.after_redis_id,
+            )
+
+        end = await bridge.append(_envelope(
+            event_id="evt4_trim_terminal", event_type="run.succeeded", seq=141,
+        ))
+        terminal_rows = await client.xrevrange(key, count=2)
+        assert [json.loads(fields["envelope"])["event_type"]
+                for _, fields in terminal_rows] == ["stream.end", "run.succeeded"]
+        assert terminal_rows[0][0] == end
+        terminal = terminal_rows[1][0]
+        await client.xtrim(key, minid=terminal, approximate=False)
+        assert await _restore_chat_stream_terminal_state(
+            bridge, **scope, through_redis_id=terminal,
+        ) == ("evt4_trim_terminal", False)
+        await client.xtrim(key, minid=end, approximate=False)
+        assert await _restore_chat_stream_terminal_state(
+            bridge, **scope, through_redis_id=end,
+        ) == ("evt4_trim_terminal", True)
     finally:
         await client.delete(key, state_key)
         await client.aclose()

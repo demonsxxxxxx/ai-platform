@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Mapping
 from typing import Any
@@ -12,6 +13,7 @@ from psycopg import AsyncConnection
 
 from app.context.domain.conversation_authority import (
     extend_source_digest,
+    initial_source_digest,
     validate_authority_receipt,
 )
 from app.context.domain.provider_sessions import (
@@ -35,31 +37,6 @@ def batch_digest(subpath: str | None, entries: list[Mapping[str, Any]]) -> str:
 
 def _scope_values(scope: ProviderSessionScope) -> tuple[str, ...]:
     return (scope.tenant_id, scope.workspace_id, scope.user_id, scope.session_id, scope.agent_id, scope.engine)
-
-
-async def matching_ready_epoch(
-    conn: AsyncConnection, *, scope: ProviderSessionScope, run_id: str,
-    source_sha256: str, message_count: int,
-) -> bool:
-    cursor = await conn.execute(
-        """
-        select epoch.id
-        from provider_session_heads head
-        join provider_session_epochs epoch on epoch.id = head.current_epoch_id
-          and epoch.tenant_id = head.tenant_id and epoch.workspace_id = head.workspace_id
-          and epoch.user_id = head.user_id and epoch.session_id = head.session_id
-          and epoch.agent_id = head.agent_id and epoch.engine = head.engine
-        where head.tenant_id = %s and head.workspace_id = %s and head.user_id = %s
-          and head.session_id = %s and head.agent_id = %s and head.engine = %s
-          and head.active_run_id = %s and head.active_attempt_id is null
-          and epoch.state = 'ready' and epoch.writer_run_id is null
-          and epoch.coverage_source_sha256 = %s and epoch.coverage_message_count = %s
-          and epoch.entry_count <= %s and epoch.transcript_bytes <= %s
-        """, (*_scope_values(scope), run_id, source_sha256, message_count,
-              MAX_PROVIDER_SESSION_ENTRIES - 128,
-              MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 2 * 1024 * 1024),
-    )
-    return await cursor.fetchone() is not None
 
 
 async def claim_provider_lineage(
@@ -100,6 +77,101 @@ async def claim_provider_lineage(
           and session_id = %s and agent_id = %s and engine = %s
         """, (run_id, *values),
     )
+
+
+async def read_provider_coverage(
+    conn: AsyncConnection,
+    *,
+    scope: ProviderSessionScope,
+    run_id: str,
+    session_generation: int,
+) -> dict[str, Any]:
+    """Read the committed source coverage protected by the claimed lineage."""
+    if type(session_generation) is not int or session_generation < 1:
+        raise ProviderSessionConflictError("provider_session_scope_invalid")
+    values = _scope_values(scope)
+    cursor = await conn.execute(
+        """
+        select head.current_epoch_id, head.active_run_id,
+               current_run.session_generation,
+               epoch.id as epoch_id, epoch.state, epoch.writer_run_id,
+               epoch.writer_attempt_id, epoch.writer_owner_generation,
+               epoch.coverage_source_sha256, epoch.coverage_message_count,
+               epoch.coverage_through_generation, epoch.entry_count,
+               epoch.transcript_bytes,
+               exists (
+                 select 1 from messages prior_message
+                 join sessions prior_session on prior_session.tenant_id = prior_message.tenant_id
+                   and prior_session.id = prior_message.session_id
+                 where prior_message.tenant_id = head.tenant_id
+                   and prior_message.session_id = head.session_id
+                   and prior_message.run_id is distinct from current_run.id
+                   and prior_session.workspace_id = head.workspace_id
+                   and prior_session.user_id = head.user_id
+                   and prior_session.agent_id = head.agent_id
+               ) as has_prior_messages
+        from provider_session_heads head
+        join runs current_run on current_run.tenant_id = head.tenant_id
+          and current_run.workspace_id = head.workspace_id
+          and current_run.user_id = head.user_id
+          and current_run.session_id = head.session_id
+          and current_run.agent_id = head.agent_id
+        left join provider_session_epochs epoch on epoch.id = head.current_epoch_id
+          and epoch.tenant_id = head.tenant_id and epoch.workspace_id = head.workspace_id
+          and epoch.user_id = head.user_id and epoch.session_id = head.session_id
+          and epoch.agent_id = head.agent_id and epoch.engine = head.engine
+        where head.tenant_id = %s and head.workspace_id = %s and head.user_id = %s
+          and head.session_id = %s and head.agent_id = %s and head.engine = %s
+          and current_run.id = %s
+        """,
+        (*values, run_id),
+    )
+    row = await cursor.fetchone()
+    if row is None or row["active_run_id"] != run_id:
+        raise ProviderSessionConflictError("provider_session_lineage_busy")
+    if row["session_generation"] != session_generation:
+        raise ProviderSessionConflictError("provider_session_scope_invalid")
+    if row["current_epoch_id"] is None:
+        if row["has_prior_messages"]:
+            raise ProviderSessionConflictError("provider_session_requires_new_conversation")
+        return {
+            "source_sha256": initial_source_digest({
+                "tenant_id": scope.tenant_id,
+                "workspace_id": scope.workspace_id,
+                "user_id": scope.user_id,
+                "session_id": scope.session_id,
+                "agent_id": scope.agent_id,
+            }),
+            "message_count": 0,
+            "coverage_through_generation": None,
+        }
+    digest = row["coverage_source_sha256"]
+    count = row["coverage_message_count"]
+    coverage_generation = row["coverage_through_generation"]
+    if (
+        row["epoch_id"] != row["current_epoch_id"]
+        or row["state"] != "ready"
+        or row["writer_run_id"] is not None
+        or row["writer_attempt_id"] is not None
+        or row["writer_owner_generation"] is not None
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or type(count) is not int
+        or count < 0
+        or type(coverage_generation) is not int
+        or coverage_generation < 1
+        or coverage_generation >= session_generation
+        or type(row["entry_count"]) is not int
+        or row["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
+        or type(row["transcript_bytes"]) is not int
+        or row["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 2 * 1024 * 1024
+    ):
+        raise ProviderSessionConflictError("provider_session_requires_new_conversation")
+    return {
+        "source_sha256": digest,
+        "message_count": count,
+        "coverage_through_generation": coverage_generation,
+    }
 
 
 async def release_provider_lineage(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> None:
@@ -247,31 +319,33 @@ async def _locked_callback_epoch(
               and session_id = %s and agent_id = %s and engine = %s and active_run_id = %s
             """, (attempt_id, *values, run_id),
         )
-    cursor = await conn.execute(
-        """
-        insert into provider_turn_receipts (
-          id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
-          epoch_id, run_id, attempt_id, execution_spec_sha256,
-          bootstrap_source_sha256, start_sequence, user_message_id,
-          prior_coverage_sha256, state
-        ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'writing')
-        on conflict (tenant_id, run_id, attempt_id) do nothing
-        returning id
-        """, (f"ptr_{uuid.uuid4().hex}", *values, epoch["id"], run_id,
-              attempt_id, attempt["execution_spec_sha256"],
-              private["source_sha256"] if private["execution_mode"] != "native_resume" else None,
-              epoch["next_sequence"], private.get("current_message_id"),
-              epoch["coverage_source_sha256"]),
-    )
-    await cursor.fetchone()
-    cursor = await conn.execute(
-        """
-        select epoch_id, execution_spec_sha256, start_sequence, user_message_id,
-               prior_coverage_sha256, bootstrap_source_sha256, state
-        from provider_turn_receipts where tenant_id = %s and run_id = %s and attempt_id = %s
-        """, (scope.tenant_id, run_id, attempt_id),
-    )
-    turn = await cursor.fetchone()
+        cursor = await conn.execute(
+            """
+            insert into provider_turn_receipts (
+              id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+              epoch_id, run_id, attempt_id, execution_spec_sha256,
+              bootstrap_source_sha256, start_sequence, user_message_id,
+              prior_coverage_sha256, state
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'writing')
+            on conflict (tenant_id, run_id, attempt_id) do nothing
+            returning epoch_id, execution_spec_sha256, start_sequence, user_message_id,
+                      prior_coverage_sha256, bootstrap_source_sha256, state
+            """, (f"ptr_{uuid.uuid4().hex}", *values, epoch["id"], run_id,
+                  attempt_id, attempt["execution_spec_sha256"],
+                  private["source_sha256"] if private["execution_mode"] != "native_resume" else None,
+                  epoch["next_sequence"], private.get("current_message_id"),
+                  epoch["coverage_source_sha256"]),
+        )
+        turn = await cursor.fetchone()
+    else:
+        cursor = await conn.execute(
+            """
+            select epoch_id, execution_spec_sha256, start_sequence, user_message_id,
+                   prior_coverage_sha256, bootstrap_source_sha256, state
+            from provider_turn_receipts where tenant_id = %s and run_id = %s and attempt_id = %s
+            """, (scope.tenant_id, run_id, attempt_id),
+        )
+        turn = await cursor.fetchone()
     if (turn is None or turn["state"] != "writing" or turn["epoch_id"] != epoch["id"]
         or turn["execution_spec_sha256"] != attempt["execution_spec_sha256"]
         or turn["user_message_id"] != private.get("current_message_id")
@@ -379,7 +453,8 @@ async def prepare_provider_epoch(
         """
         select head.current_epoch_id, head.next_epoch_number, head.active_run_id,
                epoch.provider_session_id, epoch.state, epoch.coverage_source_sha256,
-               epoch.coverage_message_count, epoch.entry_count, epoch.transcript_bytes
+               epoch.coverage_message_count, epoch.entry_count, epoch.transcript_bytes,
+               epoch.writer_run_id, epoch.writer_attempt_id, epoch.writer_owner_generation
         from provider_session_heads head
         left join provider_session_epochs epoch on epoch.id = head.current_epoch_id
           and epoch.tenant_id = head.tenant_id and epoch.workspace_id = head.workspace_id
@@ -409,18 +484,31 @@ async def prepare_provider_epoch(
             or frozen.get("provider_epoch_id") is None):
             raise ProviderSessionConflictError("provider_session_spec_mismatch")
         return dict(frozen)
-    if (head["state"] == "ready" and head["coverage_source_sha256"] == digest
-        and head["coverage_message_count"] == count
-        and head["entry_count"] <= MAX_PROVIDER_SESSION_ENTRIES - 128
-        and head["transcript_bytes"] <= MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 2 * 1024 * 1024):
+    if head["current_epoch_id"] is not None:
+        if (
+            head["state"] != "ready"
+            or head["writer_run_id"] is not None
+            or head["writer_attempt_id"] is not None
+            or head["writer_owner_generation"] is not None
+            or head["coverage_source_sha256"] != digest
+            or head["coverage_message_count"] != count
+            or head["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
+            or head["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 2 * 1024 * 1024
+        ):
+            raise ProviderSessionConflictError("provider_session_requires_new_conversation")
         epoch_id = head["current_epoch_id"]
         provider_id = str(head["provider_session_id"])
         mode = "native_resume"
-    elif conversation_context.get("native_source_verified"):
-        raise ProviderSessionConflictError("provider_session_epoch_changed")
-    elif count:
-        raise ProviderSessionConflictError("provider_session_requires_new_conversation")
     else:
+        scope_fields = {
+            "tenant_id": scope.tenant_id,
+            "workspace_id": scope.workspace_id,
+            "user_id": scope.user_id,
+            "session_id": scope.session_id,
+            "agent_id": scope.agent_id,
+        }
+        if count != 0 or digest != initial_source_digest(scope_fields):
+            raise ProviderSessionConflictError("provider_session_requires_new_conversation")
         epoch_id = f"pe_{uuid.uuid4().hex}"
         provider_id = str(uuid.uuid4())
         mode = "empty_start"
@@ -606,9 +694,9 @@ async def commit_provider_turn(
 
 
 class PostgresProviderEpochRepository:
-    matching_ready_epoch = staticmethod(matching_ready_epoch)
     callback_epoch = staticmethod(callback_provider_epoch)
     claim_lineage = staticmethod(claim_provider_lineage)
+    read_coverage = staticmethod(read_provider_coverage)
     release_lineage = staticmethod(release_provider_lineage)
     prepare_epoch = staticmethod(prepare_provider_epoch)
     commit_turn = staticmethod(commit_provider_turn)

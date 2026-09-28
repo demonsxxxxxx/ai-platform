@@ -264,20 +264,33 @@ def _fake_sdk(
     append_provider_session=True,
     append_provider_subpath=None,
     supports_structured_output=False,
+    emit_answer=True,
 ):
     class ThinkingBlock:
         def __init__(self, thinking):
             self.thinking = thinking
 
     class AssistantMessage:
-        def __init__(self, content):
+        def __init__(self, content, *, message_id="fake-message", uuid=None):
             self.content = content
+            self.message_id = message_id
+            self.uuid = uuid or message_id
+            self.parent_tool_use_id = None
+            self.stop_reason = None
 
     class TextBlock:
-        pass
+        def __init__(self, text=None):
+            self.text = text
+
+    raw_event_counter = 0
 
     class StreamEvent:
-        pass
+        def __init__(self, event):
+            nonlocal raw_event_counter
+            raw_event_counter += 1
+            self.event = event
+            self.uuid = f"fake-raw-{raw_event_counter}"
+            self.parent_tool_use_id = None
 
     class MirrorErrorMessage:
         pass
@@ -289,9 +302,10 @@ def _fake_sdk(
         result = "done"
         is_error = False
         errors = None
-        stop_reason = None
+        stop_reason = "end_turn"
         num_turns = 1
         permission_denials = None
+        uuid = "fake-result"
         if supports_structured_output:
             structured_output = {"answer": "done", "deliverables": []}
 
@@ -336,8 +350,68 @@ def _fake_sdk(
                 )
             hook_result = await matcher.hooks[0](hook_input, tool_call_id, {})
             captured.setdefault("hook_results", []).append((hook_name, hook_result))
+        message_id = "fake-message"
+        if not emit_answer:
+            terminal = ResultMessage()
+            if getattr(options, "session_store", None) is not None:
+                terminal.session_id = getattr(options, "session_id", None) or getattr(options, "resume", None)
+            yield terminal
+            return
+        yield StreamEvent(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": message_id,
+                    "role": "assistant",
+                    "stop_reason": None,
+                },
+            }
+        )
         if thinking_text is not None:
-            yield AssistantMessage([ThinkingBlock(thinking_text)])
+            yield StreamEvent(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking"},
+                }
+            )
+            yield StreamEvent(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": thinking_text},
+                }
+            )
+            yield StreamEvent({"type": "content_block_stop", "index": 0})
+            text_index = 1
+            content = [ThinkingBlock(thinking_text), TextBlock("done")]
+        else:
+            text_index = 0
+            content = [TextBlock("done")]
+        yield StreamEvent(
+            {
+                "type": "content_block_start",
+                "index": text_index,
+                "content_block": {"type": "text"},
+            }
+        )
+        yield StreamEvent(
+            {
+                "type": "content_block_delta",
+                "index": text_index,
+                "delta": {"type": "text_delta", "text": "done"},
+            }
+        )
+        yield AssistantMessage(
+            content,
+            message_id=message_id,
+            uuid="fake-assistant-observation",
+        )
+        yield StreamEvent({"type": "content_block_stop", "index": text_index})
+        yield StreamEvent(
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+        )
+        yield StreamEvent({"type": "message_stop"})
         terminal = ResultMessage()
         if getattr(options, "session_store", None) is not None:
             terminal.session_id = getattr(options, "session_id", None) or getattr(options, "resume", None)
@@ -362,7 +436,10 @@ def _scripted_sdk(
     *,
     result_text="done",
     result_error: str | None = None,
+    result_stop_reason: str | None = "end_turn",
     permission_denials=None,
+    emit_typed_result_source: bool = True,
+    result_uuid: str | None = "sdk-result",
 ):
     denials = permission_denials
 
@@ -381,23 +458,44 @@ def _scripted_sdk(
             self.input = input
 
     class AssistantMessage:
-        def __init__(self, text):
-            self.content = [TextBlock(text)]
+        def __init__(
+            self,
+            text,
+            *,
+            content=None,
+            message_id=None,
+            uuid=None,
+            stop_reason=None,
+            parent_tool_use_id=None,
+        ):
+            self.content = [TextBlock(text)] if content is None else content
+            self.message_id = message_id
+            self.uuid = uuid
+            self.stop_reason = stop_reason
+            self.parent_tool_use_id = parent_tool_use_id
+
+    stream_event_counter = 0
 
     class StreamEvent:
         def __init__(self, event):
+            nonlocal stream_event_counter
+            stream_event_counter += 1
             self.event = event
+            self.uuid = f"sdk-raw-event-{stream_event_counter}"
+            self.parent_tool_use_id = None
 
     class ResultMessage:
-        session_id = "sdk-session"
-        usage = None
-        model_usage = None
-        result = result_text
-        is_error = result_error is not None
-        errors = [result_error] if result_error is not None else None
-        stop_reason = "end_turn"
-        num_turns = 1
-        permission_denials = denials
+        def __init__(self, uuid):
+            self.session_id = "sdk-session"
+            self.usage = None
+            self.model_usage = None
+            self.result = result_text
+            self.is_error = result_error is not None
+            self.errors = [result_error] if result_error is not None else None
+            self.stop_reason = result_stop_reason
+            self.num_turns = 1
+            self.permission_denials = denials
+            self.uuid = uuid
 
     class HookMatcher:
         def __init__(self, *, matcher, hooks):
@@ -411,6 +509,35 @@ def _scripted_sdk(
     async def query(*, prompt, options):
         del options
         captured["sdk_user_messages"] = [item async for item in prompt]
+
+        raw_text_by_index = {}
+        raw_message_id = None
+        last_assistant_id = None
+        assistant_counter = 0
+        assistant_observation_counter = 0
+
+        def next_message_id():
+            nonlocal assistant_counter
+            assistant_counter += 1
+            return f"typed-message-{assistant_counter}"
+
+        def next_assistant_observation_id():
+            nonlocal assistant_observation_counter
+            assistant_observation_counter += 1
+            return f"sdk-assistant-observation-{assistant_observation_counter}"
+
+        def typed_content(text):
+            if not raw_text_by_index:
+                return [TextBlock(text)]
+            indexes = sorted(raw_text_by_index)
+            raw_texts = [raw_text_by_index[index] for index in indexes]
+            preceding = "".join(raw_texts[:-1])
+            last_text = text[len(preceding) :] if text.startswith(preceding) else raw_texts[-1]
+            segments = [*raw_texts[:-1], last_text]
+            blocks = [ThinkingBlock("") for _ in range(indexes[-1] + 1)]
+            for index, segment in zip(indexes, segments):
+                blocks[index] = TextBlock(segment)
+            return blocks
 
         async def invoke_hook(value):
             hook_name, hook_input, tool_call_id = value
@@ -434,14 +561,261 @@ def _scripted_sdk(
 
         for step in steps:
             kind, value = step
-            if kind == "assistant":
-                yield AssistantMessage(value)
+            if kind == "assistant_typed":
+                body = value["text"]
+                last_assistant_id = value.get("message_id")
+                yield AssistantMessage(
+                    body,
+                    content=value.get("content"),
+                    message_id=last_assistant_id,
+                    uuid=value.get("uuid"),
+                    stop_reason=value.get("stop_reason"),
+                    parent_tool_use_id=value.get("parent_tool_use_id"),
+                )
+            elif kind == "assistant":
+                last_assistant_id = raw_message_id or next_message_id()
+                yield AssistantMessage(
+                    value,
+                    content=typed_content(value),
+                    message_id=last_assistant_id,
+                    uuid=next_assistant_observation_id(),
+                )
+            elif kind == "assistant_before_raw":
+                body = value
+                typed_stop_reason = None
+                raw_stop_reason = "end_turn"
+                if isinstance(value, tuple):
+                    body, typed_stop_reason, raw_stop_reason = value
+                last_assistant_id = raw_message_id or next_message_id()
+                raw_message_id = last_assistant_id
+                raw_text_by_index.clear()
+                yield StreamEvent(
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": last_assistant_id,
+                            "role": "assistant",
+                            "stop_reason": None,
+                        },
+                    }
+                )
+                yield StreamEvent(
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text"},
+                    }
+                )
+                yield AssistantMessage(
+                    body,
+                    message_id=last_assistant_id,
+                    uuid=next_assistant_observation_id(),
+                    stop_reason=typed_stop_reason,
+                )
+                raw_text_by_index[0] = body
+                yield StreamEvent(
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": body},
+                    }
+                )
+                yield StreamEvent({"type": "content_block_stop", "index": 0})
+                yield StreamEvent(
+                    {"type": "message_delta", "delta": {"stop_reason": raw_stop_reason}}
+                )
+                yield StreamEvent({"type": "message_stop"})
+            elif kind == "assistant_after_raw_prefix":
+                prefix, body = value
+                last_assistant_id = raw_message_id or next_message_id()
+                raw_message_id = last_assistant_id
+                raw_text_by_index.clear()
+                yield StreamEvent(
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": last_assistant_id,
+                            "role": "assistant",
+                            "stop_reason": None,
+                        },
+                    }
+                )
+                yield StreamEvent(
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text"},
+                    }
+                )
+                raw_text_by_index[0] = prefix
+                yield StreamEvent(
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": prefix},
+                    }
+                )
+                yield AssistantMessage(
+                    body,
+                    content=[TextBlock(body)],
+                    message_id=last_assistant_id,
+                    uuid=next_assistant_observation_id(),
+                )
+                suffix = body[len(prefix) :]
+                raw_text_by_index[0] = body
+                if suffix:
+                    yield StreamEvent(
+                        {
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {"type": "text_delta", "text": suffix},
+                        }
+                    )
+                yield StreamEvent({"type": "content_block_stop", "index": 0})
+                yield StreamEvent(
+                    {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+                )
+                yield StreamEvent({"type": "message_stop"})
+            elif kind == "assistant_parser_compressed":
+                text = value
+                last_assistant_id = raw_message_id or next_message_id()
+                raw_message_id = last_assistant_id
+                raw_text_by_index.clear()
+                yield StreamEvent(
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": last_assistant_id,
+                            "role": "assistant",
+                            "stop_reason": None,
+                        },
+                    }
+                )
+                yield StreamEvent(
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "web_search_tool_result"},
+                    }
+                )
+                yield StreamEvent({"type": "content_block_stop", "index": 0})
+                yield StreamEvent(
+                    {
+                        "type": "content_block_start",
+                        "index": 1,
+                        "content_block": {"type": "text"},
+                    }
+                )
+                raw_text_by_index[1] = text
+                yield StreamEvent(
+                    {
+                        "type": "content_block_delta",
+                        "index": 1,
+                        "delta": {"type": "text_delta", "text": text},
+                    }
+                )
+                yield AssistantMessage(
+                    text,
+                    content=[TextBlock(text)],
+                    message_id=last_assistant_id,
+                    uuid=next_assistant_observation_id(),
+                )
+                yield StreamEvent({"type": "content_block_stop", "index": 1})
+                yield StreamEvent(
+                    {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+                )
+                yield StreamEvent({"type": "message_stop"})
             elif kind == "assistant_blocks":
-                message = AssistantMessage("")
-                message.content = value
+                blocks = value
+                raw_stop_reason = "tool_use"
+                if isinstance(value, tuple):
+                    blocks, raw_stop_reason = value
+                last_assistant_id = raw_message_id or next_message_id()
+                raw_message_id = last_assistant_id
+                raw_text_by_index.clear()
+                yield StreamEvent(
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": last_assistant_id,
+                            "role": "assistant",
+                            "stop_reason": None,
+                        },
+                    }
+                )
+                for block_index, block in enumerate(blocks):
+                    block_name = type(block).__name__
+                    block_type = (
+                        "server_tool_use"
+                        if block_name == "ServerToolUseBlock"
+                        else "tool_use"
+                        if block_name == "ToolUseBlock"
+                        else "thinking"
+                        if block_name in {"ThinkingBlock", "RedactedThinkingBlock"}
+                        else "text"
+                    )
+                    content_block = {"type": block_type}
+                    if block_type in {"tool_use", "server_tool_use"}:
+                        content_block.update(
+                            {
+                                "id": getattr(block, "id", None),
+                                "name": getattr(block, "name", None),
+                            }
+                        )
+                    yield StreamEvent(
+                        {
+                            "type": "content_block_start",
+                            "index": block_index,
+                            "content_block": content_block,
+                        }
+                    )
+                    if block_type == "text":
+                        text = getattr(block, "text", None)
+                        if isinstance(text, str):
+                            yield StreamEvent(
+                                {
+                                    "type": "content_block_delta",
+                                    "index": block_index,
+                                    "delta": {"type": "text_delta", "text": text},
+                                }
+                            )
+                    elif block_type == "thinking":
+                        thinking = getattr(block, "thinking", None)
+                        if isinstance(thinking, str):
+                            yield StreamEvent(
+                                {
+                                    "type": "content_block_delta",
+                                    "index": block_index,
+                                    "delta": {
+                                        "type": "thinking_delta",
+                                        "thinking": thinking,
+                                    },
+                                }
+                            )
+                    yield StreamEvent(
+                        {"type": "content_block_stop", "index": block_index}
+                    )
+                message = AssistantMessage(
+                    "",
+                    message_id=last_assistant_id,
+                    uuid=next_assistant_observation_id(),
+                )
+                message.content = blocks
                 yield message
+                yield StreamEvent(
+                    {"type": "message_delta", "delta": {"stop_reason": raw_stop_reason}}
+                )
+                yield StreamEvent({"type": "message_stop"})
             elif kind == "assistant_tool":
-                message = AssistantMessage("")
+                last_assistant_id = (
+                    value.get("message_id") or raw_message_id or next_message_id()
+                )
+                message = AssistantMessage(
+                    "",
+                    message_id=last_assistant_id,
+                    uuid=value.get("uuid") or next_assistant_observation_id(),
+                    stop_reason="tool_use",
+                )
                 message.content = [
                     ThinkingBlock(value["thinking"]),
                     ToolUseBlock(
@@ -451,7 +825,91 @@ def _scripted_sdk(
                     ),
                 ]
                 yield message
+            elif kind == "assistant_tool_turn":
+                last_assistant_id = raw_message_id or next_message_id()
+                raw_message_id = last_assistant_id
+                raw_text_by_index.clear()
+                yield StreamEvent(
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": last_assistant_id,
+                            "role": "assistant",
+                            "stop_reason": None,
+                        },
+                    }
+                )
+                yield StreamEvent(
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": value["id"],
+                            "name": value["name"],
+                        },
+                    }
+                )
+                yield StreamEvent({"type": "content_block_stop", "index": 0})
+                message = AssistantMessage(
+                    "",
+                    message_id=last_assistant_id,
+                    uuid=next_assistant_observation_id(),
+                    stop_reason="tool_use",
+                )
+                message.content = [
+                    ThinkingBlock(value["thinking"]),
+                    ToolUseBlock(
+                        id=value["id"],
+                        name=value["name"],
+                        input=value["input"],
+                    ),
+                ]
+                yield message
+                yield StreamEvent(
+                    {"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+                )
+                yield StreamEvent({"type": "message_stop"})
             elif kind == "stream":
+                event = value
+                if isinstance(event, dict) and event.get("type") == "message_start":
+                    message = event.get("message")
+                    raw_message_id = (
+                        message.get("id")
+                        if isinstance(message, dict)
+                        else None
+                    )
+                    last_assistant_id = raw_message_id
+                    raw_text_by_index.clear()
+                if (
+                    isinstance(event, dict)
+                    and event.get("type") == "content_block_delta"
+                    and isinstance(event.get("delta"), dict)
+                    and event["delta"].get("type") == "text_delta"
+                    and isinstance(event["delta"].get("text"), str)
+                    and isinstance(event.get("index"), int)
+                ):
+                    raw_text_by_index[event["index"]] = (
+                        raw_text_by_index.get(event["index"], "")
+                        + event["delta"]["text"]
+                    )
+                if (
+                    isinstance(event, dict)
+                    and event.get("type") == "message_stop"
+                    and raw_message_id is not None
+                    and raw_text_by_index
+                ):
+                    yield AssistantMessage(
+                        "",
+                        content=typed_content(
+                            "".join(
+                                raw_text_by_index[index]
+                                for index in sorted(raw_text_by_index)
+                            )
+                        ),
+                        message_id=raw_message_id,
+                        uuid=next_assistant_observation_id(),
+                    )
                 yield StreamEvent(value)
             elif kind in {"hook", "cancel_hook"}:
                 if kind == "cancel_hook":
@@ -468,7 +926,55 @@ def _scripted_sdk(
                 await asyncio.gather(*(invoke_hook(item) for item in value))
             elif kind == "probe":
                 value()
-        yield ResultMessage()
+        if (
+            emit_typed_result_source
+            and result_error is None
+            and isinstance(result_text, str)
+            and result_text.strip()
+            and last_assistant_id is None
+        ):
+            last_assistant_id = "result-message"
+            raw_message_id = last_assistant_id
+            raw_text_by_index.clear()
+            yield StreamEvent(
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": last_assistant_id,
+                        "role": "assistant",
+                        "stop_reason": None,
+                    },
+                }
+            )
+            yield StreamEvent(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text"},
+                }
+            )
+            raw_text_by_index[0] = result_text
+            yield StreamEvent(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": result_text},
+                }
+            )
+            yield StreamEvent({"type": "content_block_stop", "index": 0})
+            yield AssistantMessage(
+                result_text,
+                message_id=last_assistant_id,
+                uuid=next_assistant_observation_id(),
+            )
+            yield StreamEvent(
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                }
+            )
+            yield StreamEvent({"type": "message_stop"})
+        yield ResultMessage(result_uuid)
 
     return _client_sdk(types.SimpleNamespace(
         AssistantMessage=AssistantMessage,
@@ -484,7 +990,19 @@ def _scripted_sdk(
 
 
 def _stream_steps(text, *, index=0):
+    message_id = "sdk-message"
     return [
+        (
+            "stream",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": message_id,
+                    "role": "assistant",
+                    "stop_reason": None,
+                },
+            },
+        ),
         (
             "stream",
             {
@@ -502,6 +1020,11 @@ def _stream_steps(text, *, index=0):
             },
         ),
         ("stream", {"type": "content_block_stop", "index": index}),
+        (
+            "stream",
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        ),
+        ("stream", {"type": "message_stop"}),
     ]
 
 
@@ -882,6 +1405,7 @@ async def test_sandbox_grep_denies_outside_workspace_path(monkeypatch, tmp_path)
         _fake_sdk(
             captured,
             hook_invocations=[("PreToolUse", hook_input, hook_input["tool_use_id"])],
+            emit_answer=False,
         ),
     )
     monkeypatch.setattr(
@@ -989,7 +1513,6 @@ async def test_autonomous_sandbox_bash_preserves_pretool_narration_on_missing_te
         *_stream_steps("I will inspect the sandbox. ", index=0),
         ("hook", ("PreToolUse", hook_input, "bash-call-1")),
         *_stream_steps("The inspection started.", index=1),
-        ("assistant", public_text),
     ]
 
     async def acknowledge(_fact):
@@ -1059,7 +1582,6 @@ async def test_sandbox_effectful_tool_preserves_inflight_text_without_terminal_l
     steps = [
         ("hook", ("PreToolUse", hook_input, "local-call-1")),
         *_stream_steps(public_text),
-        ("assistant", public_text),
     ]
 
     async def acknowledge(fact):
@@ -1122,7 +1644,6 @@ async def test_sandbox_effectful_tool_streams_safe_text_across_verified_lifecycl
         ("hook", ("PostToolUse", hook_input, "local-call-1")),
         *_stream_steps("The file was updated.", index=1),
         ("probe", lambda: observed_before_result.extend(deltas)),
-        ("assistant", public_text),
     ]
 
     async def acknowledge(fact):
@@ -1189,7 +1710,6 @@ async def test_sandbox_read_only_tool_streams_only_outside_verified_lifecycle(
         *_stream_steps("private file content", index=1),
         ("hook", ("PostToolUse", hook_input, "read-only-call-1")),
         *_stream_steps("After read.", index=2),
-        ("assistant", "Before read. private file contentAfter read."),
     ]
 
     async def acknowledge(fact):
@@ -1260,7 +1780,7 @@ async def test_failed_answer_projection_does_not_hide_verified_tool_terminal(
         name = "Read"
         input = hook_input["tool_input"]
 
-    oversized_text = "x " * 131_073
+    oversized_text = "x " * 131_072
     steps = [
         *_stream_steps(oversized_text),
         ("assistant_blocks", [ToolUseBlock()]),
@@ -1310,7 +1830,7 @@ async def test_failed_answer_projection_does_not_hide_verified_tool_terminal(
         for event in public_events
         if event.event_type in {"tool.started", "tool.completed", "tool.failed"}
     ] == ["tool.started", terminal_event]
-    assert result.error is None
+    assert result.error == "claude_agent_sdk_upstream_error"
     assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
 
 
@@ -1320,7 +1840,7 @@ async def test_failed_answer_projection_keeps_skill_and_bash_receipts(
     tmp_path,
 ):
     captured, deltas, lifecycle_facts, capability_facts = {}, [], [], []
-    oversized_text = "x " * 131_073
+    oversized_text = "x " * 131_072
     skill_input = {
         "tool_name": "Skill",
         "tool_use_id": "skill-call-1",
@@ -1413,7 +1933,6 @@ async def test_sandbox_read_only_tool_without_terminal_receipt_fails_closed(
     steps = [
         ("hook", ("PreToolUse", hook_input, "read-only-call-1")),
         *_stream_steps("private file content"),
-        ("assistant", "private file content"),
     ]
 
     async def acknowledge(_fact):
@@ -1462,7 +1981,6 @@ async def test_sandbox_read_only_tool_denies_unacknowledged_start(
     steps = [
         ("hook", ("PreToolUse", hook_input, "read-only-call-1")),
         *_stream_steps("private file content"),
-        ("assistant", "private file content"),
     ]
 
     async def acknowledge(_fact):
@@ -1917,9 +2435,9 @@ async def test_required_sandbox_bash_preserves_answer_without_terminal_lifecycle
         on_text=deltas.append,
     )
 
-    assert "".join(deltas) == "must remain private"
+    assert "".join(deltas) == "must remain "
     assert result.error == "required_tool_completion_evidence_missing"
-    assert result.message == "must remain private"
+    assert result.message == ""
 
 
 @pytest.mark.asyncio
@@ -2038,7 +2556,7 @@ async def test_required_sandbox_bash_releases_only_after_acknowledged_completion
 
 
 @pytest.mark.asyncio
-async def test_required_sandbox_bash_failure_after_success_preserves_published_prefix(
+async def test_required_sandbox_bash_failure_rejects_unframed_typed_body(
     monkeypatch,
     tmp_path,
 ):
@@ -2100,9 +2618,9 @@ async def test_required_sandbox_bash_failure_after_success_preserves_published_p
         ("bash-call-2", "started"),
         ("bash-call-2", "failed"),
     ]
-    assert "".join(deltas) == "must not be published"
+    assert "".join(deltas) == ""
     assert result.error == "required_tool_completion_evidence_mismatch"
-    assert result.message == "must not be published"
+    assert result.message == ""
     failed_call = next(
         item
         for item in result.runtime_diagnostics["tool_calls"]
@@ -2673,7 +3191,6 @@ async def test_sdk_hook_seed_conflict_fails_as_unknown_execution(
         run_id="run-hook-conflict",
         attempt_id="attempt-1",
     )
-
     assert result.error == "mcp_execution_outcome_unknown"
     assert result.turn_diagnostics["retryable"] is False
     public_events = [event for batch in candidate_batches for event in batch]
@@ -2952,7 +3469,7 @@ async def test_sdk_actual_mcp_streams_public_text_without_waiting_for_receipt(
     ]
     private_text = f"Safe answer via {first['identity']} with mcp-call-1 at {first['mcp_server_config']['url']}."
     text = (
-        "x " * 131_073
+        "x " * 131_072
         if outcome == "overflow"
         else private_text
         if outcome == "success"
@@ -3061,8 +3578,7 @@ async def test_sdk_reconciles_complete_assistant_suffix_once(
         *_stream_steps(before),
         ("probe", lambda: published_before_hook.extend(deltas)),
         *_mcp_hook_steps(subject, call_id=call_id),
-        *_stream_steps(" After ", index=1),
-        ("assistant", before + after),
+        *_stream_steps(after, index=1),
         ("probe", lambda: published_before_terminal.extend(deltas)),
     ]
     monkeypatch.setitem(
@@ -3181,10 +3697,8 @@ async def test_sdk_preserves_visible_delta_when_complete_assistant_body_differs(
         on_text=deltas.append,
     )
 
-    expected_text = "Streamed answer. \n\nDifferent complete answer."
-    assert "".join(deltas) == expected_text
-    assert result.error is None
-    assert result.message == expected_text
+    assert "".join(deltas) == "Streamed answer. "
+    assert result.message == ""
 
 
 @pytest.mark.asyncio
@@ -3366,13 +3880,10 @@ async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabiliti
     ]
     assert result.error == "mcp_execution_outcome_unknown"
     assert result.turn_diagnostics["retryable"] is False
-    assert result.message
-    assert "first verified answer" in result.message
-    assert "second capability in-flight text" in result.message
-    assert "first verified answer" in "".join(deltas)
-    assert "second capability in-flight text" in "".join(deltas)
-    assert any("first verified " in repr(event.as_dict()) for event in candidate_events)
-    assert any(
+    assert result.message == ""
+    assert deltas == []
+    assert not any("first verified answer" in repr(event.as_dict()) for event in candidate_events)
+    assert not any(
         "second capability in-flight text" in repr(event.as_dict())
         for event in candidate_events
     )
@@ -3600,6 +4111,17 @@ async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
                 (
                     "stream",
                     {
+                        "type": "message_start",
+                        "message": {
+                            "id": "sdk-message",
+                            "role": "assistant",
+                            "stop_reason": None,
+                        },
+                    },
+                ),
+                (
+                    "stream",
+                    {
                         "type": "content_block_start",
                         "index": 0,
                         "content_block": {"type": "text"},
@@ -3625,6 +4147,14 @@ async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
                     },
                 ),
                 ("stream", {"type": "content_block_stop", "index": 0}),
+                (
+                    "stream",
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                    },
+                ),
+                ("stream", {"type": "message_stop"}),
                 ("hook", ("PreToolUse", skill_input, call_id)),
                 (
                     "hook",
@@ -3814,9 +4344,10 @@ async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_bou
         thinking_effort="high",
     )
 
-    assert result.error is None
+    assert result.error == "claude_agent_sdk_upstream_error"
     assert observed_before_result == []
-    assert "".join(deltas) == text
+    assert deltas == []
+    assert result.message == ""
     event_types = [
         candidate.event_type
         if hasattr(candidate, "event_type")
@@ -3824,7 +4355,7 @@ async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_bou
         for candidate in candidates
     ]
     assert "claude_sdk_thinking_summary" not in event_types
-    assert event_types.index("tool.completed") < event_types.index("message.delta")
+    assert "message.delta" not in event_types
 
 
 @pytest.mark.asyncio
@@ -3999,7 +4530,7 @@ async def test_sdk_selected_skill_rejected_post_ack_preserves_pretool_narration(
         result.used_skills,
         result.capability_evidence,
         deltas,
-    ) == ("required_tool_completion_evidence_mismatch", text, [], [], [text])
+    ) == ("required_tool_completion_evidence_mismatch", "", [], [], [text])
 
 
 @pytest.mark.asyncio
@@ -4077,7 +4608,7 @@ async def test_sdk_selected_skill_concurrent_rejection_prevents_inflight_commit(
         result.used_skills,
         result.capability_evidence,
         deltas,
-    ) == ("required_tool_completion_evidence_mismatch", "sealed", [], [], ["sealed"])
+    ) == ("required_tool_completion_evidence_mismatch", "", [], [], [])
 
 
 @pytest.mark.asyncio
@@ -4203,6 +4734,11 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
     captured, observed_before_result = {}, []
 
     class AssistantMessage:
+        message_id = "complete-message"
+        uuid = "complete-message"
+        parent_tool_use_id = None
+        stop_reason = None
+
         def __init__(self):
             self.content = [TextBlock("Complete Assistant body")]
 
@@ -4220,6 +4756,7 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
         stop_reason = "end_turn"
         num_turns = 1
         permission_denials = None
+        uuid = "complete-message"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -4275,7 +4812,13 @@ async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, t
     (skill_output / "report.docx").write_bytes(b"report")
 
     class AssistantMessage:
-        content = []
+        message_id = "attach-message"
+        uuid = "attach-message"
+        parent_tool_use_id = None
+        stop_reason = None
+
+        def __init__(self):
+            self.content = [TextBlock("Final user answer")]
 
     class TextBlock:
         def __init__(self, text):
@@ -4294,6 +4837,7 @@ async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, t
         terminal_reason = "completed"
         num_turns = 1
         permission_denials = None
+        uuid = "attach-message"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -4354,6 +4898,7 @@ async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, t
                 }
             )
         )
+        yield AssistantMessage()
         yield ResultMessage()
 
     monkeypatch.setitem(
@@ -4429,6 +4974,520 @@ async def test_sdk_empty_result_is_not_a_successful_terminal(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_sdk_nonstreaming_result_only_uses_explicit_result_source(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [],
+            result_text="terminal-only answer",
+            result_uuid="terminal-only-result",
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == "terminal-only answer"
+    assert "".join(deltas) == "terminal-only answer"
+
+
+@pytest.mark.asyncio
+async def test_sdk_nonstreaming_accepts_installed_optional_message_identities(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                (
+                    "assistant_typed",
+                    {"text": "typed answer", "message_id": None, "uuid": None},
+                )
+            ],
+            result_text="typed answer",
+            result_uuid=None,
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == "typed answer"
+    assert "".join(deltas) == "typed answer"
+
+
+@pytest.mark.asyncio
+async def test_sdk_nonstreaming_reused_message_id_creates_new_observation_source(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                (
+                    "assistant_typed",
+                    {
+                        "text": "old",
+                        "message_id": "same-message",
+                        "uuid": "old-observation",
+                    },
+                ),
+                (
+                    "assistant_tool",
+                    {
+                        "thinking": "private reasoning",
+                        "id": "tool-use-between-answers",
+                        "name": "Read",
+                        "input": {},
+                        "message_id": "same-message",
+                        "uuid": "tool-observation",
+                    },
+                ),
+                (
+                    "assistant_typed",
+                    {
+                        "text": "new",
+                        "message_id": "same-message",
+                        "uuid": "new-observation",
+                    },
+                ),
+            ],
+            result_text="old\n\nnew",
+            result_uuid="reused-message-result",
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == "old\n\nnew"
+    assert "".join(deltas) == "old\n\nnew"
+
+
+@pytest.mark.asyncio
+async def test_sdk_nonstreaming_tool_only_assistant_uses_result_source(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                (
+                    "assistant_tool",
+                    {
+                        "thinking": "private reasoning",
+                        "id": "tool-use-compat",
+                        "name": "Read",
+                        "input": {},
+                    },
+                )
+            ],
+            result_text="tool-only terminal answer",
+            result_uuid="tool-only-result",
+            result_stop_reason=None,
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == "tool-only terminal answer"
+    assert "".join(deltas) == "tool-only terminal answer"
+
+
+@pytest.mark.asyncio
+async def test_sdk_sandbox_tool_only_assistant_rejects_result_without_raw_answer_source(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                (
+                    "assistant_tool",
+                    {
+                        "thinking": "private reasoning",
+                        "id": "tool-use-streamed-compat",
+                        "name": "Read",
+                        "input": {},
+                    },
+                )
+            ],
+            result_text="tool-only terminal answer",
+            result_uuid="tool-only-streamed-result",
+            result_stop_reason=None,
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
+    assert deltas == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_sandbox_tool_only_turn_retires_previous_answer_binding(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                *_stream_steps("visible prefix."),
+                (
+                    "assistant_tool_turn",
+                    {
+                        "thinking": "private reasoning",
+                        "id": "tool-use-after-answer",
+                        "name": "Read",
+                        "input": {},
+                    },
+                ),
+            ],
+            result_text="foreign terminal body",
+            result_uuid="foreign-terminal-result",
+            result_stop_reason=None,
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
+    assert deltas == ["visible "]
+    assert result.answer_receipt is None
+
+
+@pytest.mark.asyncio
+async def test_sdk_sandbox_server_tool_only_turn_retires_previous_answer_binding(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+
+    class ServerToolUseBlock:
+        id = "server-tool-use-after-answer"
+        name = "web_search"
+        input = {}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                *_stream_steps("visible prefix."),
+                ("assistant_blocks", ([ServerToolUseBlock()], "end_turn")),
+            ],
+            result_text="visible prefix.\n\nforeign terminal body",
+            result_uuid="foreign-server-terminal-result",
+            result_stop_reason="end_turn",
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
+    assert "foreign terminal body" not in "".join(deltas)
+    assert result.answer_receipt is None
+
+
+@pytest.mark.asyncio
+async def test_sdk_sandbox_empty_typed_turn_retires_previous_answer_binding(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [
+                *_stream_steps("visible prefix."),
+                ("assistant_blocks", ([], "end_turn")),
+            ],
+            result_text="visible prefix.\n\nforeign terminal body",
+            result_uuid="foreign-empty-typed-terminal-result",
+            result_stop_reason="end_turn",
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
+    assert "foreign terminal body" not in "".join(deltas)
+    assert result.answer_receipt is None
+
+
+@pytest.mark.asyncio
+async def test_sdk_sandbox_typed_body_before_raw_delta_is_published_once(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    body = "typed before raw."
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [("assistant_before_raw", body)],
+            result_text=body,
+            result_uuid="typed-before-raw-result",
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == body
+    assert "".join(deltas) == body
+
+
+@pytest.mark.asyncio
+async def test_sdk_sandbox_raw_prefix_typed_extension_does_not_replay_suffix(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    body = "Hello world"
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [("assistant_after_raw_prefix", ("Hello", body))],
+            result_text=body,
+            result_uuid="raw-prefix-typed-extension-result",
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == body
+    assert "".join(deltas) == body
+
+
+@pytest.mark.asyncio
+async def test_sdk_sandbox_typed_end_turn_conflicts_with_raw_tool_use_stop(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    body = "typed stop conflict"
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [("assistant_before_raw", (body, "end_turn", "tool_use"))],
+            result_text=body,
+            result_uuid="typed-stop-conflict-result",
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
+    assert body.startswith("".join(deltas))
+
+
+@pytest.mark.asyncio
+async def test_sdk_streamed_result_only_uses_explicit_result_source_without_raw_lifecycle(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [],
+            result_text="terminal-only answer",
+            result_uuid="terminal-only-result",
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == "terminal-only answer"
+    assert deltas == ["terminal-only ", "answer"]
+    assert "".join(deltas) == "terminal-only answer"
+
+
+@pytest.mark.asyncio
+async def test_sdk_streamed_terminal_only_accepts_missing_optional_result_uuid(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [],
+            result_text="terminal-only answer",
+            result_uuid=None,
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == "terminal-only answer"
+    assert "".join(deltas) == "terminal-only answer"
+
+
+@pytest.mark.asyncio
 async def test_sdk_streamed_answer_can_complete_when_result_field_is_empty(
     monkeypatch, tmp_path
 ):
@@ -4456,6 +5515,38 @@ async def test_sdk_streamed_answer_can_complete_when_result_field_is_empty(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("result_text", ["terminal answer", "   "])
+async def test_sdk_unknown_result_stop_reason_fails_closed(
+    monkeypatch, tmp_path, result_text
+):
+    captured, deltas = {}, []
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [],
+            result_text=result_text,
+            result_stop_reason="future_stop",
+            emit_typed_result_source=False,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id=None,
+        on_text=deltas.append,
+    )
+
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.received_structured_terminal is True
+    assert deltas == []
+    assert result.message == ""
+
+
+@pytest.mark.asyncio
 async def test_sdk_streams_split_assistant_text_before_later_tool_block(
     monkeypatch, tmp_path
 ):
@@ -4477,11 +5568,15 @@ async def test_sdk_streams_split_assistant_text_before_later_tool_block(
         name = "Read"
         input = {"file_path": "input.txt"}
 
+    assistant_observation_counter = 0
+
     class AssistantMessage:
         def __init__(self, content):
+            nonlocal assistant_observation_counter
+            assistant_observation_counter += 1
             self.content = content
             self.message_id = shared_message_id
-            self.uuid = f"uuid-{shared_message_id}"
+            self.uuid = f"sdk-assistant-observation-{assistant_observation_counter}"
             self.stop_reason = (
                 "tool_use"
                 if any(type(block).__name__ == "ToolUseBlock" for block in content)
@@ -4489,9 +5584,14 @@ async def test_sdk_streams_split_assistant_text_before_later_tool_block(
             )
             self.parent_tool_use_id = None
 
+    raw_event_counter = 0
+
     class StreamEvent:
         def __init__(self, event):
+            nonlocal raw_event_counter
+            raw_event_counter += 1
             self.event = event
+            self.uuid = f"sdk-raw-event-{raw_event_counter}"
             self.parent_tool_use_id = None
 
     class ResultMessage:
@@ -4505,6 +5605,7 @@ async def test_sdk_streams_split_assistant_text_before_later_tool_block(
         terminal_reason = "completed"
         num_turns = 1
         permission_denials = None
+        uuid = "sdk-result-observation"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -4519,7 +5620,11 @@ async def test_sdk_streams_split_assistant_text_before_later_tool_block(
         yield StreamEvent(
             {
                 "type": "message_start",
-                "message": {"id": shared_message_id, "stop_reason": None},
+                "message": {
+                    "id": shared_message_id,
+                    "role": "assistant",
+                    "stop_reason": None,
+                },
             }
         )
         yield StreamEvent(
@@ -4553,13 +5658,31 @@ async def test_sdk_streams_split_assistant_text_before_later_tool_block(
                 "delta": {"type": "text_delta", "text": "Checking before the next step."},
             }
         )
-        yield AssistantMessage([TextBlock("Checking before the next step.")])
+        yield AssistantMessage(
+            [ThinkingBlock("private reasoning"), TextBlock("Checking before the next step.")]
+        )
         observed_after_text.extend(candidate.event_type for candidate in candidates)
         yield StreamEvent({"type": "content_block_stop", "index": 1})
         yield StreamEvent(
             {
                 "type": "content_block_start",
                 "index": 2,
+                "content_block": {"type": "text"},
+            }
+        )
+        yield StreamEvent(
+            {
+                "type": "content_block_delta",
+                "index": 2,
+                "delta": {"type": "text_delta", "text": " Still checking."},
+            }
+        )
+        yield AssistantMessage([TextBlock(" Still checking.")])
+        yield StreamEvent({"type": "content_block_stop", "index": 2})
+        yield StreamEvent(
+            {
+                "type": "content_block_start",
+                "index": 3,
                 "content_block": {
                     "type": "tool_use",
                     "id": "tool-1",
@@ -4568,7 +5691,23 @@ async def test_sdk_streams_split_assistant_text_before_later_tool_block(
             }
         )
         yield AssistantMessage([ToolUseBlock()])
-        yield StreamEvent({"type": "content_block_stop", "index": 2})
+        yield StreamEvent({"type": "content_block_stop", "index": 3})
+        yield StreamEvent(
+            {
+                "type": "content_block_start",
+                "index": 4,
+                "content_block": {"type": "text"},
+            }
+        )
+        yield StreamEvent(
+            {
+                "type": "content_block_delta",
+                "index": 4,
+                "delta": {"type": "text_delta", "text": "Final user answer"},
+            }
+        )
+        yield AssistantMessage([TextBlock("Final user answer")])
+        yield StreamEvent({"type": "content_block_stop", "index": 4})
         yield StreamEvent(
             {"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
         )
@@ -4610,7 +5749,9 @@ async def test_sdk_streams_split_assistant_text_before_later_tool_block(
         for candidate in candidates
         if candidate.event_type == "commentary.delta"
     )
-    expected_text = "Checking before the next step.\n\nFinal user answer"
+    expected_text = (
+        "Checking before the next step. Still checking.Final user answer"
+    )
     assert observed_after_thinking == []
     assert "message.delta" in observed_after_text
     assert commentary_text == ""
@@ -4641,6 +5782,10 @@ async def test_sdk_tool_turn_publishes_safe_assistant_text_before_result(
         input = {"file_path": "input.txt"}
 
     class AssistantMessage:
+        message_id = "tool-turn-message"
+        uuid = "tool-turn-message"
+        parent_tool_use_id = None
+        stop_reason = "tool_use"
         content = [
             TextBlock(
                 f"Checking {private_call_id} in {tmp_path} before the next step."
@@ -4661,6 +5806,7 @@ async def test_sdk_tool_turn_publishes_safe_assistant_text_before_result(
         terminal_reason = "completed"
         num_turns = 1
         permission_denials = None
+        uuid = "final-tool-turn-message"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -4676,6 +5822,12 @@ async def test_sdk_tool_turn_publishes_safe_assistant_text_before_result(
         observed_before_result.extend(
             candidate.event_type for candidate in candidates
         )
+        final_message = AssistantMessage()
+        final_message.message_id = "final-tool-turn-message"
+        final_message.uuid = "final-tool-turn-message"
+        final_message.stop_reason = "end_turn"
+        final_message.content = [TextBlock("Final user answer")]
+        yield final_message
         yield ResultMessage()
 
     monkeypatch.setitem(
@@ -4736,6 +5888,17 @@ async def test_sdk_structured_output_does_not_control_plain_text_terminal(
 ):
     captured = {}
 
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class AssistantMessage:
+        message_id = "structured-message"
+        uuid = "structured-observation"
+        parent_tool_use_id = None
+        stop_reason = None
+        content = [TextBlock("done")]
+
     class ResultMessage:
         __annotations__ = {"structured_output": object}
         session_id = "sdk-session"
@@ -4748,6 +5911,7 @@ async def test_sdk_structured_output_does_not_control_plain_text_terminal(
         terminal_reason = "completed"
         num_turns = 1
         permission_denials = None
+        uuid = "structured-result"
 
     ResultMessage.structured_output = structured_output
 
@@ -4757,6 +5921,7 @@ async def test_sdk_structured_output_does_not_control_plain_text_terminal(
 
     async def query(*, prompt, options):
         del prompt, options
+        yield AssistantMessage()
         yield ResultMessage()
 
     monkeypatch.setitem(
@@ -4764,11 +5929,11 @@ async def test_sdk_structured_output_does_not_control_plain_text_terminal(
         "claude_agent_sdk",
         _client_sdk(
             types.SimpleNamespace(
-                AssistantMessage=type("AssistantMessage", (), {}),
+                AssistantMessage=AssistantMessage,
                 ClaudeAgentOptions=ClaudeAgentOptions,
                 ResultMessage=ResultMessage,
                 StreamEvent=type("StreamEvent", (), {}),
-                TextBlock=type("TextBlock", (), {}),
+                TextBlock=TextBlock,
                 query=query,
             ),
             captured,
@@ -4943,10 +6108,9 @@ async def test_sdk_conflicting_result_keeps_terminal_body(
         on_text=deltas.append,
     )
 
-    expected_text = "Complete Assistant body\n\nConflicting terminal result"
-    assert "".join(deltas) == expected_text
-    assert result.error is None
-    assert result.message == expected_text
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert "".join(deltas) == "Complete Assistant "
+    assert result.message == ""
 
 
 @pytest.mark.asyncio
@@ -5010,14 +6174,29 @@ def _streaming_sdk(
     captured, events, *, on_before_result=None, result_text="terminal final"
 ):
     class AssistantMessage:
-        pass
+        message_id = "stream-message"
+        uuid = "stream-message"
+        parent_tool_use_id = None
+        stop_reason = None
 
     class TextBlock:
-        pass
+        def __init__(self, text=None):
+            self.text = text
+
+    raw_event_counter = 0
 
     class StreamEvent:
         def __init__(self, event):
-            self.event = event
+            nonlocal raw_event_counter
+            raw_event_counter += 1
+            event_uuid = event.get("__uuid") if isinstance(event, dict) else None
+            self.event = (
+                {key: value for key, value in event.items() if key != "__uuid"}
+                if isinstance(event, dict)
+                else event
+            )
+            self.uuid = event_uuid or f"stream-raw-event-{raw_event_counter}"
+            self.parent_tool_use_id = None
 
     class ResultMessage:
         session_id = "sdk-session"
@@ -5029,6 +6208,7 @@ def _streaming_sdk(
         stop_reason = "end_turn"
         num_turns = 1
         permission_denials = None
+        uuid = "stream-result"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -5209,6 +6389,14 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
     streamed_chunks = ("Short safe ", "public answer.")
     streamed_text = "".join(streamed_chunks)
     events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "stream-message",
+                "role": "assistant",
+                "stop_reason": None,
+            },
+        },
         {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
         {
             "type": "content_block_delta",
@@ -5221,6 +6409,11 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
             "delta": {"type": "text_delta", "text": streamed_chunks[1]},
         },
         {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+        },
+        {"type": "message_stop"},
     ]
     monkeypatch.setitem(
         sys.modules,
@@ -5252,6 +6445,134 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
 
 
 @pytest.mark.asyncio
+async def test_sandbox_stream_ignores_server_tool_result_before_public_text(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "stream-message",
+                "role": "assistant",
+                "stop_reason": None,
+            },
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "web_search_tool_result"},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text"}},
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "text_delta", "text": "public after search"},
+        },
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _streaming_sdk(captured, events, result_text="public after search"),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert "".join(deltas) == "public after search"
+    assert result.message == "public after search"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_server_tool_use_does_not_imply_tool_stop_reason(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    public_text = "public after server tool"
+    steps = []
+
+    class ServerToolUseBlock:
+        id = "server-tool-use-1"
+        name = "web_search"
+        input = {}
+
+    sdk = _scripted_sdk(
+        captured,
+        steps,
+        result_text=public_text,
+        result_uuid="server-tool-result",
+    )
+    steps.append(
+        (
+            "assistant_blocks",
+            ([ServerToolUseBlock(), sdk.TextBlock(public_text)], "end_turn"),
+        )
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.message == public_text
+    assert "".join(deltas) == public_text
+
+
+@pytest.mark.asyncio
+async def test_sandbox_stream_binds_parser_compressed_text_to_raw_text_source(
+    monkeypatch, tmp_path
+):
+    captured, deltas = {}, []
+    public_text = "public after compressed search"
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            [("assistant_parser_compressed", public_text)],
+            result_text=public_text,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert "".join(deltas) == public_text
+    assert result.message == public_text
+
+
+@pytest.mark.asyncio
 async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(
     monkeypatch, tmp_path
 ):
@@ -5260,6 +6581,14 @@ async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(
     raw_streamed_text = "Safe answer after tool-1 use."
     public_streamed_text = "Safe answer after \u2588 use."
     events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "stream-message",
+                "role": "assistant",
+                "stop_reason": None,
+            },
+        },
         {
             "type": "content_block_start",
             "index": 0,
@@ -5281,6 +6610,11 @@ async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(
             "delta": {"type": "text_delta", "text": raw_streamed_text},
         },
         {"type": "content_block_stop", "index": 1},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+        },
+        {"type": "message_stop"},
     ]
     monkeypatch.setitem(
         sys.modules,
@@ -5312,6 +6646,14 @@ async def test_sandbox_stream_duplicate_stop_preserves_visible_prefix(
     captured = {}
     deltas = []
     events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "stream-message",
+                "role": "assistant",
+                "stop_reason": None,
+            },
+        },
         {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
         {
             "type": "content_block_delta",
@@ -5337,9 +6679,106 @@ async def test_sandbox_stream_duplicate_stop_preserves_visible_prefix(
     )
 
     assert captured["include_partial_messages"] is True
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
+    assert "".join(deltas) == "short "
+
+
+@pytest.mark.asyncio
+async def test_sandbox_stream_duplicate_raw_observation_is_not_republished(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    deltas = []
+    duplicate_delta = {
+        "__uuid": "stream-raw-duplicate",
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": "text_delta", "text": "short answer"},
+    }
+    events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "stream-message",
+                "role": "assistant",
+                "stop_reason": None,
+            },
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        duplicate_delta,
+        dict(duplicate_delta),
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ]
+    monkeypatch.setitem(
+        sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events, result_text="short answer")
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
     assert result.error is None
-    assert result.message == "short answer\n\nterminal final"
-    assert "".join(deltas) == result.message
+    assert result.message == "short answer"
+    assert "".join(deltas) == "short answer"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_stream_failure_discards_pending_private_token_prefix(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    deltas = []
+    subject = _subject()
+    private_token = subject["identity"]
+    events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "stream-message",
+                "role": "assistant",
+                "stop_reason": None,
+            },
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": private_token[:-1]},
+        },
+        {"type": "unexpected-framing-event"},
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _streaming_sdk(captured, events, result_text=private_token),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[subject],
+        on_text=deltas.append,
+    )
+
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
+    assert deltas == []
+    assert all(private_token not in chunk for chunk in deltas)
 
 
 @pytest.mark.asyncio
@@ -5370,9 +6809,9 @@ async def test_sdk_keeps_visible_prefix_and_terminal_body_after_stream_failure(
     )
 
     assert captured["include_partial_messages"] is True
-    assert result.error is None
-    assert result.message == "safe partial must finish\n\nterminal final"
-    assert "".join(deltas) == result.message
+    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.message == ""
+    assert deltas == []
 
 
 @pytest.mark.asyncio
@@ -5387,7 +6826,7 @@ async def test_sdk_keeps_visible_prefix_and_terminal_body_after_stream_failure(
                     "content_block": {"type": "text"},
                 }
             ],
-            "terminal fallback",
+            "",
         ),
         (
             [
@@ -5402,9 +6841,9 @@ async def test_sdk_keeps_visible_prefix_and_terminal_body_after_stream_failure(
                     "delta": {"type": "text_delta", "text": "short"},
                 },
             ],
-            "short\n\nterminal fallback",
+            "",
         ),
-        (["malformed"], "terminal fallback"),
+        (["malformed"], ""),
     ],
     ids=("start-only", "short-unfinished", "malformed-first-event"),
 )
@@ -5437,7 +6876,7 @@ async def test_stream_failure_before_publication_recovers_terminal_body(
 
     assert captured["include_partial_messages"] is True
     assert "".join(deltas) == expected
-    assert result.error is None
+    assert result.error == "claude_agent_sdk_upstream_error"
     assert result.message == expected
 
 
@@ -5834,3 +7273,62 @@ async def test_native_client_delegates_compaction_to_cli_without_session_open_qu
     assert captured["extra_args"] == {"autocompact": "100000"}
     assert captured["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "36500"
     assert captured["env"].get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") in {None, ""}
+
+
+@pytest.mark.asyncio
+async def test_sdk_cli_stripped_result_completes_wrapped_stream_with_answer_receipt(
+    monkeypatch, tmp_path
+):
+    captured, candidates, deltas = {}, [], []
+    body = '<cc-memory filenames="preferences.md">Use UTF-8.</cc-memory>'
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _stream_steps(body),
+            result_text="Use UTF-8.",
+            result_uuid="wrapped-sdk-result",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-wrapped-result",
+        attempt_id="attempt-wrapped-result",
+    )
+
+    message_events = [
+        candidate
+        for candidate in candidates
+        if candidate.event_type.startswith("message.")
+    ]
+    delta_events = [
+        candidate
+        for candidate in message_events
+        if candidate.event_type == "message.delta"
+    ]
+    assert result.error is None
+    assert result.received_structured_terminal is True
+    assert result.message == ""
+    assert "".join(deltas) == body
+    assert message_events[0].event_type == "message.started"
+    assert message_events[-1].event_type == "message.completed"
+    assert "".join(event.payload["delta"] for event in delta_events) == body
+    assert result.answer_receipt == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": message_events[0].message_id,
+        "delta_count": len(delta_events),
+        "text_length": len(body),
+        "last_delta_event_id": delta_events[-1].event_id,
+    }

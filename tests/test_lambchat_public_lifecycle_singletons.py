@@ -88,12 +88,13 @@ def test_public_lifecycle_singletons_match_exact_history_projection():
         11,
         "execution_step",
         {
-            "step_id": "step-1",
-            "kind": "processing",
-            "stage": "execution",
+            "schema_version": "ai-platform.public-execution-event.v2",
+            "step_id": "pex_execution_1",
+            "presentation_kind": "read",
+            "kind": "file_read",
+            "stage": "read",
             "status": "running",
-            "title": "Controlled processing",
-            "summary": "Processing authorized input",
+            "safe_label": "Reading authorized files",
             "progress": {"current": 0, "total": 1},
         },
     )

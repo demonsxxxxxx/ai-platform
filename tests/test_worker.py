@@ -88,6 +88,22 @@ _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = _repo_app_mcp_infrastructure_tool_policies_po
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = _repo_app_skills_infrastructure_run_snapshots_postgres.materialize_run_skill_manifests
 
 
+def _native_snapshot(row):
+    from app.context.domain.conversation_authority import initial_source_digest, make_authority_receipt
+
+    scope = {key: row[key] for key in ("tenant_id", "workspace_id", "user_id", "session_id")}
+    scope["agent_id"] = _CURRENT_QUEUE_PAYLOAD["agent_id"]
+    current_ids = row["included_message_ids"]
+    return {
+        **row,
+        "conversation_authority_json": make_authority_receipt(
+            scope=scope, through_session_generation=1, message_count=0,
+            source_sha256=initial_source_digest(scope),
+            current_message_id=current_ids[0] if current_ids else None,
+        ),
+    }
+
+
 @pytest.fixture(autouse=True)
 def _stub_terminal_context_ports(monkeypatch):
     async def release(_conn, **_kwargs):
@@ -1066,13 +1082,11 @@ def default_cancel_not_requested(monkeypatch):
             ),
         )
 
-    async def no_ready_provider_epoch(*_args, **_kwargs):
-        return False
+    async def prepare_native_epoch(_conn, *, conversation_context, **_kwargs):
+        return {**conversation_context, "execution_mode": "empty_start",
+                "provider_epoch_id": "pe-test", "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685"}
 
-    monkeypatch.setattr(
-        "app.context.api.matching_ready_provider_epoch",
-        no_ready_provider_epoch,
-    )
+    monkeypatch.setattr("app.context.api.prepare_provider_epoch", prepare_native_epoch)
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
     monkeypatch.setattr(
@@ -1279,7 +1293,7 @@ def default_cancel_not_requested(monkeypatch):
     )
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": kwargs["context_snapshot_id"],
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -1302,7 +1316,7 @@ def default_cancel_not_requested(monkeypatch):
                 "memory_record_count": 0,
             },
             "created_at": None,
-        }
+        })
 
     monkeypatch.setattr(
         'app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker',
@@ -3658,7 +3672,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
         return "evt-a"
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": kwargs["context_snapshot_id"],
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -3681,7 +3695,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
                 "memory_record_count": 0,
             },
             "created_at": None,
-        }
+        })
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
@@ -4126,7 +4140,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
         return "evt-heavy"
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": "ctx-heavy",
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -4150,7 +4164,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
                 "execution_tier": execution_tier,
             },
             "created_at": None,
-        }
+        })
 
     async def create_artifact(conn, **kwargs):
         return None
@@ -4649,7 +4663,7 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
         raise AssertionError("cancel-requested runtime failures must prefer cancelled over failed")
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": "ctx-heavy",
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -4673,7 +4687,7 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
                 "execution_tier": "heavy_sandbox",
             },
             "created_at": None,
-        }
+        })
 
     async def fail_create_sandbox_lease(*args, **kwargs):
         raise AssertionError("heavy_sandbox runtime path must not record worker placeholder leases")
@@ -4839,7 +4853,7 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": "ctx-heavy",
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -4863,7 +4877,7 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
                 "execution_tier": "heavy_sandbox",
             },
             "created_at": None,
-        }
+        })
 
     async def fail_create_sandbox_lease(*args, **kwargs):
         raise AssertionError("heavy_sandbox runtime path must not record worker placeholder leases")
@@ -5176,7 +5190,7 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
             "run_id": "run-a",
             "context_snapshot_id": "ctx-existing",
         }
-        return {
+        return _native_snapshot({
             "id": "ctx-existing",
             "tenant_id": "tenant-a",
             "workspace_id": "workspace-a",
@@ -5199,7 +5213,7 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
                 "memory_record_count": 0,
             },
             "created_at": None,
-        }
+        })
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("verified queue snapshots must be reconstructed from DB scope")
@@ -5272,7 +5286,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
         return "evt-context-manifest"
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": kwargs["context_snapshot_id"],
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -5317,7 +5331,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
                 },
             },
             "created_at": None,
-        }
+        })
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("verified queue snapshots must be reconstructed from DB scope")
@@ -5393,7 +5407,7 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
         assert kwargs["context_snapshot_id"] == "ctx-existing"
-        return {
+        return _native_snapshot({
             "id": "ctx-existing",
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -5410,7 +5424,7 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
             "redaction_summary_json": {},
             "payload_json": {"window": "current"},
             "created_at": None,
-        }
+        })
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("context_snapshot_id-only payload must resolve scoped DB snapshot")
@@ -5474,7 +5488,7 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
         return "evt-context"
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": "ctx-existing",
             "tenant_id": "tenant-a",
             "workspace_id": "workspace-a",
@@ -5508,7 +5522,7 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
                 "context_pack_generated_at": "2026-06-12T01:23:45Z",
             },
             "created_at": None,
-        }
+        })
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("context_snapshot_id-only payload must resolve scoped DB snapshot")
@@ -5572,7 +5586,7 @@ async def test_worker_preserves_safe_top_level_legacy_context_source(monkeypatch
         return "evt-context"
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": "ctx-existing",
             "tenant_id": "tenant-a",
             "workspace_id": "workspace-a",
@@ -5593,7 +5607,7 @@ async def test_worker_preserves_safe_top_level_legacy_context_source(monkeypatch
                 "context_pack_generated_at": "2026-06-12T01:23:45Z",
             },
             "created_at": None,
-        }
+        })
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("context_snapshot_id-only payload must resolve scoped DB snapshot")
@@ -5655,7 +5669,7 @@ async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkey
         return "evt-context"
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": "ctx-existing",
             "tenant_id": "tenant-a",
             "workspace_id": "workspace-a",
@@ -5709,7 +5723,7 @@ async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkey
                 "used%5Fcontext%5Fsummary": {"source": "forged-encoded"},
             },
             "created_at": None,
-        }
+        })
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("verified queue snapshots must be reconstructed from DB scope")
@@ -5790,7 +5804,7 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
         return "evt-context-pack"
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": "ctx-existing",
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -5800,7 +5814,7 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
             "trace_id": "trace_run_a",
             "schema_version": "ai-platform.context-snapshot.v1",
             "context_kind": "executor",
-            "included_message_ids": ["msg-a", "msg-b"],
+            "included_message_ids": ["msg-a"],
             "included_file_ids": ["file-a"],
             "included_artifact_ids": ["artifact-a"],
             "included_memory_record_ids": ["mem-a"],
@@ -5822,7 +5836,7 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
                 "context_pack_generated_at": "2026-06-12T01:23:45Z",
             },
             "created_at": None,
-        }
+        })
 
     async def fail_record_context(*args, **kwargs):
         raise AssertionError("worker must derive context pack from the scoped DB snapshot")
@@ -5845,12 +5859,12 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
     assert outcome.status == "succeeded"
     context_pack = getattr(captured["payload"], "context_pack", None)
     assert isinstance(context_pack, dict)
-    assert context_pack["conversation_context"]["selected_message_count"] == 2
-    assert context_pack["conversation_context"]["selected_turn_count"] == 1
+    assert context_pack["conversation_context"]["selected_message_count"] == 0
+    assert context_pack["conversation_context"]["selected_turn_count"] == 0
     assert context_pack["schema_version"] == "ai-platform.executor-context-pack.v1"
     assert context_pack["source"] == "runs_api"
     assert context_pack["referenced_materials"] == {
-        "message_count": 2,
+        "message_count": 1,
         "file_count": 1,
         "artifact_count": 1,
         "memory_record_count": 1,
@@ -6167,7 +6181,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
         return "evt-a"
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": "ctx-db",
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -6184,7 +6198,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
             "redaction_summary_json": {},
             "payload_json": {"source": "stored_context_snapshot", "input_keys": ["mode", "message"]},
             "created_at": None,
-        }
+        })
 
     async def complete_run(conn, **kwargs):
         return True
@@ -8032,7 +8046,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
         calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload") or {}))
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
-        return {
+        return _native_snapshot({
             "id": kwargs["context_snapshot_id"],
             "tenant_id": kwargs["tenant_id"],
             "workspace_id": kwargs["workspace_id"],
@@ -8055,7 +8069,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
                 "memory_record_count": 0,
             },
             "created_at": None,
-        }
+        })
 
     async def create_sandbox_lease(conn, **kwargs):
         return {"id": "lease-cancel-a", **kwargs}

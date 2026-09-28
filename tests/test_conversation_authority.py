@@ -1,211 +1,125 @@
-"""Owning checks for immutable conversation source range receipts."""
-
-import hashlib
+"""Checks for scoped conversation authority receipts."""
 
 import pytest
 
 from app.context.application.worker_snapshot import materialize_worker_context_snapshot
 from app.context.domain.conversation_authority import (
-    ConversationSourceChain,
-    canonical_message,
-    source_chain_digest,
-    source_digest_scope,
+    initial_source_digest,
+    make_authority_receipt,
     validate_authority_receipt,
 )
 
 
 _SCOPE = {
-    "tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
-    "session_id": "session-a", "agent_id": "agent-a",
+    "tenant_id": "tenant-a",
+    "workspace_id": "workspace-a",
+    "user_id": "user-a",
+    "session_id": "session-a",
+    "agent_id": "agent-a",
 }
 
 
-async def _matching_epoch(*_args, **_kwargs):
-    return True
+def _receipt(*, current_message_id="msg-current", source_sha256=None):
+    return make_authority_receipt(
+        scope=_SCOPE,
+        through_session_generation=4,
+        message_count=3,
+        source_sha256=source_sha256 or initial_source_digest(_SCOPE),
+        current_message_id=current_message_id,
+    )
 
 
-def test_conversation_source_chain_authorizes_all_pages_without_a_message_candidate_cap():
-    rows = [
-        {"id": f"msg-{index:03d}", "run_id": f"run-{index:03d}", "role": "user",
-         "content": f"earlier constraint {index}: " + "x" * 128,
-         "created_at": f"2026-09-15T00:{index // 60:02d}:{index % 60:02d}Z",
-         "session_generation": index + 1}
-        for index in range(82)
-    ]
-    assert sum(len(row["content"]) for row in rows) > 8192
-    chain = ConversationSourceChain(_SCOPE, 84, "run-current", "msg-current")
-    for start in range(0, len(rows), 4):
-        chain.add_page(rows[start:start + 4])
-    receipt = validate_authority_receipt(chain.receipt())
-    assert receipt["message_count"] == receipt["tail_message_count"] == 82
+def test_authority_receipt_binds_scope_current_message_and_digest():
+    digest = initial_source_digest(_SCOPE)
+    assert len(digest) == 64
+    assert initial_source_digest(dict(_SCOPE)) == digest
+    assert initial_source_digest({**_SCOPE, "session_id": "session-b"}) != digest
+
+    receipt = validate_authority_receipt(_receipt(source_sha256=digest))
+    assert receipt["scope"] == _SCOPE
     assert receipt["current_message_id"] == "msg-current"
-    assert receipt["through_session_generation"] == 84
-    assert receipt["range_start"]["id"] == "msg-000"
-    assert receipt["range_end"]["id"] == "msg-081"
-    assert receipt["source_sha256"] == source_chain_digest(scope=source_digest_scope(**_SCOPE), rows=rows)
-    assert receipt["tail_sha256"] != receipt["source_sha256"]
-    with pytest.raises(ValueError, match="conversation_authority_range_invalid"):
-        chain.add_page([rows[-1]])
-    with pytest.raises(ValueError, match="conversation_authority_message_invalid"):
-        canonical_message({**rows[0], "id": ""})
+    assert receipt["source_sha256"] == digest
+
+    with pytest.raises(ValueError, match="conversation_authority_scope_invalid"):
+        make_authority_receipt(
+            scope={**_SCOPE, "agent_id": ""},
+            through_session_generation=4,
+            message_count=3,
+            source_sha256=digest,
+            current_message_id="msg-current",
+        )
+    with pytest.raises(ValueError, match="conversation_authority_current_message_invalid"):
+        validate_authority_receipt({**receipt, "current_message_id": "../msg"})
     with pytest.raises(ValueError, match="conversation_authority_digest_invalid"):
-        validate_authority_receipt({**receipt, "source_sha256": "0" * 63 + "X"})
-
-
-def test_conversation_source_rejects_current_run_or_unproven_generation():
-    for change in ({"run_id": "run-current"}, {"session_generation": 84}, {"role": "system"}):
-        chain = ConversationSourceChain(_SCOPE, 84, "run-current", "msg-current")
-        with pytest.raises(ValueError, match="conversation_authority_(range|message)_invalid"):
-            chain.add_page([{"id": "msg-old", "run_id": "run-old", "role": "user",
-                             "content": "old", "created_at": "2026-09-15T00:00:00Z",
-                             "session_generation": 1, **change}])
+        validate_authority_receipt({**receipt, "source_sha256": "not-a-digest"})
 
 
 @pytest.mark.asyncio
-async def test_claude_worker_verifies_every_authorized_row_without_materializing_history():
-    rows = [
-        {"id": f"msg-{index:03d}", "run_id": f"run-{index:03d}", "role": "user",
-         "content": "constraint " + "x" * 128, "created_at": f"2026-09-15T00:{index // 60:02d}:{index % 60:02d}Z",
-         "session_generation": index + 1}
-        for index in range(82)
-    ]
-    chain = ConversationSourceChain(_SCOPE, 84, "run-current", "msg-current")
-    chain.add_page(rows)
-    receipt = chain.receipt()
-    identity = {**_SCOPE, "run_id": "run-current", "engine": "claude"}
-    calls = []
+async def test_worker_snapshot_uses_receipt_metadata_without_reading_message_bodies():
+    receipt = _receipt()
+    snapshot_calls = []
 
-    async def snapshot(_conn, **_kwargs):
-        return {"id": "ctx-current", "included_message_ids": ["msg-current"],
-                "included_file_ids": [], "conversation_authority_json": receipt}
+    class NoMessageBodyReads:
+        async def execute(self, *_args, **_kwargs):
+            pytest.fail("worker snapshot must not query message bodies")
 
-    async def page(_conn, **kwargs):
-        calls.append(kwargs)
-        after = kwargs["after_id"]
-        remaining = [row for row in rows if after is None or row["id"] > after]
-        return remaining[:kwargs["limit"]]
+    async def snapshot_loader(_conn, **kwargs):
+        snapshot_calls.append(kwargs)
+        return {
+            "id": "ctx-current",
+            "included_message_ids": ["msg-current"],
+            "included_file_ids": ["file-current"],
+            "conversation_authority_json": receipt,
+        }
 
-    async def forbidden_explicit_loader(*_args, **_kwargs):
-        raise AssertionError("prior history must not be materialized from explicit IDs")
-
-    common = dict(identity=identity, context_snapshot_id="ctx-current", snapshot_loader=snapshot,
-                  message_loader=forbidden_explicit_loader, history_page_loader=page,
-                  context_projector=lambda row: {"context_snapshot_id": row["id"]},
-                  provider_epoch_matcher=_matching_epoch)
-    result = await materialize_worker_context_snapshot(object(), **common)
-    assert result is not None
-    assert result["conversation_context"]["selected_message_count"] == 0
-    assert result["conversation_context"]["selected_turn_count"] == 0
-    assert result["conversation_context"]["messages"] == []
-    assert len(calls) == 21 and calls[-1]["after_id"] == "msg-079"
-    assert "conversation_authority_json" not in str(result["context_snapshot"])
-
-    async def active_writer(*_args, **_kwargs):
-        return False
-
-    reconciliation_result = await materialize_worker_context_snapshot(
-        object(), **{**common, "provider_epoch_matcher": active_writer}
+    result = await materialize_worker_context_snapshot(
+        NoMessageBodyReads(),
+        identity={**_SCOPE, "run_id": "run-current", "engine": "claude"},
+        context_snapshot_id="ctx-current",
+        snapshot_loader=snapshot_loader,
+        context_projector=lambda row: {"context_snapshot_id": row["id"]},
     )
-    assert reconciliation_result is not None
-    assert reconciliation_result["conversation_context"]["native_source_verified"] is False
 
-    rows[0] = {**rows[0], "content": "tampered"}
-    assert await materialize_worker_context_snapshot(object(), **common) is None
-    rows[0] = {**rows[0], "content": "constraint " + "x" * 128}
-
-
-@pytest.mark.asyncio
-async def test_historical_checkpoint_receipt_still_verifies_tail_without_prompt_materialization():
-    rows = [
-        {"id": f"msg-{index:03d}", "run_id": f"run-{index:03d}", "role": "user",
-         "content": f"earlier constraint {index}: " + "x" * 128,
-         "created_at": f"2026-09-15T00:{index // 60:02d}:{index % 60:02d}+00:00",
-         "session_generation": index + 1}
-        for index in range(82)
-    ]
-    previous = ConversationSourceChain(_SCOPE, 84, "run-current", "msg-current")
-    previous.add_page(rows[:74])
-    base = {"id": "ccp-old", "range_start": previous.range_start, "range_end": previous.range_end,
-            "message_count": 74, "source_sha256": previous.receipt()["source_sha256"],
-            "summary_text": "prior goal and explicit constraints", "through_session_generation": 84}
-    base["summary_sha256"] = hashlib.sha256(base["summary_text"].encode()).hexdigest()
-    chain = ConversationSourceChain(
-        _SCOPE, 84, "run-current", "msg-current",
-        predecessor_digest=base["source_sha256"], base_checkpoint_id=base["id"],
-        base_checkpoint_summary_sha256=base["summary_sha256"],
-        predecessor_message_count=74, predecessor_range_start=base["range_start"],
-        predecessor_range_end=base["range_end"],
-    )
-    chain.add_page(rows[74:])
-    receipt = validate_authority_receipt(chain.receipt())
-    assert receipt["message_count"] == 82 and receipt["tail_message_count"] == 8
-    assert receipt["source_sha256"] == source_chain_digest(scope=source_digest_scope(**_SCOPE), rows=rows)
-    calls = []
-
-    async def page(_conn, **kwargs):
-        calls.append(kwargs)
-        return [row for row in rows if kwargs["after_id"] is None or row["id"] > kwargs["after_id"]][:4]
-
-    async def checkpoint(_conn, **kwargs):
-        assert kwargs["checkpoint_id"] == "ccp-old"
-        return base
-
-    async def snapshot(_conn, **_kwargs):
-        return {"id": "ctx-current", "included_message_ids": ["msg-current"],
-                "included_file_ids": [], "conversation_authority_json": receipt}
-
-    common = dict(identity={**_SCOPE, "run_id": "run-current", "engine": "claude"},
-                  context_snapshot_id="ctx-current", snapshot_loader=snapshot,
-                  message_loader=lambda *_args, **_kwargs: None, history_page_loader=page,
-                  checkpoint_loader=checkpoint,
-                  context_projector=lambda row: {"context_snapshot_id": row["id"]},
-                  provider_epoch_matcher=_matching_epoch)
-    result = await materialize_worker_context_snapshot(object(), **common)
+    assert snapshot_calls == [{
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-current",
+        "context_snapshot_id": "ctx-current",
+    }]
     assert result is not None
     context = result["conversation_context"]
-    assert context["message_count"] == 82 and context["selected_message_count"] == 0
+    assert context["current_message_id"] == "msg-current"
+    assert context["source_sha256"] == receipt["source_sha256"]
+    assert context["message_count"] == 3
     assert context["messages"] == []
-    assert context["checkpoint_id"] is None
-    assert context["checkpoint_summary"] is None
-    assert calls[0]["after_id"] is None and len(calls) == 21
-    rows[74] = {**rows[74], "content": "tampered"}
-    assert await materialize_worker_context_snapshot(object(), **common) is None
+    assert result["file_ids"] == ["file-current"]
 
 
 @pytest.mark.asyncio
-async def test_ready_native_epoch_verifies_over_16_mib_without_materializing_old_bodies():
-    rows = [
-        {"id": f"msg-{index:03d}", "run_id": f"run-{index:03d}", "role": "user",
-         "content": f"earlier constraint {index}: " + "x" * 205000,
-         "created_at": f"2026-09-15T00:{index // 60:02d}:{index % 60:02d}+00:00",
-         "session_generation": index + 1}
-        for index in range(82)
-    ]
-    chain = ConversationSourceChain(_SCOPE, 84, "run-current", "msg-current")
-    chain.add_page(rows)
-    receipt = chain.receipt()
-    assert sum(len(row["content"]) for row in rows) > 16 * 1024 * 1024
+async def test_worker_snapshot_rejects_receipt_scope_or_current_message_mismatch():
+    valid_receipt = _receipt()
+    invalid_receipts = (
+        {**valid_receipt, "scope": {**_SCOPE, "user_id": "user-other"}},
+        {**valid_receipt, "current_message_id": "msg-other"},
+        {**valid_receipt, "source_sha256": "x" * 64},
+    )
 
-    async def page(_conn, **kwargs):
-        return [row for row in rows if kwargs["after_id"] is None or row["id"] > kwargs["after_id"]][:4]
+    for receipt in invalid_receipts:
+        async def snapshot_loader(_conn, **_kwargs):
+            return {
+                "id": "ctx-current",
+                "included_message_ids": ["msg-current"],
+                "included_file_ids": [],
+                "conversation_authority_json": receipt,
+            }
 
-    async def snapshot(_conn, **_kwargs):
-        return {"id": "ctx-current", "included_message_ids": ["msg-current"],
-                "included_file_ids": [], "conversation_authority_json": receipt}
-
-    async def matches(_conn, *, scope, run_id, source_sha256, message_count):
-        assert scope.session_id == "session-a" and run_id == "run-current"
-        assert source_sha256 == receipt["source_sha256"] and message_count == 82
-        return True
-
-    common = dict(identity={**_SCOPE, "run_id": "run-current", "engine": "claude"},
-                  context_snapshot_id="ctx-current", snapshot_loader=snapshot,
-                  message_loader=lambda *_args, **_kwargs: None, history_page_loader=page,
-                  context_projector=lambda row: {"context_snapshot_id": row["id"]})
-    result = await materialize_worker_context_snapshot(object(), provider_epoch_matcher=matches, **common)
-    assert result is not None
-    context = result["conversation_context"]
-    assert context["message_count"] == 82 and context["native_source_verified"] is True
-    assert context["messages"] == [] and context["selected_message_count"] == 0
-    rows[0] = {**rows[0], "content": "tampered"}
-    assert await materialize_worker_context_snapshot(object(), provider_epoch_matcher=matches, **common) is None
+        result = await materialize_worker_context_snapshot(
+            object(),
+            identity={**_SCOPE, "run_id": "run-current", "engine": "claude"},
+            context_snapshot_id="ctx-current",
+            snapshot_loader=snapshot_loader,
+            context_projector=lambda row: {"context_snapshot_id": row["id"]},
+        )
+        assert result is None

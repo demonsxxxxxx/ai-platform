@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.streaming.api import (
+    ResumeDecision,
     V4ProjectionError,
     build_v4_control,
     opaque_message_id,
@@ -708,3 +709,23 @@ async def test_v4_replay_page_fails_closed_when_atomic_predecessor_is_trimmed():
         )
 
     assert client.calls[0][6] == "1-0"
+
+
+@pytest.mark.asyncio
+async def test_v4_resume_accepts_exact_retained_cursor_after_open_is_trimmed():
+    client = FakeRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    retained_end = control("stream.end", {"terminal_event_id": "terminal-a"})
+    client.rows.append(
+        ("9-0", {"envelope": canonical_json_bytes(retained_end).decode()})
+    )
+
+    resume = await bridge.resolve_resume(
+        tenant_scope_value="scope-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        current_stream_incarnation=2,
+        last_event_id="run-a:2:9-0",
+    )
+
+    assert resume == ResumeDecision("9-0", None)

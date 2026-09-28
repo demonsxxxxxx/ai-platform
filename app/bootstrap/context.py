@@ -2,7 +2,6 @@
 
 from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
 from app.context.infrastructure import sources_postgres as context_sources_postgres
-
 from app.context.file_continuity import materialize_run_context_files
 
 from app.context.api import (
@@ -13,13 +12,10 @@ from app.context.application.provider_sessions import (
     ProviderSessionUseCases,
     configure_provider_session_use_cases,
 )
-from app.context.application.checkpoints import configure_checkpoint_loader
-from app.context.infrastructure.checkpoints_postgres import load_ready_checkpoint
 from app.context.infrastructure.provider_epochs import PostgresProviderEpochRepository
 
 
 def configure_context_services() -> None:
-    configure_checkpoint_loader(load_ready_checkpoint)
     configure_provider_session_use_cases(
         ProviderSessionUseCases(PostgresProviderEpochRepository())
     )
@@ -33,8 +29,6 @@ async def materialize_queued_worker_context_snapshot(
         context = await materialize_worker_context_snapshot(
             conn, identity=identity, context_snapshot_id=str(payload.context_snapshot_id or ""),
             snapshot_loader=context_snapshot_postgres.get_context_snapshot_for_worker,
-            message_loader=context_sources_postgres.list_scoped_context_messages,
-            history_page_loader=context_sources_postgres.list_session_context_messages,
             context_projector=context_projector,
         )
     except ProviderSessionContinuityError as exc:

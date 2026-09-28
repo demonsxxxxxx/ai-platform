@@ -1,5 +1,5 @@
-/** Retry only transient terminal-history failures within the current owner. */
-export async function recoverTerminalHistory<T>(
+/** Retry transient run-history failures within the current owner. */
+export async function recoverRunHistory<T>(
   load: (signal: AbortSignal) => Promise<T>,
   signal: AbortSignal,
 ): Promise<T> {

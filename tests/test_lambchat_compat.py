@@ -207,12 +207,13 @@ def test_strict_execution_timeline_replaces_legacy_capability_rows():
             "event_type": "execution_step",
             "message": "private projector message",
             "payload_json": {
+                "schema_version": "ai-platform.public-execution-event.v2",
+                "presentation_kind": "mcp",
+                "safe_label": "Knowledge search",
                 "step_id": "pex_public_1",
                 "kind": "capability",
                 "stage": "execution",
                 "status": "running",
-                "title": "Query knowledge",
-                "summary": "Querying authorized knowledge",
                 "progress": {"current": 0, "total": 1},
             },
         },
@@ -228,7 +229,7 @@ def test_strict_execution_timeline_replaces_legacy_capability_rows():
     assert record.history_event["payload"] == record.stream_data
     assert set(record.stream_data) == {
         "schema_version", "event_id", "sequence", "run_id", "step_id", "kind", "stage",
-        "status", "title", "summary", "progress", "safe_file_name", "artifact_public_id", "created_at",
+        "status", "presentation_kind", "safe_label", "progress", "created_at",
     }
     rendered = json.dumps(record.stream_data)
     assert "private-call-id" not in rendered

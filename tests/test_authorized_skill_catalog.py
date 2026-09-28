@@ -1346,19 +1346,24 @@ async def test_sdk_natural_route_registers_only_routed_skill_and_hook_proves_cho
 
     class AssistantMessage:
         content: list[Any] = []
+        message_id = "provider-message-natural-route"
+        uuid = "assistant-observation-natural-route"
+        parent_tool_use_id = "parent-tool-natural-route"
+        stop_reason = None
 
     class TextBlock:
         def __init__(self, text: str):
             self.text = text
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-natural-route"
         usage = {"input_tokens": 1}
         model_usage = {}
         result = "done"
         is_error = False
         errors: list[str] = []
         stop_reason = "end_turn"
+        uuid = "result-observation-natural-route"
 
     class HookMatcher:
         def __init__(self, *, matcher, hooks):
@@ -1445,16 +1450,20 @@ async def test_sdk_registers_required_private_dependency_and_denies_unrelated_pr
     captured: dict[str, Any] = {}
 
     class Message:
-        pass
+        message_id = "provider-message-private-dependency"
+        uuid = "assistant-observation-private-dependency"
+        parent_tool_use_id = "parent-tool-private-dependency"
+        stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session"
+        session_id = "provider-session-private-dependency"
         usage = {}
         model_usage = {}
         result = "done"
         is_error = False
         errors: list[str] = []
         stop_reason = "end_turn"
+        uuid = "result-observation-private-dependency"
 
     class HookMatcher:
         def __init__(self, *, matcher, hooks):

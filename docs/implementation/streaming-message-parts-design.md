@@ -84,11 +84,14 @@ flowchart LR
    它在精确的 text block 内立即返回 `text_delta`，不保存整轮原文，也不判断“过程”或“最终”。
 2. Thinking、tool input JSON、server tool input 和其他非 text block 只用于排除错误来源，其 delta 不进入公开正文。
 3. raw `message_start`、block index、block stop 和 `message_stop` 执行防御性校验。
-   显式 message 内不能重复使用已关闭的 block index；缺失 envelope 的旧测试/兼容序列仍按串行 block 校验。
+   显式 message 内不能重复使用已关闭的 block index；未携带完整 envelope 或生命周期不完整的旧兼容序列已经退出并拒绝。
 4. typed `AssistantMessage` 不是 raw framing 边界。官方顺序允许它先于对应 `content_block_stop` 到达，因此不能在 typed 消息到达时清空 projector。
-5. typed TextBlock 用于补足未观察到的安全后缀，并和已流出的前缀对账；ToolUseBlock 只登记工具身份和公开生命周期。
-6. `ResultMessage.result` 是终态补充观察。它只补充尚未公开的内容；如果它与已公开前缀不同，已显示文字不能回滚，Result 作为后续正文保留。
+5. typed TextBlock 用于补足未观察到的安全后缀，并和已流出的前缀对账；如果它在同一 open indexed text source 的首个 raw delta 前到达，其 body 建立该 source 的 coverage/digest/published state，后续匹配的 raw body 只作 replay no-op；ToolUseBlock 只登记工具身份和公开生命周期。
+6. `ResultMessage.result` 是终态补充观察。它只补充同一 source 尚未公开的后缀；如果 identity、framing 或已观察正文冲突，保留已经显示的安全文字并 fail closed，不用 Result 覆盖或另造无依据的正文来源。
+   当前 SDK 会在 Result 中移除 `cc-memory` 标签。适配器仅接受它与同一 source 的已验证 typed 正文完全等价的情况，使用有界的长度与摘要证据，不重写或重复发布已公开文字；其他正文差异仍按冲突处理。
 7. 同一文本先由 raw delta、后由 typed TextBlock 或 Result 观察时，只发布一次。不同来源即使文字相同也不做全局字符串去重。
+8. SDK 单次调用按顺序消费；正文来源和最近的 raw/typed 观察使用确定性的有界窗口对账。窗口内的相同观察只处理一次，冲突拒绝追加；窗口外不作重复判定，不使用概率过滤器中断正常新输出。回调重试与 SSE 断线重放由各自的事件序号和回执处理，不在 SDK 适配层重复实现。窗口只限制对账证据，不限制累计公开正文长度。
+9. 没有 `TextBlock` 的非空 typed `AssistantMessage`（例如 Thinking/ToolUse）是新的 turn boundary：它会 retire 当前 answer binding，后续 streamed/Sandbox `ResultMessage` 必须等新的 raw answer source 才能通过；没有既有 answer source 的显式 non-streaming Result-only 兼容仍保留。
 
 所有 Assistant 公开文字统一进入 `message.delta`。后续出现 ToolUseBlock 不把早先正文改写成 `commentary.delta`。
 `commentary.delta` 继续保留给明确的、已经脱敏的公共摘要生产者和历史 v4 记录，不由 Claude turn 的工具分类推断产生。
@@ -118,6 +121,21 @@ answer receipt 覆盖本次 v4 回复中实际提交的完整 Assistant 正文�
 实时、Redis 重放、PostgreSQL history 和 terminal hydrate 使用同一 v4 语义 reducer。
 浏览器断线只恢复公共事件和水位，不重新执行 Agent；旧 hydrate 不得覆盖更高水位的 text、tool 状态或附件。
 
+公开正文在首次发布前完成脱敏；历史准入后直接保留已发布的 delta，不再累计扫描全文、替换 Agent 名称或扣留后缀。
+终态历史可合并同一消息、同一流实例内的连续正文，遇到公开活动事件先提交该组，保持文字与活动的原始顺序。
+重连接口回放游标之前的记录只恢复终态与 `stream.end` 的关联，不构建正文副本。
+已验证仍在 Redis 保留区间内的游标可直接续传，不要求已被裁剪的 `stream.open` 仍存在；游标随后被裁剪则返回 gap。仅保留 `stream.end` 时使用其已验证终态引用，其他保留行中的终态关联仍须一致。
+前端在连接入口校验并适配每帧一次，随后直接传递类型化事件；处理器继续校验当前连接归属、水位和终态提交条件。
+gap 恢复先应用持久化历史。若尚未收到 `message.started` 而无法恢复协议消息归属，则保留 Run 并沿现有状态/终态恢复流程收敛。活动与终态历史共用有取消信号、单次 10 秒、最多三次尝试的请求处理；超时释放恢复所有权，授权失败停止访问，切换会话或卸载取消旧请求。
+页面恢复与定时重连失败后的状态查询共用同一个 reconciliation owner；查询结束按身份释放，定时器开始执行即清空自身引用，避免完成后的标记堵住后续恢复或并发查询相互覆盖。
+
+历史正文只读取经当前 Attempt 授权的持久化 v4 `message.delta`。旧
+`assistant_delta` 和成功终态的 `result_json.message` 不再补造正文，其旧
+`event_page` / `PublicDelta` 解析器及专属测试一并退役。执行过程
+投影只接受当前 v2 payload，v1 和无版本解析已退役。历史 HTTP 响应的
+`message:chunk`、`run_event` 等仍是当前页面使用的内部展示格式，不是另一条 SSE 通道。
+只有旧格式的历史行不会再还原 Assistant 正文或旧执行步骤；用户输入、附件与 Run 终态仍独立展示。
+
 当前产品不要求在一条回复中另建“仅复制最后一段”的最终片段选择协议。
 如果以后确实需要独立选择多个 final parts、局部复制或跨来源编辑，再以新协议版本协调升级 producer、账本、receipt、history decoder 和前端 reducer；不能把新字段偷偷加入 v4。
 
@@ -145,7 +163,7 @@ PR #1562 早期实现曾缓存整个 SDK turn，等 typed fragment、下一 mess
 - `_text_parts` 按整轮累计原文，缺少自然的局部内存上限；
 - Result 前才 flush 会把 transport streaming 退化成终态批量显示。
 
-保留的兼容面：
+当前保留的功能：
 
 - v4 envelope、PostgreSQL/Redis 顺序、Last-Event-ID、gap/hydrate 和 answer receipt；
 - 旧 `commentary.delta` history 的读取与公开 summary 展示；
@@ -156,7 +174,7 @@ PR #1562 早期实现曾缓存整个 SDK turn，等 typed fragment、下一 mess
 
 - `ClaudeStreamTurn`、`queue_stream_turn` 和整轮文本缓冲；
 - 因 stop reason 或 ToolUseBlock 把 Claude Assistant 文字重新分类成 commentary；
-- 等 Result 才公开已经通过 raw framing 和脱敏 gate 的文字。
+- 跨 source 的字符串前缀/相等判断、Result 冲突追加和不完整 framing 后的 typed fallback；这些路径不再作为兼容行为保留。
 
 ## 7. 验收边界
 
@@ -169,7 +187,7 @@ PR #1562 早期实现曾缓存整个 SDK turn，等 typed fragment、下一 mess
 | AssistantMessage 先于 block stop | projector 不被 typed 边界错误关闭，后续 raw 事件仍可校验 |
 | 文字 → 已验证工具 → 文字 | 两段文字在 Result 前有可见前缀；工具状态独立 |
 | private token 跨两个 delta | 前缀有界保留，最终替换后无原 token |
-| Result 相同、扩展或冲突 | 相同不重放；扩展只补后缀；冲突保留已公开前缀并追加终态观察 |
+| Result 相同、扩展或冲突 | 相同不重放；同一 source 的扩展只补后缀；identity/framing 冲突 fail closed 并保留已公开前缀 |
 | 工具失败、Run 失败、取消 | 已提交安全文字保留，终态和附件不伪造成功 |
 | 无附件、多个附件、Skill output 临时文件 | 只有显式 `attach_file` 清单成为附件，顺序稳定 |
 | SSE 断线、重放、hydrate | 正文、公开摘要、工具和附件顺序一致，不重新执行 |

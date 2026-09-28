@@ -478,7 +478,3 @@ async def commit_sse_revocation(
     if row is None:
         raise SseAuthorityConflictError("sse_revocation_conflict")
     return _authority(row)
-
-
-CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
-_ASSISTANT_DELTA_INPUT_STAGES = frozenset({"message", "assistant"})

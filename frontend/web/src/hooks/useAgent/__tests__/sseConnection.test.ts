@@ -16,6 +16,7 @@ import {
   queryAuthoritativeRunStatus,
   reconnectSSE,
   recoverReplayGap,
+  type ReplayGapRecoveryOwner,
   type SSEConnectionContext,
   type SSEFetchEventSource,
 } from "../sseConnection.ts";
@@ -192,6 +193,7 @@ function createTokenRefreshContext() {
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-old" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     messagesRef: { current: [] },
     sessionIdRef: { current: "session-old" },
@@ -691,6 +693,7 @@ test("keeps a silent running heartbeat attached without projecting assistant con
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: null },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 2 },
     messagesRef: { current: messages },
     sessionIdRef: { current: "session-heartbeat" },
@@ -897,6 +900,7 @@ test("connectToSSE propagates a terminal transport failure to its caller", async
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: null },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     messagesRef: { current: [] },
     sessionIdRef: { current: "session-1" },
@@ -929,6 +933,59 @@ test("connectToSSE propagates a terminal transport failure to its caller", async
   assert.equal(connectionStates.at(-1), "disconnected");
 });
 
+test("does not publish from a connection after its streaming owner is retired", async () => {
+  const connectionStates: string[] = [];
+  let capturedInit: Parameters<SSEFetchEventSource>[1] | undefined;
+  let releaseFetch!: () => void;
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: null },
+    reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
+    retryCountRef: { current: 0 },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } satisfies SSEConnectionContext;
+
+  const connection = connectToSSE(
+    "session-1",
+    "run-1",
+    "assistant-1",
+    context,
+    false,
+    async (_input, init) => {
+      capturedInit = init;
+      await new Promise<void>((resolve) => {
+        releaseFetch = resolve;
+      });
+    },
+    { getValidAccessToken: async () => null },
+  );
+  for (let attempt = 0; attempt < 10 && !capturedInit; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.ok(capturedInit);
+  context.streamingMessageIdRef.current = null;
+  context.isConnectingRef.current = false;
+  await capturedInit.onopen?.(new Response(null, { status: 200 }));
+  releaseFetch();
+  await connection;
+
+  assert.equal(connectionStates.includes("connected"), false);
+  assert.equal(context.isConnectingRef.current, false);
+});
+
 test("does not let a stale connection target abort the active stream", async () => {
   const activeController = new AbortController();
   let fetchCalls = 0;
@@ -937,6 +994,7 @@ test("does not let a stale connection target abort the active stream", async () 
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "active-message" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     messagesRef: { current: [] },
     sessionIdRef: { current: "session-new" },
@@ -976,6 +1034,7 @@ test("keeps the hydrated reconnect assistant when authoritative status is tempor
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     messagesRef: { current: [{
       id: "assistant-1",
@@ -1052,6 +1111,7 @@ test("fails closed when reconnect status is unauthorized or its assistant owner 
       isConnectingRef: { current: false },
       streamingMessageIdRef: { current: candidate.messageId },
       reconnectTimeoutRef: { current: null },
+      reconcileOwnerRef: { current: null },
       retryCountRef: { current: 0 },
       messagesRef: { current: [] },
       sessionIdRef: { current: "session-1" },
@@ -1100,6 +1160,7 @@ test("drops a reconnect when its status response belongs to an old stream genera
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-old" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     messagesRef: { current: [] },
     sessionIdRef: { current: "session-old" },
@@ -1142,6 +1203,73 @@ test("drops a reconnect when its status response belongs to an old stream genera
   assert.equal(context.reconnectTimeoutRef.current, null);
 });
 
+test("drops an in-flight reconnect when terminal synchronization retires its assistant owner", async () => {
+  let resolveStatus:
+    | ((value: { session_id: string; run_id: string; status: string }) => void)
+    | undefined;
+  let connectCalls = 0;
+  let unavailableCalls = 0;
+  const states: string[] = [];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" as string | null },
+    reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: { current: [{
+      id: "assistant-1",
+      role: "assistant" as const,
+      runId: "run-1",
+      content: "partial",
+      parts: [],
+      timestamp: new Date(),
+    }] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 1 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => states.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunStatusUnavailable: () => {
+      unavailableCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+
+  const reconnect = reconnectSSE(context, {
+    getStatus: () =>
+      new Promise<{ session_id: string; run_id: string; status: string }>((resolve) => {
+        resolveStatus = resolve;
+      }),
+    connect: async () => {
+      connectCalls += 1;
+    },
+  });
+
+  context.streamingMessageIdRef.current = null;
+  resolveStatus?.({
+    session_id: "session-1",
+    run_id: "run-1",
+    status: "running",
+  });
+  await reconnect;
+
+  assert.equal(connectCalls, 0);
+  assert.equal(unavailableCalls, 0);
+  assert.deepEqual(states, []);
+  assert.equal(context.reconnectTimeoutRef.current, null);
+});
+
 test("bounds status-query retries without terminalizing the reconnect owner", async () => {
   let statusCalls = 0;
   let unavailableCalls = 0;
@@ -1150,6 +1278,7 @@ test("bounds status-query retries without terminalizing the reconnect owner", as
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     messagesRef: { current: [{
@@ -1204,6 +1333,7 @@ test("drops a status-query retry after its session generation changes", async ()
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-old" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     messagesRef: { current: [] },
@@ -1249,6 +1379,7 @@ test("rejects a foreign v3 frame without accepting terminal state", async () => 
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: null },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     messagesRef: { current: [] },
@@ -1308,6 +1439,7 @@ test("leaves a stream close without terminal for authoritative status reconcilia
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: null },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     messagesRef: { current: [] },
     sessionIdRef: { current: "session-1" },
@@ -1361,6 +1493,7 @@ test("drops a delayed non-terminal application error after its stream generation
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: null },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     messagesRef: { current: [] },
     sessionIdRef: { current: "session-old" },
@@ -1958,6 +2091,7 @@ test("a scheduled reconnect converges non-retryable auth without another status 
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-auth" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     messagesRef: {
@@ -2071,6 +2205,7 @@ test("a scheduled reconnect reconciles a post-refresh transport failure", async 
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-transport" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     messagesRef: {
@@ -2178,6 +2313,7 @@ test("keeps an active run recoverable after repeated replay-only transport losse
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     messagesRef: {
@@ -2308,6 +2444,7 @@ test("recovers a terminal run after heartbeat-only losses without inventing cont
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-heartbeat-loop" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     messagesRef: { current: messages },
@@ -2434,6 +2571,7 @@ test("resets reconnect budget only after a unique current-run progress frame", a
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: null },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: MAX_CONSECUTIVE_SSE_RECONNECTS },
     messagesRef: currentMessagesRef,
     sessionIdRef: { current: "session-1" },
@@ -2577,8 +2715,9 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
   const context = {
     abortControllerRef: { current: null },
     isConnectingRef: { current: false },
-    streamingMessageIdRef: { current: "assistant-1" },
+    streamingMessageIdRef: { current: "assistant-1" as string | null },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     messagesRef: { current: [] as Message[] },
     sessionIdRef: { current: "session-1" },
@@ -2649,6 +2788,9 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
   assert.equal(terminalCalls, 1);
   assert.equal(context.acceptedStreamCursorRef.current.eventId, null);
   assert.deepEqual(connectionStates, ["connecting", "connected"]);
+  context.streamingMessageIdRef.current = null;
+  context.isConnectingRef.current = false;
+  context.setConnectionStatus("disconnected");
   acceptTerminal?.(true);
   await Promise.resolve();
   assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:3-0");
@@ -2663,6 +2805,7 @@ test("failed terminal hydration releases close without accepting its cursor", as
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     messagesRef: { current: [] as Message[] },
     sessionIdRef: { current: "session-1" },
@@ -2734,6 +2877,7 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: null },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: MAX_CONSECUTIVE_SSE_RECONNECTS },
     messagesRef: { current: [] },
     sessionIdRef: { current: "session-1" },
@@ -2795,6 +2939,7 @@ test("cross-incarnation replay gap preserves partial output until terminal hydra
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     replayGapRecoveryRef: { current: null },
@@ -2908,6 +3053,7 @@ test("active retained-history gap hydrates durable V4 state and reconnects from 
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     replayGapRecoveryRef: { current: null },
@@ -3018,6 +3164,7 @@ test("active retained-history gap cannot overwrite a cursor that advances during
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     replayGapRecoveryRef: { current: null },
@@ -3125,6 +3272,7 @@ test("fresh no-cursor gap enters durable recovery without committing its cursor"
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     replayGapRecoveryRef: { current: null },
@@ -3317,6 +3465,199 @@ test("non-resumable gap preserves transient failure state and rejects status aut
 });
 
 
+test("drops in-flight replay-gap recovery when terminal synchronization retires its assistant owner", async () => {
+  let resolveStatus:
+    | ((value: { session_id: string; run_id: string; status: string }) => void)
+    | undefined;
+  let hydrateCalls = 0;
+  let reconnectCalls = 0;
+  let unavailableCalls = 0;
+  const states: string[] = [];
+  const context = {
+    isMountedRef: { current: true },
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" as string | null },
+    reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    replayGapRecoveryRef: { current: null },
+    messagesRef: { current: [] as Message[] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: 20 },
+    },
+    acceptedStreamCursorRef: {
+      current: {
+        sessionId: "session-1",
+        runId: "run-1",
+        eventId: "run-1:1:1-0",
+        streamIncarnation: 1,
+      },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => states.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    hydrateActiveRun: async () => {
+      hydrateCalls += 1;
+      return "assistant-hydrated";
+    },
+    onRunStatusUnavailable: () => {
+      unavailableCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext;
+
+  const recovery = recoverReplayGap(
+    context,
+    {
+      sessionId: "session-1",
+      runId: "run-1",
+      messageId: "assistant-1",
+      streamVersion: 0,
+      gap: {
+        streamIncarnation: 1,
+        event: {
+          payload: {
+            reason: "retained_history_unavailable",
+            current_stream_incarnation: 1,
+            latest_available_event_id: "9-0",
+          },
+        },
+      } as never,
+    },
+    {
+      getStatus: () =>
+        new Promise<{ session_id: string; run_id: string; status: string }>((resolve) => {
+          resolveStatus = resolve;
+        }),
+      connect: async () => {
+        reconnectCalls += 1;
+      },
+    },
+  );
+
+  context.replayGapRecoveryRef.current = null;
+  context.streamingMessageIdRef.current = null;
+  resolveStatus?.({
+    session_id: "session-1",
+    run_id: "run-1",
+    status: "running",
+  });
+  await recovery;
+
+  assert.equal(hydrateCalls, 0);
+  assert.equal(reconnectCalls, 0);
+  assert.equal(unavailableCalls, 0);
+  assert.deepEqual(states, ["recovering_gap"]);
+  assert.deepEqual(context.acceptedStreamCursorRef.current, {
+    sessionId: "session-1",
+    runId: "run-1",
+    eventId: "run-1:1:1-0",
+    streamIncarnation: 1,
+  });
+  assert.equal(context.replayGapRecoveryRef.current, null);
+});
+
+test("does not resume replay after active hydration owner is retired", async () => {
+  let resolveHydration!: (messageId: string) => void;
+  let hydrateCalls = 0;
+  let reconnectCalls = 0;
+  let hydrationOwner: ReplayGapRecoveryOwner | undefined;
+  const context = {
+    isMountedRef: { current: true },
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    replayGapRecoveryRef: { current: null },
+    messagesRef: { current: [] as Message[] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: 20 },
+    },
+    acceptedStreamCursorRef: {
+      current: {
+        sessionId: "session-1",
+        runId: "run-1",
+        eventId: "run-1:1:1-0",
+        streamIncarnation: 1,
+      },
+    },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    hydrateActiveRun: async (...args: unknown[]) => {
+      hydrateCalls += 1;
+      hydrationOwner = args[5] as ReplayGapRecoveryOwner;
+      return new Promise<string>((resolve) => {
+        resolveHydration = resolve;
+      });
+    },
+  } satisfies SSEConnectionContext;
+
+  const recovery = recoverReplayGap(
+    context,
+    {
+      sessionId: "session-1",
+      runId: "run-1",
+      messageId: "assistant-1",
+      streamVersion: 0,
+      gap: {
+        streamIncarnation: 1,
+        event: {
+          payload: {
+            reason: "retained_history_unavailable",
+            current_stream_incarnation: 1,
+            latest_available_event_id: "9-0",
+          },
+        },
+      } as never,
+    },
+    {
+      getStatus: async () => ({
+        session_id: "session-1",
+        run_id: "run-1",
+        status: "running",
+      }),
+      connect: async () => {
+        reconnectCalls += 1;
+      },
+    },
+  );
+
+  for (let attempt = 0; attempt < 10 && !hydrationOwner; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(hydrateCalls, 1);
+  assert.ok(hydrationOwner);
+  context.replayGapRecoveryRef.current = null;
+  resolveHydration("assistant-hydrated");
+  await recovery;
+
+  assert.equal(reconnectCalls, 0);
+  assert.equal(context.streamingMessageIdRef.current, "assistant-1");
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:1-0");
+});
+
 test("does not mutate shared state when a stale owner receives a replay gap", async () => {
   const states: string[] = [];
   const context = {
@@ -3363,6 +3704,7 @@ test("a queued reconnect fails closed if its assistant disappears before the tim
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-1" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     messagesRef: { current: [{
@@ -3423,6 +3765,7 @@ test("drops a queued reconnect timer after session switch or unmount", async (t)
     isConnectingRef: { current: false },
     streamingMessageIdRef: { current: "assistant-old" },
     reconnectTimeoutRef: { current: null },
+    reconcileOwnerRef: { current: null },
     retryCountRef: { current: 0 },
     statusRetryCountRef: { current: 0 },
     messagesRef: {

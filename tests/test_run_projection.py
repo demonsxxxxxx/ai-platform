@@ -10,11 +10,9 @@ from app.run_projection import (
     CHAT_PUBLIC_PROJECTION_VERSION,
     PUBLIC_TERMINAL_DETAIL_MESSAGES,
     PUBLIC_TERMINAL_ERROR_CODE_ALIASES,
-    PublicChatAnswerStreamProjector,
     artifact_card,
     normalize_run_status,
     progress_for_status,
-    public_chat_answer_text,
     public_chat_terminal_projection,
     public_terminal_detail,
     public_terminal_projection,
@@ -507,21 +505,7 @@ def test_public_chat_terminal_projection_owns_versioned_terminal_payloads():
         }
     )
 
-    assert succeeded == {
-        "event_type": "message:chunk",
-        "payload": {
-            "projection_version": "ai-platform.chat-public-projection.v1",
-            "projection_kind": "assistant_delta",
-            "event_id": "run-a:final",
-            "message_id": "run-a:assistant",
-            "run_id": "run-a",
-            "source": "worker_answer_delta_v1",
-            "content": "当前（general-agent），没有 Bash 工具，无法执行。",
-        },
-        "message": "当前（general-agent），没有 Bash 工具，无法执行。",
-        "event_payload": {},
-        "severity": "info",
-    }
+    assert succeeded is None
     assert failed is not None
     assert failed["event_type"] == "final_detail"
     assert failed["payload"] == {
@@ -753,25 +737,26 @@ def test_projection_module_rejects_invalid_event_schema_version():
     assert exc_info.value.detail == "invalid_event_schema_version"
 
 
-def test_run_projection_returns_only_the_public_execution_event_v1_shape():
+def test_run_projection_returns_only_the_public_execution_event_v2_shape():
     event = run_event_response(
         "run-a",
         event_row(
             "execution_step",
             payload_json={
+                "schema_version": "ai-platform.public-execution-event.v2",
+                "presentation_kind": "processing",
+                "safe_label": "Data processing",
                 "step_id": "step-opaque-a",
                 "kind": "processing",
-                "stage": "execution",
+                "stage": "data",
                 "status": "running",
-                "title": "Document review",
-                "summary": "Processing",
-                "progress": {"current": 1, "total": 4},
+                "progress": {"current": 0, "total": 1},
             },
         ),
         principal=principal(),
     )
 
-    assert event["schema_version"] == "ai-platform.public-execution-event.v1"
+    assert event["schema_version"] == "ai-platform.public-execution-event.v2"
     assert set(event) <= {
         "schema_version",
         "event_id",
@@ -781,11 +766,9 @@ def test_run_projection_returns_only_the_public_execution_event_v1_shape():
         "kind",
         "stage",
         "status",
-        "title",
-        "summary",
+        "presentation_kind",
+        "safe_label",
         "progress",
-        "safe_file_name",
-        "artifact_public_id",
         "created_at",
     }
 
@@ -801,28 +784,11 @@ def test_run_projection_returns_only_the_public_execution_event_v1_shape():
         ),
         principal=principal(),
     )
-    assert raw["schema_version"] != "ai-platform.public-execution-event.v1"
+    assert raw["schema_version"] != "ai-platform.public-execution-event.v2"
     assert raw.get("kind") not in {"execution_step", "execution_progress", "execution_step_completed"}
 
 
-def test_public_chat_answer_text_retains_answer_when_capabilities_differ():
-    run = {
-        "id": "run-a",
-        "skill_id": "general-chat",
-        "agent_id": "qa-word-review",
-        "status": "succeeded",
-    }
-    content = public_chat_answer_text(
-        run,
-        "使用了 general-chat 完成审阅，样本 q 数据已归档。",
-    )
-
-    assert content == "使用了 general-agent 完成审阅，样本 q 数据已归档。"
-    assert "general-chat" not in content
-    assert "qa-word-review" not in content
-
-
-def test_successful_terminal_projection_without_answer_is_result_unavailable():
+def test_successful_terminal_does_not_fabricate_an_answer_or_error():
     projection = public_chat_terminal_projection(
         {
             "id": "run-a",
@@ -833,185 +799,4 @@ def test_successful_terminal_projection_without_answer_is_result_unavailable():
         }
     )
 
-    assert projection is not None
-    assert projection["event_type"] == "final_detail"
-    assert projection["payload"]["detail_kind"] == "result_unavailable"
-    assert projection["payload"]["detail_code"] == "result_unavailable"
-    assert projection["payload"]["message"] == "本次执行未能生成可展示的回复内容。"
-    assert projection["severity"] == "info"
-    assert "任务完成" not in str(projection)
-
-
-def test_successful_terminal_projection_strips_legacy_artifact_link_suffix():
-    projection = public_chat_terminal_projection(
-        {
-            "id": "run-legacy-artifact-links",
-            "status": "succeeded",
-            "result_json": {
-                "message": (
-                    "交付已完成。\n\n"
-                    "输出文件:\n"
-                    "- 报告.docx: /api/ai/artifacts/art-report/download\n"
-                    "- 数据.xlsx: /api/ai/artifacts/art-data/download"
-                )
-            },
-        }
-    )
-
-    assert projection is not None
-    assert projection["event_type"] == "message:chunk"
-    assert projection["message"] == "交付已完成。"
-    assert "/api/ai/artifacts/" not in str(projection)
-
-
-def test_live_delta_and_terminal_final_converge_to_same_public_text():
-    run = {
-        "id": "run-a",
-        "agent_id": "qa-word-review",
-        "skill_id": "general-chat",
-        "status": "succeeded",
-    }
-    full_answer = "general-chat 已处理该文档，qa-word-review 审核通过。"
-    delta_fragment = "general-chat 已处理"
-    delta_tail = "该文档，qa-word-review 审核通过。"
-
-    final = public_chat_terminal_projection(
-        {**run, "result_json": {"message": full_answer}}
-    )
-    assert final["event_type"] == "message:chunk"
-    assert final["payload"] == {
-        "projection_version": "ai-platform.chat-public-projection.v1",
-        "projection_kind": "assistant_delta",
-        "event_id": "run-a:final",
-        "message_id": "run-a:assistant",
-        "run_id": "run-a",
-        "source": "worker_answer_delta_v1",
-        "content": "general-agent 已处理该文档，document-review 审核通过。",
-    }
-
-    assembled = (
-        public_chat_answer_text(run, delta_fragment)
-        + public_chat_answer_text(run, delta_tail)
-    )
-    assert assembled == final["payload"]["content"]
-    assert "general-chat" not in final["payload"]["content"]
-    assert "qa-word-review" not in final["payload"]["content"]
-    assert "general-agent" in final["payload"]["content"]
-    assert "document-review" in final["payload"]["content"]
-
-
-def test_stream_projector_withholds_identifier_until_split_token_is_complete():
-    run = {
-        "id": "run-a",
-        "agent_id": "qa-word-review",
-        "skill_id": "general-chat",
-        "status": "running",
-    }
-    projector = PublicChatAnswerStreamProjector(run)
-
-    chunks = [
-        projector.push("已开始处理，general-"),
-        projector.push("chat 已完成，qa-word-"),
-        projector.push("review 审核通过。"),
-    ]
-    streamed = "".join(chunks)
-
-    assert streamed == "已开始处理，general-agent 已完成，document-review 审核通过。"
-    assert "general-chat" not in streamed
-    assert "qa-word-review" not in streamed
-    assert projector.flush() == ""
-
-
-@pytest.mark.parametrize(
-    ("secret_text", "split"),
-    [
-        ("api_key=sk-abcdefghi12", 9),
-        ("Bearer abcdefgh1", 7),
-        ("abcdefghij.klmnopqrst.uvwxyzabcd", 21),
-    ],
-)
-def test_stream_projector_matches_terminal_projection_at_secret_split_boundaries(
-    secret_text, split
-):
-    run = {
-        "id": "run-secret-parity",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
-        "status": "running",
-    }
-    projector = PublicChatAnswerStreamProjector(run)
-    full_answer = f"ordinary {secret_text} after"
-
-    streamed = "".join(
-        (
-            projector.push(full_answer[: len("ordinary ") + split]),
-            projector.push(full_answer[len("ordinary ") + split :]),
-            projector.flush(),
-        )
-    )
-    terminal = public_chat_terminal_projection(
-        {**run, "status": "succeeded", "result_json": {"message": full_answer}}
-    )
-
-    assert terminal is not None
-    assert streamed == terminal["payload"]["content"]
-    assert secret_text not in streamed
-    assert "ordinary" in streamed
-
-
-
-
-@pytest.mark.parametrize(
-    "secret_text",
-    [
-        'client_secret="opaque12345"',
-        "api-key='opaque12345'",
-        "access_token=opaque12345",
-        'client_secret => "opaque value!/$-with.punctuation"',
-        "'authorization' -> 'opaque,value;with spaces'",
-        "authorization: \"opaque12345\"",
-        "Bearer abcdefgh1",
-        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345",
-    ],
-)
-def test_stream_projector_matches_terminal_for_every_secret_split(secret_text):
-    run = {
-        "id": "run-secret-every-split",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
-        "status": "running",
-    }
-    for split in range(1, len(secret_text)):
-        projector = PublicChatAnswerStreamProjector(run)
-        full_answer = f"ordinary {secret_text} after"
-        prefix_length = len("ordinary ") + split
-        streamed = "".join(
-            (
-                projector.push(full_answer[:prefix_length]),
-                projector.push(full_answer[prefix_length:]),
-                projector.flush(),
-            )
-        )
-        terminal = public_chat_terminal_projection(
-            {**run, "status": "succeeded", "result_json": {"message": full_answer}}
-        )
-        assert terminal is not None
-        assert streamed == terminal["payload"]["content"]
-        assert secret_text not in streamed
-
-
-def test_stream_projector_preserves_a_path_split_across_chunks():
-    run = {
-        "id": "run-a",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
-        "status": "running",
-    }
-    projector = PublicChatAnswerStreamProjector(run)
-
-    safe_prefix = projector.push("已生成安全摘要。 /va")
-    blocked_suffix = projector.push("r/private/result.txt")
-
-    assert safe_prefix == ""
-    assert blocked_suffix == ""
-    assert projector.flush() == "已生成安全摘要。 /var/private/result.txt"
+    assert projection is None

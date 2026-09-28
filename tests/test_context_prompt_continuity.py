@@ -186,6 +186,10 @@ async def test_sdk_runner_uses_authorized_session_id_in_stream_instead_of_global
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-authorized-session"
+            self.uuid = "assistant-observation-authorized-session"
+            self.parent_tool_use_id = "parent-tool-authorized-session"
+            self.stop_reason = None
 
     class ResultMessage:
         session_id = "sdk-session-returned"
@@ -195,6 +199,7 @@ async def test_sdk_runner_uses_authorized_session_id_in_stream_instead_of_global
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-authorized-session"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
@@ -261,15 +266,20 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     class AssistantMessage:
         def __init__(self, content):
             self.content = content
+            self.message_id = "provider-message-context-retrieval"
+            self.uuid = "assistant-observation-context-retrieval"
+            self.parent_tool_use_id = "parent-tool-context-retrieval"
+            self.stop_reason = None
 
     class ResultMessage:
-        session_id = "sdk-session-returned"
+        session_id = "provider-session-context-retrieval"
         usage = {}
         model_usage = {}
         result = "ok"
         is_error = False
         errors = []
         stop_reason = None
+        uuid = "result-observation-context-retrieval"
 
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):

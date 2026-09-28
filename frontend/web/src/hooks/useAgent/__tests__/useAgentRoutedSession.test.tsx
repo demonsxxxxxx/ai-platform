@@ -4001,6 +4001,204 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
   }
 });
 
+test("useAgent stops generation while exact terminal history is still synchronizing", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalFetch = dom.window.fetch;
+  let statusCalls = 0;
+  const lifecycle = controlledPublicRunLifecycle(
+    "run-terminal-sync",
+    "succeeded",
+    [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "流式正文" } },
+    ],
+  );
+  let resolveTerminalHistory:
+    | ((value: Awaited<ReturnType<typeof sessionApi.getEvents>>) => void)
+    | null = null;
+  dom.window.fetch = async () => lifecycle.response;
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "终态同步会话",
+    session_id: "session-terminal-sync",
+  });
+  sessionApi.getEvents = (() =>
+    new Promise((resolve) => {
+      resolveTerminalHistory = resolve;
+    })) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-terminal-sync",
+      run_id: "run-terminal-sync",
+      status: "running",
+    };
+  }) as typeof sessionApi.getStatus;
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-terminal-sync",
+    run_id: "run-terminal-sync",
+    trace_id: "trace-terminal-sync",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("等待终态同步");
+    });
+    await settle(harness.act);
+
+    await harness.act(async () => {
+      lifecycle.finish();
+    });
+    await settle(harness.act);
+
+    const synchronizing = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" && message.runId === "run-terminal-sync",
+    );
+    assert.equal(synchronizing?.content, "流式正文");
+    assert.equal(synchronizing?.isStreaming, false);
+    assert.equal(synchronizing?.isSynchronizing, true);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(harness.hook.currentRunId, "run-terminal-sync");
+    assert.ok(resolveTerminalHistory);
+
+    await harness.act(async () => {
+      await harness.hook.reconnectSSE();
+    });
+    assert.equal(statusCalls, 0);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+
+    await harness.act(async () => {
+      resolveTerminalHistory?.({
+        events: [
+          {
+            id: "run-terminal-sync:answer",
+            event_type: "message:chunk",
+            run_id: "run-terminal-sync",
+            timestamp: "2026-08-21T00:00:01Z",
+            data: {
+              projection_version: "ai-platform.chat-public-projection.v1",
+              projection_kind: "assistant_delta",
+              event_id: "run-terminal-sync:answer",
+              run_id: "run-terminal-sync",
+              content: "持久化最终正文",
+            },
+          },
+        ],
+      });
+    });
+    await settle(harness.act);
+
+    const settled = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" && message.runId === "run-terminal-sync",
+    );
+    assert.equal(settled?.content, "持久化最终正文");
+    assert.equal(settled?.isStreaming, false);
+    assert.equal(settled?.isSynchronizing, false);
+    assert.equal(harness.hook.currentRunId, null);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent keeps a succeeded Run terminal when result synchronization fails", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalFetch = dom.window.fetch;
+  const lifecycle = controlledPublicRunLifecycle(
+    "run-terminal-sync-unavailable",
+    "succeeded",
+    [
+      { eventType: "message.started", payload: {} },
+      { eventType: "message.delta", payload: { delta: "已公开正文" } },
+    ],
+  );
+  dom.window.fetch = async () => lifecycle.response;
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "终态同步失败会话",
+    session_id: "session-terminal-sync-unavailable",
+  });
+  sessionApi.getEvents = (async () => {
+    throw Object.assign(new Error("history denied"), { status: 403 });
+  }) as typeof sessionApi.getEvents;
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-terminal-sync-unavailable",
+    run_id: "run-terminal-sync-unavailable",
+    trace_id: "trace-terminal-sync-unavailable",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("终态成功但同步失败");
+    });
+    await settle(harness.act);
+    await harness.act(async () => {
+      lifecycle.finish();
+    });
+    await settle(harness.act);
+
+    const assistant = harness.hook.messages.find(
+      (message) =>
+        message.role === "assistant" &&
+        message.runId === "run-terminal-sync-unavailable",
+    );
+    const statuses = assistant?.parts?.filter(
+      (part) => part.type === "run_status",
+    ) ?? [];
+    assert.equal(assistant?.content, "已公开正文");
+    assert.equal(assistant?.isStreaming, false);
+    assert.equal(assistant?.isSynchronizing, false);
+    assert.equal(
+      statuses.some(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id ===
+            "terminal-result-unavailable:run-terminal-sync-unavailable",
+      ),
+      true,
+    );
+    assert.equal(
+      statuses.some(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id === "terminal-failure:run-terminal-sync-unavailable",
+      ),
+      false,
+    );
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getEvents = originalGetEvents;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent consumes lambchat's runless error then done fallback exactly once", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -4216,77 +4414,6 @@ test("useAgent preserves its active owner after bounded transient status-query f
   }
 });
 
-test("useAgent fails closed once for a non-retryable SSE authentication error", async () => {
-  const harness = await loadReactHarness();
-  const { sessionApi } = await import("../../../services/api/session.ts");
-  const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
-  const originalGenerateTitle = sessionApi.generateTitle;
-  const originalGetStatus = sessionApi.getStatus;
-  const originalFetch = dom.window.fetch;
-  let statusCalls = 0;
-  let sseCalls = 0;
-  dom.window.localStorage.removeItem("ai_platform_session_present");
-  dom.window.fetch = async () => {
-    sseCalls += 1;
-    return new Response(null, { status: 401 });
-  };
-  sessionApi.markRead = async () => {};
-  sessionApi.generateTitle = async () => ({
-    title: "认证失效会话",
-    session_id: "session-auth-unavailable",
-  });
-  sessionApi.submitChat = (async () => ({
-    session_id: "session-auth-unavailable",
-    run_id: "run-auth-unavailable",
-    trace_id: "trace-auth-unavailable",
-    status: "queued",
-  })) as typeof sessionApi.submitChat;
-  // A generic stream interruption would query this active projection. A
-  // non-retryable authentication rejection must not do so.
-  sessionApi.getStatus = (async () => {
-    statusCalls += 1;
-    return {
-      session_id: "session-auth-unavailable",
-      run_id: "run-auth-unavailable",
-      status: "running",
-    };
-  }) as typeof sessionApi.getStatus;
-
-  try {
-    await harness.act(async () => {
-      await harness.hook.sendMessage("认证失效后不应重连");
-    });
-    await settle(harness.act);
-    // The shortest reconnect backoff is one second. Waiting past it proves no
-    // stale reconnect timer or second stream attempt was scheduled.
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
-    await settle(harness.act);
-
-    const parts = harness.hook.messages.flatMap((message) => message.parts || []);
-    assert.equal(statusCalls, 0);
-    assert.equal(sseCalls, 1);
-    assert.equal(harness.hook.currentRunId, null);
-    assert.equal(harness.hook.isLoading, false);
-    assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(
-      parts.filter(
-        (part) =>
-          part.type === "run_status" &&
-          part.event_id === "terminal-status-unavailable:run-auth-unavailable",
-      ).length,
-      1,
-    );
-  } finally {
-    sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
-    sessionApi.generateTitle = originalGenerateTitle;
-    sessionApi.getStatus = originalGetStatus;
-    dom.window.fetch = originalFetch;
-    await harness.cleanup();
-  }
-});
-
 test("useAgent fails closed for each protocol-invalid SSE frame", async () => {
   const cases = [
     { kind: "json" as const, label: "invalid JSON" },
@@ -4465,7 +4592,8 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
   }
 });
 
-test("useAgent shares one generation-bound reconciliation owner across concurrent recovery callers", async () => {
+for (const recoveryEntry of ["initial", "timer retry"]) {
+test(`useAgent shares one reconciliation owner across online callers during ${recoveryEntry}`, async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -4492,6 +4620,14 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
   })) as typeof sessionApi.submitChat;
   sessionApi.getStatus = (async () => {
     statusCalls += 1;
+    if (recoveryEntry === "timer retry" && statusCalls === 1) {
+      return {
+        session_id: "session-reconcile-owner",
+        run_id: "run-reconcile-owner",
+        status: "running",
+        raw_status: "running",
+      };
+    }
     return new Promise((resolve) => {
       resolveStatus = resolve;
     });
@@ -4513,15 +4649,21 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
       await harness.hook.sendMessage("并发状态恢复");
     });
     await settle(harness.act);
-    assert.equal(statusCalls, 1);
+    const expectedStatusCalls = recoveryEntry === "timer retry" ? 2 : 1;
+    for (let attempt = 0; attempt < 300 && statusCalls < expectedStatusCalls; attempt += 1) {
+      await harness.act(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+    }
+    assert.equal(statusCalls, expectedStatusCalls);
+    await settle(harness.act);
 
     let firstReconnect!: Promise<void>;
     let secondReconnect!: Promise<void>;
     await harness.act(async () => {
+      dom.window.dispatchEvent({ type: "online" });
       firstReconnect = harness.hook.reconnectSSE();
       secondReconnect = harness.hook.reconnectSSE();
     });
-    assert.equal(statusCalls, 1);
+    assert.equal(statusCalls, expectedStatusCalls);
 
     resolveStatus({
       session_id: "session-reconcile-owner",
@@ -4534,7 +4676,7 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
     });
     await settle(harness.act);
 
-    assert.equal(statusCalls, 1);
+    assert.equal(statusCalls, expectedStatusCalls);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(
       harness.hook.messages
@@ -4556,8 +4698,10 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
     await harness.cleanup();
   }
 });
+}
 
-test("useAgent production 401 fails closed without refresh or status reconciliation", async () => {
+for (const sessionMarker of [null, "present"]) {
+test(`useAgent expires cookie-session stream ownership with ${sessionMarker ? "a marker" : "no marker"}`, async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -4573,40 +4717,44 @@ test("useAgent production 401 fails closed without refresh or status reconciliat
   let statusCalls = 0;
   let streamCalls = 0;
   let refreshProbeCalls = 0;
-  const fetchWithRefresh: typeof fetch = async (input) => {
+  const fetchWithExpiredSession: typeof fetch = async (input) => {
     const url = String(input);
     if (url.includes("/api/ai/auth/me")) {
       refreshProbeCalls += 1;
       return new Response("{}", { status: 200 });
     }
-    if (url.includes("/stream?run_id=run-initial-post-refresh")) {
+    if (url.includes("/stream?run_id=run-expired-session")) {
       streamCalls += 1;
       if (streamCalls === 1) {
         return new Response(null, { status: 401 });
       }
-      throw new Error("initial post-refresh transport interruption");
+      throw new Error("unexpected stream retry");
     }
     throw new Error(`unexpected fetch: ${url}`);
   };
-  dom.window.localStorage.setItem("ai_platform_session_present", "present");
-  dom.window.fetch = fetchWithRefresh;
-  globalThis.fetch = fetchWithRefresh;
+  if (sessionMarker) {
+    dom.window.localStorage.setItem("ai_platform_session_present", sessionMarker);
+  } else {
+    dom.window.localStorage.removeItem("ai_platform_session_present");
+  }
+  dom.window.fetch = fetchWithExpiredSession;
+  globalThis.fetch = fetchWithExpiredSession;
   sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
-    title: "刷新后中断会话",
-    session_id: "session-initial-post-refresh",
+    title: "登录过期会话",
+    session_id: "session-expired-session",
   });
   sessionApi.submitChat = (async () => ({
-    session_id: "session-initial-post-refresh",
-    run_id: "run-initial-post-refresh",
-    trace_id: "trace-initial-post-refresh",
+    session_id: "session-expired-session",
+    run_id: "run-expired-session",
+    trace_id: "trace-expired-session",
     status: "queued",
   })) as typeof sessionApi.submitChat;
   sessionApi.getStatus = (async () => {
     statusCalls += 1;
     return {
-      session_id: "session-initial-post-refresh",
-      run_id: "run-initial-post-refresh",
+      session_id: "session-expired-session",
+      run_id: "run-expired-session",
       status: "error",
       raw_status: "failed",
     };
@@ -4614,12 +4762,12 @@ test("useAgent production 401 fails closed without refresh or status reconciliat
   sessionApi.getEvents = (async (_sessionId, options) => ({
     events: options?.run_id
       ? [{
-          id: "run-initial-post-refresh:final",
+          id: "run-expired-session:final",
           event_type: "final_detail",
-          run_id: "run-initial-post-refresh",
+          run_id: "run-expired-session",
           timestamp: "2026-07-15T00:00:01Z",
           data: {
-            run_id: "run-initial-post-refresh",
+            run_id: "run-expired-session",
             projection_version: "ai-platform.chat-public-projection.v1",
             detail_kind: "failed",
             detail_code: "run_failed",
@@ -4630,25 +4778,19 @@ test("useAgent production 401 fails closed without refresh or status reconciliat
 
   try {
     await harness.act(async () => {
-      await harness.hook.sendMessage("刷新后网络中断需要核对状态");
+      await harness.hook.sendMessage("登录过期后停止读取会话");
     });
     await settle(harness.act);
 
-    const parts = harness.hook.messages.flatMap((message) => message.parts || []);
     assert.equal(refreshProbeCalls, 0);
     assert.equal(streamCalls, 1);
     assert.equal(statusCalls, 0);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
-    assert.equal(
-      parts.filter(
-        (part) =>
-          part.type === "run_status" &&
-          part.event_id ===
-            "terminal-status-unavailable:run-initial-post-refresh",
-      ).length,
-      1,
-    );
+    assert.equal(harness.auth.isAuthenticated, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(harness.hook.sessionId, null);
+    assert.deepEqual(harness.hook.messages, []);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;
@@ -4669,7 +4811,9 @@ test("useAgent production 401 fails closed without refresh or status reconciliat
   }
 });
 
-test("useAgent history restore fails closed for non-retryable SSE authentication", async () => {
+}
+
+test("useAgent clears restored history when its cookie session expires", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -4723,7 +4867,6 @@ test("useAgent history restore fails closed for non-retryable SSE authentication
     });
     await settle(harness.act);
 
-    const parts = harness.hook.messages.flatMap((message) => message.parts || []);
     // The one status read establishes that the restored run was active. The
     // typed authentication result must not trigger a second reconciliation.
     assert.equal(statusCalls, 1);
@@ -4731,14 +4874,9 @@ test("useAgent history restore fails closed for non-retryable SSE authentication
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(harness.hook.connectionStatus, "disconnected");
-    assert.equal(
-      parts.filter(
-        (part) =>
-          part.type === "run_status" &&
-          part.event_id === "terminal-status-unavailable:run-history-auth",
-      ).length,
-      1,
-    );
+    assert.equal(harness.auth.isAuthenticated, false);
+    assert.equal(harness.hook.sessionId, null);
+    assert.deepEqual(harness.hook.messages, []);
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
@@ -5375,7 +5513,9 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
   }
 });
 
-test("useAgent hydrates an active same-incarnation gap before replay resumes", async () => {
+for (const recovery of ["resume", "terminal", "timeout"] as const) {
+const hasProtocolMessage = recovery !== "terminal";
+test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" ? "after a history timeout and online recovery" : hasProtocolMessage ? "before replay resumes" : "before the first message and observes terminal"}`, async (t) => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -5398,6 +5538,15 @@ test("useAgent hydrates an active same-incarnation gap before replay resumes", a
   const initialStreams: Array<ReturnType<typeof controlledNonClosingSseResponse>> = [];
   const replacementStreams: Array<ReturnType<typeof controlledNonClosingSseResponse>> = [];
   let statusCalls = 0;
+  let finishRun: (() => void) | undefined;
+  let terminalObserved = false;
+  let allowHistory = recovery !== "timeout";
+  const historySignals: AbortSignal[] = [];
+  if (recovery === "timeout") {
+    const schedule = globalThis.setTimeout;
+    t.mock.method(globalThis, "setTimeout", (callback: Parameters<typeof setTimeout>[0], delay?: number, ...args: unknown[]) =>
+      schedule(callback, !allowHistory && statusCalls >= 3 && [1000, 2000, 10000].includes(delay ?? 0) ? 1 : delay, ...args));
+  }
 
   const envelope = (
     eventType: string,
@@ -5456,6 +5605,11 @@ test("useAgent hydrates an active same-incarnation gap before replay resumes", a
         ],
       };
     }
+    if (!allowHistory) {
+      assert.ok(options?.signal);
+      historySignals.push(options.signal);
+      return new Promise<never>(() => {});
+    }
     return {
       current_run_id: runId,
       events: [
@@ -5484,11 +5638,15 @@ test("useAgent hydrates an active same-incarnation gap before replay resumes", a
   }) as typeof sessionApi.getEvents;
   sessionApi.getStatus = async () => {
     statusCalls += 1;
+    if (!hasProtocolMessage && statusCalls > 3) {
+      await new Promise<void>((resolve) => { finishRun = resolve; });
+      terminalObserved = true;
+    }
     return {
       session_id: "session-active-gap",
       run_id: runId,
-      status: "running",
-      raw_status: "running",
+      status: terminalObserved ? "completed" : "running",
+      raw_status: terminalObserved ? "succeeded" : "running",
     };
   };
   dom.window.fetch = async (_input, init) => {
@@ -5497,17 +5655,17 @@ test("useAgent hydrates an active same-incarnation gap before replay resumes", a
       const initialStream = controlledNonClosingSseResponse(
         frame("1-0", "stream.open", "active-gap-open", null, {
           design_id: STREAM_DESIGN_ID,
-        }) + frame("3-0", "message.started", "active-gap-started", 20, {}),
+        }) + (hasProtocolMessage ? frame("3-0", "message.started", "active-gap-started", 20, {}) : ""),
       );
       initialStreams.push(initialStream);
       return initialStream.response;
     }
-    if (requestCursors.length === 2) {
+    if (requestCursors.length === 2 || (recovery === "timeout" && requestCursors.length === 3)) {
       return new Response(
         frame("4-0", "stream.gap", "active-gap-gap", null, {
           reason: "retained_history_unavailable",
           recovery: "reload_durable_state",
-          requested_event_id: "3-0",
+          requested_event_id: hasProtocolMessage ? "3-0" : "1-0",
           requested_stream_incarnation: 1,
           current_stream_incarnation: 1,
           earliest_available_event_id: "4-0",
@@ -5549,15 +5707,26 @@ test("useAgent hydrates an active same-incarnation gap before replay resumes", a
       () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
     );
     for (const stream of initialStreams) stream.close();
-    for (let attempt = 0; attempt < 350 && requestCursors.length < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 500 && (recovery === "timeout" ? !(statusCalls >= 3 && harness.hook.connectionStatus === "disconnected") : hasProtocolMessage ? requestCursors.length < 3 : !finishRun); attempt += 1) {
       await harness.act(
         () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
       );
     }
+    if (recovery === "timeout") {
+      assert.equal(historySignals.length, 3);
+      assert.ok(historySignals.every((signal) => signal.aborted));
+      assert.equal(harness.hook.currentRunId, runId);
+      assert.equal(harness.hook.connectionStatus, "disconnected");
+      allowHistory = true;
+      await harness.act(async () => { dom.window.dispatchEvent({ type: "online" }); });
+      for (let attempt = 0; attempt < 500 && requestCursors.length < 4; attempt += 1) {
+        await harness.act(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+      }
+    }
     await settle(harness.act);
     for (
       let attempt = 0;
-      attempt < 30 &&
+      attempt < 30 && hasProtocolMessage &&
       !harness.hook.messages.some((message) =>
         message.content.includes("+resumed"),
       );
@@ -5571,17 +5740,31 @@ test("useAgent hydrates an active same-incarnation gap before replay resumes", a
     const assistant = harness.hook.messages.find(
       (message) => message.runId === runId && message.role === "assistant",
     );
-    assert.equal(statusCalls, 3);
-    assert.deepEqual(requestCursors, [
-      null,
-      `${runId}:1:3-0`,
-      `${runId}:1:9-0`,
-    ]);
-    assert.deepEqual(eventQueries, [undefined, runId]);
-    assert.equal(assistant?.id, runId);
-    assert.equal(assistant?.content, "durable-before-gap+resumed");
-    assert.equal(harness.hook.currentRunId, runId);
-    assert.equal(harness.hook.connectionStatus, "connected");
+    if (hasProtocolMessage) {
+      assert.equal(statusCalls, recovery === "timeout" ? 5 : 3);
+      assert.deepEqual(requestCursors, [
+        null,
+        `${runId}:1:3-0`,
+        ...(recovery === "timeout" ? [`${runId}:1:3-0`] : []),
+        `${runId}:1:9-0`,
+      ]);
+      assert.deepEqual(eventQueries, recovery === "timeout" ? [undefined, runId, runId, runId, runId] : [undefined, runId]);
+      assert.equal(assistant?.id, runId);
+      assert.equal(assistant?.content, "durable-before-gap+resumed");
+      assert.equal(harness.hook.currentRunId, runId);
+      assert.equal(harness.hook.connectionStatus, "connected");
+    } else {
+      assert.ok(finishRun, "active Run must remain observable after hydration");
+      assert.deepEqual(requestCursors, [null, `${runId}:1:1-0`]);
+      assert.equal(assistant?.content, "durable-before-gap");
+      assert.equal(harness.hook.currentRunId, runId);
+      await harness.act(async () => { finishRun!(); });
+      await settle(harness.act);
+      assert.equal(harness.hook.currentRunId, null);
+      assert.equal(harness.hook.connectionStatus, "disconnected");
+      assert.equal(harness.hook.messages.find((message) => message.runId === runId && message.role === "assistant")?.content, "durable-before-gap");
+      assert.deepEqual(eventQueries, [undefined, runId, runId]);
+    }
   } finally {
     for (const stream of initialStreams) stream.close();
     for (const stream of replacementStreams) stream.close();
@@ -5595,6 +5778,8 @@ test("useAgent hydrates an active same-incarnation gap before replay resumes", a
     animationWindow.cancelAnimationFrame = originalCancelAnimationFrame;
   }
 });
+
+}
 
 test("useAgent preserves accepted body and tool state through terminal-only stream-missing convergence", async () => {
   const harness = await loadReactHarness();

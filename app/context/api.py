@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import secrets
 
-from app.context.application.checkpoints import load_ready_checkpoint as load_ready_checkpoint
 from app.context.domain.conversation_authority import (
-    ConversationSourceChain as ConversationSourceChain,
+    make_authority_receipt as make_authority_receipt,
     validate_authority_receipt as validate_authority_receipt,
 )
 from app.context.application.provider_sessions import (
     ProviderSessionOperationResult,
-    matching_ready_provider_epoch,
     claim_provider_lineage,
+    read_provider_coverage,
     release_provider_lineage,
     prepare_provider_epoch,
     commit_provider_turn,
@@ -24,8 +23,6 @@ from app.context.domain.file_staging import (
 )
 from app.context.domain.conversation import (
     EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2,
-    ConversationContextError,
-    build_executor_conversation_context,
     empty_executor_conversation_context,
 )
 from app.context.domain.provider_sessions import (
@@ -190,19 +187,14 @@ async def materialize_worker_context_snapshot(
     identity: dict[str, str],
     context_snapshot_id: str,
     snapshot_loader,
-    message_loader,
     context_projector,
-    history_page_loader=None,
 ):
     result = await _materialize_worker_context_snapshot(
         conn,
         identity=identity,
         context_snapshot_id=context_snapshot_id,
         snapshot_loader=snapshot_loader,
-        message_loader=message_loader,
         context_projector=context_projector,
-        history_page_loader=history_page_loader,
-        provider_epoch_matcher=matching_ready_provider_epoch,
     )
     if (result is not None and identity.get("engine") == PROVIDER_SESSION_ENGINE_CLAUDE
         and result["conversation_context"].get("schema_version") == EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2):
@@ -226,16 +218,13 @@ async def materialize_worker_context_snapshot(
 __all__ = [
     "CONTEXT_FILE_ERROR_CODES",
     "CONTEXT_FILE_FAILURE_SCHEMA_VERSION",
-    "ConversationContextError",
     "ContextFileContentError",
-    "build_executor_conversation_context",
     "context_file_executor_failure",
     "context_file_failure_diagnostic",
     "empty_executor_conversation_context",
     "materialize_worker_context_snapshot",
-    "ConversationSourceChain",
+    "make_authority_receipt",
     "validate_authority_receipt",
-    "load_ready_checkpoint",
     "normalize_context_file_error_code",
     "MAX_PROVIDER_SESSION_BATCH_BYTES",
     "MAX_PROVIDER_SESSION_BATCH_COUNT",
@@ -250,8 +239,8 @@ __all__ = [
     "ProviderSessionEntry",
     "ProviderSessionNotFoundError",
     "ProviderSessionOperationResult",
-    "matching_ready_provider_epoch",
     "claim_provider_lineage",
+    "read_provider_coverage",
     "release_provider_lineage",
     "prepare_provider_epoch",
     "commit_provider_turn",

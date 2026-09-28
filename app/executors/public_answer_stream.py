@@ -1,4 +1,5 @@
-from collections.abc import Callable, Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from app.execution.api import public_answer_failure_reason
@@ -6,6 +7,8 @@ from app.kernel.memory_redaction import sanitizer_unstable_suffix_length
 
 
 _RECOVERED_TEXT = "[content unavailable]"
+_PUBLIC_ANSWER_COALESCE_SECONDS = 0.05
+_PUBLIC_ANSWER_MAX_CODEPOINTS = 8_192
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,6 +17,117 @@ class PublicAnswerFinish:
 
     chunks: tuple[str, ...]
     final_text: str
+
+
+class PublicAnswerCoalescer:
+    """Coalesce adjacent safe answer text before event identity allocation."""
+
+    def __init__(
+        self,
+        emit: Callable[[str], Awaitable[bool]],
+        *,
+        window_seconds: float = _PUBLIC_ANSWER_COALESCE_SECONDS,
+    ) -> None:
+        if window_seconds < 0:
+            raise ValueError("answer coalescing window must be non-negative")
+        self._emit = emit
+        self._window_seconds = window_seconds
+        self._pending = ""
+        self._source_identity: object = None
+        self._has_source = False
+        self._flush_task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+        self._closed = False
+        self._error: BaseException | None = None
+        self._emission_unacknowledged = False
+
+    async def push(self, text: object, *, source_identity: object = None) -> bool:
+        if not isinstance(text, str) or not text:
+            return True
+        async with self._lock:
+            self._raise_if_failed()
+            if self._closed:
+                return False
+            if (
+                self._pending
+                and self._has_source
+                and source_identity != self._source_identity
+                and not await self._flush_locked()
+            ):
+                return False
+            remaining = text
+            while remaining:
+                if not self._pending:
+                    self._source_identity = source_identity
+                    self._has_source = True
+                available = _PUBLIC_ANSWER_MAX_CODEPOINTS - len(self._pending)
+                self._pending += remaining[:available]
+                remaining = remaining[available:]
+                if len(self._pending) == _PUBLIC_ANSWER_MAX_CODEPOINTS:
+                    if not await self._flush_locked():
+                        return False
+            if self._pending and self._flush_task is None:
+                self._flush_task = asyncio.create_task(self._flush_after_window())
+            return True
+
+    async def flush(self) -> bool:
+        async with self._lock:
+            self._raise_if_failed()
+            return await self._flush_locked()
+
+    async def close(self, *, flush: bool) -> bool:
+        self._closed = True
+        task = self._flush_task
+        self._flush_task = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        async with self._lock:
+            self._raise_if_failed()
+            if self._emission_unacknowledged:
+                return False
+            if flush:
+                return await self._flush_locked()
+            self._pending = ""
+            self._has_source = False
+            return True
+
+    async def _flush_after_window(self) -> None:
+        try:
+            await asyncio.sleep(self._window_seconds)
+            await self.flush()
+        except asyncio.CancelledError as error:
+            task = asyncio.current_task()
+            if task is None or task.cancelling() == 0:
+                self._error = error
+        except Exception as error:  # noqa: BLE001 - re-raised at the owner barrier.
+            self._error = error
+        finally:
+            if self._flush_task is asyncio.current_task():
+                self._flush_task = None
+
+    def _raise_if_failed(self) -> None:
+        if self._error is not None:
+            raise self._error
+
+    async def _flush_locked(self) -> bool:
+        if not self._pending:
+            self._has_source = False
+            return True
+        text = self._pending
+        self._pending = ""
+        self._has_source = False
+        try:
+            accepted = await self._emit(text)
+        except asyncio.CancelledError:
+            self._emission_unacknowledged = True
+            raise
+        if not accepted:
+            self._closed = True
+        return accepted
 
 
 class PublicAnswerStreamGate:

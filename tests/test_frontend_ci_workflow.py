@@ -139,8 +139,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
     test_sse = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]["test:sse"]
     assert (
-        "session route lifecycle supersedes stale loads across external and sidebar navigation"
-        in test_sse
+        "tsx --test src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx"
+        in test_sse.split(" && ")
     )
     assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse
     assert "group: ai-platform-frontend-${{ github.event.pull_request.number || github.run_id }}" in workflow

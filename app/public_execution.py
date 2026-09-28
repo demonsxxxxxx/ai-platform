@@ -7,15 +7,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION = "ai-platform.public-execution-event.v1"
 PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION = "ai-platform.public-execution-event.v2"
 PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION = "ai-platform.public-agent-progress.v1"
 PUBLIC_AGENT_PROGRESS_EVENT_TYPE = "agent_public_progress"
-PUBLIC_EXECUTION_KINDS = frozenset({"analysis", "capability", "file_read", "processing", "generation", "verification", "artifact", "collaboration"})
 PUBLIC_EXECUTION_EVENT_TYPES = frozenset({"execution_step", "execution_progress", "execution_step_completed", "execution_step_failed"})
-PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS = frozenset({"step_id", "kind", "stage", "status", "title", "summary", "progress", "safe_file_name", "artifact_public_id"})
-_REQUIRED_STEP_PAYLOAD_FIELDS = PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS - {"safe_file_name", "artifact_public_id"}
-PUBLIC_EXECUTION_EVENT_FIELDS = frozenset({"schema_version", "event_id", "sequence", "run_id", *PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS, "created_at"})
 PUBLIC_EXECUTION_V2_EVENT_TYPES = frozenset(
     {
         "execution_step",
@@ -40,22 +35,6 @@ _REQUIRED_V2_STEP_PAYLOAD_FIELDS = PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS - {
     "safe_label"
 }
 
-_FACT_KIND_CONFIG = {
-    "capability_invocation": ("capability", "execution", "Using authorized capability"),
-    "tool_invocation": ("processing", "execution", "Running controlled processing"),
-    "execution_analysis": ("analysis", "analysis", "Analyzing request"),
-    "file_processing": ("file_read", "file", "Processing authorized file"),
-    "structured_terminal_check": ("verification", "verification", "Checking structured result"),
-    "artifact_generation": ("generation", "artifact", "Generating result file"),
-    "subagent_invocation": ("collaboration", "execution", "Coordinating task"),
-}
-_LIFECYCLE_CONFIG = {
-    "started": ("execution_step", "running", "Started", {"current": 0, "total": 1}),
-    "progress": ("execution_progress", "running", "In progress", None),
-    "completed": ("execution_step_completed", "completed", "Completed", {"current": 1, "total": 1}),
-    "failed": ("execution_step_failed", "failed", "Not completed", {"current": 1, "total": 1}),
-}
-_EVENT_STATUS = {config[0]: config[1] for config in _LIFECYCLE_CONFIG.values()}
 _V2_LIFECYCLE_CONFIG = {
     "started": ("execution_step", "running", 0),
     "progress": ("execution_progress", "running", 0),
@@ -184,17 +163,6 @@ _V2_RAW_FACT_FIELDS = frozenset(
 _REQUIRED_V2_RAW_FACT_FIELDS = _V2_RAW_FACT_FIELDS - {"safe_label"}
 _SAFE_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
 _UNSAFE_LABEL_CHARS = frozenset("\\/:.;`'\"<>|{}[]$\n\r\t")
-_UNSAFE_FILE_NAME_CHARS = frozenset("\\/:*?\"<>|;`$")
-
-
-@dataclass
-class _InvocationState:
-    step_id: str
-    fact_kind: str
-    label: str
-    total: int
-    current: int
-    terminal: str | None = None
 
 
 @dataclass
@@ -233,7 +201,7 @@ class PersistablePublicExecutionStepV2:
 def public_execution_event_type_for_lifecycle(value: object) -> str | None:
     """Return the strict public event type for a supported private lifecycle."""
 
-    config = _LIFECYCLE_CONFIG.get(value) if isinstance(value, str) else None
+    config = _V2_LIFECYCLE_CONFIG.get(value) if isinstance(value, str) else None
     return config[0] if config else None
 
 
@@ -268,13 +236,6 @@ def _safe_public_label(value: object) -> str | None:
     return _safe_text(value, max_length=96, unsafe=_UNSAFE_LABEL_CHARS, require_alnum=True)
 
 
-def _safe_optional_file_name(value: object) -> str | None:
-    if value is None:
-        return None
-    file_name = _safe_text(value, max_length=128, unsafe=_UNSAFE_FILE_NAME_CHARS)
-    return None if file_name in {None, ".", ".."} else file_name
-
-
 def _normalize_public_execution_created_at(value: object) -> str | None:
     """Return a public timestamp or fail closed when it lacks timezone authority."""
 
@@ -303,48 +264,6 @@ def _safe_progress(value: object) -> dict[str, int] | None:
     if type(current) is not int or type(total) is not int or total <= 0 or not 0 <= current <= total:
         return None
     return {"current": current, "total": total}
-
-
-def _validate_public_execution_step_payload_v1(
-    payload: object, *, expected_kind: str | None = None
-) -> dict[str, object] | None:
-    """Accept only the exact persisted step payload contract."""
-
-    expected_status = _EVENT_STATUS.get(expected_kind)
-    if (
-        not isinstance(payload, dict)
-        or not _REQUIRED_STEP_PAYLOAD_FIELDS <= set(payload) <= PUBLIC_EXECUTION_STEP_PAYLOAD_FIELDS
-        or payload.get("kind") not in PUBLIC_EXECUTION_KINDS
-        or payload.get("status") != expected_status
-    ):
-        return None
-    step_id = _safe_opaque_id(payload.get("step_id"))
-    stage = _safe_text(payload.get("stage"), max_length=48)
-    title, summary = _safe_public_label(payload.get("title")), _safe_public_label(payload.get("summary"))
-    progress, file_name = _safe_progress(payload.get("progress")), _safe_optional_file_name(payload.get("safe_file_name"))
-    artifact = payload.get("artifact_public_id")
-    artifact_id = _safe_opaque_id(artifact) if artifact is not None else None
-    if (
-        any(value is None for value in (step_id, stage, title, summary, progress))
-        or (payload.get("safe_file_name") is not None and file_name is None)
-        or (artifact is not None and artifact_id is None)
-        or (
-            expected_kind == "execution_step_completed"
-            and progress["current"] != progress["total"]
-        )
-    ):
-        return None
-    return {
-        "step_id": step_id,
-        "kind": payload["kind"],
-        "stage": stage,
-        "status": expected_status,
-        "title": title,
-        "summary": summary,
-        "progress": progress,
-        "safe_file_name": file_name,
-        "artifact_public_id": artifact_id,
-    }
 
 
 def _validate_public_execution_step_payload_v2(
@@ -470,55 +389,17 @@ def _projected_public_execution_step_v2(
     return step
 
 
-def _versioned_public_execution_step_payload(
-    payload: object,
-    *,
-    expected_kind: str | None = None,
-) -> tuple[str, dict[str, object]] | None:
-    if not isinstance(expected_kind, str):
-        return None
-    if isinstance(payload, dict) and "schema_version" in payload:
-        validated_v2 = _validate_public_execution_step_payload_v2(
-            payload,
-            expected_kind=expected_kind,
-        )
-        if validated_v2 is None:
-            return None
-        return PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION, validated_v2
-    validated_v1 = _validate_public_execution_step_payload_v1(
-        payload,
-        expected_kind=expected_kind,
-    )
-    if validated_v1 is None:
-        return None
-    return PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION, validated_v1
-
-
-def validate_public_execution_step_payload(
-    payload: object,
-    *,
-    expected_kind: str | None = None,
-) -> dict[str, object] | None:
-    """Accept only the historical v1 callback persistence contract."""
-
-    return _validate_public_execution_step_payload_v1(
-        payload,
-        expected_kind=expected_kind,
-    )
-
-
 def validate_versioned_public_execution_step_payload(
     payload: object,
     *,
     expected_kind: str | None = None,
 ) -> dict[str, object] | None:
-    """Validate either public execution wire version before persistence."""
+    """Validate only the v2 public execution wire contract before persistence."""
 
-    versioned = _versioned_public_execution_step_payload(
+    return _validate_public_execution_step_payload_v2(
         payload,
         expected_kind=expected_kind,
     )
-    return versioned[1] if versioned is not None else None
 
 
 def public_execution_phase_progress_payload(
@@ -565,7 +446,7 @@ def public_execution_event_from_row(run_id: object, row: Mapping[str, object]) -
     """Compose one versioned public event from persisted envelope authority."""
 
     event_type = row.get("event_type")
-    versioned_payload = _versioned_public_execution_step_payload(
+    payload = _validate_public_execution_step_payload_v2(
         row.get("payload_json"),
         expected_kind=event_type,
     )
@@ -575,7 +456,7 @@ def public_execution_event_from_row(run_id: object, row: Mapping[str, object]) -
     if (
         not isinstance(event_type, str)
         or event_type not in PUBLIC_EXECUTION_EVENT_TYPES
-        or versioned_payload is None
+        or payload is None
         or event_id is None
         or public_run_id is None
         or type(sequence) is not int
@@ -583,9 +464,8 @@ def public_execution_event_from_row(run_id: object, row: Mapping[str, object]) -
         or raw_created_at is not None and created_at is None
     ):
         return None
-    schema_version, payload = versioned_payload
     return {
-        "schema_version": schema_version,
+        "schema_version": PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
         "event_id": event_id,
         "sequence": sequence,
         "run_id": public_run_id,
@@ -717,80 +597,3 @@ class PublicExecutionPhasePublisher:
         if lifecycle in {"completed", "failed"}:
             self._phases[phase] = lifecycle
         return projected
-
-
-class PublicExecutionProjector:
-    """Project server-validated private lifecycle facts into opaque public steps."""
-
-    def __init__(self) -> None:
-        self._invocations: dict[str, _InvocationState] = {}
-
-    def project(self, fact: object) -> dict[str, object] | None:
-        if not isinstance(fact, dict):
-            return None
-        invocation_id = _safe_text(fact.get("invocation_id"), max_length=512)
-        fact_kind, lifecycle, label = fact.get("fact_kind"), fact.get("lifecycle"), _safe_public_label(fact.get("public_label"))
-        if not invocation_id or fact_kind not in _FACT_KIND_CONFIG or lifecycle not in _LIFECYCLE_CONFIG or not label:
-            return None
-        state = self._invocations.get(invocation_id)
-        _event_type, status, summary, default_progress = _LIFECYCLE_CONFIG[lifecycle]
-        kind, stage, default_title = _FACT_KIND_CONFIG[fact_kind]
-        supplied_progress = _safe_progress(fact.get("progress"))
-        file_name = _safe_optional_file_name(fact.get("safe_file_name"))
-        artifact = fact.get("artifact_public_id")
-        artifact_id = _safe_opaque_id(artifact) if artifact is not None else None
-        if (fact.get("safe_file_name") is not None and file_name is None) or (artifact is not None and artifact_id is None):
-            return None
-        if lifecycle == "started":
-            if state is not None:
-                return None
-            progress = supplied_progress or default_progress
-            if progress is None or progress["current"] != 0:
-                return None
-            next_state = _InvocationState(
-                step_id=f"pex_{uuid.uuid4().hex}",
-                fact_kind=fact_kind,
-                label=label,
-                total=progress["total"],
-                current=progress["current"],
-            )
-        else:
-            if (
-                state is None
-                or state.terminal is not None
-                or state.fact_kind != fact_kind
-                or state.label != label
-            ):
-                return None
-            if lifecycle == "progress":
-                progress = supplied_progress
-            elif lifecycle == "completed":
-                progress = supplied_progress or {"current": state.total, "total": state.total}
-            else:
-                progress = supplied_progress or {"current": state.current, "total": state.total}
-            if (
-                progress is None
-                or progress["total"] != state.total
-                or progress["current"] < state.current
-                or lifecycle == "completed" and progress["current"] != state.total
-            ):
-                return None
-            next_state = state
-        event = {
-            "step_id": next_state.step_id,
-            "kind": kind,
-            "stage": stage,
-            "status": status,
-            "title": label if fact_kind in {"capability_invocation", "tool_invocation"} else default_title,
-            "summary": summary,
-            "progress": progress,
-            "safe_file_name": file_name,
-            "artifact_public_id": artifact_id,
-        }
-        if lifecycle == "started":
-            self._invocations[invocation_id] = next_state
-        else:
-            state.current = progress["current"]
-            if lifecycle in {"completed", "failed"}:
-                state.terminal = lifecycle
-        return event
