@@ -88,6 +88,7 @@ flowchart LR
 4. typed `AssistantMessage` 不是 raw framing 边界。官方顺序允许它先于对应 `content_block_stop` 到达，因此不能在 typed 消息到达时清空 projector。
 5. typed TextBlock 用于补足未观察到的安全后缀，并和已流出的前缀对账；如果它在同一 open indexed text source 的首个 raw delta 前到达，其 body 建立该 source 的 coverage/digest/published state，后续匹配的 raw body 只作 replay no-op；ToolUseBlock 只登记工具身份和公开生命周期。
 6. `ResultMessage.result` 是终态补充观察。它只补充同一 source 尚未公开的后缀；如果 identity、framing 或已观察正文冲突，保留已经显示的安全文字并 fail closed，不用 Result 覆盖或另造无依据的正文来源。
+   当前 SDK 会在 Result 中移除 `cc-memory` 标签。适配器仅接受它与同一 source 的已验证 typed 正文完全等价的情况，使用有界的长度与摘要证据，不重写或重复发布已公开文字；其他正文差异仍按冲突处理。
 7. 同一文本先由 raw delta、后由 typed TextBlock 或 Result 观察时，只发布一次。不同来源即使文字相同也不做全局字符串去重。
 8. SDK 单次调用按顺序消费；正文来源和最近的 raw/typed 观察使用确定性的有界窗口对账。窗口内的相同观察只处理一次，冲突拒绝追加；窗口外不作重复判定，不使用概率过滤器中断正常新输出。回调重试与 SSE 断线重放由各自的事件序号和回执处理，不在 SDK 适配层重复实现。窗口只限制对账证据，不限制累计公开正文长度。
 9. 没有 `TextBlock` 的非空 typed `AssistantMessage`（例如 Thinking/ToolUse）是新的 turn boundary：它会 retire 当前 answer binding，后续 streamed/Sandbox `ResultMessage` 必须等新的 raw answer source 才能通过；没有既有 answer source 的显式 non-streaming Result-only 兼容仍保留。
@@ -123,7 +124,9 @@ answer receipt 覆盖本次 v4 回复中实际提交的完整 Assistant 正文�
 公开正文在首次发布前完成脱敏；历史准入后直接保留已发布的 delta，不再累计扫描全文、替换 Agent 名称或扣留后缀。
 终态历史可合并同一消息、同一流实例内的连续正文，遇到公开活动事件先提交该组，保持文字与活动的原始顺序。
 重连接口回放游标之前的记录只恢复终态与 `stream.end` 的关联，不构建正文副本。
+已验证仍在 Redis 保留区间内的游标可直接续传，不要求已被裁剪的 `stream.open` 仍存在；游标随后被裁剪则返回 gap。仅保留 `stream.end` 时使用其已验证终态引用，其他保留行中的终态关联仍须一致。
 前端在连接入口校验并适配每帧一次，随后直接传递类型化事件；处理器继续校验当前连接归属、水位和终态提交条件。
+gap 恢复先应用持久化历史。若尚未收到 `message.started` 而无法恢复协议消息归属，则保留 Run 并沿现有状态/终态恢复流程收敛。活动与终态历史共用有取消信号、单次 10 秒、最多三次尝试的请求处理；超时释放恢复所有权，授权失败停止访问，切换会话或卸载取消旧请求。
 
 历史正文只读取经当前 Attempt 授权的持久化 v4 `message.delta`。旧
 `assistant_delta` 和成功终态的 `result_json.message` 不再补造正文，其旧

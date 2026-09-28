@@ -419,20 +419,41 @@ async def test_terminal_state_restore_preserves_a_valid_terminal_resume(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_terminal_state_restore_requires_open_and_terminal_linkage():
-    missing_open = FakeBridge(
-        [entry("1-0", "sev-delta", "message.delta", {"delta": "hello"})]
+async def test_terminal_state_restore_accepts_trimmed_prefix_and_checks_end_linkage():
+    trimmed_prefix = FakeBridge(
+        [entry("8-0", "sev-delta", "message.delta", {"delta": "retained"})]
+    )
+    restored = await route._restore_chat_stream_terminal_state(
+        trimmed_prefix,
+        tenant_scope_value="scope-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=1,
+        through_redis_id="8-0",
+    )
+    assert restored == (None, False)
+
+    missing_terminal = FakeBridge(
+        [
+            entry("8-0", "sev-delta", "message.delta", {"delta": "retained"}),
+            entry(
+                "9-0",
+                "sev-end",
+                "stream.end",
+                {"terminal_event_id": "sev-terminal"},
+            ),
+        ]
     )
     with pytest.raises(
-        StreamContractError, match="stream_terminal_history_unavailable"
+        StreamContractError, match="stream_end_without_observed_terminal"
     ):
         await route._restore_chat_stream_terminal_state(
-            missing_open,
+            missing_terminal,
             tenant_scope_value="scope-a",
             run_id="run-a",
             attempt_id="attempt-a",
             stream_incarnation=1,
-            through_redis_id="1-0",
+            through_redis_id="9-0",
         )
 
     mismatched_end = FakeBridge(
@@ -463,6 +484,106 @@ async def test_terminal_state_restore_requires_open_and_terminal_linkage():
             stream_incarnation=1,
             through_redis_id="3-0",
         )
+
+
+@pytest.mark.asyncio
+async def test_v4_retained_cursor_replays_after_trimmed_open(monkeypatch):
+    patch_authority(monkeypatch)
+    bridge = FakeBridge(
+        [
+            entry("8-0", "sev-retained", "message.delta", {"delta": "old"}),
+            entry("9-0", "sev-next", "message.delta", {"delta": "new"}),
+        ],
+        resume=ResumeDecision("8-0", None),
+    )
+
+    _, body = await connect(bridge, last_event_id="run-a:1:8-0")
+
+    assert "event: stream.gap\n" not in body
+    assert '"delta": "old"' not in body
+    assert '"delta": "new"' in body
+
+
+@pytest.mark.asyncio
+async def test_v4_gap_cursor_resumes_after_hydration_with_trimmed_open(monkeypatch):
+    patch_authority(monkeypatch)
+    retained = [
+        entry("8-0", "sev-retained", "message.delta", {"delta": "old"}),
+        entry("9-0", "sev-gap-anchor", "message.delta", {"delta": "anchor"}),
+    ]
+    gap_bridge = FakeBridge(
+        retained,
+        resume=ResumeDecision(
+            None,
+            StreamGap("retained_history_unavailable", None, None, 1),
+        ),
+    )
+
+    _, gap_body = await connect(gap_bridge)
+    assert gap_body.startswith("id: run-a:1:9-0\nevent: stream.gap\n")
+
+    resumed_bridge = FakeBridge(
+        [
+            *retained,
+            entry("10-0", "sev-after-hydration", "message.delta", {"delta": "after"}),
+        ],
+        resume=ResumeDecision("9-0", None),
+    )
+    _, resumed_body = await connect(
+        resumed_bridge,
+        last_event_id="run-a:1:9-0",
+    )
+
+    assert "event: stream.gap\n" not in resumed_body
+    assert '"delta": "after"' in resumed_body
+
+
+@pytest.mark.asyncio
+async def test_v4_terminal_resume_survives_trimmed_open(monkeypatch):
+    patch_authority(monkeypatch)
+    bridge = FakeBridge(
+        [
+            entry(
+                "8-0",
+                "sev-terminal",
+                "run.succeeded",
+                {"terminal_event_id": "sev-terminal", "hydrate_required": True},
+            ),
+            entry(
+                "9-0",
+                "sev-end",
+                "stream.end",
+                {"terminal_event_id": "sev-terminal"},
+            ),
+        ],
+        resume=ResumeDecision("8-0", None),
+    )
+
+    _, body = await connect(bridge, last_event_id="run-a:1:8-0")
+
+    assert "event: stream.gap\n" not in body
+    assert "event: stream.end\n" in body
+
+
+@pytest.mark.asyncio
+async def test_v4_end_cursor_is_accepted_when_trimmed_suffix_starts_at_end(monkeypatch):
+    patch_authority(monkeypatch)
+    bridge = FakeBridge(
+        [
+            entry(
+                "9-0",
+                "sev-end",
+                "stream.end",
+                {"terminal_event_id": "sev-terminal"},
+            )
+        ],
+        resume=ResumeDecision("9-0", None),
+    )
+
+    _, body = await connect(bridge, last_event_id="run-a:1:9-0")
+
+    assert body == ""
+    assert "replay:0-0:9-0" in bridge.calls
 
 
 async def connect_expect_conflict():

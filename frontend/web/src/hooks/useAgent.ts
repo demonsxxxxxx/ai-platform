@@ -58,7 +58,7 @@ import {
   prepareMessagesForRunningRun,
 } from "./useAgent/historyLoader";
 import { normalizeMessageTextLogicalIds } from "./useAgent/eventProcessor";
-import { recoverTerminalHistory } from "./useAgent/terminalHistoryRecovery";
+import { recoverRunHistory } from "./useAgent/runHistoryRecovery";
 import {
   beginHistoryLoad,
   isCurrentHistoryLoad,
@@ -945,6 +945,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     reconcileOwnerRef.current = null;
     terminalHydrationOwnerRef.current?.controller.abort();
     terminalHydrationOwnerRef.current = null;
+    replayGapRecoveryRef.current?.controller.abort();
     replayGapRecoveryRef.current = null;
     v4MessageOwnerRef.current = null;
     v4MessageCandidateRef.current = null;
@@ -1253,6 +1254,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       });
       publicStreamPresentationRef.current?.invalidate();
       reconcileOwnerRef.current = null;
+      replayGapRecoveryRef.current?.controller.abort();
       replayGapRecoveryRef.current = null;
       clearReconnectTimeout(reconnectTimeoutRef);
       streamingMessageIdRef.current = null;
@@ -1385,7 +1387,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return onSettled?.(accepted) !== false;
         };
         try {
-          const eventsData = await recoverTerminalHistory(
+          const eventsData = await recoverRunHistory(
             (signal) => sessionApi.getEvents(targetSessionId, { run_id: targetRunId, signal }),
             owner.controller.signal,
           );
@@ -1529,9 +1531,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           expectedStreamIncarnation &&
         acceptedStreamCursorRef.current.eventId === expectedCursorEventId &&
         replayGapRecoveryRef.current === replayOwner;
-      const eventsData = await sessionApi.getEvents(targetSessionId, {
-        run_id: targetRunId,
-      });
+      const eventsData = await recoverRunHistory(
+        (signal) => sessionApi.getEvents(targetSessionId, {
+          run_id: targetRunId,
+          signal,
+        }),
+        replayOwner.controller.signal,
+      );
       if (!isCurrent()) return null;
       const events = (eventsData.events || []) as HistoryEvent[];
       let reconstructed = reconstructMessagesFromEvents(events, new Set<string>(), {
@@ -1554,20 +1560,16 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         reconstructed,
         targetRunId,
       );
-      if (
-        !rebindV4MessageOwner(
-          v4MessageOwnerRef,
-          {
-            sessionId: targetSessionId,
-            runId: targetRunId,
-            streamVersion: expectedStreamVersion,
-            streamIncarnation: expectedStreamIncarnation,
-          },
-          streamingMessageId,
-        )
-      ) {
-        return null;
-      }
+      const hasMessageOwner = rebindV4MessageOwner(
+        v4MessageOwnerRef,
+        {
+          sessionId: targetSessionId,
+          runId: targetRunId,
+          streamVersion: expectedStreamVersion,
+          streamIncarnation: expectedStreamIncarnation,
+        },
+        streamingMessageId,
+      );
       const acceptedSequence = acceptedRunEventSequenceRef.current;
       const currentSequence =
         acceptedSequence.sessionId === targetSessionId &&
@@ -1592,7 +1594,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       }
       if (lastTimestamp) lastHistoryTimestampRef.current = lastTimestamp;
       setMessageSnapshot({ messagesRef, setMessages }, merged);
-      return streamingMessageId;
+      return hasMessageOwner ? streamingMessageId : null;
     },
     [],
   );

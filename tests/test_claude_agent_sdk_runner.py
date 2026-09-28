@@ -7273,3 +7273,62 @@ async def test_native_client_delegates_compaction_to_cli_without_session_open_qu
     assert captured["extra_args"] == {"autocompact": "100000"}
     assert captured["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "36500"
     assert captured["env"].get("CLAUDE_CODE_MAX_CONTEXT_TOKENS") in {None, ""}
+
+
+@pytest.mark.asyncio
+async def test_sdk_cli_stripped_result_completes_wrapped_stream_with_answer_receipt(
+    monkeypatch, tmp_path
+):
+    captured, candidates, deltas = {}, [], []
+    body = '<cc-memory filenames="preferences.md">Use UTF-8.</cc-memory>'
+
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            captured,
+            _stream_steps(body),
+            result_text="Use UTF-8.",
+            result_uuid="wrapped-sdk-result",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-wrapped-result",
+        attempt_id="attempt-wrapped-result",
+    )
+
+    message_events = [
+        candidate
+        for candidate in candidates
+        if candidate.event_type.startswith("message.")
+    ]
+    delta_events = [
+        candidate
+        for candidate in message_events
+        if candidate.event_type == "message.delta"
+    ]
+    assert result.error is None
+    assert result.received_structured_terminal is True
+    assert result.message == ""
+    assert "".join(deltas) == body
+    assert message_events[0].event_type == "message.started"
+    assert message_events[-1].event_type == "message.completed"
+    assert "".join(event.payload["delta"] for event in delta_events) == body
+    assert result.answer_receipt == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": message_events[0].message_id,
+        "delta_count": len(delta_events),
+        "text_length": len(body),
+        "last_delta_event_id": delta_events[-1].event_id,
+    }

@@ -1,6 +1,7 @@
 """Validate Claude SDK text framing before the separate public-answer gate."""
 
 import hashlib
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
@@ -79,6 +80,9 @@ _NON_TEXT_DELTA_TYPES = {
     "text_editor_code_execution_tool_result": frozenset(),
 }
 
+_CLI_STRIPPED_CC_MEMORY_TAG = re.compile(r"</?cc-memory\b[^>]*>", re.ASCII)
+_NORMALIZED_FINGERPRINT_CHUNK_CHARS = 64 * 1024
+
 
 @dataclass
 class _AnswerSource:
@@ -108,6 +112,10 @@ class _AnswerSource:
     typed_body_replay_expected_length: int = 0
     typed_body_replay_expected_digest: str = ""
     typed_body_replay_hasher: Any = field(default=None, repr=False)
+    normalized_result_source_length: int | None = None
+    normalized_result_source_digest: str = ""
+    normalized_result_length: int | None = None
+    normalized_result_digest: str = ""
 
 
 @dataclass
@@ -219,6 +227,57 @@ class AssistantAnswerTimeline:
             and hashlib.sha256(text.encode("utf-8")).hexdigest()
             == source.coverage_digest
         )
+
+    @staticmethod
+    def _normalized_result_fingerprint(text: str) -> tuple[int, str, int]:
+        """Fingerprint the SDK CLI's cc-memory-tag-stripped text variant."""
+
+        hasher = hashlib.sha256()
+        normalized_length = 0
+        removed_tag_count = 0
+        cursor = 0
+
+        def update_unmatched(end: int) -> None:
+            nonlocal cursor, normalized_length
+            while cursor < end:
+                chunk_end = min(
+                    cursor + _NORMALIZED_FINGERPRINT_CHUNK_CHARS,
+                    end,
+                )
+                chunk = text[cursor:chunk_end]
+                normalized_length += len(chunk)
+                hasher.update(chunk.encode("utf-8"))
+                cursor = chunk_end
+
+        for match in _CLI_STRIPPED_CC_MEMORY_TAG.finditer(text):
+            update_unmatched(match.start())
+            cursor = match.end()
+            removed_tag_count += 1
+        update_unmatched(len(text))
+        return normalized_length, hasher.hexdigest(), removed_tag_count
+
+    def _remember_normalized_result_candidate(
+        self,
+        source: _AnswerSource,
+        text: str,
+    ) -> None:
+        if "cc-memory" not in text:
+            return
+        if not self._coverage_matches(source, text):
+            return
+        normalized_length, normalized_digest, removed_tag_count = (
+            self._normalized_result_fingerprint(text)
+        )
+        if not removed_tag_count:
+            source.normalized_result_source_length = None
+            source.normalized_result_source_digest = ""
+            source.normalized_result_length = None
+            source.normalized_result_digest = ""
+            return
+        source.normalized_result_source_length = source.coverage_length
+        source.normalized_result_source_digest = source.coverage_digest
+        source.normalized_result_length = normalized_length
+        source.normalized_result_digest = normalized_digest
 
     def _publication_prefix(
         self,
@@ -605,6 +664,7 @@ class AssistantAnswerTimeline:
         self._record_typed_body_replay_target(source, text)
         if not source.raw_open:
             self._seal_coverage(source)
+        self._remember_normalized_result_candidate(source, text)
         return published
 
     def validate_assistant_observations(
@@ -816,6 +876,16 @@ class AssistantAnswerTimeline:
         self._result_length = result_length
         self._result_digest = result_digest
         rendered = self.text
+        if (
+            not self._has_later_published(source)
+            and source.normalized_result_source_length == source.coverage_length
+            and source.normalized_result_source_digest == source.coverage_digest
+            and source.normalized_result_length == len(text)
+            and source.normalized_result_digest == result_digest
+        ):
+            self._result_suffix = ""
+            self._current = source
+            return ""
         if source.coverage_truncated:
             if (
                 not source.coverage_known

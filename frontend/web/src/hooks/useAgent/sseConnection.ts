@@ -40,6 +40,7 @@ export interface ReplayGapRecoveryOwner {
   sessionId: string;
   runId: string;
   streamVersion: number;
+  controller: AbortController;
   promise: Promise<void>;
 }
 
@@ -387,6 +388,7 @@ export async function recoverReplayGap(
   if (!isCurrentTarget()) {
     return;
   }
+  existing?.controller.abort();
 
   const payload = gap.event.payload as Record<string, unknown>;
   const reason = payload.reason;
@@ -469,6 +471,7 @@ export async function recoverReplayGap(
   };
 
   const owner: ReplayGapRecoveryOwner = {
+    controller: new AbortController(),
     sessionId,
     runId,
     streamVersion,
@@ -521,50 +524,66 @@ export async function recoverReplayGap(
         const terminalStatus = terminalRunStatus(statusResult.status);
         if (!terminalStatus && isActiveRunStatus(statusResult.status)) {
           if (
+            !stoppedForTerminalRecovery &&
             resumeCursor &&
             typeof expectedCursorEventId === "string" &&
             ctx.hydrateActiveRun &&
             ctx.acceptedStreamCursorRef &&
             dependencies.connect
           ) {
-            const hydratedMessageId = await ctx.hydrateActiveRun(
-              sessionId,
-              runId,
-              streamVersion,
-              gap.streamIncarnation,
-              expectedCursorEventId,
-              owner,
-            );
-            if (!isCurrent() || !ownsExpectedCursor()) return;
-            if (!hydratedMessageId) {
-              convergeUnrecoverable();
+            let hydratedMessageId: string | null;
+            try {
+              hydratedMessageId = await ctx.hydrateActiveRun(
+                sessionId,
+                runId,
+                streamVersion,
+                gap.streamIncarnation,
+                expectedCursorEventId,
+                owner,
+              );
+            } catch (error) {
+              if (isCurrent()) {
+                if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
+                  convergeUnrecoverable();
+                } else {
+                  settleStatusUnavailable();
+                }
+              }
               return;
             }
-            ctx.acceptedStreamCursorRef.current = {
-              sessionId,
-              runId,
-              eventId: resumeCursor,
-              streamIncarnation: gap.streamIncarnation,
-            };
-            ctx.streamingMessageIdRef.current = hydratedMessageId;
-            ctx.publicStreamPresentation?.activate({
-              sessionId,
-              runId,
-              assistantMessageId: hydratedMessageId,
-              streamVersion,
-            });
-            ctx.setConnectionStatus("reconnecting");
-            if (ctx.replayGapRecoveryRef?.current === owner) {
-              ctx.replayGapRecoveryRef.current = null;
+            if (!isCurrent() || !ownsExpectedCursor()) return;
+            if (!hydratedMessageId) {
+              // Durable history is useful even when it does not identify the
+              // protocol message owner needed to continue this stream. Keep
+              // the Run and let authoritative status/terminal history settle it.
+              stopForTerminalRecovery();
+            } else {
+              ctx.acceptedStreamCursorRef.current = {
+                sessionId,
+                runId,
+                eventId: resumeCursor,
+                streamIncarnation: gap.streamIncarnation,
+              };
+              ctx.streamingMessageIdRef.current = hydratedMessageId;
+              ctx.publicStreamPresentation?.activate({
+                sessionId,
+                runId,
+                assistantMessageId: hydratedMessageId,
+                streamVersion,
+              });
+              ctx.setConnectionStatus("reconnecting");
+              if (ctx.replayGapRecoveryRef?.current === owner) {
+                ctx.replayGapRecoveryRef.current = null;
+              }
+              await dependencies.connect(
+                sessionId,
+                runId,
+                hydratedMessageId,
+                ctx,
+                true,
+              );
+              return;
             }
-            await dependencies.connect(
-              sessionId,
-              runId,
-              hydratedMessageId,
-              ctx,
-              true,
-            );
-            return;
           }
           stopForTerminalRecovery();
         }
@@ -591,6 +610,7 @@ export async function recoverReplayGap(
         }
       }
     } finally {
+      owner.controller.abort();
       if (ctx.replayGapRecoveryRef?.current === owner) {
         ctx.replayGapRecoveryRef.current = null;
       }

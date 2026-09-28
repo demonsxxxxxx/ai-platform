@@ -332,6 +332,9 @@ Validation results:
   either old stream;
 - valid current incarnation whose exact entry was trimmed/missing or whose
   continuity cannot be proven: emit strict `stream.gap`;
+- valid retained cursor: resume from it even when the original `stream.open`
+  has been trimmed. Restore terminal linkage from the retained suffix; an end
+  that is itself the first retained row carries the validated terminal reference;
 - no header: read from the earliest retained entry only when exact current
   `stream.open` is still the origin; otherwise emit `stream.gap`.
 
@@ -379,6 +382,13 @@ reset a reconnect budget, or enter the live reducer. Reconnect sends only the
 last accepted cursor in `Last-Event-ID`. Terminal hydrate reconciles the same
 Run segment and accepted source identities; it does not append duplicate answer
 text or replace unrelated narration, Tool, process, or actionable status parts.
+
+An active gap with no observed `message.started` may lack the protocol message
+owner needed to resume. Apply the durable history and preserve the Run, then
+observe authoritative status and terminal history instead of inventing that
+identity. Active and terminal history requests share cancellation and bounded
+timeouts. Transient exhaustion releases recovery ownership for a later retry;
+authorization failure stops access, and session changes cancel stale requests.
 
 ## Required focused tests
 
@@ -463,7 +473,8 @@ schema and receipt version; it is not part of this v4 repair.
   that anchor; Redis replay/live owns later events. `stream_missing`,
   and cross-incarnation recovery without a validated current anchor require
   durable hydration without stream reconstruction. The frontend never invents
-  a cursor or successor incarnation.
+  a cursor, message identity, or successor incarnation. If the message owner is
+  unavailable, it preserves the Run and converges through status/terminal history.
 - **Single-body invariant:** v4 `message.delta` is the public incremental body
   authority and accepted deltas remain the durable source for streamed answers.
   `message.completed` closes the sequence with counts only and carries no answer
@@ -481,11 +492,10 @@ schema and receipt version; it is not part of this v4 repair.
   fail closed. For streamed answers,
   short compatibility content remains inline when persistence limits allow,
   otherwise history stores a bounded `run_events_v4` reference, without
-  truncating the answer. Legacy non-streaming bounded terminal messages use the
-  same stable-source `assistant_delta` compatibility shape only when no streamed
-  answer exists; obsolete `assistant_final` is retired. Terminal hydrate uses the
+  truncating the answer. Historical `assistant_delta`, successful terminal-body
+  fallback, and obsolete `assistant_final` are retired. Terminal hydrate uses the
   same Run segment and source-local reconciliation, preserving unrelated accepted
-  sources and actionable parts.
+sources and actionable parts.
 - **Acceptance:** focused tests prove text-only, read-only Tool, effectful local
   Tool, Skill, MCP, sequential capability, denial/failure, terminal race,
   reconnect, and failed-history behavior. Tests delay both animation-frame and
@@ -517,11 +527,9 @@ Removed from the active streaming path: punctuation-based withholding; the
 4,096 and 262,144 cumulative answer shutdowns; aggregate
 `message.completed.content`; the streamed Sandbox terminal full-body path;
 obsolete `assistant_final`; and obsolete frontend final-text replacement.
-Retained: bounded per-frame and queue limits, legacy non-streaming bounded
-terminal messages projected as the stable-source `assistant_delta`
-compatibility shape only when no streamed answer exists, and current history
-compatibility projection. Their consumers are stored conversation records and
-authorized history/final hydration, never a second SSE producer. Run/Attempt,
+Retained: bounded per-frame and queue limits and the current authorized v4
+history projection into UI message parts. The legacy `assistant_delta` reader
+and terminal-body fallback are removed. Run/Attempt,
 lease and callback-receipt authorities remain; publication claims and Pub/Sub
 are retired by ADR 0013. This source disposition is not deployment or latency
 evidence.

@@ -1672,3 +1672,196 @@ def test_projector_close_unfinished_is_a_permanent_disable():
     open_message.accept(_stop())
     open_message.close_unfinished()
     assert open_message.disabled is True
+
+
+def test_answer_timeline_accepts_cli_stripped_result_after_split_raw_tags():
+    timeline = AssistantAnswerTimeline()
+    source = ("wrapped-message", 0)
+    message = ("wrapped-message", None)
+    body = '<cc-memory filenames="preferences.md">Use UTF-8.</cc-memory>'
+
+    for index, fragment in enumerate(
+        ("<cc-mem", 'ory filenames="preferences.md">Use UTF-8.</cc-mem', "ory>")
+    ):
+        assert timeline.accept_delta(
+            fragment,
+            source_identity=source,
+            message_identity=message,
+            observed_identity=f"wrapped-raw-{index}",
+        ) == fragment
+    timeline.close_raw_source(source)
+
+    assert timeline.validate_assistant_observations(
+        [(body, source, message, None)]
+    )
+    assert timeline.accept_assistant(
+        body,
+        source_identity=source,
+        message_identity=message,
+        observed_identity="wrapped-assistant",
+    ) == ""
+    assert timeline.accept_result(
+        "Use UTF-8.",
+        source_identity=source,
+        message_identity=message,
+        result_identity="wrapped-result",
+        terminal_reason="end_turn",
+    ) == ""
+    assert timeline.disabled is False
+    assert timeline.text == body
+
+
+@pytest.mark.parametrize("body", [
+    '<cc-memory filenames="preferences.md">Use UTF-8.</cc-memory>',
+    '<cc-memory中文>Use UTF-8.</cc-memory中文>',
+])
+def test_answer_timeline_accepts_cli_stripped_result_for_typed_only_body(body):
+    timeline = AssistantAnswerTimeline()
+    source = ("typed-only-message", 0)
+    message = ("typed-only-message", None)
+    assert timeline.accept_assistant(
+        body,
+        source_identity=source,
+        message_identity=message,
+    ) == body
+    assert timeline.accept_result(
+        "Use UTF-8.",
+        source_identity=source,
+        message_identity=message,
+        result_identity="typed-only-result",
+        terminal_reason="end_turn",
+    ) == ""
+    assert timeline.disabled is False
+    assert timeline.text == body
+
+
+def test_answer_timeline_accepts_cli_stripped_result_when_typed_precedes_raw():
+    timeline = AssistantAnswerTimeline()
+    source = ("typed-before-raw-message", 0)
+    message = ("typed-before-raw-message", None)
+    body = '<cc-memory filenames="preferences.md">Use UTF-8.</cc-memory>'
+
+    assert timeline.establish_raw_source(source, message_identity=message)
+    assert timeline.accept_assistant(
+        body,
+        source_identity=source,
+        message_identity=message,
+        observed_identity="typed-before-raw-assistant",
+    ) == body
+    assert timeline.accept_delta(
+        body,
+        source_identity=source,
+        message_identity=message,
+        observed_identity="typed-before-raw-delta",
+    ) == ""
+    timeline.close_raw_source(source)
+    assert timeline.accept_result(
+        "Use UTF-8.",
+        source_identity=source,
+        message_identity=message,
+        result_identity="typed-before-raw-result",
+        terminal_reason="end_turn",
+    ) == ""
+    assert timeline.disabled is False
+    assert timeline.text == body
+
+
+def test_answer_timeline_normalizes_result_against_only_latest_text_source():
+    timeline = AssistantAnswerTimeline()
+    message = ("multiple-text-message", None)
+    first_source = ("multiple-text-message", 0)
+    second_source = ("multiple-text-message", 1)
+    body = '<cc-memory filenames="preferences.md">Use UTF-8.</cc-memory>'
+
+    assert timeline.accept_assistant(
+        "Earlier text.", source_identity=first_source, message_identity=message
+    ) == "Earlier text."
+    assert timeline.accept_assistant(
+        body, source_identity=second_source, message_identity=message
+    ) == body
+    assert timeline.accept_result(
+        "Use UTF-8.",
+        source_identity=second_source,
+        message_identity=message,
+        result_identity="multiple-text-result",
+        terminal_reason="end_turn",
+    ) == ""
+    assert timeline.disabled is False
+    assert timeline.text == "Earlier text." + body
+
+
+def test_answer_timeline_normalizes_long_typed_result_with_bounded_coverage():
+    timeline = AssistantAnswerTimeline()
+    source = ("long-wrapped-message", 0)
+    message = ("long-wrapped-message", None)
+    body_text = "x" * (RUN_RESULT_MAX_BYTES + 4096)
+    body = f'<cc-memory filenames="preferences.md">{body_text}</cc-memory>'
+
+    assert timeline.accept_assistant(
+        body,
+        source_identity=source,
+        message_identity=message,
+    ) == body
+    assert timeline._sources[0].coverage_truncated is True
+    assert timeline.accept_result(
+        body_text,
+        source_identity=source,
+        message_identity=message,
+        result_identity="long-wrapped-result",
+        terminal_reason="end_turn",
+    ) == ""
+    assert timeline.disabled is False
+    assert timeline.text == body
+    assert timeline._sources[0].normalized_result_length == len(body_text)
+    assert timeline._sources[0].normalized_result_digest
+
+
+def test_answer_timeline_rejects_changed_or_foreign_cli_normalized_result():
+    body = '<cc-memory filenames="preferences.md">Use UTF-8.</cc-memory>'
+    source = ("bound-message", 0)
+    message = ("bound-message", None)
+
+    changed = AssistantAnswerTimeline()
+    assert changed.accept_assistant(
+        body, source_identity=source, message_identity=message
+    ) == body
+    assert changed.accept_result(
+        "Use UTF-8!",
+        source_identity=source,
+        message_identity=message,
+        result_identity="changed-result",
+        terminal_reason="end_turn",
+    ) == ""
+    assert changed.disabled is True
+
+    foreign = AssistantAnswerTimeline()
+    assert foreign.accept_assistant(
+        body, source_identity=source, message_identity=message
+    ) == body
+    assert foreign.accept_result(
+        "Use UTF-8.",
+        source_identity=("foreign-message", 0),
+        message_identity=("foreign-message", None),
+        result_identity="foreign-result",
+        terminal_reason="end_turn",
+    ) == ""
+    assert foreign.disabled is True
+
+    extended = AssistantAnswerTimeline()
+    assert extended.accept_assistant(
+        body, source_identity=source, message_identity=message
+    ) == body
+    assert extended.accept_delta(
+        " extra",
+        source_identity=source,
+        message_identity=message,
+        observed_identity="body-extension",
+    ) == " extra"
+    assert extended.accept_result(
+        "Use UTF-8.",
+        source_identity=source,
+        message_identity=message,
+        result_identity="stale-normalized-result",
+        terminal_reason="end_turn",
+    ) == ""
+    assert extended.disabled is True

@@ -1848,13 +1848,18 @@ async def _restore_chat_stream_terminal_state(
     stream_incarnation: int,
     through_redis_id: str,
 ) -> tuple[str | None, bool]:
-    """Restore terminal linkage through the resume cursor."""
+    """Restore terminal linkage from the retained suffix through the cursor.
+
+    ``resolve_resume`` has already proved that the caller's cursor is an exact
+    retained entry. The original ``stream.open`` may have been trimmed, so the
+    retained suffix is the available boundary for restoring terminal state.
+    """
     terminal_event_id: str | None = None
     ended = False
     if through_redis_id == "0-0":
         return terminal_event_id, ended
     after = "0-0"
-    saw_stream_open = False
+    saw_entry = False
     while after != through_redis_id:
         previous_after = after
         entries = await bridge.replay_page(
@@ -1866,25 +1871,34 @@ async def _restore_chat_stream_terminal_state(
             through_redis_id=through_redis_id,
         )
         if not entries:
-            raise StreamContractError("stream_terminal_history_unavailable")
+            # The cursor can be trimmed after resolve_resume validated it.
+            # Let the caller return a hydration gap for that race.
+            raise StreamContractError("stream_replay_continuity_unproven")
         for entry in entries:
             after = entry.cursor.redis_id
             envelope = entry.envelope
             event_type = envelope["event_type"]
-            if not saw_stream_open:
-                if event_type != "stream.open":
-                    raise StreamContractError("stream_terminal_history_unavailable")
-                saw_stream_open = True
-            elif event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
+            if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
                 terminal_event_id = str(envelope["event_id"])
             elif event_type == "stream.end":
-                if envelope["payload"].get("terminal_event_id") != terminal_event_id:
+                end_terminal_id = envelope["payload"].get("terminal_event_id")
+                if terminal_event_id is None:
+                    # An end can be the first retained row if the terminal
+                    # prefix was trimmed. If any earlier retained rows remain,
+                    # the missing terminal is an inconsistent ordering.
+                    if saw_entry:
+                        raise StreamContractError(
+                            "stream_end_without_observed_terminal"
+                        )
+                    terminal_event_id = str(end_terminal_id)
+                elif end_terminal_id != terminal_event_id:
                     raise StreamContractError("stream_end_without_observed_terminal")
                 ended = True
+            saw_entry = True
             if after == through_redis_id:
                 return terminal_event_id, ended
         if after == previous_after:
-            raise StreamContractError("stream_terminal_history_unavailable")
+            raise StreamContractError("stream_replay_continuity_unproven")
     return terminal_event_id, ended
 
 
