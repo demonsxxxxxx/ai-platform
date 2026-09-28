@@ -5497,8 +5497,9 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
   }
 });
 
-for (const hasProtocolMessage of [true, false]) {
-test(`useAgent hydrates an active same-incarnation gap ${hasProtocolMessage ? "before replay resumes" : "before the first message and observes terminal"}`, async () => {
+for (const recovery of ["resume", "terminal", "timeout"] as const) {
+const hasProtocolMessage = recovery !== "terminal";
+test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" ? "after a history timeout and online recovery" : hasProtocolMessage ? "before replay resumes" : "before the first message and observes terminal"}`, async (t) => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -5523,6 +5524,13 @@ test(`useAgent hydrates an active same-incarnation gap ${hasProtocolMessage ? "b
   let statusCalls = 0;
   let finishRun: (() => void) | undefined;
   let terminalObserved = false;
+  let allowHistory = recovery !== "timeout";
+  const historySignals: AbortSignal[] = [];
+  if (recovery === "timeout") {
+    const schedule = globalThis.setTimeout;
+    t.mock.method(globalThis, "setTimeout", (callback: Parameters<typeof setTimeout>[0], delay?: number, ...args: unknown[]) =>
+      schedule(callback, !allowHistory && statusCalls >= 3 && [1000, 2000, 10000].includes(delay ?? 0) ? 1 : delay, ...args));
+  }
 
   const envelope = (
     eventType: string,
@@ -5581,6 +5589,11 @@ test(`useAgent hydrates an active same-incarnation gap ${hasProtocolMessage ? "b
         ],
       };
     }
+    if (!allowHistory) {
+      assert.ok(options?.signal);
+      historySignals.push(options.signal);
+      return new Promise<never>(() => {});
+    }
     return {
       current_run_id: runId,
       events: [
@@ -5631,7 +5644,7 @@ test(`useAgent hydrates an active same-incarnation gap ${hasProtocolMessage ? "b
       initialStreams.push(initialStream);
       return initialStream.response;
     }
-    if (requestCursors.length === 2) {
+    if (requestCursors.length === 2 || (recovery === "timeout" && requestCursors.length === 3)) {
       return new Response(
         frame("4-0", "stream.gap", "active-gap-gap", null, {
           reason: "retained_history_unavailable",
@@ -5678,10 +5691,21 @@ test(`useAgent hydrates an active same-incarnation gap ${hasProtocolMessage ? "b
       () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
     );
     for (const stream of initialStreams) stream.close();
-    for (let attempt = 0; attempt < 500 && (hasProtocolMessage ? requestCursors.length < 3 : !finishRun); attempt += 1) {
+    for (let attempt = 0; attempt < 500 && (recovery === "timeout" ? !(statusCalls >= 3 && harness.hook.connectionStatus === "disconnected") : hasProtocolMessage ? requestCursors.length < 3 : !finishRun); attempt += 1) {
       await harness.act(
         () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
       );
+    }
+    if (recovery === "timeout") {
+      assert.equal(historySignals.length, 3);
+      assert.ok(historySignals.every((signal) => signal.aborted));
+      assert.equal(harness.hook.currentRunId, runId);
+      assert.equal(harness.hook.connectionStatus, "disconnected");
+      allowHistory = true;
+      await harness.act(async () => { dom.window.dispatchEvent({ type: "online" }); });
+      for (let attempt = 0; attempt < 500 && requestCursors.length < 4; attempt += 1) {
+        await harness.act(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+      }
     }
     await settle(harness.act);
     for (
@@ -5701,13 +5725,14 @@ test(`useAgent hydrates an active same-incarnation gap ${hasProtocolMessage ? "b
       (message) => message.runId === runId && message.role === "assistant",
     );
     if (hasProtocolMessage) {
-      assert.equal(statusCalls, 3);
+      assert.equal(statusCalls, recovery === "timeout" ? 5 : 3);
       assert.deepEqual(requestCursors, [
         null,
         `${runId}:1:3-0`,
+        ...(recovery === "timeout" ? [`${runId}:1:3-0`] : []),
         `${runId}:1:9-0`,
       ]);
-      assert.deepEqual(eventQueries, [undefined, runId]);
+      assert.deepEqual(eventQueries, recovery === "timeout" ? [undefined, runId, runId, runId, runId] : [undefined, runId]);
       assert.equal(assistant?.id, runId);
       assert.equal(assistant?.content, "durable-before-gap+resumed");
       assert.equal(harness.hook.currentRunId, runId);

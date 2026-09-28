@@ -1683,6 +1683,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     ) {
       return existing.promise;
     }
+    if (reconnectTimeoutRef.current !== null) {
+      return;
+    }
     const ctx = {
       ...createSSEContext(),
       sessionIdRef,
@@ -1696,16 +1699,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       promise: Promise.resolve(),
     };
     const promise = reconnectSSE(ctx).finally(() => {
-      // A scheduled retry remains the same owner until terminal/clear/switch;
-      // stale completions can never clear a replacement generation's owner.
-      const ownerIsCurrent =
-        sessionIdRef.current === targetSessionId &&
-        currentRunIdRef.current === targetRunId &&
-        streamVersionRef.current === streamVersion;
-      if (
-        reconcileOwnerRef.current === owner &&
-        (reconnectTimeoutRef.current === null || !ownerIsCurrent)
-      ) {
+      // The timer owns a scheduled attempt; this owner covers only the
+      // in-flight reconciliation. Old completions cannot clear a replacement.
+      if (reconcileOwnerRef.current === owner) {
         reconcileOwnerRef.current = null;
       }
     });

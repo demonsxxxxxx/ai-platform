@@ -1377,7 +1377,9 @@ export async function reconnectSSE(
     `[SSE] Scheduling reconnect in ${delay}ms (retry ${retryCountRef.current})`,
   );
 
-  reconnectTimeoutRef.current = setTimeout(async () => {
+  const reconnectTimer = setTimeout(async () => {
+    if (reconnectTimeoutRef.current !== reconnectTimer) return;
+    reconnectTimeoutRef.current = null;
     if (!isCurrentReconnect()) {
       return;
     }
@@ -1407,6 +1409,7 @@ export async function reconnectSSE(
       }
     }
   }, delay);
+  reconnectTimeoutRef.current = reconnectTimer;
 }
 
 // Import Message type for messagesRef
