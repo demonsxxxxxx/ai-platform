@@ -3,9 +3,31 @@ import test from "node:test";
 import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { Message, MessagePart } from "../../../types";
 import {
+  PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
+  type EventData,
+} from "../types.ts";
+import {
   normalizeMessageTextLogicalIds,
   processMessageEvent,
 } from "../eventProcessor.ts";
+
+const validPublicExecutionEvent = (
+  overrides: Partial<EventData> = {},
+): EventData => ({
+  schema_version: PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
+  event_id: "evt-execution",
+  sequence: 1,
+  run_id: "run-execution",
+  step_id: "step-prepare-report",
+  presentation_kind: "write",
+  kind: "generation",
+  stage: "edit",
+  status: "running",
+  progress: { current: 0, total: 1 },
+  safe_label: "Updating authorized files",
+  created_at: "2026-07-27T00:00:00Z",
+  ...overrides,
+});
 
 test("normalizes hydrated text with deterministic message-local ordinals", () => {
   const hydrated = {
@@ -1298,22 +1320,11 @@ test("dedupes ai-platform artifact cards by artifact id", () => {
 test("upserts strict public execution steps by step id without merging them into assistant text", () => {
   const started = processMessageEvent(
     "execution_step",
-    {
-      schema_version: "ai-platform.public-execution-event.v1",
+    validPublicExecutionEvent({
       event_id: "evt-step-started",
-      run_id: "run-execution",
       sequence: 4,
-      step_id: "step-prepare-report",
-      kind: "processing",
-      stage: "prepare",
-      status: "running",
-      title: "准备报告",
-      summary: "正在读取已批准的输入",
-      progress: { current: 0, total: 4 },
-      safe_file_name: null,
-      artifact_public_id: null,
       created_at: "2026-07-27T07:59:00.000Z",
-    } as never,
+    }) as never,
     [{ type: "text", content: "最终答复保持独立。" }],
     "最终答复保持独立。",
     [],
@@ -1324,22 +1335,10 @@ test("upserts strict public execution steps by step id without merging them into
   );
   const progressed = processMessageEvent(
     "execution_progress",
-    {
-      schema_version: "ai-platform.public-execution-event.v1",
+    validPublicExecutionEvent({
       event_id: "evt-step-progress",
-      run_id: "run-execution",
       sequence: 5,
-      step_id: "step-prepare-report",
-      kind: "processing",
-      stage: "prepare",
-      status: "running",
-      title: "准备报告",
-      summary: "已读取已批准的输入",
-      progress: { current: 2, total: 4 },
-      safe_file_name: null,
-      artifact_public_id: null,
-      created_at: null,
-    } as never,
+    }) as never,
     started.parts,
     started.content,
     [],
@@ -1350,22 +1349,13 @@ test("upserts strict public execution steps by step id without merging them into
   );
   const completed = processMessageEvent(
     "execution_step_completed",
-    {
-      schema_version: "ai-platform.public-execution-event.v1",
+    validPublicExecutionEvent({
       event_id: "evt-step-completed",
-      run_id: "run-execution",
       sequence: 6,
-      step_id: "step-prepare-report",
-      kind: "processing",
-      stage: "prepare",
       status: "completed",
-      title: "准备报告",
-      summary: "输入已准备完成",
-      progress: { current: 4, total: 4 },
-      safe_file_name: "report.docx",
-      artifact_public_id: "artifact-public-report",
+      progress: { current: 1, total: 1 },
       created_at: "2026-07-27T08:00:00.000Z",
-    } as never,
+    }) as never,
     progressed.parts,
     progressed.content,
     [],
@@ -1381,6 +1371,7 @@ test("upserts strict public execution steps by step id without merging them into
     type: string;
     step_id: string;
     kind: string;
+    presentation_kind?: string;
     stage?: string;
     progress: { current: number; total: number };
     status: string;
@@ -1390,16 +1381,17 @@ test("upserts strict public execution steps by step id without merging them into
   };
   assert.equal(executionStep.type, "execution_step");
   assert.equal(executionStep.step_id, "step-prepare-report");
-  assert.equal(executionStep.kind, "processing");
-  assert.equal(executionStep.stage, undefined);
-  assert.deepEqual(executionStep.progress, { current: 4, total: 4 });
+  assert.equal(executionStep.kind, "generation");
+  assert.equal(executionStep.presentation_kind, "write");
+  assert.equal(executionStep.stage, "edit");
+  assert.deepEqual(executionStep.progress, { current: 1, total: 1 });
   assert.equal(executionStep.status, "completed");
-  assert.equal(executionStep.safe_file_name, "report.docx");
+  assert.equal(executionStep.safe_file_name, null);
   assert.equal(executionStep.started_at, "2026-07-27T07:59:00.000Z");
   assert.equal(executionStep.completed_at, "2026-07-27T08:00:00.000Z");
   assert.doesNotMatch(
     JSON.stringify(completed.parts),
-    /evt-step|run-execution|准备报告|输入已准备|artifact-public/,
+    /evt-step|run-execution|Updating authorized files/,
   );
 });
 
@@ -1592,22 +1584,14 @@ test("fails closed when a history envelope carries a raw execution field", () =>
   const result = processMessageEvent(
     "run_event",
     {
-      schema_version: "ai-platform.public-execution-event.v1",
-      event_id: "evt-history-raw",
-      run_id: "run-history-raw",
-      sequence: 7,
+      ...validPublicExecutionEvent({
+        event_id: "evt-history-raw",
+        run_id: "run-history-raw",
+        step_id: "step-history-raw",
+        sequence: 7,
+      }),
       event_type: "execution_step",
       timestamp: "2026-07-31T01:00:00.000Z",
-      step_id: "step-history-raw",
-      kind: "processing",
-      stage: "prepare",
-      status: "running",
-      title: "private title",
-      summary: "private summary",
-      progress: { current: 0, total: 1 },
-      safe_file_name: null,
-      artifact_public_id: null,
-      created_at: null,
       command: "private command must fail closed",
     } as never,
     [],
@@ -1623,7 +1607,7 @@ test("fails closed when a history envelope carries a raw execution field", () =>
   assert.equal(result.content, "");
 });
 
-test("fails closed when v2 history carries a v1-only field", () => {
+test("fails closed when v2 history carries an unknown field", () => {
   const result = processMessageEvent(
     "run_event",
     {
@@ -1702,106 +1686,40 @@ test("preserves v2 optional-label parity between live and history", () => {
   assert.deepEqual(history.parts, live.parts);
 });
 
-test("drops a path-like safe_file_name before public execution state is retained", () => {
-  const result = processMessageEvent(
-    "execution_step",
-    {
-      schema_version: "ai-platform.public-execution-event.v1",
-      event_id: "evt-unsafe-file-name",
-      run_id: "run-unsafe-file-name",
-      sequence: 1,
-      step_id: "step-unsafe-file-name",
-      kind: "processing",
-      stage: "prepare",
-      status: "running",
-      title: "private title",
-      summary: "private summary",
-      progress: { current: 0, total: 1 },
-      safe_file_name: "C:\\private\\report.xlsx",
-      artifact_public_id: null,
-      created_at: null,
-    } as never,
-    [],
-    "",
-    [],
-    0,
-    [],
-    true,
-    "assistant-unsafe-file-name",
-  );
-
-  const step = result.parts[0];
-  assert.equal(step?.type, "execution_step");
-  if (step?.type !== "execution_step") throw new Error("expected execution step");
-  assert.equal(step.safe_file_name, null);
-  assert.doesNotMatch(JSON.stringify(result), /C:\\private/);
-});
-
 test("fails closed for malformed, unknown, or step-id-less public execution events", () => {
   for (const [eventType, data] of [
     [
       "execution_step",
-      {
-        schema_version: "ai-platform.public-execution-event.v1",
+      validPublicExecutionEvent({
         event_id: "evt-without-step-id",
         sequence: 4,
-        run_id: "run-execution",
-        kind: "processing",
-        stage: "prepare",
-        status: "running",
-        title: "准备报告",
-        summary: "缺少步骤标识",
-        progress: { current: 0, total: 4 },
-      },
+        step_id: undefined,
+      }),
     ],
     [
       "execution_progress",
       {
-        schema_version: "ai-platform.public-execution-event.v1",
-        event_id: "evt-extra-content",
-        sequence: 5,
-        run_id: "run-execution",
-        step_id: "step-prepare-report",
-        kind: "processing",
-        stage: "prepare",
-        status: "running",
-        title: "准备报告",
-        summary: "额外字段不得显示",
-        progress: { current: 2, total: 4 },
+        ...validPublicExecutionEvent({
+          event_id: "evt-extra-content",
+          sequence: 5,
+        }),
         content: "assistant text is not an execution event field",
       },
     ],
     [
       "execution_step_unknown",
-      {
-        schema_version: "ai-platform.public-execution-event.v1",
+      validPublicExecutionEvent({
         event_id: "evt-unknown-step-event",
         sequence: 6,
-        run_id: "run-execution",
-        step_id: "step-prepare-report",
-        kind: "processing",
-        stage: "prepare",
-        status: "running",
-        title: "准备报告",
-        summary: "未知事件不得显示",
-        progress: { current: 0, total: 4 },
-      },
+      }),
     ],
     [
       "execution_progress",
-      {
-        schema_version: "ai-platform.public-execution-event.v1",
+      validPublicExecutionEvent({
         event_id: "evt-numeric-progress",
         sequence: 7,
-        run_id: "run-execution",
-        step_id: "step-prepare-report",
-        kind: "processing",
-        stage: "prepare",
-        status: "running",
-        title: "准备报告",
-        summary: "数值进度不得显示",
-        progress: 2,
-      },
+        progress: 2 as never,
+      }),
     ],
   ] as const) {
     const result = processMessageEvent(
@@ -1817,6 +1735,49 @@ test("fails closed for malformed, unknown, or step-id-less public execution even
     );
     assert.deepEqual(result.parts, []);
     assert.equal(result.content, "");
+  }
+});
+
+test("ignores retired v1 and schema-less public execution events in live and history", () => {
+  const v1 = {
+    ...validPublicExecutionEvent({ event_id: "evt-v1-rejected" }),
+    schema_version: "ai-platform.public-execution-event.v1",
+  };
+  const schemaLess = validPublicExecutionEvent({
+    event_id: "evt-schema-less-rejected",
+  });
+  delete schemaLess.schema_version;
+
+  for (const data of [v1, schemaLess]) {
+    const live = processMessageEvent(
+      "execution_step",
+      data as never,
+      [],
+      "",
+      [],
+      0,
+      [],
+      true,
+      "message-rejected-execution",
+    );
+    const history = processMessageEvent(
+      "run_event",
+      {
+        ...data,
+        event_type: "execution_step",
+        timestamp: "2026-07-31T01:00:00.000Z",
+      } as never,
+      [],
+      "",
+      [],
+      0,
+      [],
+      false,
+      "message-rejected-execution",
+    );
+
+    assert.deepEqual(live.parts, []);
+    assert.deepEqual(history.parts, []);
   }
 });
 

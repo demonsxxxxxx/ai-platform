@@ -58,7 +58,6 @@ from app.streaming.domain.public_events_v4 import (
 )
 from app.streaming.domain.run_events import (
     RunCursor,
-    event_page,
 )
 from app.streaming.domain.transport import (
     ResumeDecision,
@@ -70,7 +69,6 @@ from app.streaming.domain.transport import (
 
 __all__ = [
     "RunCursor",
-    "event_page",
     "REDIS_ID_PATTERN",
     "RUN_ID_PATTERN",
     "STREAM_KEY_PREFIX",

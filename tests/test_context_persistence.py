@@ -325,47 +325,8 @@ async def test_owned_unbound_file_query_binds_full_owner_scope():
 
 
 @pytest.mark.asyncio
-async def test_session_context_candidates_bind_owner_scope_and_latest_successful_artifact_run():
+async def test_session_context_files_and_artifacts_bind_owner_scope():
     conn = RecordingConnection()
-
-    await _repo_owner_app_context_infrastructure_sources_postgres.list_session_context_messages(
-        conn,
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-current",
-        limit=8,
-    )
-    messages_sql, messages_params = conn.calls[-1]
-    assert "sessions.status = 'active'" in messages_sql
-    assert "runs.workspace_id = sessions.workspace_id" in messages_sql
-    assert "runs.user_id = sessions.user_id" in messages_sql
-    assert "runs.session_generation <" in messages_sql
-    assert "order by runs.session_generation desc" in messages_sql
-    assert "order by session_generation asc" in messages_sql
-    assert messages_params == (
-        "tenant-a", "workspace-a", "user-a", "session-a", "run-current",
-        "tenant-a", "session-a", "workspace-a", "user-a", 8,
-    )
-
-    await _repo_owner_app_context_infrastructure_sources_postgres.count_session_context_messages(
-        conn,
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-current",
-    )
-    count_sql, count_params = conn.calls[-1]
-    assert "count(*) as context_message_count" in count_sql
-    assert "messages.content" not in count_sql
-    assert "order by" not in count_sql
-    assert "limit" not in count_sql
-    assert count_params == (
-        "tenant-a", "workspace-a", "user-a", "session-a", "run-current",
-        "tenant-a", "session-a", "workspace-a", "user-a",
-    )
 
     await _repo_owner_app_context_infrastructure_sources_postgres.list_session_context_files(
         conn,

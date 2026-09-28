@@ -120,6 +120,13 @@ answer receipt 覆盖本次 v4 回复中实际提交的完整 Assistant 正文�
 实时、Redis 重放、PostgreSQL history 和 terminal hydrate 使用同一 v4 语义 reducer。
 浏览器断线只恢复公共事件和水位，不重新执行 Agent；旧 hydrate 不得覆盖更高水位的 text、tool 状态或附件。
 
+历史正文只读取经当前 Attempt 授权的持久化 v4 `message.delta`。旧
+`assistant_delta` 和成功终态的 `result_json.message` 不再补造正文，其旧
+`event_page` / `PublicDelta` 解析器及专属测试一并退役。执行过程
+投影只接受当前 v2 payload，v1 和无版本解析已退役。历史 HTTP 响应的
+`message:chunk`、`run_event` 等仍是当前页面使用的内部展示格式，不是另一条 SSE 通道。
+只有旧格式的历史行不会再还原 Assistant 正文或旧执行步骤；用户输入、附件与 Run 终态仍独立展示。
+
 当前产品不要求在一条回复中另建“仅复制最后一段”的最终片段选择协议。
 如果以后确实需要独立选择多个 final parts、局部复制或跨来源编辑，再以新协议版本协调升级 producer、账本、receipt、history decoder 和前端 reducer；不能把新字段偷偷加入 v4。
 
@@ -147,7 +154,7 @@ PR #1562 早期实现曾缓存整个 SDK turn，等 typed fragment、下一 mess
 - `_text_parts` 按整轮累计原文，缺少自然的局部内存上限；
 - Result 前才 flush 会把 transport streaming 退化成终态批量显示。
 
-保留的兼容面：
+当前保留的功能：
 
 - v4 envelope、PostgreSQL/Redis 顺序、Last-Event-ID、gap/hydrate 和 answer receipt；
 - 旧 `commentary.delta` history 的读取与公开 summary 展示；

@@ -79,8 +79,6 @@ const DIRECT_HISTORY_PROCESSOR_EVENTS = new Set([
   "thinking",
   "message:chunk",
   "final_detail",
-  "tool:start",
-  "tool:result",
   "sandbox:starting",
   "sandbox:ready",
   "sandbox:error",

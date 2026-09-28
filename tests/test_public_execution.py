@@ -6,22 +6,22 @@ from app.public_execution import (
     PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
     PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS,
     PersistablePublicExecutionStepV2,
-    PublicExecutionProjector,
     PublicExecutionV2Projector,
     public_execution_event_from_row,
-    validate_public_execution_step_payload,
 )
 
-PUBLIC_STEP_PAYLOAD_FIELDS = {
+PUBLIC_EVENT_FIELDS = {
+    "schema_version",
+    "event_id",
+    "sequence",
+    "run_id",
     "step_id",
+    "presentation_kind",
     "kind",
     "stage",
     "status",
-    "title",
-    "summary",
     "progress",
-    "safe_file_name",
-    "artifact_public_id",
+    "safe_label",
     "created_at",
 }
 
@@ -44,12 +44,13 @@ def _persisted_step(*, created_at):
         "event_type": "execution_step",
         "created_at": created_at,
         "payload_json": {
+            "schema_version": PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
             "step_id": "pex_execution_1",
-            "kind": "processing",
-            "stage": "execution",
+            "presentation_kind": "read",
+            "kind": "file_read",
+            "stage": "read",
             "status": "running",
-            "title": "Process request",
-            "summary": "Running controlled processing",
+            "safe_label": "Reading authorized files",
             "progress": {"current": 0, "total": 1},
         },
     }
@@ -93,7 +94,7 @@ def test_public_execution_row_normalizes_timezone_aware_repository_datetime():
     assert event is not None
     assert event["created_at"] == "2026-07-30T04:34:56.120000Z"
     assert {"event_id", "sequence", "run_id", "step_id"} <= set(event)
-    assert set(event) == {"schema_version", "event_id", "sequence", "run_id", *PUBLIC_STEP_PAYLOAD_FIELDS}
+    assert set(event) == PUBLIC_EVENT_FIELDS
 
 
 @pytest.mark.parametrize(
@@ -147,16 +148,16 @@ def test_public_execution_row_rejects_datetime_timezone_offset_errors(exception_
     [
         ("Skill", "skill", "capability", "execution", "Document review"),
         ("MCP", "mcp", "capability", "execution", "Tenant search"),
-        ("Read", "read", "file_read", "file", None),
-        ("Glob", "read", "file_read", "file", None),
-        ("Grep", "read", "file_read", "file", None),
-        ("LS", "read", "file_read", "file", None),
-        ("Write", "write", "generation", "file", None),
-        ("Edit", "write", "generation", "file", None),
-        ("NotebookEdit", "write", "generation", "file", None),
-        ("Bash", "bash", "processing", "execution", None),
-        ("Agent", "agent", "collaboration", "execution", None),
-        ("Task", "agent", "collaboration", "execution", None),
+        ("Read", "read", "file_read", "read", "Reading authorized files"),
+        ("Glob", "read", "file_read", "search", "Finding authorized files"),
+        ("Grep", "read", "file_read", "search", "Finding authorized files"),
+        ("LS", "read", "file_read", "search", "Finding authorized files"),
+        ("Write", "write", "generation", "edit", "Updating authorized files"),
+        ("Edit", "write", "generation", "edit", "Updating authorized files"),
+        ("NotebookEdit", "write", "generation", "edit", "Updating authorized files"),
+        ("Bash", "processing", "processing", "data", "Data processing"),
+        ("Agent", "agent", "collaboration", "execution", "Coordinating task"),
+        ("Task", "agent", "collaboration", "execution", "Coordinating task"),
     ],
 )
 def test_v2_projector_owns_the_closed_server_tool_mapping(
@@ -167,7 +168,7 @@ def test_v2_projector_owns_the_closed_server_tool_mapping(
     safe_label,
 ):
     projected = PublicExecutionV2Projector().project(
-        _v2_fact(tool_name=tool_name, safe_label=safe_label)
+        _v2_fact(tool_name=tool_name, safe_label=safe_label if tool_name in {"Skill", "MCP"} else None)
     )
 
     assert isinstance(projected, PersistablePublicExecutionStepV2)
@@ -184,16 +185,6 @@ def test_v2_projector_owns_the_closed_server_tool_mapping(
     }
     assert set(projected.payload_json) <= PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
     assert "private-call-1" not in str(projected.payload_json)
-
-
-def test_v2_projector_output_is_not_arbitrary_dict_persistence_ingress():
-    projected = PublicExecutionV2Projector().project(_v2_fact())
-    assert projected is not None
-
-    assert validate_public_execution_step_payload(
-        projected.payload_json,
-        expected_kind=projected.event_type,
-    ) is None
 
 
 def test_v2_persistable_value_cannot_be_constructed_outside_the_projector():
@@ -344,16 +335,24 @@ def test_v2_projector_rejects_private_or_arbitrary_raw_fact_extensions(private_f
     assert projector.project(_v2_fact()) is not None
 
 
-def test_public_execution_row_keeps_v1_replay_compatible_without_reinterpreting_it_as_v2():
-    event = public_execution_event_from_row(
-        "run-execution-1",
-        _persisted_step(created_at="2026-07-30T04:34:56Z"),
-    )
-
-    assert event is not None
-    assert event["schema_version"] == "ai-platform.public-execution-event.v1"
-    assert event["title"] == "Process request"
-    assert "presentation_kind" not in event
+def test_public_execution_row_rejects_retired_v1_and_unversioned_payloads():
+    legacy_payload = {
+        "step_id": "step-old",
+        "kind": "processing",
+        "stage": "execution",
+        "status": "running",
+        "title": "Old title",
+        "summary": "Old summary",
+        "progress": {"current": 0, "total": 1},
+    }
+    for payload in (
+        {"schema_version": "ai-platform.public-execution-event.v1", **legacy_payload},
+        legacy_payload,
+    ):
+        assert public_execution_event_from_row(
+            "run-execution-1",
+            {**_persisted_step(created_at=None), "payload_json": payload},
+        ) is None
 
 
 def test_public_execution_row_projects_only_the_strict_v2_payload_plus_row_authority():
@@ -409,19 +408,6 @@ def test_public_execution_row_rejects_v2_private_answer_artifact_and_extension_f
     ) is None
 
 
-def test_public_execution_row_rejects_v1_fields_under_the_v2_schema_version():
-    v1_payload = _persisted_step(created_at=None)["payload_json"]
-    payload = {
-        **v1_payload,
-        "schema_version": PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
-    }
-
-    assert public_execution_event_from_row(
-        "run-execution-v2-1",
-        _v2_row(payload),
-    ) is None
-
-
 def test_public_execution_row_rejects_explicit_null_v2_safe_label():
     projected = PublicExecutionV2Projector().project(
         _v2_fact(tool_name="Skill", safe_label="Document review")
@@ -442,133 +428,3 @@ def test_public_execution_row_fails_closed_for_malformed_event_type():
         "run-execution-v2-1",
         _v2_row(projected.payload_json, event_type=["execution_step"]),
     ) is None
-
-
-def test_public_execution_projector_is_the_fail_closed_owner_of_strict_opaque_events():
-    projector = PublicExecutionProjector()
-    private_fact = {
-        "invocation_id": "private-tool-call-77",
-        "fact_kind": "capability_invocation",
-        "lifecycle": "started",
-        "public_label": "Document review",
-        "command": "powershell -Command $env:PRIVATE_TOKEN",
-        "args": ["C:\\private\\workspace"],
-        "stdout": "private stdout",
-        "stderr": "private stderr",
-        "path": "C:\\private\\workspace",
-        "token": "private-token",
-        "private_payload": {"secret": "private"},
-    }
-
-    started = projector.project(private_fact)
-    completed = projector.project({**private_fact, "lifecycle": "completed"})
-
-    assert started is not None
-    assert completed is not None
-    assert set(started) <= PUBLIC_STEP_PAYLOAD_FIELDS
-    assert started["kind"] == "capability"
-    assert completed["kind"] == "capability"
-    assert started["status"] == "running"
-    assert completed["status"] == "completed"
-    assert started["step_id"] == completed["step_id"]
-    assert all(value not in str(started) for value in ("private-tool-call-77", "PRIVATE_TOKEN", "private-token", "C:\\private"))
-    assert projector.project({**private_fact, "fact_kind": "future_private_fact"}) is None
-    assert projector.project({**private_fact, "public_label": "cmd.exe /c private"}) is None
-
-
-def test_public_execution_projector_keeps_progress_monotonic_for_one_opaque_step():
-    projector = PublicExecutionProjector()
-    fact = {
-        "invocation_id": "private-tool-call-progress",
-        "fact_kind": "tool_invocation",
-        "public_label": "Processing authorized data",
-    }
-
-    started = projector.project({**fact, "lifecycle": "started", "progress": {"current": 0, "total": 4}})
-    progress = projector.project({**fact, "lifecycle": "progress", "progress": {"current": 2, "total": 4}})
-    completed = projector.project({**fact, "lifecycle": "completed", "progress": {"current": 4, "total": 4}})
-
-    assert started is not None
-    assert progress is not None
-    assert completed is not None
-    assert {started["step_id"], progress["step_id"], completed["step_id"]} == {started["step_id"]}
-    assert [started["progress"], progress["progress"], completed["progress"]] == [
-        {"current": 0, "total": 4},
-        {"current": 2, "total": 4},
-        {"current": 4, "total": 4},
-    ]
-    assert projector.project({**fact, "lifecycle": "completed", "progress": {"current": 4, "total": 4}}) is None
-
-
-def test_public_execution_projector_rejects_progress_total_changes_and_regressions():
-    projector = PublicExecutionProjector()
-    fact = {
-        "invocation_id": "private-tool-call-reject",
-        "fact_kind": "tool_invocation",
-        "public_label": "Processing authorized data",
-    }
-
-    assert projector.project({**fact, "lifecycle": "started", "progress": {"current": 0, "total": 4}})
-    assert projector.project({**fact, "lifecycle": "progress", "progress": {"current": 3, "total": 4}})
-    assert projector.project({**fact, "lifecycle": "progress", "progress": {"current": 3, "total": 5}}) is None
-    assert projector.project({**fact, "lifecycle": "failed", "progress": {"current": 2, "total": 4}}) is None
-    failed = projector.project({**fact, "lifecycle": "failed", "progress": {"current": 3, "total": 4}})
-
-    assert failed is not None
-    assert failed["status"] == "failed"
-
-
-def test_public_execution_projector_rejects_invalid_public_fields_without_consuming_lifecycle():
-    projector = PublicExecutionProjector()
-    fact = {
-        "invocation_id": "private-tool-call-atomic",
-        "fact_kind": "tool_invocation",
-        "public_label": "Processing authorized data",
-    }
-
-    invalid_started = {**fact, "lifecycle": "started", "safe_file_name": "C:\\private\\report.txt"}
-    started = {**fact, "lifecycle": "started", "progress": {"current": 0, "total": 2}}
-    assert projector.project(invalid_started) is None
-    assert projector.project(started) is not None
-
-    invalid_progress = {
-        **fact,
-        "lifecycle": "progress",
-        "progress": {"current": 2, "total": 2},
-        "artifact_public_id": "private/artifact",
-    }
-    progress = {**fact, "lifecycle": "progress", "progress": {"current": 1, "total": 2}}
-    assert projector.project(invalid_progress) is None
-    assert projector.project(progress) is not None
-
-    invalid_terminal = {
-        **fact,
-        "lifecycle": "completed",
-        "progress": {"current": 2, "total": 2},
-        "safe_file_name": "report\\draft.txt",
-    }
-    completed = {**fact, "lifecycle": "completed", "progress": {"current": 2, "total": 2}}
-    assert projector.project(invalid_terminal) is None
-    assert projector.project(completed) is not None
-
-
-def test_public_execution_projector_accepts_safe_result_basename_and_rejects_paths():
-    projector = PublicExecutionProjector()
-    fact = {
-        "invocation_id": "private-artifact-call",
-        "fact_kind": "artifact_generation",
-        "lifecycle": "started",
-        "public_label": "Generating result file",
-    }
-
-    assert projector.project({**fact, "safe_file_name": "../private/analysis.xlsx"}) is None
-    started = projector.project({**fact, "safe_file_name": "分析报告.xlsx"})
-
-    assert started is not None
-    assert started["safe_file_name"] == "分析报告.xlsx"
-
-    for unsafe_name in ("..", "C:\\private\\analysis.xlsx", "analysis;whoami.xlsx"):
-        rejected = PublicExecutionProjector().project(
-            {**fact, "invocation_id": f"private-{unsafe_name}", "safe_file_name": unsafe_name}
-        )
-        assert rejected is None

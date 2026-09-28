@@ -13,8 +13,10 @@ from app.runs.infrastructure import creation_postgres as runs_creation_postgres
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events_postgres
 
 from app.context.api import (
-    ConversationSourceChain, ProviderSessionScope, claim_provider_lineage,
-    validate_authority_receipt,
+    ProviderSessionScope,
+    claim_provider_lineage,
+    read_provider_coverage,
+    make_authority_receipt,
 )
 from app.context.file_continuity import snapshot_file_ids
 from app.context_manifest import (
@@ -605,42 +607,26 @@ async def record_initial_context_snapshot(
             raise platform_errors.RepositoryConflictError(str(exc)) from exc
         scope = {"tenant_id": tenant_id, "workspace_id": workspace_id, "user_id": user_id,
                  "session_id": session_id, "agent_id": agent_id}
-        chain = ConversationSourceChain(
+        try:
+            coverage = await read_provider_coverage(
+                conn,
+                scope=ProviderSessionScope(tenant_id, workspace_id, user_id, session_id, agent_id),
+                run_id=run_id,
+                session_generation=current_run.get("session_generation"),
+            )
+        except ValueError as exc:
+            raise platform_errors.RepositoryConflictError(str(exc)) from exc
+        if len(included_message_ids) > 1:
+            raise platform_errors.RepositoryConflictError("conversation_authority_current_message_invalid")
+        history_candidate_count = coverage["message_count"]
+        history_authorized_count = history_candidate_count
+        conversation_authority = make_authority_receipt(
             scope=scope,
             through_session_generation=current_run.get("session_generation"),
-            current_run_id=run_id,
-            current_message_id=(included_message_ids[-1] if included_message_ids else None),
+            message_count=history_authorized_count,
+            source_sha256=coverage["source_sha256"],
+            current_message_id=included_message_ids[0] if included_message_ids else None,
         )
-        history_candidate_count = await context_sources_postgres.count_session_context_messages(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-        )
-        while True:
-            page = await context_sources_postgres.list_session_context_messages(
-                conn,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                session_id=session_id,
-                run_id=run_id,
-                limit=4,
-                oldest_first=True,
-                after_created_at=chain.range_end["created_at"] if chain.range_end else None,
-                after_id=chain.range_end["id"] if chain.range_end else None,
-            )
-            if len(page) > 4 or sum(len(str(row.get("content") or "").encode("utf-8")) for row in page) > 1024 * 1024:
-                raise platform_errors.RepositoryConflictError("conversation_source_page_invalid")
-            chain.add_page(page)
-            if len(page) < 4:
-                break
-        if chain.predecessor_message_count + chain.message_count != history_candidate_count:
-            raise platform_errors.RepositoryConflictError("conversation_authority_range_invalid")
-        history_authorized_count = history_candidate_count
-        conversation_authority = validate_authority_receipt(chain.receipt())
         if include_session_files:
             session_files = await context_sources_postgres.list_session_context_files(
                 conn,

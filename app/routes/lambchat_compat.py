@@ -45,7 +45,6 @@ from app.routes.runs import (
     run_event_response,
 )
 from app.run_projection import (
-    CHAT_ASSISTANT_DELTA_SOURCE,
     CHAT_PUBLIC_PROJECTION_VERSION,
     PublicChatAnswerStreamProjector,
     public_chat_answer_text,
@@ -56,10 +55,8 @@ from app.runs import api as runs_api
 from app.runs.infrastructure import creation_postgres as runs_creation
 from app.settings import get_settings
 from app.streaming.api import (
-    RunCursor,
     V4ProjectionError,
     V4StreamEntry,
-    event_page,
     live_redis_id_is_after,
     project_persisted_message_delta_v4,
     project_public_envelope_v4,
@@ -293,17 +290,10 @@ def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
 
 def _terminal_final_payload(
     run: dict[str, Any],
-    *,
-    include_successful_answer: bool = True,
 ) -> tuple[str, dict[str, str], str] | None:
-    """Adapt the authoritative terminal projection to the compatibility wire."""
+    """Adapt only terminal error details to the compatibility wire."""
     projection = public_chat_terminal_projection(run)
     if projection is None:
-        return None
-    if (
-        projection["event_type"] == "message:chunk"
-        and not include_successful_answer
-    ):
         return None
     payload = projection["payload"]
     if not isinstance(payload, dict):
@@ -328,7 +318,6 @@ class _CompatibilityFoldState:
 
     has_strict_public_execution: bool
     seen_public_lifecycle_singletons: frozenset[str]
-    answer_source: str
     answer_projection_state: tuple[str, str, bool] = ("", "", False)
 
 
@@ -572,11 +561,8 @@ def _strict_typed_chat_event_product(
     run: dict[str, Any],
     event: dict[str, Any],
     principal: AuthPrincipal,
-    *,
-    answer_projector: PublicChatAnswerStreamProjector | None = None,
-    final_answer_delta: bool = False,
 ) -> _StrictChatEventProduct | None:
-    """Retain exact answer deltas and identity-safe capability products for Chat.
+    """Retain identity-safe capability products for Chat.
 
     Generic run events remain owned by ``run_event_response``.  This seam is
     deliberately narrower: it reads raw persisted data only to construct typed
@@ -584,53 +570,7 @@ def _strict_typed_chat_event_product(
     live SSE and exact-run history use it through the
     shared compatibility event builder.
     """
-    raw_event_type = str(event.get("event_type") or "")
-    capability_product = _strict_capability_chat_product(run, event, principal)
-    if capability_product is not None:
-        return capability_product
-    if raw_event_type != "assistant_delta":
-        return None
-    if not _chat_event_marked_visible(event) or not event_visible_to_principal(
-        event, principal
-    ):
-        return None
-    run_id = str(run["id"])
-    raw_payload = event.get("payload_json")
-    if not isinstance(raw_payload, dict):
-        return None
-    if raw_event_type == "assistant_delta":
-        sequence = event.get("sequence")
-        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
-            return None
-        page = event_page(
-            cursor=RunCursor(run_id=run_id, sequence=sequence - 1), rows=(event,)
-        )
-        if len(page.events) != 1:
-            return None
-        delta = page.events[0]
-        content = (
-            answer_projector.push(delta.delta, final=final_answer_delta)
-            if answer_projector is not None
-            else public_chat_answer_text(run, delta.delta)
-        )
-        if not content:
-            return None
-        return _StrictChatEventProduct(
-            kind="assistant_delta",
-            generic_envelope={
-                "event_id": delta.event_id,
-                "sequence": delta.cursor.sequence,
-            },
-            payload={
-                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                "projection_kind": "assistant_delta",
-                "event_id": delta.event_id,
-                "sequence": delta.cursor.sequence,
-                "run_id": run_id,
-                "content": content,
-            },
-        )
-    return None
+    return _strict_capability_chat_product(run, event, principal)
 
 
 def _strict_capability_chat_product(
@@ -904,45 +844,16 @@ def _public_run_event_envelope(
     }
 
 
-def _persisted_v4_assistant_delta(
+def _persisted_v4_message_delta(
     run: dict[str, Any], event: dict[str, Any]
-) -> dict[str, Any] | None:
-    """Return the legacy-shaped body input only after strict persisted-v4 admission."""
+) -> dict[str, object] | None:
+    """Return a persisted v4 message delta only after strict history admission."""
 
-    projected = project_persisted_message_delta_v4(
+    return project_persisted_message_delta_v4(
         event,
         tenant_id=str(run.get("tenant_id") or ""),
         run_id=str(run["id"]),
     )
-    if projected is None:
-        return None
-    payload = projected.get("payload")
-    delta = payload.get("delta") if isinstance(payload, dict) else None
-    if not isinstance(delta, str) or not delta:
-        return None
-    return {
-        "id": projected["event_id"],
-        "tenant_id": run.get("tenant_id"),
-        "run_id": run["id"],
-        "sequence": projected["seq"],
-        "event_type": "assistant_delta",
-        "stage": "answer",
-        "message": "",
-        "severity": "info",
-        "visible_to_user": True,
-        "payload_json": {
-            "delta": delta,
-            "source": CHAT_ASSISTANT_DELTA_SOURCE,
-            "visible_to_user": True,
-            "severity": "info",
-        },
-        "trace_id": event.get("trace_id"),
-        "created_at": event.get("created_at"),
-        "_history_message_identity": (
-            projected["message_id"],
-            projected["stream_incarnation"],
-        ),
-    }
 
 
 def _assistant_delta_projection(
@@ -952,18 +863,51 @@ def _assistant_delta_projection(
     *,
     answer_projector: PublicChatAnswerStreamProjector | None = None,
     final_answer_delta: bool = False,
+    projected_event: dict[str, object] | None = None,
+    delta_override: str | None = None,
 ) -> dict[str, object] | None:
-    """Return a sanitized delta frame without carrying any executor payload."""
-    typed_product = _strict_typed_chat_event_product(
-        run,
-        event,
-        principal,
-        answer_projector=answer_projector,
-        final_answer_delta=final_answer_delta,
-    )
-    if typed_product is None or typed_product.kind != "assistant_delta":
+    """Return a sanitized answer frame from one persisted strict v4 delta."""
+    if not _chat_event_marked_visible(event) or not event_visible_to_principal(
+        event, principal
+    ):
         return None
-    return typed_product.payload
+    projected = projected_event or _persisted_v4_message_delta(run, event)
+    if projected is None:
+        return None
+    payload = projected.get("payload")
+    delta = (
+        delta_override
+        if delta_override is not None
+        else payload.get("delta")
+        if isinstance(payload, dict)
+        else None
+    )
+    if not isinstance(delta, str) or not delta:
+        return None
+    event_id = projected.get("event_id")
+    sequence = projected.get("seq")
+    if (
+        not isinstance(event_id, str)
+        or isinstance(sequence, bool)
+        or not isinstance(sequence, int)
+        or sequence < 1
+    ):
+        return None
+    content = (
+        answer_projector.push(delta, final=final_answer_delta)
+        if answer_projector is not None
+        else public_chat_answer_text(run, delta)
+    )
+    if not content:
+        return None
+    return {
+        "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+        "projection_kind": "assistant_delta",
+        "event_id": event_id,
+        "sequence": sequence,
+        "run_id": str(run["id"]),
+        "content": content,
+    }
 
 
 def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int, int]:
@@ -1028,23 +972,6 @@ def _visible_assistant_artifacts(
     return visible
 
 
-def _answer_source_for_run(
-    run: dict[str, Any],
-    run_events: list[dict[str, Any]],
-    principal: AuthPrincipal,
-) -> str:
-    return (
-        "v4"
-        if any(
-            _chat_event_marked_visible(event)
-            and event_visible_to_principal(event, principal)
-            and _persisted_v4_assistant_delta(run, event) is not None
-            for event in run_events
-        )
-        else "legacy"
-    )
-
-
 def _compatibility_events_for_run(
     run: dict[str, Any],
     run_events: list[dict[str, Any]],
@@ -1064,7 +991,6 @@ def _compatibility_events_for_run(
         fold_state=_CompatibilityFoldState(
             False,
             frozenset(),
-            _answer_source_for_run(run, run_events, principal),
         ),
         user_messages=user_messages,
         include_terminal=include_terminal,
@@ -1135,12 +1061,10 @@ def _compatibility_events_for_run_page(
         for position, event in ordered_events
         if _chat_event_marked_visible(event)
         and event_visible_to_principal(event, principal)
-        and (projected := _persisted_v4_assistant_delta(run, event)) is not None
+        and (projected := _persisted_v4_message_delta(run, event)) is not None
     }
-    prefer_v4_answer = fold_state.answer_source == "v4"
     compact_terminal_answer = (
         compact_answer_deltas
-        and prefer_v4_answer
         and status in {"succeeded", "failed", "cancelled"}
     )
     final_answer_position = next(
@@ -1149,20 +1073,15 @@ def _compatibility_events_for_run_page(
             for position, event in reversed(ordered_events)
             if include_terminal
             and status in {"succeeded", "failed", "cancelled"}
-            and (
-                position in v4_answer_events
-                if prefer_v4_answer
-                else str(event.get("event_type") or "") == "assistant_delta"
-                and _chat_event_marked_visible(event)
-                and event_visible_to_principal(event, principal)
-            )
+            and position in v4_answer_events
         ),
         None,
     )
-    pending_answer_events: list[tuple[int, dict[str, Any]]] = []
+    pending_answer_events: list[tuple[int, dict[str, Any], dict[str, object]]] = []
 
     def emit_answer_event(
-        answer_event: dict[str, Any], *, final_answer_delta: bool
+        answer_event: dict[str, Any], projected: dict[str, object], *,
+        final_answer_delta: bool, delta_override: str | None = None,
     ) -> None:
         delta = _assistant_delta_projection(
             run,
@@ -1170,6 +1089,8 @@ def _compatibility_events_for_run_page(
             principal,
             answer_projector=answer_projector,
             final_answer_delta=final_answer_delta,
+            projected_event=projected,
+            delta_override=delta_override,
         )
         if delta is None:
             return
@@ -1201,14 +1122,14 @@ def _compatibility_events_for_run_page(
             return
         # ponytail: public barriers reproject the prefix; materialize terminal
         # messages if heavily interleaved histories make that cost measurable.
-        last_position, last_event = pending_answer_events[-1]
-        payload = dict(last_event["payload_json"])
-        payload["delta"] = "".join(
-            str(event["payload_json"]["delta"])
-            for _, event in pending_answer_events
+        last_position, last_event, last_projected = pending_answer_events[-1]
+        delta = "".join(
+            str(projected["payload"]["delta"])
+            for _, _, projected in pending_answer_events
         )
         emit_answer_event(
-            {**last_event, "payload_json": payload},
+            last_event, last_projected,
+            delta_override=delta,
             final_answer_delta=last_position == final_answer_position,
         )
         pending_answer_events.clear()
@@ -1318,25 +1239,22 @@ def _compatibility_events_for_run_page(
         ):
             continue
         if raw_event_type in {"assistant_delta", "message.delta"}:
-            if prefer_v4_answer:
-                answer_event = v4_answer_events.get(position)
-                if answer_event is None:
-                    continue
-            else:
-                if raw_event_type != "assistant_delta":
-                    continue
-                answer_event = event
+            answer_event = v4_answer_events.get(position)
+            if answer_event is None:
+                continue
             if compact_terminal_answer:
                 if (
                     pending_answer_events
-                    and pending_answer_events[-1][1].get("_history_message_identity")
-                    != answer_event.get("_history_message_identity")
+                    and any(
+                        pending_answer_events[-1][2][key] != answer_event[key]
+                        for key in ("message_id", "stream_incarnation")
+                    )
                 ):
                     flush_pending_answer_events()
-                pending_answer_events.append((position, answer_event))
+                pending_answer_events.append((position, event, answer_event))
             else:
                 emit_answer_event(
-                    answer_event,
+                    event, answer_event,
                     final_answer_delta=position == final_answer_position,
                 )
             continue
@@ -1427,12 +1345,8 @@ def _compatibility_events_for_run_page(
             )
         )
 
-    has_streamed_answer = prefer_v4_answer or bool(answer_projector.state[1])
     final_payload = (
-        _terminal_final_payload(
-            run,
-            include_successful_answer=not has_streamed_answer,
-        )
+        _terminal_final_payload(run)
         if include_terminal
         else None
     )
@@ -1488,7 +1402,6 @@ def _compatibility_events_for_run_page(
     return compatibility_events, _CompatibilityFoldState(
         has_strict_public_execution=has_strict_public_execution,
         seen_public_lifecycle_singletons=frozenset(seen_public_lifecycle_singletons),
-        answer_source=fold_state.answer_source,
         answer_projection_state=answer_projector.state,
     )
 

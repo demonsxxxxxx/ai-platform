@@ -11,12 +11,12 @@ from app.context.domain.provider_sessions import (
 
 
 class ProviderSessionRepository(Protocol):
-    async def matching_ready_epoch(self, conn: Any, *, scope: ProviderSessionScope,
-                                   run_id: str, source_sha256: str, message_count: int) -> bool: ...
-
     async def callback_epoch(self, conn: Any, **scope: Any) -> dict[str, Any]: ...
 
     async def claim_lineage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None: ...
+
+    async def read_coverage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str,
+                            session_generation: int) -> dict[str, Any]: ...
 
     async def release_lineage(self, conn: Any, *, tenant_id: str, run_id: str) -> None: ...
 
@@ -48,15 +48,14 @@ class ProviderSessionUseCases:
     def __init__(self, repository: ProviderSessionRepository) -> None:
         self._repository = repository
 
-    async def matching_ready_epoch(self, conn: Any, *, scope: ProviderSessionScope,
-                                   run_id: str, source_sha256: str, message_count: int) -> bool:
-        return await self._repository.matching_ready_epoch(
-            conn, scope=scope, run_id=run_id,
-            source_sha256=source_sha256, message_count=message_count,
-        )
-
     async def claim_lineage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None:
         await self._repository.claim_lineage(conn, scope=scope, run_id=run_id)
+
+    async def read_coverage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str,
+                            session_generation: int) -> dict[str, Any]:
+        return await self._repository.read_coverage(
+            conn, scope=scope, run_id=run_id, session_generation=session_generation,
+        )
 
     async def release_lineage(self, conn: Any, *, tenant_id: str, run_id: str) -> None:
         await self._repository.release_lineage(conn, tenant_id=tenant_id, run_id=run_id)
@@ -122,16 +121,15 @@ def configured_provider_session_use_cases() -> ProviderSessionUseCases:
     return _use_cases
 
 
-async def matching_ready_provider_epoch(conn: Any, *, scope: ProviderSessionScope,
-                                        run_id: str, source_sha256: str, message_count: int) -> bool:
-    return await configured_provider_session_use_cases().matching_ready_epoch(
-        conn, scope=scope, run_id=run_id,
-        source_sha256=source_sha256, message_count=message_count,
-    )
-
-
 async def claim_provider_lineage(conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None:
     await configured_provider_session_use_cases().claim_lineage(conn, scope=scope, run_id=run_id)
+
+
+async def read_provider_coverage(conn: Any, *, scope: ProviderSessionScope, run_id: str,
+                                 session_generation: int) -> dict[str, Any]:
+    return await configured_provider_session_use_cases().read_coverage(
+        conn, scope=scope, run_id=run_id, session_generation=session_generation,
+    )
 
 
 async def release_provider_lineage(conn: Any, *, tenant_id: str, run_id: str) -> None:
@@ -162,8 +160,8 @@ __all__ = [
     "ProviderSessionOperationResult",
     "ProviderSessionRepository",
     "ProviderSessionUseCases",
-    "matching_ready_provider_epoch",
     "claim_provider_lineage",
+    "read_provider_coverage",
     "release_provider_lineage",
     "prepare_provider_epoch",
     "commit_provider_turn",

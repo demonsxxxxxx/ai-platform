@@ -38,7 +38,6 @@ import { translateBackendError } from "../../utils/backendErrors";
 import {
   CHAT_PUBLIC_PROGRESS_EVENT_TYPES,
   CHAT_PUBLIC_PROJECTION_VERSION,
-  PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
   isPublicAgentProgressEvent,
   isAssistantTextProjection,
   isPublicExecutionEvent,
@@ -361,11 +360,6 @@ export function processMessageEvent(
   const data = normalizedEvent.data;
   const result: ProcessMessageEventResult = { parts, content, toolCalls };
   const agentId = data.agent_id;
-  if (eventName === "tool:start" || eventName === "tool:result") {
-    // Legacy tool frames carry an unversioned raw-tool surface. They are not a
-    // fallback for public execution v1 and must not create renderable parts.
-    return result;
-  }
 
   switch (eventName) {
     // ---- Agent events ----
@@ -1130,54 +1124,17 @@ function createExecutionTimelinePart(
     step_id: publicEvent.step_id,
     kind: publicEvent.kind,
     presentation_kind: publicEvent.presentation_kind,
-    stage:
-      publicEvent.schema_version === PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION
-        ? publicEvent.stage
-        : undefined,
+    stage: publicEvent.stage,
     title: undefined,
     summary: undefined,
     status: publicEvent.status,
     progress: publicEvent.progress,
-    safe_file_name: safePublicExecutionFileName(
-      publicEvent.safe_file_name ?? null,
-    ),
+    safe_file_name: null,
     ...(timestamp ? { started_at: timestamp } : {}),
     ...(isTerminal && timestamp ? { completed_at: timestamp } : {}),
   };
 }
 
-function safePublicExecutionFileName(value: string | null): string | null {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > 128 ||
-    value !== value.trim() ||
-    value === "." ||
-    value === ".." ||
-    /[\\/:*?"<>|]/.test(value) ||
-    [...value].some((character) => character.charCodeAt(0) < 32)
-  ) {
-    return null;
-  }
-  return value;
-}
-
-const PUBLIC_EXECUTION_V1_FIELDS = new Set([
-  "schema_version",
-  "event_id",
-  "sequence",
-  "run_id",
-  "step_id",
-  "kind",
-  "stage",
-  "status",
-  "title",
-  "summary",
-  "progress",
-  "safe_file_name",
-  "artifact_public_id",
-  "created_at",
-]);
 const PUBLIC_EXECUTION_V2_FIELDS = new Set([
   "schema_version",
   "event_id",
@@ -1199,11 +1156,8 @@ type ValidPublicExecutionEvent = EventData & {
   kind: ExecutionTimelinePart["kind"];
   status: ExecutionTimelinePart["status"];
   progress: ExecutionTimelinePart["progress"];
-  safe_file_name?: string | null;
   stage: string;
   presentation_kind?: string;
-  title?: string;
-  summary?: string;
   safe_label?: string;
 };
 
@@ -1213,13 +1167,8 @@ function normalizePublicExecutionEvent(
 ): ValidPublicExecutionEvent | null {
   if (isPublicExecutionEvent(eventType, data)) return data;
   const source = data as Record<string, unknown>;
-  const fields =
-    source.schema_version === "ai-platform.public-execution-event.v2"
-      ? PUBLIC_EXECUTION_V2_FIELDS
-      : source.schema_version === "ai-platform.public-execution-event.v1"
-        ? PUBLIC_EXECUTION_V1_FIELDS
-        : null;
-  if (fields === null) return null;
+  if (source.schema_version !== "ai-platform.public-execution-event.v2") return null;
+  const fields = PUBLIC_EXECUTION_V2_FIELDS;
   const envelopeFields = new Set([...fields, "event_type", "timestamp"]);
   if (
     source.event_type !== eventType ||

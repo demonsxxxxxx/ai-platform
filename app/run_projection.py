@@ -65,33 +65,6 @@ def public_text_or_fallback(value: object, fallback: object = "") -> str:
 
 
 RESULT_UNAVAILABLE_MESSAGE = "本次执行未能生成可展示的回复内容。"
-CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
-_LEGACY_ARTIFACT_LINK_LINE = re.compile(
-    r"- .+: /api/ai/artifacts/[^/\s]+/download"
-)
-
-
-def _strip_legacy_artifact_link_block(value: object) -> object:
-    """Remove only the exact artifact-link suffix emitted by older workers."""
-
-    if not isinstance(value, str):
-        return value
-    lines = value.splitlines()
-    end = len(lines)
-    while end and not lines[end - 1].strip():
-        end -= 1
-    for position in range(end - 1, -1, -1):
-        if lines[position].strip() != "输出文件:":
-            continue
-        link_lines = [line.strip() for line in lines[position + 1 : end]]
-        if link_lines and all(
-            _LEGACY_ARTIFACT_LINK_LINE.fullmatch(line) for line in link_lines
-        ):
-            return "\n".join(lines[:position]).rstrip()
-        break
-    return value
-
-
 def _chat_identifier_token_pattern(identifier: str) -> re.Pattern[str]:
     """Match an identifier only outside Unicode word, dash, dot, or colon tokens."""
     token_character = r"[\w.:\-]"
@@ -221,51 +194,11 @@ class PublicChatAnswerStreamProjector:
         return self.push("", final=True)
 
 
-def _chat_terminal_answer_candidate(run: dict[str, object]) -> object:
-    result = run.get("result_json")
-    if isinstance(result, dict):
-        message = result.get("message")
-        if isinstance(message, str) and message.strip():
-            return _strip_legacy_artifact_link_block(message)
-    return run.get("error_message") or ""
-
-
 def public_chat_terminal_projection(run: dict[str, object]) -> dict[str, object] | None:
-    """Build the sole versioned Chat payload for a terminal run state."""
+    """Project failed or cancelled Run details independently of answer content."""
     status = normalize_run_status(str(run.get("status") or ""))
     if status == "succeeded":
-        content = public_chat_answer_text(run, _chat_terminal_answer_candidate(run))
-        run_id = str(run.get("id") or "")
-        if content and run_id:
-            return {
-                "event_type": "message:chunk",
-                "payload": {
-                    "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                    "projection_kind": "assistant_delta",
-                    "event_id": f"{run_id}:final",
-                    "message_id": f"{run_id}:assistant",
-                    "run_id": run_id,
-                    "source": CHAT_ASSISTANT_DELTA_SOURCE,
-                    "content": content,
-                },
-                "message": content,
-                "event_payload": {},
-                "severity": "info",
-            }
-        if content:
-            return None
-        return {
-            "event_type": "final_detail",
-            "payload": {
-                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
-                "detail_kind": "result_unavailable",
-                "detail_code": "result_unavailable",
-                "message": RESULT_UNAVAILABLE_MESSAGE,
-            },
-            "message": RESULT_UNAVAILABLE_MESSAGE,
-            "event_payload": {"detail_code": "result_unavailable"},
-            "severity": "info",
-        }
+        return None
     terminal = public_terminal_projection(
         status,
         run.get("error_code"),

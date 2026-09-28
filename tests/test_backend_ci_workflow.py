@@ -97,7 +97,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_queue.py",
         "tests/test_run_attempt_application.py",
         "tests/test_run_attempt_repository.py",
-        "tests/test_legacy_context_checkpoint.py",
         "tests/test_worker_main.py",
         "tests/test_worker_maintenance.py",
         "tests/test_sandbox_cleanup_postgres.py",

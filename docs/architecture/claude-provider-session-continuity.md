@@ -2,7 +2,7 @@
 
 Status: source candidate; deployment and external acceptance are separate
 Owner: Context + Execution + Runs
-Last updated: 2026-09-22
+Last updated: 2026-09-28
 
 ## Decision
 
@@ -33,8 +33,8 @@ inside an existing conversation.
 
 ### Owner
 
-- **Context** owns immutable conversation source receipts, exact scoped source
-  verification, provider epoch lifecycle, opaque `SessionStore` entries, append
+- **Context** owns immutable conversation coverage receipts, scoped epoch
+  binding, provider epoch lifecycle, opaque `SessionStore` entries, append
   receipts, turn receipts, and lineage release.
 - **Execution** owns the frozen `empty_start`/`native_resume` dispatch contract,
   the current user/system channel split, model-proxy authorization, and the
@@ -62,9 +62,10 @@ callback protocol, database migration, or deployment change is in scope.
 
 1. Tenant, workspace, user, Session, Agent, Run, Attempt, lease, model, and tool
    boundaries remain platform-owned.
-2. Worker verification reads every message authorized by the exact immutable
-   source receipt, validates scope/order/count/digest, and retains no historical
-   body for Claude model input.
+2. Admission reads the committed provider coverage under the lineage lock.
+   Worker binds the scoped snapshot to that digest/count and current message.
+   Neither stage reloads prior platform message bodies. The success transaction
+   extends coverage with only this Run's user and assistant messages.
 3. Historical tool calls never restore current capabilities. Every Run rebuilds
    Agent Profile, Skill Set, MCP/tool authorization, credentials, files, and
    system policy from current authority. Claude's current capability set excludes
@@ -87,16 +88,21 @@ callback protocol, database migration, or deployment change is in scope.
 
 ### Continuity admission
 
+Admission claims the scoped lineage and reads the committed current epoch's
+coverage digest/count. For a head with no current epoch, a scoped metadata-only
+existence query rejects prior messages; only a new conversation receives the
+empty scope digest. No historical content query or hash scan runs here.
+
 Before ExecutionSpec/Attempt binding, the Worker:
 
-1. loads the exact scoped Context snapshot;
-2. streams all authorized historical message rows through the source-digest
-   verifier without projecting them into the Claude prompt;
-3. requires a ready provider epoch whose coverage digest and message count equal
-   the verified receipt and whose entry/transcript headroom is valid;
-4. selects `native_resume` when that exact epoch exists;
-5. selects `empty_start` only when the verified prior-message count is zero; and
-6. otherwise terminalizes the Run with
+1. loads the exact Run-bound Context snapshot and validates its scope and current
+   message identity (Runs API tasks may have no business user-message row);
+2. restores an already-running Attempt's frozen context when recovering that Run;
+3. otherwise requires the current ready, writer-free epoch to match coverage and
+   capacity before selecting `native_resume`;
+4. selects `empty_start` only when there is no current epoch and the receipt has
+   zero prior messages and the scope's initial digest;
+5. rejects unavailable native continuity with
    `provider_session_requires_new_conversation`.
 
 Missing, dirty, closed, over-capacity, coverage-mismatched, or concurrently
@@ -135,9 +141,9 @@ Stop and revise this contract if implementation requires:
 ## Runtime Flow
 
 ```text
-Platform Messages (immutable authority/audit)
-  -> Context source receipt
-  -> Worker streams rows only to verify scope/order/digest/count
+Committed provider epoch coverage
+  -> Context coverage receipt under lineage lock
+  -> Worker validates scoped snapshot/current message
   -> exact provider epoch match
        prior count = 0              -> empty_start
        exact ready covered epoch    -> native_resume
@@ -166,13 +172,17 @@ Removed production surfaces:
 - checkpoint usage merge into Run terminal token counts;
 - tests that exclusively asserted the retired build/lease/summarization path.
 
-Legacy checkpoint tables and rows remain in the schema. No new checkpoint is
-built or billed. The ready-checkpoint loader remains temporarily for historical
-non-Claude snapshots and compatibility inspection. The shared scoped message
-retrieval API remains only for identified non-Claude consumers; Claude capability
-planning filters `read_session_messages`. Historical Claude snapshots with a
-checkpoint ancestry are verified from their full authorized message range; their
-checkpoint summary is ignored.
+Legacy checkpoint tables and rows remain in the schema, but their loader and
+Worker materialization path are removed. Explicit historical-message lists,
+range/tail/checkpoint verification, and both admission and Worker full-body
+scans are retired. New v2 coverage receipts contain only scope, Run generation,
+message count, digest, and current-message identity. Shared scoped message
+retrieval remains a separate authorized retrieval API; it is not a Worker
+continuation fallback and Claude does not receive that capability.
+
+Platform display-history edits are no longer audited by rereading all bodies
+before each turn. Native transcript entries and atomic provider coverage are
+the continuity authority; this is an intentional contract change.
 
 This is an intentional compatibility break for existing conversations without
 one exact usable native epoch: users must start a new conversation. There is no

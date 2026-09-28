@@ -22,8 +22,6 @@ export type StopGenerationResult = RunControlCancelResult;
 
 export const CHAT_PUBLIC_PROJECTION_VERSION =
   "ai-platform.chat-public-projection.v1";
-export const PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION =
-  "ai-platform.public-execution-event.v1";
 export const PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION =
   "ai-platform.public-execution-event.v2";
 export const PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION =
@@ -31,7 +29,6 @@ export const PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION =
 export const PUBLIC_AGENT_PROGRESS_EVENT_TYPE = "agent_public_progress";
 export type PublicExecutionEventType = "execution_step" | "execution_progress" | "execution_step_completed" | "execution_step_failed";
 export const PUBLIC_EXECUTION_EVENT_TYPES: ReadonlySet<PublicExecutionEventType> = new Set(["execution_step", "execution_progress", "execution_step_completed", "execution_step_failed"]);
-const PUBLIC_EXECUTION_V1_EVENT_FIELDS = "schema_version event_id sequence run_id step_id kind stage status title summary progress safe_file_name artifact_public_id created_at".split(" ");
 const PUBLIC_EXECUTION_V2_EVENT_FIELDS = "schema_version event_id sequence run_id step_id presentation_kind kind stage status progress safe_label created_at".split(" ");
 const PUBLIC_EXECUTION_STATUSES: Record<PublicExecutionEventType, string> = { execution_step: "running", execution_progress: "running", execution_step_completed: "completed", execution_step_failed: "failed" };
 const EXECUTION_TIMELINE_KINDS = new Set<ExecutionTimelineKind>(["analysis", "capability", "file_read", "processing", "generation", "verification", "artifact", "collaboration"]);
@@ -104,8 +101,6 @@ export type EventType =
   | "user:message"
   | "user:cancel"
   | "thinking"
-  | "tool:start"
-  | "tool:result"
   | "todo:updated"
   | "summary"
   | "run_event"
@@ -205,14 +200,10 @@ export interface EventData {
   severity?: "info" | "warning" | "error" | string;
   payload?: Record<string, unknown>;
   created_at?: string;
-  // Strict ai-platform public execution timeline v1 fields
+  // Strict ai-platform public execution timeline v2 fields
   schema_version?: string;
   kind?: string;
-  title?: string;
-  summary?: string;
   progress?: { current: number; total: number };
-  safe_file_name?: string | null;
-  artifact_public_id?: string | null;
   presentation_kind?: string;
   safe_label?: string;
   // v4 public Render Contract fields
@@ -321,9 +312,7 @@ export function isPublicExecutionEvent(
   eventType: string,
   data: EventData,
 ): data is EventData & {
-  schema_version:
-    | typeof PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION
-    | typeof PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION;
+  schema_version: typeof PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION;
   event_id: string;
   sequence: number;
   run_id: string;
@@ -331,13 +320,9 @@ export function isPublicExecutionEvent(
   kind: ExecutionTimelineKind;
   stage: string;
   status: "running" | "completed" | "failed";
-  title?: string;
-  summary?: string;
   presentation_kind?: string;
   safe_label?: string;
   progress: { current: number; total: number };
-  safe_file_name?: string | null;
-  artifact_public_id?: string | null;
   created_at: string | null;
 } {
   if (!PUBLIC_EXECUTION_EVENT_TYPES.has(eventType as PublicExecutionEventType)) {
@@ -359,16 +344,6 @@ export function isPublicExecutionEvent(
   }
   if (!isExecutionTimelineKind(source.kind) || source.status !== PUBLIC_EXECUTION_STATUSES[eventType as PublicExecutionEventType]) {
     return false;
-  }
-  if (source.schema_version === PUBLIC_EXECUTION_EVENT_SCHEMA_VERSION) {
-    return (
-      Object.keys(source).length === PUBLIC_EXECUTION_V1_EVENT_FIELDS.length &&
-      PUBLIC_EXECUTION_V1_EVENT_FIELDS.every((key) => Object.hasOwn(source, key)) &&
-      typeof source.title === "string" && !!source.title &&
-      typeof source.summary === "string" && !!source.summary &&
-      (source.safe_file_name === null || typeof source.safe_file_name === "string") &&
-      (source.artifact_public_id === null || isOpaquePublicId(source.artifact_public_id))
-    );
   }
   if (source.schema_version !== PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION) return false;
   const presentation = `${String(source.presentation_kind)}:${String(source.kind)}:${String(source.stage)}`;
@@ -556,11 +531,7 @@ export interface HistoryEventData {
   created_at?: string;
   schema_version?: string;
   kind?: string;
-  title?: string;
-  summary?: string;
   progress?: { current: number; total: number };
-  safe_file_name?: string | null;
-  artifact_public_id?: string | null;
   artifact_id?: string;
   artifact_type?: string;
   label?: string;

@@ -1004,247 +1004,21 @@ def test_lambchat_profile_keeps_empty_principal_permissions(monkeypatch):
     assert profile_response.json()["permissions"] == []
 
 
-@pytest.mark.parametrize(
-    ("agent_id", "skill_id", "message", "expected_content"),
-    [
-        (
-            "general-agent",
-            "x",
-            "execute exactly once",
-            "execute exactly once",
-        ),
-        (
-            "general-agent",
-            "x",
-            "x 没有 Bash 工具，无法执行。",
-            "没有 Bash 工具，无法执行。",
-        ),
-        (
-            "general-agent",
-            "general-chat",
-            "non-general-chat-support 没有 Bash 工具，无法执行。",
-            "non-general-chat-support 没有 Bash 工具，无法执行。",
-        ),
-        (
-            "general-agent",
-            "general-chat",
-            "当前（general-chat），没有 Bash 工具，无法执行。",
-            "当前（general-agent），没有 Bash 工具，无法执行。",
-        ),
-        (
-            "general-agent",
-            "general-chat",
-            "请查看 https://general-chat.example.com/help",
-            "请查看 https://general-chat.example.com/help",
-        ),
-        (
-            "general-agent",
-            "general-chat",
-            "team.general-chat.policy 不可用",
-            "team.general-chat.policy 不可用",
-        ),
-        (
-            "general-agent",
-            "general-chat",
-            "team_general-chat_policy 不可用",
-            "team_general-chat_policy 不可用",
-        ),
-        (
-            "general-agent",
-            "general-chat",
-            "team:general-chat:policy 不可用",
-            "team:general-chat:policy 不可用",
-        ),
-        (
-            "general-agent",
-            "general-chat",
-            "团队general-chat策略不可用",
-            "团队general-chat策略不可用",
-        ),
-        (
-            "unknown-agent",
-            "unknown-skill",
-            "unknown-skill 没有 Bash 工具，无法执行。",
-            "没有 Bash 工具，无法执行。",
-        ),
-    ],
-    ids=[
-        "one-character-substring",
-        "one-character-exact-unknown",
-        "larger-token",
-        "punctuated-exact-token",
-        "url-domain-token",
-        "dot-qualified-token",
-        "underscore-qualified-token",
-        "colon-qualified-token",
-        "unicode-adjacent-token",
-        "unknown-exact-identifier",
-    ],
-)
-def test_lambchat_terminal_answer_uses_trusted_identifier_token_boundaries(
-    agent_id,
-    skill_id,
-    message,
-    expected_content,
-):
+def test_lambchat_success_terminal_never_falls_back_to_result_body():
     from app.routes.lambchat_compat import _terminal_final_payload
 
-    final_payload = _terminal_final_payload(
+    assert _terminal_final_payload(
         {
             "id": "run_a",
-            "agent_id": agent_id,
-            "skill_id": skill_id,
             "status": "succeeded",
-            "result_json": {"message": message},
+            "result_json": {"message": "unpersisted answer body"},
         }
-    )
-
-    assert final_payload is not None
-    _, payload, _ = final_payload
-    assert payload["content"] == expected_content
-
-
-@pytest.mark.parametrize(
-    ("agent_id", "skill_id", "message", "expected_content"),
-    [
-        (
-            "qa-word-review",
-            "general-chat",
-            "general-chat 拒绝执行",
-            "general-agent 拒绝执行",
-        ),
-        (
-            "qa-word-review",
-            "general-chat",
-            "qa-word-review 拒绝执行",
-            "document-review 拒绝执行",
-        ),
-        (
-            "unknown-agent",
-            "general-chat",
-            "general-chat 拒绝执行",
-            "general-agent 拒绝执行",
-        ),
-        (
-            "unknown-agent",
-            "general-chat",
-            "unknown-agent 拒绝执行",
-            "general-agent 拒绝执行",
-        ),
-        (
-            "qa-word-review",
-            "unknown-skill",
-            "unknown-skill 拒绝执行",
-            "document-review 拒绝执行",
-        ),
-        (
-            "qa-word-review",
-            "unknown-skill",
-            "qa-word-review 拒绝执行",
-            "document-review 拒绝执行",
-        ),
-        (
-            "qa-word-review",
-            "",
-            "qa-word-review 拒绝执行",
-            "document-review 拒绝执行",
-        ),
-        (
-            "",
-            "general-chat",
-            "general-chat 拒绝执行",
-            "general-agent 拒绝执行",
-        ),
-    ],
-    ids=[
-        "mapped-mismatch-skill-side",
-        "mapped-mismatch-agent-side",
-        "mapped-skill-unmapped-agent-skill-side",
-        "mapped-skill-unmapped-agent-agent-side",
-        "unmapped-skill-mapped-agent-skill-side",
-        "unmapped-skill-mapped-agent-agent-side",
-        "missing-skill-mapped-agent",
-        "mapped-skill-missing-agent",
-    ],
-)
-def test_lambchat_terminal_answer_requires_consistent_identifier_capabilities(
-    agent_id,
-    skill_id,
-    message,
-    expected_content,
-):
-    from app.routes.lambchat_compat import _terminal_final_payload
-
-    final_payload = _terminal_final_payload(
-        {
-            "id": "run_a",
-            "agent_id": agent_id,
-            "skill_id": skill_id,
-            "status": "succeeded",
-            "result_json": {"message": message},
-        }
-    )
-
-    assert final_payload is not None
-    _, payload, _ = final_payload
-    assert payload["content"] == expected_content
-
-
-@pytest.mark.parametrize(
-    ("agent_id", "skill_id", "message", "private_marker", "expected_content", "expected_detail_code"),
-    [
-        (
-            "general-agent",
-            "general-chat",
-            "general-chat 拒绝读取 /var/lib/private/answer.txt",
-            "",
-            "general-agent 拒绝读取 /var/lib/private/answer.txt",
-            None,
-        ),
-        (
-            "executor_native",
-            "custom-skill",
-            "custom-skill 拒绝暴露运行时详情",
-            "executor_native",
-            "拒绝暴露运行时详情",
-            None,
-        ),
-    ],
-)
-def test_lambchat_terminal_answer_identifier_replacement_keeps_private_text_gate(
-    agent_id,
-    skill_id,
-    message,
-    private_marker,
-    expected_content,
-    expected_detail_code,
-):
-    from app.routes.lambchat_compat import _terminal_final_payload
-
-    final_payload = _terminal_final_payload(
-        {
-            "id": "run_a",
-            "agent_id": agent_id,
-            "skill_id": skill_id,
-            "status": "succeeded",
-            "result_json": {"message": message},
-        }
-    )
-
-    assert final_payload is not None
-    event_type, payload, _ = final_payload
-    assert private_marker not in str(payload) if private_marker else True
-    assert skill_id not in str(payload)
-    if expected_detail_code is not None:
-        assert event_type == "final_detail"
-        assert payload["detail_code"] == expected_detail_code
-        assert "content" not in payload
-    else:
-        assert event_type == "message:chunk"
-        assert payload["content"] == expected_content
+    ) is None
 
 
 def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
+    from app.streaming.api import opaque_message_id
+
     async def fake_get_authorized_lambchat_session(
         conn, *, tenant_id, user_id, session_id
     ):
@@ -1256,6 +1030,7 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
         return [
             {
                 "id": "run_a",
+                "tenant_id": "default",
                 "trace_id": "trace_run_a",
                 "status": "running",
                 "result_json": {},
@@ -1263,44 +1038,41 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
             }
         ]
 
+    message_id = opaque_message_id("default", "run_a")
+
+    def v4_delta(event_id, sequence, delta):
+        return {
+            "id": event_id,
+            "tenant_id": "default",
+            "run_id": "run_a",
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": sequence,
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
+            "message": "",
+            "severity": "info",
+            "visible_to_user": True,
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
+            "payload_json": {
+                "delta": delta,
+                "__stream_v4": {
+                    "attempt_id": "attempt-history",
+                    "version": 1,
+                    "stream_incarnation": 1,
+                    "authorization_epoch": 1,
+                    "message_id": message_id,
+                    "publication_state": "published",
+                },
+            },
+            "created_at": "2026-07-30T00:00:00Z",
+        }
+
     async def fake_list_run_events(conn, *, tenant_id, run_id):
         return [
-            {
-                "id": "evt-delta-7",
-                "trace_id": "trace_run_a",
-                "schema_version": "ai-platform.event-envelope.v1",
-                "sequence": 7,
-                "event_type": "assistant_delta",
-                "stage": "answer",
-                "message": "",
-                "severity": "info",
-                "visible_to_user": True,
-                "payload_json": {
-                    "delta": "partial ",
-                    "source": "worker_answer_delta_v1",
-                    "visible_to_user": True,
-                    "severity": "info",
-                },
-                "created_at": None,
-            },
-            {
-                "id": "evt-delta-8",
-                "trace_id": "trace_run_a",
-                "schema_version": "ai-platform.event-envelope.v1",
-                "sequence": 8,
-                "event_type": "assistant_delta",
-                "stage": "answer",
-                "message": "",
-                "severity": "info",
-                "visible_to_user": True,
-                "payload_json": {
-                    "delta": "answer",
-                    "source": "worker_answer_delta_v1",
-                    "visible_to_user": True,
-                    "severity": "info",
-                },
-                "created_at": None,
-            },
+            v4_delta("evt4_delta-7", 7, "partial "),
+            v4_delta("evt4_delta-8", 8, "answer"),
         ]
 
     async def empty_artifacts(conn, *, tenant_id, run_id):
@@ -1335,7 +1107,7 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
     events = response.json()["events"]
     assert [event["event_type"] for event in events] == ["message:chunk"]
     assert [event["sequence"] for event in events] == [7]
-    assert [event["payload"]["event_id"] for event in events] == ["evt-delta-7"]
+    assert [event["payload"]["event_id"] for event in events] == ["evt4_delta-7"]
     assert [event["payload"]["content"] for event in events] == ["partial "]
 
 
@@ -1378,6 +1150,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
 ):
     from app.auth import AuthPrincipal
     from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
 
     principal = AuthPrincipal(
         user_id="user-a",
@@ -1387,6 +1160,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     )
     run = {
         "id": "run-terminal-partial",
+        "tenant_id": "default",
         "trace_id": "trace-terminal-partial",
         "agent_id": "general-agent",
         "skill_id": "general-chat",
@@ -1397,6 +1171,8 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         "finished_at": "2026-07-22T01:02:03Z",
     }
     base = {
+        "tenant_id": "default",
+        "run_id": "run-terminal-partial",
         "trace_id": "trace-terminal-partial",
         "schema_version": "ai-platform.event-envelope.v1",
         "severity": "info",
@@ -1404,10 +1180,35 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         "error_code": None,
         "created_at": "2026-07-22T01:02:00Z",
     }
+    message_id = opaque_message_id("default", "run-terminal-partial")
+
+    def v4_delta(event_id, sequence, delta):
+        return {
+            **base,
+            "id": event_id,
+            "sequence": sequence,
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
+            "message": "",
+            "payload_json": {
+                "delta": delta,
+                "__stream_v4": {
+                    "attempt_id": "attempt-terminal-partial",
+                    "version": 1,
+                    "stream_incarnation": 1,
+                    "authorization_epoch": 1,
+                    "message_id": message_id,
+                    "publication_state": "published",
+                },
+            },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
+        }
+
     run_events = [
         {
             **base,
-            "id": "evt-started",
+            "id": "evt4_started",
             "sequence": 1,
             "event_type": "worker_started",
             "stage": "worker",
@@ -1416,7 +1217,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         },
         {
             **base,
-            "id": "evt-tool-progress",
+            "id": "evt4_tool-progress",
             "sequence": 2,
             "event_type": "tool_call_delta",
             "stage": "tool",
@@ -1426,37 +1227,15 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
                 "visible_to_user": True,
             },
         },
+        v4_delta("evt4_safe-delta", 3, "已完成公开部分；"),
+        v4_delta(
+            "evt4_private-delta",
+            4,
+            "api_key=actual-secret-value",
+        ),
         {
             **base,
-            "id": "evt-safe-delta",
-            "sequence": 3,
-            "event_type": "assistant_delta",
-            "stage": "answer",
-            "message": "",
-            "payload_json": {
-                "delta": "已完成公开部分；",
-                "source": "worker_answer_delta_v1",
-                "visible_to_user": True,
-                "severity": "info",
-            },
-        },
-        {
-            **base,
-            "id": "evt-private-delta",
-            "sequence": 4,
-            "event_type": "assistant_delta",
-            "stage": "answer",
-            "message": "",
-            "payload_json": {
-                "delta": "api_key=actual-secret-value at /home/private/result.txt",
-                "source": "worker_answer_delta_v1",
-                "visible_to_user": True,
-                "severity": "info",
-            },
-        },
-        {
-            **base,
-            "id": "evt-thinking",
+            "id": "evt4_thinking",
             "sequence": 5,
             "event_type": "thinking",
             "stage": "sdk",
@@ -1488,7 +1267,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     assert "受控处理步骤仍在进行" in serialized
     assert "private chain of thought" not in serialized
     assert "actual-secret-value" not in serialized
-    assert "/home/private/result.txt" in serialized
+    assert "actual-secret-value" not in serialized
     assert "worker-private" not in serialized
     assert "current_step" not in serialized
 
@@ -1916,6 +1695,7 @@ def test_lambchat_history_selects_one_authorized_body_source(
 def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer():
     from app.auth import AuthPrincipal
     from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
 
     canonical_public_text = "公开答案在终态前已持久化。"
     principal = AuthPrincipal(
@@ -1926,6 +1706,7 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
     )
     run = {
         "id": "run-empty-terminal",
+        "tenant_id": "default",
         "trace_id": "trace-empty-terminal",
         "agent_id": "general-agent",
         "skill_id": "general-chat",
@@ -1937,22 +1718,31 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
     }
     run_events = [
         {
-            "id": "evt-sealed",
+            "id": "evt4_sealed",
+            "tenant_id": "default",
+            "run_id": "run-empty-terminal",
             "trace_id": "trace-empty-terminal",
             "schema_version": "ai-platform.event-envelope.v1",
             "sequence": 1,
-            "event_type": "assistant_delta",
-            "stage": "answer",
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
             "message": "",
             "severity": "info",
             "visible_to_user": True,
             "error_code": None,
             "payload_json": {
                 "delta": canonical_public_text,
-                "source": "worker_answer_delta_v1",
-                "visible_to_user": True,
-                "severity": "info",
+                "__stream_v4": {
+                    "attempt_id": "attempt-empty-terminal",
+                    "version": 1,
+                    "stream_incarnation": 1,
+                    "authorization_epoch": 1,
+                    "message_id": opaque_message_id("default", "run-empty-terminal"),
+                    "publication_state": "published",
+                },
             },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
             "created_at": "2026-07-30T00:00:00Z",
         }
     ]
@@ -1960,26 +1750,18 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
     records = _compatibility_events_for_run(run, run_events, [], principal)
     history = [record.history_event for record in records]
 
+    assert [event["event_type"] for event in history] == ["message:chunk", "done"]
     terminal_answers = [
-        event["data"]
-        for event in history
-        if event["event_type"] in {"message:chunk", "final_detail"}
+        event["data"] for event in history if event["event_type"] == "message:chunk"
     ]
     assert terminal_answers == [
         {
             "projection_version": "ai-platform.chat-public-projection.v1",
             "projection_kind": "assistant_delta",
-            "event_id": "evt-sealed",
+            "event_id": "evt4_sealed",
             "sequence": 1,
             "run_id": "run-empty-terminal",
             "content": canonical_public_text,
-        },
-        {
-            "projection_version": "ai-platform.chat-public-projection.v1",
-            "run_id": "run-empty-terminal",
-            "detail_kind": "result_unavailable",
-            "detail_code": "result_unavailable",
-            "message": "本次执行未能生成可展示的回复内容。",
         },
     ]
 
@@ -1987,6 +1769,7 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
 def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
     from app.auth import AuthPrincipal
     from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.streaming.api import opaque_message_id
 
     principal = AuthPrincipal(
         user_id="user-a",
@@ -1996,6 +1779,7 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
     )
     run = {
         "id": "run-split-identifier",
+        "tenant_id": "default",
         "trace_id": "trace-split-identifier",
         "agent_id": "qa-word-review",
         "skill_id": "general-chat",
@@ -2007,41 +1791,59 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
     }
     run_events = [
         {
-            "id": "evt-split-a",
+            "id": "evt4_split-a",
+            "tenant_id": "default",
+            "run_id": "run-split-identifier",
             "trace_id": "trace-split-identifier",
             "schema_version": "ai-platform.event-envelope.v1",
             "sequence": 1,
-            "event_type": "assistant_delta",
-            "stage": "answer",
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
             "message": "",
             "severity": "info",
             "visible_to_user": True,
             "error_code": None,
             "payload_json": {
                 "delta": "已开始，general-",
-                "source": "worker_answer_delta_v1",
-                "visible_to_user": True,
-                "severity": "info",
+                "__stream_v4": {
+                    "attempt_id": "attempt-split-identifier",
+                    "version": 1,
+                    "stream_incarnation": 1,
+                    "authorization_epoch": 1,
+                    "message_id": opaque_message_id("default", "run-split-identifier"),
+                    "publication_state": "published",
+                },
             },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
             "created_at": "2026-07-30T00:00:00Z",
         },
         {
-            "id": "evt-split-b",
+            "id": "evt4_split-b",
+            "tenant_id": "default",
+            "run_id": "run-split-identifier",
             "trace_id": "trace-split-identifier",
             "schema_version": "ai-platform.event-envelope.v1",
             "sequence": 2,
-            "event_type": "assistant_delta",
-            "stage": "answer",
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
             "message": "",
             "severity": "info",
             "visible_to_user": True,
             "error_code": None,
             "payload_json": {
                 "delta": "chat 完成。",
-                "source": "worker_answer_delta_v1",
-                "visible_to_user": True,
-                "severity": "info",
+                "__stream_v4": {
+                    "attempt_id": "attempt-split-identifier",
+                    "version": 1,
+                    "stream_incarnation": 1,
+                    "authorization_epoch": 1,
+                    "message_id": opaque_message_id("default", "run-split-identifier"),
+                    "publication_state": "published",
+                },
             },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
             "created_at": "2026-07-30T00:00:01Z",
         },
     ]
@@ -2059,7 +1861,7 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
     ]
 
     assert len(answer_payloads) == 1
-    assert [payload["event_id"] for payload in answer_payloads] == ["evt-split-b"]
+    assert [payload["event_id"] for payload in answer_payloads] == ["evt4_split-b"]
     assert "".join(deltas) == "已开始，general-agent 完成。"
     assert "general-chat" not in str(answer_payloads)
     assert "qa-word-review" not in str(answer_payloads)
@@ -2194,6 +1996,7 @@ def test_lambchat_history_fold_preserves_split_identifier_across_pages():
         _CompatibilityFoldState,
         _compatibility_events_for_run_page,
     )
+    from app.streaming.api import opaque_message_id
 
     principal = AuthPrincipal(
         user_id="user-a",
@@ -2203,6 +2006,7 @@ def test_lambchat_history_fold_preserves_split_identifier_across_pages():
     )
     run = {
         "id": "run-paged-identifier",
+        "tenant_id": "default",
         "trace_id": "trace-paged-identifier",
         "agent_id": "qa-word-review",
         "skill_id": "general-chat",
@@ -2213,30 +2017,39 @@ def test_lambchat_history_fold_preserves_split_identifier_across_pages():
     def delta_event(event_id, sequence, delta):
         return {
             "id": event_id,
+            "tenant_id": "default",
+            "run_id": "run-paged-identifier",
             "trace_id": "trace-paged-identifier",
             "schema_version": "ai-platform.event-envelope.v1",
             "sequence": sequence,
-            "event_type": "assistant_delta",
-            "stage": "answer",
+            "event_type": "message.delta",
+            "stage": "agent_kernel",
             "message": "",
             "severity": "info",
             "visible_to_user": True,
             "error_code": None,
             "payload_json": {
                 "delta": delta,
-                "source": "worker_answer_delta_v1",
-                "visible_to_user": True,
-                "severity": "info",
+                "__stream_v4": {
+                    "attempt_id": "attempt-paged-identifier",
+                    "version": 1,
+                    "stream_incarnation": 1,
+                    "authorization_epoch": 1,
+                    "message_id": opaque_message_id("default", "run-paged-identifier"),
+                    "publication_state": "published",
+                },
             },
+            "stream_publication_state": "published",
+            "v4_attempt_authorized": True,
             "created_at": f"2026-07-30T00:00:0{sequence}Z",
         }
 
     first_page, fold_state = _compatibility_events_for_run_page(
         run,
-        [delta_event("evt-page-a", 1, "已开始，general-")],
+        [delta_event("evt4_page-a", 1, "已开始，general-")],
         [],
         principal,
-        fold_state=_CompatibilityFoldState(False, frozenset(), "legacy"),
+        fold_state=_CompatibilityFoldState(False, frozenset()),
         include_terminal=False,
     )
     second_page, _ = _compatibility_events_for_run_page(
@@ -2246,7 +2059,7 @@ def test_lambchat_history_fold_preserves_split_identifier_across_pages():
             "result_json": {"message": "已开始，general-chat 完成。"},
             "finished_at": "2026-07-30T00:00:03Z",
         },
-        [delta_event("evt-page-b", 2, "chat 完成。")],
+        [delta_event("evt4_page-b", 2, "chat 完成。")],
         [],
         principal,
         fold_state=fold_state,
@@ -2264,7 +2077,7 @@ def test_lambchat_history_fold_preserves_split_identifier_across_pages():
     ]
 
     assert len(answer_payloads) == 1
-    assert [payload["event_id"] for payload in answer_payloads] == ["evt-page-b"]
+    assert [payload["event_id"] for payload in answer_payloads] == ["evt4_page-b"]
     assert "".join(deltas) == "已开始，general-agent 完成。"
     assert "general-chat" not in str(answer_payloads)
     assert "qa-word-review" not in str(answer_payloads)
@@ -2315,6 +2128,7 @@ def test_lambchat_history_fold_keeps_run_wide_v4_source_across_pages() -> None:
         "id": "evt4_paged_delta",
         "sequence": 2,
         "event_type": "message.delta",
+        "stage": "agent_kernel",
         "stream_publication_state": "published",
         "v4_attempt_authorized": True,
         "payload_json": {
@@ -2336,7 +2150,7 @@ def test_lambchat_history_fold_keeps_run_wide_v4_source_across_pages() -> None:
         [legacy],
         [],
         principal,
-        fold_state=_CompatibilityFoldState(False, frozenset(), "v4"),
+        fold_state=_CompatibilityFoldState(False, frozenset()),
         include_terminal=False,
     )
     second_page, final_state = _compatibility_events_for_run_page(
@@ -2362,7 +2176,7 @@ def test_lambchat_history_fold_keeps_run_wide_v4_source_across_pages() -> None:
     assert first_page == []
     assert [chunk.id for chunk in chunks] == ["evt4_paged_delta"]
     assert chunks[0].stream_data["content"] == "分页正文。"
-    assert final_state.answer_source == "v4"
+    assert final_state.answer_projection_state != ("", "", False)
 
 
 def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
@@ -2971,10 +2785,8 @@ def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(
     events = response.json()["events"]
     assert [event["event_type"] for event in events] == [
         "user:message",
-        "message:chunk",
         "done",
         "user:message",
-        "message:chunk",
         "done",
     ]
     user_events = [event for event in events if event["event_type"] == "user:message"]
@@ -3444,13 +3256,10 @@ def test_lambchat_exact_session_events_restore_an_authorized_run_beyond_the_late
     assert response.json()["current_run_id"] == "run-51"
     assert [event["event_type"] for event in response.json()["events"]] == [
         "user:message",
-        "message:chunk",
         "done",
     ]
     assert response.json()["events"][0]["data"]["content"] == "恢复旧问题"
-    assert (
-        response.json()["events"][1]["data"]["content"] == "restored exact old answer"
-    )
+    assert "restored exact old answer" not in response.text
     assert "metadata_json" not in response.text
 
 
@@ -3521,6 +3330,8 @@ def test_lambchat_exact_session_events_hide_missing_or_wrong_session_runs(
 
 
 def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
+    from app.streaming.api import opaque_message_id
+
     async def fake_get_authorized_lambchat_session(
         conn, *, tenant_id, user_id, session_id
     ):
@@ -3532,19 +3343,48 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
         return [
             {
                 "id": "run_a",
+                "tenant_id": "default",
                 "trace_id": "trace_run_a",
                 "agent_id": "general-agent",
                 "skill_id": "general-chat",
-                "status": "succeeded",
-                "result_json": {"message": "hello"},
+                "status": "running",
+                "result_json": {},
                 "error_message": None,
-                "created_at": None,
+                "created_at": "2026-07-30T00:00:00Z",
                 "finished_at": None,
             }
         ]
 
     async def fake_list_run_events(conn, *, tenant_id, run_id):
-        return []
+        return [
+            {
+                "id": "evt4_answer",
+                "tenant_id": "default",
+                "run_id": "run_a",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 1,
+                "event_type": "message.delta",
+                "stage": "agent_kernel",
+                "message": "",
+                "severity": "info",
+                "visible_to_user": True,
+                "stream_publication_state": "published",
+                "v4_attempt_authorized": True,
+                "payload_json": {
+                    "delta": "hello ",
+                    "__stream_v4": {
+                        "attempt_id": "attempt-run-a",
+                        "version": 1,
+                        "stream_incarnation": 1,
+                        "authorization_epoch": 1,
+                        "message_id": opaque_message_id("default", "run_a"),
+                        "publication_state": "published",
+                    },
+                },
+                "created_at": "2026-07-30T00:00:00Z",
+            }
+        ]
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
@@ -3571,16 +3411,15 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
     assert event["type"] == "message:chunk"
     assert event["stage"] == "answer"
     assert event["payload"] == {
-        "run_id": "run_a",
         "projection_version": "ai-platform.chat-public-projection.v1",
         "projection_kind": "assistant_delta",
-        "event_id": "run_a:final",
-        "message_id": "run_a:assistant",
-        "source": "worker_answer_delta_v1",
-        "content": "hello",
+        "event_id": "evt4_answer",
+        "sequence": 1,
+        "run_id": "run_a",
+        "content": "hello ",
     }
     assert event["data"] == event["payload"]
-    assert "sequence" not in event
+    assert event["sequence"] == 1
 
 
 def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch):
@@ -3778,6 +3617,8 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
 def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
     monkeypatch,
 ):
+    from app.streaming.api import opaque_message_id
+
     async def fake_get_authorized_lambchat_session(
         conn, *, tenant_id, user_id, session_id
     ):
@@ -3789,6 +3630,7 @@ def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
         return [
             {
                 "id": "run_a",
+                "tenant_id": "default",
                 "trace_id": "trace_run_a",
                 "agent_id": "general-agent",
                 "skill_id": "general-chat",
@@ -3796,13 +3638,15 @@ def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
                 "result_json": {"message": "Executor failed at /private/runtime.log"},
                 "error_code": "terminal_reconciliation_failed",
                 "error_message": "Executor failed at /private/runtime.log",
-                "created_at": None,
+                "created_at": "2026-07-30T00:00:00Z",
                 "finished_at": None,
             }
         ]
 
     async def fake_list_run_events(conn, *, tenant_id, run_id):
         base = {
+            "tenant_id": "default",
+            "run_id": "run_a",
             "trace_id": "trace_run_a",
             "schema_version": "ai-platform.event-envelope.v1",
             "severity": "info",
@@ -3813,26 +3657,33 @@ def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
             "output_token_count": 0,
             "total_token_count": 0,
             "estimated_cost_minor": 0,
-            "created_at": None,
+            "created_at": "2026-07-30T00:00:00Z",
         }
         return [
             {
                 **base,
-                "id": "evt-partial",
+                "id": "evt4_partial",
                 "sequence": 11,
-                "event_type": "assistant_delta",
-                "stage": "answer",
+                "event_type": "message.delta",
+                "stage": "agent_kernel",
                 "message": "",
                 "payload_json": {
                     "delta": "已完成并保留的公开部分。",
-                    "source": "worker_answer_delta_v1",
-                    "visible_to_user": True,
-                    "severity": "info",
+                    "__stream_v4": {
+                        "attempt_id": "attempt-run-a",
+                        "version": 1,
+                        "stream_incarnation": 1,
+                        "authorization_epoch": 1,
+                        "message_id": opaque_message_id("default", "run_a"),
+                        "publication_state": "published",
+                    },
                 },
+                "stream_publication_state": "published",
+                "v4_attempt_authorized": True,
             },
             {
                 **base,
-                "id": "evt-failed",
+                "id": "evt4_failed",
                 "sequence": 12,
                 "event_type": "run_failed",
                 "stage": "worker",
@@ -3841,7 +3692,7 @@ def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
             },
             {
                 **base,
-                "id": "evt-artifact",
+                "id": "evt4_artifact",
                 "sequence": 13,
                 "event_type": "artifact_created",
                 "stage": "artifact",
@@ -3862,7 +3713,7 @@ def test_lambchat_reconciliation_failure_preserves_partial_content_and_artifact(
                 "size_bytes": 42,
                 "manifest_version": "ai-platform.artifact-manifest.v1",
                 "manifest_json": {"local_path": "/var/lib/private.txt"},
-                "created_at": None,
+                "created_at": "2026-07-30T00:00:00Z",
             }
         ]
 

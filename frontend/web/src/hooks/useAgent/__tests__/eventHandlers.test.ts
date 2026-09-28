@@ -683,19 +683,21 @@ test("advances only transport for an immediate equal semantic sequence", () => {
     {
       event: "execution_progress",
       data: JSON.stringify({
-        schema_version: "ai-platform.public-execution-event.v1",
+        schema_version: "ai-platform.public-execution-event.v2",
         event_id: "semantic-equal-immediate",
         run_id: "run-active",
         sequence: 9,
         step_id: "step-prepare-report",
+        presentation_kind: "processing",
+        safe_label: "Data processing",
         kind: "processing",
-        stage: "prepare",
+        stage: "data",
         status: "running",
-        title: "准备报告",
-        summary: "重复事件不得更新",
-        progress: { current: 2, total: 4 },
-        safe_file_name: null,
-        artifact_public_id: null,
+
+
+        progress: { current: 0, total: 1 },
+
+
         created_at: null,
       }),
     } as StreamEvent,
@@ -814,19 +816,21 @@ test("uses the existing cursor and event-id guard for public execution steps", (
     {
       event: "execution_step",
       data: JSON.stringify({
-        schema_version: "ai-platform.public-execution-event.v1",
+        schema_version: "ai-platform.public-execution-event.v2",
         event_id: "evt-execution-started",
         run_id: "run-active",
         sequence: 9,
         step_id: "step-prepare-report",
+        presentation_kind: "processing",
+        safe_label: "Data processing",
         kind: "processing",
-        stage: "prepare",
+        stage: "data",
         status: "running",
-        title: "准备报告",
-        summary: "正在读取输入",
-        progress: { current: 0, total: 4 },
-        safe_file_name: null,
-        artifact_public_id: null,
+
+
+        progress: { current: 0, total: 1 },
+
+
         created_at: null,
       }),
     } as StreamEvent,
@@ -840,19 +844,21 @@ test("uses the existing cursor and event-id guard for public execution steps", (
     {
       event: "execution_progress",
       data: JSON.stringify({
-        schema_version: "ai-platform.public-execution-event.v1",
+        schema_version: "ai-platform.public-execution-event.v2",
         event_id: "evt-execution-started",
         run_id: "run-active",
         sequence: 10,
         step_id: "step-prepare-report",
+        presentation_kind: "processing",
+        safe_label: "Data processing",
         kind: "processing",
-        stage: "prepare",
+        stage: "data",
         status: "running",
-        title: "准备报告",
-        summary: "重复事件不得更新",
-        progress: { current: 2, total: 4 },
-        safe_file_name: null,
-        artifact_public_id: null,
+
+
+        progress: { current: 0, total: 1 },
+
+
         created_at: null,
       }),
     } as StreamEvent,
@@ -866,19 +872,21 @@ test("uses the existing cursor and event-id guard for public execution steps", (
     {
       event: "execution_progress",
       data: JSON.stringify({
-        schema_version: "ai-platform.public-execution-event.v1",
+        schema_version: "ai-platform.public-execution-event.v2",
         event_id: "evt-execution-stale",
         run_id: "run-active",
         sequence: 8,
         step_id: "step-prepare-report",
+        presentation_kind: "processing",
+        safe_label: "Data processing",
         kind: "processing",
-        stage: "prepare",
+        stage: "data",
         status: "running",
-        title: "准备报告",
-        summary: "乱序事件不得更新",
-        progress: { current: 1, total: 4 },
-        safe_file_name: null,
-        artifact_public_id: null,
+
+
+        progress: { current: 0, total: 1 },
+
+
         created_at: null,
       }),
     } as StreamEvent,
@@ -939,19 +947,21 @@ test("commits execution protocol state before a throttled React publication", ()
       {
         event: "execution_progress",
         data: JSON.stringify({
-          schema_version: "ai-platform.public-execution-event.v1",
+          schema_version: "ai-platform.public-execution-event.v2",
           event_id: `evt-progress-${sequence}`,
           run_id: "run-active",
           sequence,
           step_id: "step-1",
+          presentation_kind: "processing",
+          safe_label: "Data processing",
           kind: "processing",
-          stage: "prepare",
+          stage: "data",
           status: "running",
-          title: "准备报告",
-          summary: "正在读取输入",
-          progress: { current: sequence, total: 4 },
-          safe_file_name: null,
-          artifact_public_id: null,
+
+
+          progress: { current: 0, total: 1 },
+
+
           created_at: null,
         }),
       } as StreamEvent,
@@ -1165,19 +1175,21 @@ test("commits a public delta before a later execution state and keeps history se
   const started = {
     event: "execution_step",
     data: JSON.stringify({
-      schema_version: "ai-platform.public-execution-event.v1",
+      schema_version: "ai-platform.public-execution-event.v2",
       event_id: "evt-step-9",
       run_id: "run-ordered",
       sequence: 9,
       step_id: "step-1",
+      presentation_kind: "processing",
+      safe_label: "Data processing",
       kind: "processing",
-      stage: "private-stage",
+      stage: "data",
       status: "running",
-      title: "private title",
-      summary: "private summary",
+
+
       progress: { current: 0, total: 1 },
-      safe_file_name: null,
-      artifact_public_id: null,
+
+
       created_at: "2026-07-31T01:00:00.000Z",
     }),
   } as StreamEvent;

@@ -12,6 +12,20 @@ from app.context_builder import (
 )
 
 
+def _coverage_reader(message_count, *, source_sha256="a" * 64):
+    async def read_coverage(_conn, *, scope, run_id, session_generation):
+        assert scope.session_id == "session-a"
+        assert run_id == "run-current"
+        assert session_generation > 0
+        return {
+            "source_sha256": source_sha256,
+            "message_count": message_count,
+            "coverage_through_generation": session_generation - 1 if message_count else None,
+        }
+
+    return read_coverage
+
+
 @pytest.fixture(autouse=True)
 def fake_provider_lineage_port_for_context_builder(monkeypatch):
     async def fake_claim(_conn, *, scope, run_id):
@@ -818,35 +832,8 @@ async def test_context_builder_preserves_only_authorized_retrieval_file_basename
 
 
 @pytest.mark.asyncio
-async def test_record_initial_context_snapshot_keeps_messages_without_implicit_session_files(monkeypatch):
+async def test_record_initial_context_snapshot_uses_coverage_and_keeps_files_explicit(monkeypatch):
     captured = {}
-
-    async def fake_count_messages(conn, **kwargs):
-        assert kwargs == {
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "session_id": "session-a",
-            "run_id": "run-current",
-        }
-        return 2
-
-    async def fake_list_messages(conn, **kwargs):
-        assert kwargs == {
-            "tenant_id": "tenant-a",
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "session_id": "session-a",
-            "run_id": "run-current",
-            "limit": 4,
-            "oldest_first": True,
-            "after_created_at": None,
-            "after_id": None,
-        }
-        return [
-            {"id": "msg-prior-user", "run_id": "run-prior", "role": "user", "content": "translate it", "session_generation": 1, "created_at": "2026-07-19T00:00:01Z"},
-            {"id": "msg-prior-assistant", "run_id": "run-prior", "role": "assistant", "content": "done", "session_generation": 1, "created_at": "2026-07-19T00:00:02Z"},
-        ]
 
     async def fake_list_artifacts(conn, **kwargs):
         assert kwargs == {
@@ -894,8 +881,7 @@ async def test_record_initial_context_snapshot_keeps_messages_without_implicit_s
                 "agent_id": "general-agent", "session_generation": 2}
 
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', fake_current_run)
-    monkeypatch.setattr('app.context.infrastructure.sources_postgres.count_session_context_messages', fake_count_messages)
-    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_messages', fake_list_messages)
+    monkeypatch.setattr('app.context_builder.read_provider_coverage', _coverage_reader(2))
     monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_artifacts', fake_list_artifacts)
     monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_memory_policy)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.create_context_snapshot', fake_create)
@@ -946,9 +932,6 @@ async def test_record_initial_context_snapshot_preserves_more_than_eight_current
     async def empty(*_args, **_kwargs):
         return []
 
-    async def no_history(*_args, **_kwargs):
-        return 0
-
     async def historical_files(*_args, **_kwargs):
         return [{"id": f"file-prior-{index}"} for index in range(8)]
 
@@ -974,8 +957,7 @@ async def test_record_initial_context_snapshot_preserves_more_than_eight_current
         return {"workspace_id": "workspace-a", "session_id": "session-a", "agent_id": "document-review", "session_generation": 2}
 
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', current_run)
-    monkeypatch.setattr('app.context.infrastructure.sources_postgres.count_session_context_messages', no_history)
-    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_messages', empty)
+    monkeypatch.setattr('app.context_builder.read_provider_coverage', _coverage_reader(0))
     monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_files', historical_files)
     monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_artifacts', empty)
     monkeypatch.setattr('app.context.infrastructure.sources_postgres.session_has_legacy_run_history', no_legacy)
@@ -1008,22 +990,8 @@ async def test_record_initial_context_snapshot_preserves_more_than_eight_current
 
 
 @pytest.mark.asyncio
-async def test_session_history_snapshot_authorizes_candidate_tail_without_manifest_message_refs(monkeypatch):
+async def test_session_history_snapshot_persists_coverage_without_manifest_message_refs(monkeypatch):
     captured = {}
-
-    async def fake_count_messages(_conn, **_kwargs):
-        return 10
-
-    history = [
-        {"id": f"msg-prior-{index:02d}", "run_id": "run-prior", "role": "user", "content": f"prior-{index}",
-         "created_at": f"2026-07-19T00:00:{index:02d}Z", "session_generation": 1}
-        for index in range(1, 11)
-    ]
-
-    async def fake_list_messages(_conn, **kwargs):
-        after = kwargs["after_id"]
-        remaining = [row for row in history if after is None or row["id"] > after]
-        return remaining[:kwargs["limit"]]
 
     async def fake_empty(*_args, **_kwargs):
         return []
@@ -1039,8 +1007,7 @@ async def test_session_history_snapshot_authorizes_candidate_tail_without_manife
         return {"workspace_id": "workspace-a", "session_id": "session-a", "agent_id": "general-agent", "session_generation": 2}
 
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', current_run)
-    monkeypatch.setattr('app.context.infrastructure.sources_postgres.count_session_context_messages', fake_count_messages)
-    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_messages', fake_list_messages)
+    monkeypatch.setattr('app.context_builder.read_provider_coverage', _coverage_reader(10))
     monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_files', fake_empty)
     monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_artifacts', fake_empty)
     monkeypatch.setattr('app.context.infrastructure.postgres.get_effective_memory_policy', fake_policy)
@@ -1065,26 +1032,17 @@ async def test_session_history_snapshot_authorizes_candidate_tail_without_manife
 
 
 @pytest.mark.asyncio
-async def test_context_builder_counts_history_before_fetching_authorized_candidate_tail(monkeypatch):
-    captured: dict[str, object] = {}
-    call_order: list[str] = []
+async def test_context_builder_uses_scoped_coverage_for_history_count(monkeypatch):
+    captured = {}
+    coverage_calls = []
 
-    async def count_messages(_conn, **kwargs):
-        call_order.append("count")
-        assert kwargs["run_id"] == "run-current"
-        return 13
-
-    history = [
-        {"id": f"msg-{index:02d}", "run_id": f"run-{index}", "role": "user", "content": f"历史内容 {index}",
-         "session_generation": index, "created_at": f"2026-07-19T00:00:{index:02d}Z"}
-        for index in range(1, 14)
-    ]
-
-    async def list_messages(_conn, **kwargs):
-        call_order.append("list")
-        assert kwargs["limit"] == 4 and kwargs["oldest_first"] is True
-        remaining = [row for row in history if kwargs["after_id"] is None or row["id"] > kwargs["after_id"]]
-        return remaining[:kwargs["limit"]]
+    async def read_coverage(_conn, *, scope, run_id, session_generation):
+        coverage_calls.append((scope.session_id, run_id, session_generation))
+        return {
+            "source_sha256": "b" * 64,
+            "message_count": 13,
+            "coverage_through_generation": 12,
+        }
 
     async def empty(*_args, **_kwargs):
         return []
@@ -1093,18 +1051,19 @@ async def test_context_builder_counts_history_before_fetching_authorized_candida
         return False
 
     async def policy(*_args, **_kwargs):
-        return {"source": "default", "memory_enabled": True, "long_term_memory_enabled": False, "retention_days": 90}
+        return {"source": "default", "memory_enabled": True,
+                "long_term_memory_enabled": False, "retention_days": 90}
 
     async def create(_conn, **kwargs):
         captured.update(kwargs)
         return {"id": "ctx-current"}
 
     async def current_run(*_args, **_kwargs):
-        return {"workspace_id": "workspace-a", "session_id": "session-a", "agent_id": "general-agent", "session_generation": 14}
+        return {"workspace_id": "workspace-a", "session_id": "session-a",
+                "agent_id": "general-agent", "session_generation": 14}
 
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', current_run)
-    monkeypatch.setattr('app.context.infrastructure.sources_postgres.count_session_context_messages', count_messages)
-    monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_messages', list_messages)
+    monkeypatch.setattr('app.context_builder.read_provider_coverage', read_coverage)
     monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_files', empty)
     monkeypatch.setattr('app.context.infrastructure.sources_postgres.list_session_context_artifacts', empty)
     monkeypatch.setattr('app.context.infrastructure.sources_postgres.session_has_legacy_run_history', no_legacy)
@@ -1121,12 +1080,19 @@ async def test_context_builder_counts_history_before_fetching_authorized_candida
     )
 
     manifest = captured["payload_json"]["context_manifest"]
-    assert call_order == ["count", "list", "list", "list", "list"]
+    assert coverage_calls == [("session-a", "run-current", 14)]
     assert manifest["selection"]["history_candidate_count"] == 13
     assert manifest["selection"]["history_authorized_count"] == 13
     assert manifest["selection"]["history_omitted_count"] == 0
-    assert captured["conversation_authority_json"]["range_start"]["id"] == "msg-01"
-    assert captured["conversation_authority_json"]["range_end"]["id"] == "msg-13"
+    assert captured["conversation_authority_json"] == {
+        "schema_version": "ai-platform.conversation-authority.v2",
+        "scope": {"tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
+                  "session_id": "session-a", "agent_id": "general-agent"},
+        "through_session_generation": 14,
+        "message_count": 13,
+        "source_sha256": "b" * 64,
+        "current_message_id": None,
+    }
     assert "recent_messages" not in manifest
 
 

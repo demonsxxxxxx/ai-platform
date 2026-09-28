@@ -7,7 +7,10 @@ import {
   mergeHydratedRunSegment,
   reconstructMessagesFromEvents,
 } from "../historyLoader.ts";
-import type { HistoryEvent } from "../types.ts";
+import {
+  PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
+  type HistoryEvent,
+} from "../types.ts";
 
 test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   const messages = reconstructMessagesFromEvents(
@@ -409,19 +412,17 @@ test("history preserves the same safe terminal process structure as live present
       run_id: "run-public-process",
       timestamp,
       data: {
-        schema_version: "ai-platform.public-execution-event.v1",
+        schema_version: PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
         event_id: `evt-${sequence}`,
         run_id: "run-public-process",
         sequence,
         step_id: "step-private-id",
+        presentation_kind: "processing",
         kind: "processing",
-        stage: "private-stage",
+        stage: "data",
         status,
-        title: "private title",
-        summary: "private summary",
-        progress: { current: sequence, total: 3 },
-        safe_file_name: "report.xlsx",
-        artifact_public_id: "artifact-private-id",
+        progress: { current: status === "completed" ? 1 : 0, total: 1 },
+        safe_label: "Data processing",
         created_at: timestamp,
       },
     };
@@ -475,7 +476,7 @@ test("history preserves the same safe terminal process structure as live present
   assert.equal(process.steps[0]?.completed_at, "2026-07-31T01:00:05.000Z");
   assert.doesNotMatch(
     JSON.stringify(assistant),
-    /private-stage|private title|private summary|artifact-private-id|evt-[123]/,
+    /evt-[123]|Data processing/,
   );
 });
 
@@ -491,19 +492,17 @@ test("history does not regress a completed execution step from a different equal
     sequence: 7,
     timestamp: id === "evt-completed" ? "2026-07-31T01:00:00.000Z" : "2026-07-31T01:00:01.000Z",
     data: {
-      schema_version: "ai-platform.public-execution-event.v1",
+      schema_version: PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
       event_id: id,
       run_id: "run-equal-sequence",
       sequence: 7,
       step_id: "step-1",
+      presentation_kind: "processing",
       kind: "processing",
-      stage: "private-stage",
+      stage: "data",
       status,
-      title: "private title",
-      summary: "private summary",
       progress: status === "completed" ? { current: 1, total: 1 } : { current: 0, total: 1 },
-      safe_file_name: null,
-      artifact_public_id: null,
+      safe_label: "Data processing",
       created_at: "2026-07-31T01:00:00.000Z",
     },
   });
