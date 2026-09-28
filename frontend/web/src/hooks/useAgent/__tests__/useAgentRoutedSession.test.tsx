@@ -6254,7 +6254,7 @@ test(`useAgent requires complete metadata for exact Run history: ${initiallyComp
     is_active: true,
     metadata: {},
   });
-  sessionApi.getEvents = async () => {
+  sessionApi.getEvents = async (): Promise<Awaited<ReturnType<typeof sessionApi.getEvents>>> => {
     eventReads += 1;
     return {
       current_run_id: "run-complete-terminal",
