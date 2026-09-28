@@ -1016,7 +1016,7 @@ def test_lambchat_success_terminal_never_falls_back_to_result_body():
     ) is None
 
 
-def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
+def test_lambchat_active_history_preserves_every_published_delta(monkeypatch):
     from app.streaming.api import opaque_message_id
 
     async def fake_get_authorized_lambchat_session(
@@ -1105,10 +1105,10 @@ def test_lambchat_active_history_withholds_unstable_delta_suffix(monkeypatch):
 
     assert response.status_code == 200
     events = response.json()["events"]
-    assert [event["event_type"] for event in events] == ["message:chunk"]
-    assert [event["sequence"] for event in events] == [7]
-    assert [event["payload"]["event_id"] for event in events] == ["evt4_delta-7"]
-    assert [event["payload"]["content"] for event in events] == ["partial "]
+    assert [event["event_type"] for event in events] == ["message:chunk", "message:chunk"]
+    assert [event["sequence"] for event in events] == [7, 8]
+    assert [event["payload"]["event_id"] for event in events] == ["evt4_delta-7", "evt4_delta-8"]
+    assert [event["payload"]["content"] for event in events] == ["partial ", "answer"]
 
 
 @pytest.mark.parametrize(
@@ -1205,6 +1205,18 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
             "v4_attempt_authorized": True,
         }
 
+    from app.executors.public_answer_stream import PublicAnswerStreamGate
+    from app.platform.public_payload import sanitize_public_answer_text
+
+    raw_text = "api_key=actual-secret-value"
+    gate = PublicAnswerStreamGate(
+        private_replacements={}, sanitizer=sanitize_public_answer_text,
+    )
+    published_chunks = list(gate.accept(raw_text))
+    published_chunks.extend(gate.finish(final_text=raw_text, release=True).chunks)
+    published_text = "".join(published_chunks)
+    assert published_text and "actual-secret-value" not in published_text
+
     run_events = [
         {
             **base,
@@ -1229,9 +1241,9 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         },
         v4_delta("evt4_safe-delta", 3, "已完成公开部分；"),
         v4_delta(
-            "evt4_private-delta",
+            "evt4_redacted-delta",
             4,
-            "api_key=actual-secret-value",
+            published_text,
         ),
         {
             **base,
@@ -1256,6 +1268,7 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         "done",
     ]
     assert history[2]["data"]["content"] == "已完成公开部分；"
+    assert history[3]["data"]["content"] == published_text
     assert history[4]["data"]["detail_kind"] == detail_kind
     assert history[4]["data"]["detail_code"] == detail_code
     assert "projection_failure_reason" not in history[4]["data"]
@@ -1266,7 +1279,6 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     assert "已完成请求准备，正在进入受控执行阶段" in serialized
     assert "受控处理步骤仍在进行" in serialized
     assert "private chain of thought" not in serialized
-    assert "actual-secret-value" not in serialized
     assert "actual-secret-value" not in serialized
     assert "worker-private" not in serialized
     assert "current_step" not in serialized
@@ -1481,7 +1493,7 @@ def test_lambchat_history_compacts_v4_answer_deltas_without_crossing_public_even
         "id": "run-v4-compact",
         "tenant_id": "default",
         "trace_id": "trace-v4-compact",
-        "agent_id": "general-agent",
+        "agent_id": "agent-custom",
         "skill_id": "general-chat",
         "status": "failed",
         "result_json": {},
@@ -1551,8 +1563,8 @@ def test_lambchat_history_compacts_v4_answer_deltas_without_crossing_public_even
             "payload_json": {"visible_to_user": True},
             "created_at": "2026-08-01T00:00:06Z",
         },
-        delta(7, "已开始，general-"),
-        delta(8, "chat 完成。"),
+        delta(7, "  已开始，agent-"),
+        delta(8, "custom 完成。 \n"),
     ]
     principal = AuthPrincipal(
         user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
@@ -1571,13 +1583,23 @@ def test_lambchat_history_compacts_v4_answer_deltas_without_crossing_public_even
     compacted_chunks = [
         event for event in compacted_history if event["event_type"] == "message:chunk"
     ]
+    for records in (uncompressed, compacted):
+        for record in records:
+            if record.stream_event_type == "message:chunk":
+                assert (
+                    record.stream_data["content"]
+                    == record.history_event["data"]["content"]
+                )
 
-    assert [event["data"]["content"] for event in uncompressed_chunks] == [
+    uncompressed_content = [event["data"]["content"] for event in uncompressed_chunks]
+    compacted_content = [event["data"]["content"] for event in compacted_chunks]
+    assert uncompressed_content == [
         "第一段",
         "第二段",
         "独立消息",
         "新流实例",
-        "已开始，general-agent 完成。",
+        "  已开始，agent-",
+        "custom 完成。 \n",
     ]
     assert [event["event_type"] for event in compacted_history] == [
         "message:chunk",
@@ -1588,12 +1610,13 @@ def test_lambchat_history_compacts_v4_answer_deltas_without_crossing_public_even
         "final_detail",
         "done",
     ]
-    assert [event["data"]["content"] for event in compacted_chunks] == [
+    assert compacted_content == [
         "第一段第二段",
         "独立消息",
         "新流实例",
-        "已开始，general-agent 完成。",
+        "  已开始，agent-custom 完成。 \n",
     ]
+    assert "".join(uncompressed_content) == "".join(compacted_content)
     assert [event["id"] for event in compacted_chunks] == [
         "evt4_delta_3",
         "evt4_delta_4",
@@ -1766,7 +1789,7 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
     ]
 
 
-def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
+def test_lambchat_terminal_history_preserves_published_identifier_fragments():
     from app.auth import AuthPrincipal
     from app.routes.lambchat_compat import _compatibility_events_for_run
     from app.streaming.api import opaque_message_id
@@ -1832,7 +1855,7 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
             "visible_to_user": True,
             "error_code": None,
             "payload_json": {
-                "delta": "chat 完成。",
+                "delta": "agent 完成。",
                 "__stream_v4": {
                     "attempt_id": "attempt-split-identifier",
                     "version": 1,
@@ -1860,8 +1883,8 @@ def test_lambchat_terminal_history_projects_identifier_split_across_deltas():
         if payload["projection_kind"] == "assistant_delta"
     ]
 
-    assert len(answer_payloads) == 1
-    assert [payload["event_id"] for payload in answer_payloads] == ["evt4_split-b"]
+    assert len(answer_payloads) == 2
+    assert [payload["event_id"] for payload in answer_payloads] == ["evt4_split-a", "evt4_split-b"]
     assert "".join(deltas) == "已开始，general-agent 完成。"
     assert "general-chat" not in str(answer_payloads)
     assert "qa-word-review" not in str(answer_payloads)
@@ -1990,99 +2013,6 @@ def test_lambchat_history_uses_legacy_result_artifact_ids_as_allowlist():
     ] == ["artifact-final"]
 
 
-def test_lambchat_history_fold_preserves_split_identifier_across_pages():
-    from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import (
-        _CompatibilityFoldState,
-        _compatibility_events_for_run_page,
-    )
-    from app.streaming.api import opaque_message_id
-
-    principal = AuthPrincipal(
-        user_id="user-a",
-        display_name="User A",
-        tenant_id="default",
-        roles=["user"],
-    )
-    run = {
-        "id": "run-paged-identifier",
-        "tenant_id": "default",
-        "trace_id": "trace-paged-identifier",
-        "agent_id": "qa-word-review",
-        "skill_id": "general-chat",
-        "status": "running",
-        "result_json": {},
-    }
-
-    def delta_event(event_id, sequence, delta):
-        return {
-            "id": event_id,
-            "tenant_id": "default",
-            "run_id": "run-paged-identifier",
-            "trace_id": "trace-paged-identifier",
-            "schema_version": "ai-platform.event-envelope.v1",
-            "sequence": sequence,
-            "event_type": "message.delta",
-            "stage": "agent_kernel",
-            "message": "",
-            "severity": "info",
-            "visible_to_user": True,
-            "error_code": None,
-            "payload_json": {
-                "delta": delta,
-                "__stream_v4": {
-                    "attempt_id": "attempt-paged-identifier",
-                    "version": 1,
-                    "stream_incarnation": 1,
-                    "authorization_epoch": 1,
-                    "message_id": opaque_message_id("default", "run-paged-identifier"),
-                    "publication_state": "published",
-                },
-            },
-            "stream_publication_state": "published",
-            "v4_attempt_authorized": True,
-            "created_at": f"2026-07-30T00:00:0{sequence}Z",
-        }
-
-    first_page, fold_state = _compatibility_events_for_run_page(
-        run,
-        [delta_event("evt4_page-a", 1, "已开始，general-")],
-        [],
-        principal,
-        fold_state=_CompatibilityFoldState(False, frozenset()),
-        include_terminal=False,
-    )
-    second_page, _ = _compatibility_events_for_run_page(
-        {
-            **run,
-            "status": "succeeded",
-            "result_json": {"message": "已开始，general-chat 完成。"},
-            "finished_at": "2026-07-30T00:00:03Z",
-        },
-        [delta_event("evt4_page-b", 2, "chat 完成。")],
-        [],
-        principal,
-        fold_state=fold_state,
-        include_terminal=True,
-    )
-    answer_payloads = [
-        record.stream_data
-        for record in [*first_page, *second_page]
-        if record.stream_event_type == "message:chunk"
-    ]
-    deltas = [
-        payload["content"]
-        for payload in answer_payloads
-        if payload["projection_kind"] == "assistant_delta"
-    ]
-
-    assert len(answer_payloads) == 1
-    assert [payload["event_id"] for payload in answer_payloads] == ["evt4_page-b"]
-    assert "".join(deltas) == "已开始，general-agent 完成。"
-    assert "general-chat" not in str(answer_payloads)
-    assert "qa-word-review" not in str(answer_payloads)
-
-
 def test_lambchat_history_fold_keeps_run_wide_v4_source_across_pages() -> None:
     from app.auth import AuthPrincipal
     from app.routes.lambchat_compat import (
@@ -2153,7 +2083,7 @@ def test_lambchat_history_fold_keeps_run_wide_v4_source_across_pages() -> None:
         fold_state=_CompatibilityFoldState(False, frozenset()),
         include_terminal=False,
     )
-    second_page, final_state = _compatibility_events_for_run_page(
+    second_page, _ = _compatibility_events_for_run_page(
         {
             **run,
             "status": "failed",
@@ -2176,7 +2106,6 @@ def test_lambchat_history_fold_keeps_run_wide_v4_source_across_pages() -> None:
     assert first_page == []
     assert [chunk.id for chunk in chunks] == ["evt4_paged_delta"]
     assert chunks[0].stream_data["content"] == "分页正文。"
-    assert final_state.answer_projection_state != ("", "", False)
 
 
 def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):

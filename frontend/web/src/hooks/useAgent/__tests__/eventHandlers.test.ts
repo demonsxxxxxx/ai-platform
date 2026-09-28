@@ -3,7 +3,7 @@ import test from "node:test";
 import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { Message } from "../../../types";
 import {
-  handlePublicRunStreamFrameV4Result,
+  handlePublicRunStreamEventV4Result,
   handleStreamEvent,
   rebindV4MessageOwner,
   setMessageSnapshot,
@@ -11,15 +11,25 @@ import {
 import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
 import type { EventHandlerContext } from "../eventHandlers.ts";
 import type { HistoryEvent, StreamEvent } from "../types.ts";
+import { adaptPublicRunStreamEventV4 } from "../../../components/chat/assistant-ui/publicEventAdapter.ts";
 import {
   prepareMessagesForRunningRun,
   reconstructMessagesFromEvents,
 } from "../historyLoader.ts";
 
-const handlePublicRunStreamFrameV4 = (
-  args: Parameters<typeof handlePublicRunStreamFrameV4Result>[0],
+const adaptV4Frame = (
+  frame: Parameters<typeof adaptPublicRunStreamEventV4>[0],
+  binding: Parameters<typeof adaptPublicRunStreamEventV4>[1],
 ) => {
-  const result = handlePublicRunStreamFrameV4Result(args);
+  const event = adaptPublicRunStreamEventV4(frame, binding);
+  assert.ok(event);
+  return event;
+};
+
+const handlePublicRunStreamEventV4 = (
+  args: Parameters<typeof handlePublicRunStreamEventV4Result>[0],
+) => {
+  const result = handlePublicRunStreamEventV4Result(args);
   return result.kind === "applied" || result.kind === "deferred";
 };
 
@@ -337,8 +347,8 @@ test("v4 control ordering ignores wall-clock history timestamps", () => {
   const ctx = createContext([], new Date("2026-04-19T01:02:03.456Z"));
   ctx.currentRunIdRef.current = "run-active";
   const commits: boolean[] = [];
-  const accepted = handlePublicRunStreamFrameV4({
-    frame: {
+  const accepted = handlePublicRunStreamEventV4({
+    event: adaptV4Frame({
       eventHeader: "stream.open",
       transportCursor: "run-active:2:1-0",
       generation: 7,
@@ -358,12 +368,11 @@ test("v4 control ordering ignores wall-clock history timestamps", () => {
           design_id: "ai-platform.redis-streams-sse-event-channel.v4",
         },
       },
-    },
-    adapterBinding: {
+    }, {
       runId: "run-active",
       streamIncarnation: 2,
       generation: 7,
-    },
+    }),
     messageId: "assistant-1",
     ctx,
     binding: {
@@ -1723,9 +1732,8 @@ test("v4 accepts correlated activity before message owner is declared", () => {
     },
   });
   const accept = (candidate: ReturnType<typeof frame>) =>
-    handlePublicRunStreamFrameV4({
-      frame: candidate as never,
-      adapterBinding: { runId: "run-owner", streamIncarnation: 2, generation: 7 },
+    handlePublicRunStreamEventV4({
+      event: adaptV4Frame(candidate as never, { runId: "run-owner", streamIncarnation: 2, generation: 7 }),
       messageId: "run-owner",
       ctx,
       binding: {
@@ -1786,8 +1794,8 @@ test("v4 history-covered message.started restores ownership before live delta", 
     sequence: number,
     emittedAt: string,
   ) =>
-    handlePublicRunStreamFrameV4({
-      frame: {
+    handlePublicRunStreamEventV4({
+      event: adaptV4Frame({
         eventHeader: eventType,
         transportCursor: `run-history:2:${sequence}-0`,
         generation: 7,
@@ -1805,12 +1813,11 @@ test("v4 history-covered message.started restores ownership before live delta", 
           emitted_at: emittedAt,
           payload: eventType === "message.delta" ? { delta: " live" } : {},
         },
-      },
-      adapterBinding: {
+      }, {
         runId: "run-history",
         streamIncarnation: 2,
         generation: 7,
-      },
+      }),
       messageId: "assistant-history",
       ctx,
       binding: {
@@ -1881,8 +1888,8 @@ test("v4 rejects a message delta when its reducer message is missing", () => {
     generation: 7,
   };
 
-  const result = handlePublicRunStreamFrameV4Result({
-    frame: {
+  const result = handlePublicRunStreamEventV4Result({
+    event: adaptV4Frame({
       eventHeader: "message.delta",
       transportCursor: "run-missing-message:2:2-0",
       generation: 7,
@@ -1900,12 +1907,11 @@ test("v4 rejects a message delta when its reducer message is missing", () => {
         emitted_at: "2026-01-01T00:00:02Z",
         payload: { delta: "must not be silently dropped" },
       },
-    },
-    adapterBinding: {
+    }, {
       runId: "run-missing-message",
       streamIncarnation: 2,
       generation: 7,
-    },
+    }),
     messageId: "missing-assistant",
     ctx,
     binding,
@@ -1961,9 +1967,8 @@ test("v4 message ownership survives reconnect and rejects a second protocol iden
     candidate: ReturnType<typeof frame>,
     generation: number,
     streamIncarnation = 2,
-  ) => handlePublicRunStreamFrameV4({
-    frame: candidate as never,
-    adapterBinding: { runId: "run-owner", streamIncarnation, generation },
+  ) => handlePublicRunStreamEventV4({
+    event: adaptV4Frame(candidate as never, { runId: "run-owner", streamIncarnation, generation }),
     messageId: "run-owner",
     ctx,
     binding: {
@@ -2105,33 +2110,33 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   } as const;
   const binding = { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 2, generation: 7 } as const;
   const adapterBinding = { runId: "run-1", streamIncarnation: 2, generation: 7 } as const;
-  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
+  assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(end, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
   const commits: boolean[] = [];
-  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => commits.push(semanticApplied) }), true);
+  assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(terminal, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => commits.push(semanticApplied) }), true);
   assert.deepEqual(commits, []);
   assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, null);
   assert.equal(ctx.v4TerminalReservationsRef?.current.has("terminal-1"), true);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
+  assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(terminal, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
+  assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(end, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7 }), false);
   acceptTerminal?.(true);
   assert.deepEqual(commits, [false]);
   assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 1);
   assert.equal(ctx.v4TerminalReservationsRef?.current.size, 0);
   const lateCommits: boolean[] = [];
-  assert.equal(handlePublicRunStreamFrameV4({ frame: terminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
+  assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(terminal, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
   const higherSequenceTerminal = {
     ...terminal,
     transportCursor: "run-1:2:4-0",
     value: { ...terminal.value, event_id: "event-terminal-replay", seq: 2 },
   } as const;
-  assert.equal(handlePublicRunStreamFrameV4({ frame: higherSequenceTerminal, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
-  assert.equal(handlePublicRunStreamFrameV4({ frame: end, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), true);
+  assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(higherSequenceTerminal, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
+  assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(end, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), true);
   const duplicateEnd = {
     ...end,
     transportCursor: "run-1:2:3-0",
     value: { ...end.value, event_id: "event-end-duplicate" },
   } as const;
-  assert.equal(handlePublicRunStreamFrameV4({ frame: duplicateEnd, adapterBinding, messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
+  assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(duplicateEnd, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
   assert.deepEqual(lateCommits, [false, false, false, false]);
   assert.equal(terminalCalls, 1);
 });
@@ -2227,9 +2232,8 @@ test("v4 terminal waits for committed text before sequence and cursor acceptance
     },
   } as const;
 
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame: delta,
-    adapterBinding,
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame(delta, adapterBinding),
     messageId: "assistant-terminal-order",
     ctx,
     binding,
@@ -2238,9 +2242,8 @@ test("v4 terminal waits for committed text before sequence and cursor acceptance
       ctx.acceptedStreamCursorRef!.current.eventId = delta.transportCursor;
     },
   }), true);
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame: terminal,
-    adapterBinding,
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame(terminal, adapterBinding),
     messageId: "assistant-terminal-order",
     ctx,
     binding,
@@ -2267,9 +2270,8 @@ test("v4 terminal waits for committed text before sequence and cursor acceptance
       payload: { terminal_event_id: "terminal-stale", hydrate_required: true },
     },
   } as const;
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame: staleTerminal,
-    adapterBinding,
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame(staleTerminal, adapterBinding),
     messageId: "assistant-terminal-order",
     ctx,
     binding,
@@ -2338,9 +2340,8 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     generation: 4,
   } as const;
   for (const invalidGeneration of [undefined, -1, 1.5, Infinity] as unknown[]) {
-    assert.equal(handlePublicRunStreamFrameV4({
-      frame,
-      adapterBinding,
+    assert.equal(handlePublicRunStreamEventV4({
+      event: adaptV4Frame(frame, adapterBinding),
       messageId: "assistant-authority",
       ctx,
       binding,
@@ -2349,9 +2350,8 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     }), false);
     assert.equal(gapCalls, 0);
   }
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame,
-    adapterBinding,
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame(frame, adapterBinding),
     messageId: "assistant-authority",
     ctx,
     binding,
@@ -2359,9 +2359,8 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     onGap,
   }), false);
   assert.equal(gapCalls, 0);
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame,
-    adapterBinding,
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame(frame, adapterBinding),
     messageId: "assistant-authority",
     ctx,
     binding,
@@ -2373,8 +2372,8 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     { eventId: "9-0", incarnation: 3 },
     { eventId: null, incarnation: null },
   ] as const) {
-    assert.equal(handlePublicRunStreamFrameV4({
-      frame: {
+    assert.equal(handlePublicRunStreamEventV4({
+      event: adaptV4Frame({
         ...frame,
         value: {
           ...frame.value,
@@ -2384,8 +2383,7 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
             requested_stream_incarnation: requested.incarnation,
           },
         },
-      },
-      adapterBinding,
+      }, adapterBinding),
       messageId: "assistant-authority",
       ctx,
       binding,
@@ -2394,41 +2392,36 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     }), false);
     assert.equal(gapCalls, 1);
   }
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame,
-    adapterBinding,
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame(frame, adapterBinding),
     messageId: "assistant-authority",
     ctx,
     binding: undefined as never,
     currentGeneration: 4,
   }), false);
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame,
-    adapterBinding: { runId: "run-authority", streamIncarnation: 3 },
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame(frame, { runId: "run-authority", streamIncarnation: 3 }),
     messageId: "assistant-authority",
     ctx,
     binding,
     currentGeneration: 4,
   }), false);
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame,
-    adapterBinding,
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame(frame, adapterBinding),
     messageId: "assistant-authority",
     ctx,
     binding: { ...binding, generation: 5 },
     currentGeneration: 4,
   }), false);
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame,
-    adapterBinding,
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame(frame, adapterBinding),
     messageId: "assistant-authority",
     ctx,
     binding: { ...binding, streamIncarnation: 2 },
     currentGeneration: 4,
   }), false);
-  assert.equal(handlePublicRunStreamFrameV4({
-    frame: { ...frame, generation: undefined },
-    adapterBinding: { runId: "run-authority", streamIncarnation: 3 },
+  assert.equal(handlePublicRunStreamEventV4({
+    event: adaptV4Frame({ ...frame, generation: undefined }, { runId: "run-authority", streamIncarnation: 3 }),
     messageId: "assistant-authority",
     ctx,
     binding,

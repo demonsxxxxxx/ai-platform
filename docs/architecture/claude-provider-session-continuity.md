@@ -161,6 +161,13 @@ Claude SessionStore
 The provider transcript is the only model-facing conversation history. Context
 receipts prove what that transcript must cover; they do not become model input.
 
+The first callback claims the epoch writer and creates its turn receipt in the
+same transaction, using the inserted row directly. Later callbacks read and
+validate that receipt instead of attempting another insert. A missing or
+inconsistent receipt is a conflict; callbacks do not recreate it under an
+existing writer. Scoped locks, current Attempt/lease checks, owner generation,
+and frozen coverage checks apply to every callback.
+
 ## Retirement And Compatibility
 
 Removed production surfaces:

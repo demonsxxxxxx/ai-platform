@@ -120,6 +120,11 @@ answer receipt 覆盖本次 v4 回复中实际提交的完整 Assistant 正文�
 实时、Redis 重放、PostgreSQL history 和 terminal hydrate 使用同一 v4 语义 reducer。
 浏览器断线只恢复公共事件和水位，不重新执行 Agent；旧 hydrate 不得覆盖更高水位的 text、tool 状态或附件。
 
+公开正文在首次发布前完成脱敏；历史准入后直接保留已发布的 delta，不再累计扫描全文、替换 Agent 名称或扣留后缀。
+终态历史可合并同一消息、同一流实例内的连续正文，遇到公开活动事件先提交该组，保持文字与活动的原始顺序。
+重连接口回放游标之前的记录只恢复终态与 `stream.end` 的关联，不构建正文副本。
+前端在连接入口校验并适配每帧一次，随后直接传递类型化事件；处理器继续校验当前连接归属、水位和终态提交条件。
+
 历史正文只读取经当前 Attempt 授权的持久化 v4 `message.delta`。旧
 `assistant_delta` 和成功终态的 `result_json.message` 不再补造正文，其旧
 `event_page` / `PublicDelta` 解析器及专属测试一并退役。执行过程

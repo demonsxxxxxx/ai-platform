@@ -404,6 +404,67 @@ def terminal_rows():
     )
 
 
+@pytest.mark.asyncio
+async def test_terminal_state_restore_preserves_a_valid_terminal_resume(monkeypatch):
+    patch_authority(monkeypatch)
+    bridge = FakeBridge(
+        terminal_rows(),
+        resume=ResumeDecision("4-0", None),
+    )
+
+    _, body = await connect(bridge, last_event_id="run-a:1:4-0")
+
+    assert body == ""
+    assert "replay:0-0:4-0" in bridge.calls
+
+
+@pytest.mark.asyncio
+async def test_terminal_state_restore_requires_open_and_terminal_linkage():
+    missing_open = FakeBridge(
+        [entry("1-0", "sev-delta", "message.delta", {"delta": "hello"})]
+    )
+    with pytest.raises(
+        StreamContractError, match="stream_terminal_history_unavailable"
+    ):
+        await route._restore_chat_stream_terminal_state(
+            missing_open,
+            tenant_scope_value="scope-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=1,
+            through_redis_id="1-0",
+        )
+
+    mismatched_end = FakeBridge(
+        [
+            open_entry(),
+            entry(
+                "2-0",
+                "sev-terminal",
+                "run.succeeded",
+                {"terminal_event_id": "sev-terminal", "hydrate_required": True},
+            ),
+            entry(
+                "3-0",
+                "sev-end",
+                "stream.end",
+                {"terminal_event_id": "wrong-terminal"},
+            ),
+        ]
+    )
+    with pytest.raises(
+        StreamContractError, match="stream_end_without_observed_terminal"
+    ):
+        await route._restore_chat_stream_terminal_state(
+            mismatched_end,
+            tenant_scope_value="scope-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=1,
+            through_redis_id="3-0",
+        )
+
+
 async def connect_expect_conflict():
     with pytest.raises(HTTPException) as exc_info:
         await route.chat_session_stream(

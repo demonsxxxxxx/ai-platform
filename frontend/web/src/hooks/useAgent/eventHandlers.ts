@@ -35,12 +35,9 @@ import {
   type TerminalRunStatus,
 } from "./runLifecycle";
 import {
-  adaptPublicRunStreamEventV4,
   comparePublicRunStreamCursors,
   isV4MessageCorrelatedEventType,
-  type V4AdapterBinding,
   type V4PublicEvent,
-  type V4SseFrame,
 } from "../../components/chat/assistant-ui/publicEventAdapter";
 
 /**
@@ -786,9 +783,8 @@ export type V4FrameHandlingResult =
   | { kind: "applied" }
   | { kind: "deferred"; reason: "terminal_hydration" };
 
-export interface PublicRunStreamFrameV4Args {
-  frame: V4SseFrame;
-  adapterBinding: V4AdapterBinding;
+export interface PublicRunStreamEventV4Args {
+  event: V4PublicEvent;
   messageId: string;
   ctx: EventHandlerContext;
   binding?: StreamEventBinding;
@@ -798,24 +794,21 @@ export interface PublicRunStreamFrameV4Args {
   onTerminalSettled?: (accepted: boolean) => void;
 }
 
-/** Preserve frame outcomes at the connection boundary. */
-export function handlePublicRunStreamFrameV4Result(
-  args: PublicRunStreamFrameV4Args,
+/** Preserve validated event outcomes at the connection boundary. */
+export function handlePublicRunStreamEventV4Result(
+  args: PublicRunStreamEventV4Args,
 ): V4FrameHandlingResult {
   if (
     !isStrictV4Binding(args.binding) ||
     !Number.isSafeInteger(args.currentGeneration) ||
     args.currentGeneration < 0 ||
     args.currentGeneration !== args.binding.generation ||
-    args.adapterBinding.runId !== args.binding.runId ||
-    args.adapterBinding.generation !== args.binding.generation ||
-    args.adapterBinding.streamIncarnation !== args.binding.streamIncarnation ||
-    args.frame.generation !== args.binding.generation
+    args.event.runId !== args.binding.runId ||
+    args.event.generation !== args.binding.generation
   ) {
     return { kind: "invalid" };
   }
-  const event = adaptPublicRunStreamEventV4(args.frame, args.adapterBinding);
-  if (!event) return { kind: "invalid" };
+  const event = args.event;
   if (event.eventType === "stream.gap") {
     if (!isCurrentV4GapOwner(args.ctx, args.binding, event)) {
       return { kind: "invalid" };

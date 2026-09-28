@@ -46,8 +46,6 @@ from app.routes.runs import (
 )
 from app.run_projection import (
     CHAT_PUBLIC_PROJECTION_VERSION,
-    PublicChatAnswerStreamProjector,
-    public_chat_answer_text,
     public_chat_terminal_projection,
     public_terminal_detail,
 )
@@ -318,7 +316,6 @@ class _CompatibilityFoldState:
 
     has_strict_public_execution: bool
     seen_public_lifecycle_singletons: frozenset[str]
-    answer_projection_state: tuple[str, str, bool] = ("", "", False)
 
 
 @dataclass(frozen=True)
@@ -861,12 +858,10 @@ def _assistant_delta_projection(
     event: dict[str, Any],
     principal: AuthPrincipal,
     *,
-    answer_projector: PublicChatAnswerStreamProjector | None = None,
-    final_answer_delta: bool = False,
     projected_event: dict[str, object] | None = None,
     delta_override: str | None = None,
 ) -> dict[str, object] | None:
-    """Return a sanitized answer frame from one persisted strict v4 delta."""
+    """Return the admitted v4 answer text from one persisted delta."""
     if not _chat_event_marked_visible(event) or not event_visible_to_principal(
         event, principal
     ):
@@ -893,20 +888,13 @@ def _assistant_delta_projection(
         or sequence < 1
     ):
         return None
-    content = (
-        answer_projector.push(delta, final=final_answer_delta)
-        if answer_projector is not None
-        else public_chat_answer_text(run, delta)
-    )
-    if not content:
-        return None
     return {
         "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
         "projection_kind": "assistant_delta",
         "event_id": event_id,
         "sequence": sequence,
         "run_id": str(run["id"]),
-        "content": content,
+        "content": delta,
     }
 
 
@@ -1052,10 +1040,6 @@ def _compatibility_events_for_run_page(
         )
         is not None
     }
-    answer_projector = PublicChatAnswerStreamProjector(
-        run,
-        fold_state.answer_projection_state,
-    )
     v4_answer_events = {
         position: projected
         for position, event in ordered_events
@@ -1067,28 +1051,18 @@ def _compatibility_events_for_run_page(
         compact_answer_deltas
         and status in {"succeeded", "failed", "cancelled"}
     )
-    final_answer_position = next(
-        (
-            position
-            for position, event in reversed(ordered_events)
-            if include_terminal
-            and status in {"succeeded", "failed", "cancelled"}
-            and position in v4_answer_events
-        ),
-        None,
-    )
-    pending_answer_events: list[tuple[int, dict[str, Any], dict[str, object]]] = []
+    pending_answer_events: list[tuple[dict[str, Any], dict[str, object]]] = []
 
     def emit_answer_event(
-        answer_event: dict[str, Any], projected: dict[str, object], *,
-        final_answer_delta: bool, delta_override: str | None = None,
+        answer_event: dict[str, Any],
+        projected: dict[str, object],
+        *,
+        delta_override: str | None = None,
     ) -> None:
         delta = _assistant_delta_projection(
             run,
             answer_event,
             principal,
-            answer_projector=answer_projector,
-            final_answer_delta=final_answer_delta,
             projected_event=projected,
             delta_override=delta_override,
         )
@@ -1120,18 +1094,12 @@ def _compatibility_events_for_run_page(
     def flush_pending_answer_events() -> None:
         if not pending_answer_events:
             return
-        # ponytail: public barriers reproject the prefix; materialize terminal
-        # messages if heavily interleaved histories make that cost measurable.
-        last_position, last_event, last_projected = pending_answer_events[-1]
+        last_event, last_projected = pending_answer_events[-1]
         delta = "".join(
             str(projected["payload"]["delta"])
-            for _, _, projected in pending_answer_events
+            for _, projected in pending_answer_events
         )
-        emit_answer_event(
-            last_event, last_projected,
-            delta_override=delta,
-            final_answer_delta=last_position == final_answer_position,
-        )
+        emit_answer_event(last_event, last_projected, delta_override=delta)
         pending_answer_events.clear()
 
     for message in user_messages or []:
@@ -1246,17 +1214,14 @@ def _compatibility_events_for_run_page(
                 if (
                     pending_answer_events
                     and any(
-                        pending_answer_events[-1][2][key] != answer_event[key]
+                        pending_answer_events[-1][1][key] != answer_event[key]
                         for key in ("message_id", "stream_incarnation")
                     )
                 ):
                     flush_pending_answer_events()
-                pending_answer_events.append((position, event, answer_event))
+                pending_answer_events.append((event, answer_event))
             else:
-                emit_answer_event(
-                    event, answer_event,
-                    final_answer_delta=position == final_answer_position,
-                )
+                emit_answer_event(event, answer_event)
             continue
         envelope = _public_run_event_envelope(run, event, principal)
         if envelope is None:
@@ -1402,7 +1367,6 @@ def _compatibility_events_for_run_page(
     return compatibility_events, _CompatibilityFoldState(
         has_strict_public_execution=has_strict_public_execution,
         seen_public_lifecycle_singletons=frozenset(seen_public_lifecycle_singletons),
-        answer_projection_state=answer_projector.state,
     )
 
 
@@ -1875,22 +1839,20 @@ async def chat_status(
     }
 
 
-async def _restore_chat_stream_projection(
+async def _restore_chat_stream_terminal_state(
     bridge: _V4StreamBridge,
     *,
-    run: dict[str, Any],
     tenant_scope_value: str,
     run_id: str,
     attempt_id: str,
     stream_incarnation: int,
     through_redis_id: str,
-) -> tuple[PublicChatAnswerStreamProjector, str | None, bool]:
-    """Rebuild private projection and terminal state through one resume cursor."""
-    projector = PublicChatAnswerStreamProjector(run)
+) -> tuple[str | None, bool]:
+    """Restore terminal linkage through the resume cursor."""
     terminal_event_id: str | None = None
     ended = False
     if through_redis_id == "0-0":
-        return projector, terminal_event_id, ended
+        return terminal_event_id, ended
     after = "0-0"
     saw_stream_open = False
     while after != through_redis_id:
@@ -1904,17 +1866,15 @@ async def _restore_chat_stream_projection(
             through_redis_id=through_redis_id,
         )
         if not entries:
-            raise StreamContractError("stream_projection_history_unavailable")
+            raise StreamContractError("stream_terminal_history_unavailable")
         for entry in entries:
             after = entry.cursor.redis_id
             envelope = entry.envelope
             event_type = envelope["event_type"]
             if not saw_stream_open:
                 if event_type != "stream.open":
-                    raise StreamContractError("stream_projection_history_unavailable")
+                    raise StreamContractError("stream_terminal_history_unavailable")
                 saw_stream_open = True
-            elif event_type == "message.delta":
-                projector.push(envelope["payload"]["delta"])
             elif event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
                 terminal_event_id = str(envelope["event_id"])
             elif event_type == "stream.end":
@@ -1922,10 +1882,10 @@ async def _restore_chat_stream_projection(
                     raise StreamContractError("stream_end_without_observed_terminal")
                 ended = True
             if after == through_redis_id:
-                return projector, terminal_event_id, ended
+                return terminal_event_id, ended
         if after == previous_after:
-            raise StreamContractError("stream_projection_history_unavailable")
-    return projector, terminal_event_id, ended
+            raise StreamContractError("stream_terminal_history_unavailable")
+    return terminal_event_id, ended
 
 
 @router.get("/chat/sessions/{session_id}/stream")
@@ -1986,7 +1946,6 @@ async def chat_session_stream(
             current_stream_incarnation=authority.stream_incarnation,
             last_event_id=last_event_id,
         )
-        answer_projector = PublicChatAnswerStreamProjector(initial_run)
         restored_terminal_event_id: str | None = None
         resume_already_ended = False
         replay_tail = resume.after_redis_id or "0-0"
@@ -2002,12 +1961,10 @@ async def chat_session_stream(
             replay_tail = bounds[1].cursor.redis_id
             try:
                 (
-                    answer_projector,
                     restored_terminal_event_id,
                     resume_already_ended,
-                ) = await _restore_chat_stream_projection(
+                ) = await _restore_chat_stream_terminal_state(
                     bridge,
-                    run=initial_run,
                     tenant_scope_value=authority.tenant_scope,
                     run_id=run_id,
                     attempt_id=authority.attempt_id,

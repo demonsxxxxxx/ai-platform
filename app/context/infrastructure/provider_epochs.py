@@ -319,31 +319,33 @@ async def _locked_callback_epoch(
               and session_id = %s and agent_id = %s and engine = %s and active_run_id = %s
             """, (attempt_id, *values, run_id),
         )
-    cursor = await conn.execute(
-        """
-        insert into provider_turn_receipts (
-          id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
-          epoch_id, run_id, attempt_id, execution_spec_sha256,
-          bootstrap_source_sha256, start_sequence, user_message_id,
-          prior_coverage_sha256, state
-        ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'writing')
-        on conflict (tenant_id, run_id, attempt_id) do nothing
-        returning id
-        """, (f"ptr_{uuid.uuid4().hex}", *values, epoch["id"], run_id,
-              attempt_id, attempt["execution_spec_sha256"],
-              private["source_sha256"] if private["execution_mode"] != "native_resume" else None,
-              epoch["next_sequence"], private.get("current_message_id"),
-              epoch["coverage_source_sha256"]),
-    )
-    await cursor.fetchone()
-    cursor = await conn.execute(
-        """
-        select epoch_id, execution_spec_sha256, start_sequence, user_message_id,
-               prior_coverage_sha256, bootstrap_source_sha256, state
-        from provider_turn_receipts where tenant_id = %s and run_id = %s and attempt_id = %s
-        """, (scope.tenant_id, run_id, attempt_id),
-    )
-    turn = await cursor.fetchone()
+        cursor = await conn.execute(
+            """
+            insert into provider_turn_receipts (
+              id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+              epoch_id, run_id, attempt_id, execution_spec_sha256,
+              bootstrap_source_sha256, start_sequence, user_message_id,
+              prior_coverage_sha256, state
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'writing')
+            on conflict (tenant_id, run_id, attempt_id) do nothing
+            returning epoch_id, execution_spec_sha256, start_sequence, user_message_id,
+                      prior_coverage_sha256, bootstrap_source_sha256, state
+            """, (f"ptr_{uuid.uuid4().hex}", *values, epoch["id"], run_id,
+                  attempt_id, attempt["execution_spec_sha256"],
+                  private["source_sha256"] if private["execution_mode"] != "native_resume" else None,
+                  epoch["next_sequence"], private.get("current_message_id"),
+                  epoch["coverage_source_sha256"]),
+        )
+        turn = await cursor.fetchone()
+    else:
+        cursor = await conn.execute(
+            """
+            select epoch_id, execution_spec_sha256, start_sequence, user_message_id,
+                   prior_coverage_sha256, bootstrap_source_sha256, state
+            from provider_turn_receipts where tenant_id = %s and run_id = %s and attempt_id = %s
+            """, (scope.tenant_id, run_id, attempt_id),
+        )
+        turn = await cursor.fetchone()
     if (turn is None or turn["state"] != "writing" or turn["epoch_id"] != epoch["id"]
         or turn["execution_spec_sha256"] != attempt["execution_spec_sha256"]
         or turn["user_message_id"] != private.get("current_message_id")

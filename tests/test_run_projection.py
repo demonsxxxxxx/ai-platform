@@ -10,11 +10,9 @@ from app.run_projection import (
     CHAT_PUBLIC_PROJECTION_VERSION,
     PUBLIC_TERMINAL_DETAIL_MESSAGES,
     PUBLIC_TERMINAL_ERROR_CODE_ALIASES,
-    PublicChatAnswerStreamProjector,
     artifact_card,
     normalize_run_status,
     progress_for_status,
-    public_chat_answer_text,
     public_chat_terminal_projection,
     public_terminal_detail,
     public_terminal_projection,
@@ -790,23 +788,6 @@ def test_run_projection_returns_only_the_public_execution_event_v2_shape():
     assert raw.get("kind") not in {"execution_step", "execution_progress", "execution_step_completed"}
 
 
-def test_public_chat_answer_text_retains_answer_when_capabilities_differ():
-    run = {
-        "id": "run-a",
-        "skill_id": "general-chat",
-        "agent_id": "qa-word-review",
-        "status": "succeeded",
-    }
-    content = public_chat_answer_text(
-        run,
-        "使用了 general-chat 完成审阅，样本 q 数据已归档。",
-    )
-
-    assert content == "使用了 general-agent 完成审阅，样本 q 数据已归档。"
-    assert "general-chat" not in content
-    assert "qa-word-review" not in content
-
-
 def test_successful_terminal_does_not_fabricate_an_answer_or_error():
     projection = public_chat_terminal_projection(
         {
@@ -819,114 +800,3 @@ def test_successful_terminal_does_not_fabricate_an_answer_or_error():
     )
 
     assert projection is None
-
-
-def test_stream_projector_withholds_identifier_until_split_token_is_complete():
-    run = {
-        "id": "run-a",
-        "agent_id": "qa-word-review",
-        "skill_id": "general-chat",
-        "status": "running",
-    }
-    projector = PublicChatAnswerStreamProjector(run)
-
-    chunks = [
-        projector.push("已开始处理，general-"),
-        projector.push("chat 已完成，qa-word-"),
-        projector.push("review 审核通过。"),
-    ]
-    streamed = "".join(chunks)
-
-    assert streamed == "已开始处理，general-agent 已完成，document-review 审核通过。"
-    assert "general-chat" not in streamed
-    assert "qa-word-review" not in streamed
-    assert projector.flush() == ""
-
-
-@pytest.mark.parametrize(
-    ("secret_text", "split"),
-    [
-        ("api_key=sk-abcdefghi12", 9),
-        ("Bearer abcdefgh1", 7),
-        ("abcdefghij.klmnopqrst.uvwxyzabcd", 21),
-    ],
-)
-def test_stream_projector_matches_whole_answer_projection_at_secret_split_boundaries(
-    secret_text, split
-):
-    run = {
-        "id": "run-secret-parity",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
-        "status": "running",
-    }
-    projector = PublicChatAnswerStreamProjector(run)
-    full_answer = f"ordinary {secret_text} after"
-
-    streamed = "".join(
-        (
-            projector.push(full_answer[: len("ordinary ") + split]),
-            projector.push(full_answer[len("ordinary ") + split :]),
-            projector.flush(),
-        )
-    )
-    expected = public_chat_answer_text(run, full_answer)
-
-    assert streamed == expected
-    assert secret_text not in streamed
-    assert "ordinary" in streamed
-
-
-
-
-@pytest.mark.parametrize(
-    "secret_text",
-    [
-        'client_secret="opaque12345"',
-        "api-key='opaque12345'",
-        "access_token=opaque12345",
-        'client_secret => "opaque value!/$-with.punctuation"',
-        "'authorization' -> 'opaque,value;with spaces'",
-        "authorization: \"opaque12345\"",
-        "Bearer abcdefgh1",
-        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature12345",
-    ],
-)
-def test_stream_projector_matches_whole_answer_for_every_secret_split(secret_text):
-    run = {
-        "id": "run-secret-every-split",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
-        "status": "running",
-    }
-    for split in range(1, len(secret_text)):
-        projector = PublicChatAnswerStreamProjector(run)
-        full_answer = f"ordinary {secret_text} after"
-        prefix_length = len("ordinary ") + split
-        streamed = "".join(
-            (
-                projector.push(full_answer[:prefix_length]),
-                projector.push(full_answer[prefix_length:]),
-                projector.flush(),
-            )
-        )
-        expected = public_chat_answer_text(run, full_answer)
-        assert streamed == expected
-        assert secret_text not in streamed
-
-
-def test_stream_projector_preserves_a_path_split_across_chunks():
-    run = {
-        "id": "run-a",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
-        "status": "running",
-    }
-    projector = PublicChatAnswerStreamProjector(run)
-
-    safe_prefix = projector.push("已生成安全摘要。 /va")
-    blocked_suffix = projector.push("r/private/result.txt")
-
-    assert safe_prefix == ""
-    assert blocked_suffix == ""
-    assert projector.flush() == "已生成安全摘要。 /var/private/result.txt"

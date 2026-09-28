@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { act, createElement, useEffect, useState, type ReactNode } from "react";
 import { adaptPublicRunStreamEventV4 } from "../publicEventAdapter";
-import { acceptV4TerminalFence, handlePublicRunStreamFrameV4Result, type EventHandlerContext } from "../../../../hooks/useAgent/eventHandlers";
+import { acceptV4TerminalFence, handlePublicRunStreamEventV4Result, type EventHandlerContext } from "../../../../hooks/useAgent/eventHandlers";
 import { processMessageEvent } from "../../../../hooks/useAgent/eventProcessor";
 import { createRoot, type Root } from "react-dom/client";
 import { ThreadPrimitive } from "@assistant-ui/react";
@@ -15,10 +15,19 @@ import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
 import { closePersistentToolPanel, getPersistentToolPanelState } from "../../ChatMessage/items/persistentToolPanelState";
 import type { Message, MessagePart } from "../../../../types";
 
-const handlePublicRunStreamFrameV4 = (
-  args: Parameters<typeof handlePublicRunStreamFrameV4Result>[0],
+const adaptV4Frame = (
+  frame: Parameters<typeof adaptPublicRunStreamEventV4>[0],
+  binding: Parameters<typeof adaptPublicRunStreamEventV4>[1],
 ) => {
-  const result = handlePublicRunStreamFrameV4Result(args);
+  const event = adaptPublicRunStreamEventV4(frame, binding);
+  assert.ok(event);
+  return event;
+};
+
+const handlePublicRunStreamEventV4 = (
+  args: Parameters<typeof handlePublicRunStreamEventV4Result>[0],
+) => {
+  const result = handlePublicRunStreamEventV4Result(args);
   return result.kind === "applied" || result.kind === "deferred";
 };
 
@@ -288,15 +297,26 @@ test("mounted production fence owner accepts its matching end once and rejects a
     assert.equal(adaptedEnd?.eventType, "stream.end");
     assert.equal((adaptedEnd?.event.payload as Record<string, unknown>).terminal_event_id, "terminal-1");
     assert.equal(ctx.v4TerminalFenceRef?.current?.terminalEventId, "terminal-1");
+    assert.ok(adaptedEnd);
+    const handlerArgs = {
+      event: adaptedEnd,
+      messageId: endFrame.messageId,
+      ctx: endFrame.ctx,
+      binding: endFrame.binding,
+      currentGeneration: endFrame.currentGeneration,
+    };
     const staleEnd = {
-      ...endFrame,
+      ...handlerArgs,
       binding: { sessionId: "session-1", runId: "run-1", streamVersion: 2, streamIncarnation: 1, generation: 3 },
     };
-    assert.equal(handlePublicRunStreamFrameV4(staleEnd as never), false);
-    assert.equal(handlePublicRunStreamFrameV4(endFrame as never), true);
-    assert.equal(handlePublicRunStreamFrameV4(endFrame as never), false);
-    const foreignEnd = { ...endFrame, frame: { ...endFrame.frame, value: { ...endFrame.frame.value, run_id: "run-2" } }, adapterBinding: { runId: "run-2", streamIncarnation: 1, generation: 3 } };
-    assert.equal(handlePublicRunStreamFrameV4(foreignEnd as never), false);
+    assert.equal(handlePublicRunStreamEventV4(staleEnd), false);
+    assert.equal(handlePublicRunStreamEventV4(handlerArgs), true);
+    assert.equal(handlePublicRunStreamEventV4(handlerArgs), false);
+    const foreignEnd = adaptV4Frame(
+      { ...endFrame.frame, transportCursor: "run-2:1:2-0", value: { ...endFrame.frame.value, run_id: "run-2" } },
+      { runId: "run-2", streamIncarnation: 1, generation: 3 },
+    );
+    assert.equal(handlePublicRunStreamEventV4({ ...handlerArgs, event: foreignEnd }), false);
   } finally {
     dom.cleanup();
   }

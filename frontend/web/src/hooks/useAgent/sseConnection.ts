@@ -11,14 +11,13 @@ import {
 } from "../../services/api/tokenManager";
 import { getAccessToken, getRefreshToken } from "../../services/api/token";
 import {
-  handlePublicRunStreamFrameV4Result,
+  handlePublicRunStreamEventV4Result,
   setMessageSnapshot,
   type EventHandlerContext,
 } from "./eventHandlers";
 import {
   adaptPublicRunStreamEventV4,
   comparePublicRunStreamCursors,
-  type V4AdapterBinding,
   type V4PublicEvent,
   type V4SseFrame,
 } from "../../components/chat/assistant-ui/publicEventAdapter";
@@ -916,11 +915,6 @@ export async function connectToSSE(
             streamIncarnation: bindingIncarnation,
             generation: streamVersion,
           };
-          const adapterBinding: V4AdapterBinding = {
-            runId: targetRunId,
-            streamIncarnation: bindingIncarnation,
-            generation: streamVersion,
-          };
           const semanticEventId = adaptedEvent.eventId;
           const payload = (
             adaptedEvent.event as unknown as { payload: Record<string, unknown> }
@@ -1018,9 +1012,8 @@ export async function connectToSSE(
             pendingTerminalHydration = null;
             pending.resolve();
           };
-          const handlingResult = handlePublicRunStreamFrameV4Result({
-            frame,
-            adapterBinding,
+          const handlingResult = handlePublicRunStreamEventV4Result({
+            event: adaptedEvent,
             messageId,
             ctx,
             binding,

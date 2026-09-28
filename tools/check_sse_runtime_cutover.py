@@ -529,7 +529,7 @@ def _frontend_cursor_commit_failures(frontend: str) -> list[str]:
     connect = _typescript_function_body(frontend, "export async function connectToSSE")
     handle_calls = _typescript_call_arguments(
         connect,
-        "handlePublicRunStreamFrameV4Result",
+        "handlePublicRunStreamEventV4Result",
     )
     commit = _typescript_function_body(
         connect,
@@ -649,7 +649,7 @@ def check() -> list[str]:
     if connect.count('headers["Last-Event-ID"] = acceptedCursor.eventId') != 1:
         failures.append("sseConnection.ts:last_event_id_not_from_accepted_cursor")
     failures.extend(_frontend_cursor_commit_failures(frontend))
-    if connect.count("handlePublicRunStreamFrameV4Result(") != 1:
+    if connect.count("handlePublicRunStreamEventV4Result(") != 1:
         failures.append("sseConnection.ts:v4_handler_not_unique")
     active_frontend_paths = (
         "frontend/web/src/hooks/useAgent/sseConnection.ts",
