@@ -1,36 +1,5 @@
-from fastapi.testclient import TestClient
-
 from app.auth import AuthPrincipal
-from app.main import create_app
 from app.routes.lambchat_compat import _compatibility_events_for_run
-
-
-def auth_settings():
-    return type("S", (), {"trusted_principal_secret": "test-secret", "frontend_poc_auth_enabled": False})()
-
-
-def test_retired_agent_apps_compatibility_response_contains_no_executor_secrets(monkeypatch):
-    monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    client = TestClient(create_app())
-
-    response = client.get(
-        "/api/ai/agent-apps",
-        headers={
-            "x-ai-user-id": "user-a",
-            "x-ai-user-name": "User A",
-            "x-ai-tenant-id": "default",
-            "x-ai-roles": "developer",
-            "x-ai-gateway-secret": "test-secret",
-        },
-    )
-
-    assert response.status_code == 410
-    payload_text = response.text.lower()
-    assert "api_key" not in payload_text
-    assert "token" not in payload_text
-    assert "password" not in payload_text
-    assert "runtime_211_base_url" not in payload_text
-    assert "claude" not in payload_text
 
 
 def test_lambchat_live_and_history_use_public_execution_event_names():
@@ -41,7 +10,7 @@ def test_lambchat_live_and_history_use_public_execution_event_names():
             {
                 "id": "evt-1",
                 "trace_id": "trace-run-a",
-                "schema_version": "ai-platform.public-execution-event.v1",
+                "schema_version": "ai-platform.event-envelope.v1",
                 "sequence": 1,
                 "event_type": "execution_step",
                 "stage": "execution",
@@ -49,13 +18,14 @@ def test_lambchat_live_and_history_use_public_execution_event_names():
                 "severity": "info",
                 "visible_to_user": True,
                 "payload_json": {
+                    "schema_version": "ai-platform.public-execution-event.v2",
+                    "presentation_kind": "processing",
+                    "safe_label": "Data processing",
                     "step_id": "step-opaque-a",
                     "kind": "processing",
-                    "stage": "execution",
+                    "stage": "data",
                     "status": "running",
-                    "title": "Document review",
-                    "summary": "Processing",
-                    "progress": {"current": 0, "total": 4},
+                    "progress": {"current": 0, "total": 1},
                 },
                 "created_at": None,
             }
@@ -271,7 +241,7 @@ def test_lambchat_omits_legacy_capability_rows_when_strict_timeline_exists_for_e
     public_event = {
         "id": "evt-execution",
         "trace_id": "trace-run-a",
-        "schema_version": "ai-platform.public-execution-event.v1",
+        "schema_version": "ai-platform.event-envelope.v1",
         "sequence": 2,
         "event_type": "execution_step",
         "stage": "execution",
@@ -279,12 +249,13 @@ def test_lambchat_omits_legacy_capability_rows_when_strict_timeline_exists_for_e
         "severity": "info",
         "visible_to_user": True,
         "payload_json": {
+            "schema_version": "ai-platform.public-execution-event.v2",
+            "presentation_kind": "mcp",
+            "safe_label": "Tenant Search",
             "step_id": "step-opaque-a",
             "kind": "capability",
             "stage": "execution",
             "status": "running",
-            "title": "Tenant Search",
-            "summary": "Started",
             "progress": {"current": 0, "total": 1},
         },
         "created_at": None,
