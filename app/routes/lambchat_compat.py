@@ -60,8 +60,6 @@ from app.streaming.api import (
     live_redis_id_is_after,
     project_persisted_message_delta_v4,
     validate_public_application_payload_v4,
-)
-from app.streaming.domain.public_events_v4 import (
     _project_validated_internal_envelope_v4,
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events

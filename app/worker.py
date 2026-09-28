@@ -716,18 +716,9 @@ def _agent_profile_snapshot_matches_authority(
         return False
     if queued_mcp_tool_ids != authority_mcp_tool_ids:
         return False
-    expected = dict(private_execution_input)
-    if payload.execution_kind != RUN_EXECUTION_KIND_HARNESS_CHAT:
-        authority_skill = getattr(admission, "skill", None)
-        if (
-            not isinstance(authority_skill, dict)
-            or str(authority_skill.get("skill_id") or "") != str(payload.skill_id or "")
-            or str(authority_skill.get("skill_version") or "")
-            != str(payload.skill_version or "")
-            or not payload.skill_version
-        ):
-            return False
-    return payload.agent_profile == expected
+    # Durable snapshot validation owns the Run's primary Skill identity and pins.
+    # This comparison owns the Profile instructions, Skill set and MCP selection.
+    return payload.agent_profile == private_execution_input
 
 
 def _locked_run_trace_id(payload: QueueRunPayload, locked_run: object) -> str:

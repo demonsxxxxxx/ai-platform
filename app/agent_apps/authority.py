@@ -38,12 +38,7 @@ from app.agent_apps.api import (
 )
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
-from app.control_plane_contracts import (
-    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
-    RUN_EXECUTION_KIND_HARNESS_CHAT,
-    RUN_EXECUTION_KIND_SKILL,
-    standard_trace_id,
-)
+from app.control_plane_contracts import standard_trace_id
 from app.mcp import api as mcp_api
 from app.mcp.api import parse_mcp_tool_reference
 from app.models import (
@@ -601,14 +596,14 @@ class AgentProfileAuthority:
         ):
             raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid")
 
-        if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+        if execution_kind == "harness_chat":
             if (
                 pinned_manifests
                 or len(run_skill_set) != 1
-                or run_skill_set[0]["skill_id"] != LEGACY_SYNTHETIC_CHAT_SKILL_ID
+                or run_skill_set[0]["skill_id"] != "general-chat"
             ):
                 raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid")
-        elif execution_kind != RUN_EXECUTION_KIND_SKILL or not pinned_manifests:
+        elif execution_kind != "skill" or not pinned_manifests:
             raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid")
 
         # Current capability ACLs are resolved from the published Profile. The worker
@@ -1392,7 +1387,7 @@ class AgentProfileAuthority:
             except platform_errors.RepositoryConflictError as exc:
                 raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
         execution_kind = str(snapshot.get("execution_kind") or run.get("execution_kind") or (
-            RUN_EXECUTION_KIND_SKILL if skill_manifests else RUN_EXECUTION_KIND_HARNESS_CHAT
+            "skill" if skill_manifests else "harness_chat"
         ))
         admission = await self.resolve_bound_for_submission(
             conn, principal=principal, agent_id=str(run.get("agent_id") or ""),
@@ -1418,8 +1413,9 @@ class AgentProfileAuthority:
             or "required_skill_id" in profile_snapshot
             or "required_skill_version" in profile_snapshot
         )
+        skill_identity_matches = str(run.get("skill_id") or "") == authority_skill_id
         governed_mcp_tool_ids: tuple[str, ...] | None = None
-        if governed_profile_snapshot and execution_kind != RUN_EXECUTION_KIND_HARNESS_CHAT:
+        if governed_profile_snapshot and execution_kind != "harness_chat":
             if skill_manifests is None:
                 try:
                     skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
@@ -1519,13 +1515,20 @@ class AgentProfileAuthority:
                 )
                 and governed_mcp_tool_ids == admission.mcp_tool_ids
             )
+        elif execution_kind == "harness_chat":
+            skill_identity_matches = run.get("skill_id") is None
+            skill_version_matches = (
+                snapshot.get("skill_version") is None
+                and not snapshot.get("skill_manifests")
+                and not snapshot.get("release_decision")
+            )
         else:
             skill_version_matches = snapshot_skill_version == str(
                 admission.skill.get("skill_version") or ""
             )
         if (
             profile_snapshot != expected_profile_snapshot
-            or str(run.get("skill_id") or "") != str(admission.skill.get("skill_id") or "")
+            or not skill_identity_matches
             or not skill_version_matches
             or str(snapshot.get("executor_type") or "")
             != str(admission.skill.get("executor_type") or "")

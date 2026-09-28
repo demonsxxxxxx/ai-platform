@@ -6236,7 +6236,8 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
   }
 });
 
-test("useAgent trusts complete terminal history metadata without an exact second read", async () => {
+for (const initiallyComplete of [true, false]) {
+test(`useAgent requires complete metadata for exact Run history: ${initiallyComplete}`, async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -6270,10 +6271,10 @@ test("useAgent trusts complete terminal history metadata without an exact second
           event_type: "message:chunk",
           run_id: "run-complete-terminal",
           timestamp: "2026-07-15T00:00:01Z",
-          data: { content: "完整持久化答案" },
+          data: { content: eventReads === 1 && !initiallyComplete ? "半截正文" : "完整持久化答案" },
         },
       ],
-      terminal_run_statuses: { "run-complete-terminal": "succeeded" },
+      terminal_run_statuses: initiallyComplete || eventReads > 1 ? { "run-complete-terminal": "succeeded" as const } : {},
       next_cursor: null,
     };
   };
@@ -6285,10 +6286,11 @@ test("useAgent trusts complete terminal history metadata without an exact second
 
   try {
     await harness.act(async () => {
-      await harness.hook.loadHistory("session-complete-terminal");
+      await harness.hook.loadHistory("session-complete-terminal", "run-complete-terminal");
     });
     await settle(harness.act);
-    assert.equal(eventReads, 1);
+    assert.equal(eventReads, initiallyComplete ? 1 : 2);
+    assert.equal(harness.hook.isLoadingHistory, false);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(
@@ -6303,6 +6305,8 @@ test("useAgent trusts complete terminal history metadata without an exact second
     await harness.cleanup();
   }
 });
+
+}
 
 test("useAgent loads an exact old run as one complete deduplicated segment from the first request", async () => {
   const harness = await loadReactHarness();
@@ -6338,6 +6342,7 @@ test("useAgent loads an exact old run as one complete deduplicated segment from 
     return {
       run_id: "run-51",
       current_run_id: "run-51",
+      terminal_run_statuses: { "run-51": "succeeded" },
       events: [
         {
           id: "message-run-51",
@@ -6383,7 +6388,7 @@ test("useAgent loads an exact old run as one complete deduplicated segment from 
   sessionApi.getStatus = (async (_sessionId, runId) => ({
     session_id: "session-exact-old",
     run_id: runId,
-    status: "error",
+    status: "completed",
     raw_status: "succeeded",
   })) as typeof sessionApi.getStatus;
 

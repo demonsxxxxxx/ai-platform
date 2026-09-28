@@ -2148,7 +2148,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             // same response also reconstructed the assistant segment.
             currentRunIdRef.current = historyCurrentRunId;
             setCurrentRunId(historyCurrentRunId);
-            if (targetRunId || hasCompleteTerminalHistory) {
+            if (hasCompleteTerminalHistory) {
               let exactAssistant = reconstructedMessages.find(
                 (message) =>
                   message.role === "assistant" &&

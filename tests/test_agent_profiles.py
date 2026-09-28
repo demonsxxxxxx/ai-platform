@@ -1608,3 +1608,64 @@ async def test_mock_profile_revision_fence_allows_one_concurrent_publish_from_th
 
     assert [outcome["revision"] for outcome in outcomes if isinstance(outcome, dict)] == [5]
     assert sum(isinstance(outcome, RepositoryConflictError) for outcome in outcomes) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", [None, "skill_id", "skill_version", "release_decision", "skill_manifests"])
+async def test_harness_profile_replay_preserves_skillless_run_identity(monkeypatch, mutation):
+    from types import SimpleNamespace
+    from app.agent_apps import AgentProfileAuthority
+    from app.platform.postgres.errors import RepositoryConflictError
+
+    profile = {
+        "agent_id": "agt_support", "revision": 4, "content_hash": "a" * 64,
+        "instructions": "Keep the admitted profile.",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "profile-pin-a"}],
+    }
+    source = {
+        "id": "harness-run", "agent_id": "agt_support", "skill_id": None,
+        "execution_kind": "harness_chat", "admitted_agent_profile_revision": 4,
+        "admitted_agent_profile_hash": "a" * 64,
+        "input_json": {
+            "execution_kind": "harness_chat", "executor_type": "claude-agent-worker",
+            "skill_version": None, "skill_manifests": [], "release_decision": {},
+            "input": {"message": "retry"}, "model_id": "model-a",
+            "model_value": "provider-model-a", "agent_profile": profile,
+        },
+    }
+    if mutation == "skill_id":
+        source["skill_id"] = "general-chat"
+    elif mutation is not None:
+        source["input_json"][mutation] = {
+            "skill_version": "unexpected-package",
+            "release_decision": {"selected_version": "unexpected-package"},
+            "skill_manifests": [{"skill_id": "unexpected-package"}],
+        }[mutation]
+
+    async def get_run(*_args, **_kwargs):
+        return source
+
+    async def materialize(*_args, **kwargs):
+        return kwargs["skill_manifest_refs"]
+
+    async def resolve_bound(*_args, **kwargs):
+        assert kwargs["pinned_skill_set"] == profile["skill_set"]
+        assert kwargs["execution_kind"] == "harness_chat"
+        return SimpleNamespace(
+            private_execution_input=profile, mcp_tool_ids=(),
+            skill={"skill_id": "general-chat", "skill_version": "profile-pin-a", "executor_type": "claude-agent-worker"},
+        )
+
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", get_run)
+    monkeypatch.setattr("app.skills.infrastructure.run_snapshots_postgres.materialize_run_skill_manifests", materialize)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
+    operation = authority.reauthorize_pinned_run_for_replay(
+        object(), principal=AuthPrincipal(user_id="user-a", display_name="User", tenant_id="tenant-a", roles=["user"]),
+        run_id="harness-run",
+    )
+    if mutation is None:
+        await operation
+    else:
+        with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+            await operation
