@@ -2131,7 +2131,7 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
 async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(monkeypatch):
     from contextlib import asynccontextmanager
 
-    from app.models import AgentAppRunRequest
+    from app.routes.agent_profiles import AgentAppRunRequest
     from app.routes import agent_profiles
 
     connection = object()

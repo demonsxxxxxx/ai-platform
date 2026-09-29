@@ -2,8 +2,7 @@ from typing import Annotated, Any, ClassVar, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import (
-    AfterValidator, AliasChoices, BeforeValidator,
-    BaseModel,
+    AfterValidator, AliasChoices, BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
@@ -17,7 +16,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     RUN_PAYLOAD_SCHEMA_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
-    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, ThinkingEffort, normalize_thinking_effort, validate_thinking_agent_options,
+    SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS, validate_thinking_agent_options,
 )
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.agent_apps.api import AgentProfileAvatarRef
@@ -331,26 +330,6 @@ class AgentProfileTrialRunRequest(BaseModel):
     @classmethod
     def validate_workspace_id(cls, value: str):
         return assert_safe_id(value, "workspace_id")
-
-    @field_validator("file_ids")
-    @classmethod
-    def validate_file_ids(cls, value: list[str]):
-        normalized = [assert_safe_id(item, "file_ids") for item in value]
-        if len(normalized) != len(set(normalized)):
-            raise ValueError("file_ids contains duplicates")
-        return normalized
-
-
-class AgentAppRunRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    message: str = Field(min_length=1, max_length=100_000)
-    submission_id: UUID
-    file_ids: list[str] = Field(default_factory=list, max_length=32)
-    user_timezone: str | None = Field(default=None, max_length=128)
-    thinking_effort: Annotated[ThinkingEffort, BeforeValidator(normalize_thinking_effort)] = "auto"
-    model_id: str | None = Field(default=None, min_length=1, max_length=128)
-    model: str | None = Field(default=None, min_length=1, max_length=512)
 
     @field_validator("file_ids")
     @classmethod

@@ -2,6 +2,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypedDict
 
 from app.skills.application.run_admission import (
+    MAX_SKILL_RUN_MANIFESTS,
     SkillRunAdmission,
     SkillRunAdmissionService,
 )
@@ -216,6 +217,7 @@ def restore_admitted_skill_manifest_authority(
 __all__ = [
     "AdminSkillListResponse",
     "AdminSkillSummaryResponse",
+    "MAX_SKILL_RUN_MANIFESTS",
     "SkillRunAdmission",
     "SkillRunVersionMismatch",
     "admit_skill_run",

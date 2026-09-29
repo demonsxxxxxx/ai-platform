@@ -8,6 +8,7 @@ from app.skills.application.run_admission import (
     SkillRunAdmissionService,
     SkillRunVersionMismatch,
 )
+from app.skills.catalog import is_current_skill_dependency_usable
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
     SkillVersionMaterializationError,
@@ -50,6 +51,7 @@ async def test_admission_selects_rollout_version_and_locks_matching_manifest():
             resolve_release_decision=resolve_rollout_skill_decision,
             release_decision_payload=release_decision_payload_for_locked_version,
             is_user_runnable_status=is_user_runnable_status,
+            dependency_is_usable=is_current_skill_dependency_usable,
             build_manifest_pins=build_skill_version_policy_manifest_pins,
             lock_skill_version=governed_locked_skill_version,
             attach_snapshot_governance=attach_skill_snapshot_governance,
@@ -195,6 +197,7 @@ def _current_dependency_service(version_rows):
             resolve_release_decision=resolve_rollout_skill_decision,
             release_decision_payload=release_decision_payload_for_locked_version,
             is_user_runnable_status=is_user_runnable_status,
+            dependency_is_usable=is_current_skill_dependency_usable,
             build_manifest_pins=build_manifest,
             lock_skill_version=governed_locked_skill_version,
             attach_snapshot_governance=attach_governance,

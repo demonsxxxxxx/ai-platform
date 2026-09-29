@@ -30,7 +30,7 @@ from app.skills.pinning import (
     build_skill_version_manifest_pin,
     validate_skill_version_dependency_policy,
 )
-from app.skills.application.run_admission import MAX_SKILL_RUN_MANIFESTS
+from app.skills.api import MAX_SKILL_RUN_MANIFESTS
 from app.validation import SAFE_ID_PATTERN
 
 
@@ -917,6 +917,43 @@ def _fixed_skill_query_scope(
         if isinstance(dependency_id, str)
     }
     return sorted(set(roots) | manifest_ids | dependency_ids)
+
+
+def is_current_skill_dependency_usable(
+    *,
+    tenant_id: str,
+    skill_id: str,
+    row: dict[str, Any],
+    department_id: str,
+    roles: list[str] | None,
+    permissions: list[str] | None,
+) -> bool:
+    """Require tenant distribution and fail closed when caller scope is unavailable."""
+
+    distribution = {
+        "status": row.get("status"),
+        "visible_to_user": row.get("visible_to_user"),
+        "department_ids": row.get("department_ids"),
+        "allowed_roles": row.get("allowed_roles"),
+    }
+    decision = resolve_capability_access(
+        CapabilityAccessContext(
+            tenant_id=tenant_id,
+            department_id=department_id,
+            roles=roles or [],
+            permissions=permissions or [],
+        ),
+        CapabilityDistributionSubject(
+            capability_kind="skill",
+            capability_id=skill_id,
+            lifecycle_status=str(row.get("lifecycle_status") or "disabled"),
+            distribution=distribution,
+        ),
+        intent="use",
+    )
+    return bool(
+        decision.usable and is_user_runnable_status(row.get("version_status"))
+    )
 
 
 async def resolve_authorized_skill_catalog(

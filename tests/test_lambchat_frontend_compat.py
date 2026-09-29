@@ -10,7 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.models import AgentAppRunRequest, ChatStreamRequest
+from app.models import ChatStreamRequest
+from app.routes.agent_profiles import AgentAppRunRequest
 from app.conversations.infrastructure.postgres import append_message as real_append_message
 from app.conversations.infrastructure.postgres import list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs
 from app.run_projection import (

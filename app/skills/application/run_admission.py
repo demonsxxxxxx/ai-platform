@@ -6,12 +6,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from app.capability_distribution import (
-    CapabilityAccessContext,
-    CapabilityDistributionSubject,
-    resolve_capability_access,
-)
-
 
 MAX_SKILL_RUN_MANIFESTS = 64
 
@@ -52,6 +46,7 @@ class SkillRunAdmissionPorts:
     resolve_release_decision: Callable[..., Any]
     release_decision_payload: Callable[..., dict[str, Any]]
     is_user_runnable_status: Callable[[Any], bool]
+    dependency_is_usable: Callable[..., bool]
     build_manifest_pins: Callable[..., list[dict[str, Any]]]
     lock_skill_version: Callable[..., str]
     attach_snapshot_governance: Callable[..., list[dict[str, Any]]]
@@ -163,7 +158,7 @@ class SkillRunAdmissionService:
             next_frontier: set[str] = set()
             for dependency_id in frontier:
                 row = rows_by_id.get(dependency_id)
-                if row is None or not self._tenant_dependency_is_usable(
+                if row is None or not self._ports.dependency_is_usable(
                     tenant_id=tenant_id,
                     skill_id=dependency_id,
                     row=row,
@@ -268,39 +263,6 @@ class SkillRunAdmissionService:
         ):
             raise self._ports.materialization_error("skill_version_not_materializable")
         return list(dependencies)
-
-    def _tenant_dependency_is_usable(
-        self,
-        *,
-        tenant_id: str,
-        skill_id: str,
-        row: dict[str, Any],
-        department_id: str,
-        roles: list[str] | None,
-        permissions: list[str] | None,
-    ) -> bool:
-        """Require tenant distribution and fail closed when caller scope is unavailable."""
-
-        distribution = {
-            "status": row.get("status"),
-            "visible_to_user": row.get("visible_to_user"),
-            "department_ids": row.get("department_ids"),
-            "allowed_roles": row.get("allowed_roles"),
-        }
-        decision = resolve_capability_access(
-            CapabilityAccessContext(tenant_id=tenant_id, department_id=department_id, roles=roles or [], permissions=permissions or []),
-            CapabilityDistributionSubject(
-                capability_kind="skill",
-                capability_id=skill_id,
-                lifecycle_status=str(row.get("lifecycle_status") or "disabled"),
-                distribution=distribution,
-            ),
-            intent="use",
-        )
-        return bool(
-            decision.usable
-            and self._ports.is_user_runnable_status(row.get("version_status"))
-        )
 
     def _validate_acyclic_complete_graph(
         self,

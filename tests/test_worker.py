@@ -1039,7 +1039,7 @@ def default_cancel_not_requested(monkeypatch):
     _CURRENT_QUEUE_PAYLOAD = None
     _TEST_RUN_LIFECYCLE = _FakeRunLifecycle()
     original_locked_agent_profile_identity_valid = (
-        worker_module._locked_agent_profile_identity_valid
+        worker_module.locked_agent_profile_identity_valid
     )
 
     def capture_queue_payload(raw):
@@ -1110,7 +1110,7 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
     monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
     monkeypatch.setattr(
-        "app.worker._locked_agent_profile_identity_valid",
+        "app.worker.locked_agent_profile_identity_valid",
         validate_materialized_locked_agent_profile,
     )
     monkeypatch.setattr(
@@ -2709,7 +2709,7 @@ def test_locked_agent_profile_identity_requires_exact_physical_pin(
     elif pin_change == "session_hash":
         locked_run["session_admitted_agent_profile_hash"] = "b" * 64
 
-    assert worker_module._locked_agent_profile_identity_valid(
+    assert worker_module.locked_agent_profile_identity_valid(
         candidate,
         locked_run,
     ) is expected
@@ -2752,7 +2752,7 @@ def test_locked_generic_agent_requires_explicit_null_physical_pins(pin_change, e
     elif field is not None:
         locked_run[field] = 7 if field.endswith("revision") else "a" * 64
 
-    assert worker_module._locked_agent_profile_identity_valid({}, locked_run) is expected
+    assert worker_module.locked_agent_profile_identity_valid({}, locked_run) is expected
 
 
 @pytest.mark.asyncio

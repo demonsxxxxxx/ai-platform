@@ -1222,6 +1222,49 @@ def selected_capability_completion_decision(
     )
 
 
+def capability_invocation_completion_decision(
+    available_capabilities: Collection[tuple[str, str]],
+    *,
+    binding: Mapping[str, object],
+    evidence: object,
+    allow_terminal_failure_capabilities: Collection[tuple[str, str]] = frozenset(),
+) -> RequiredCapabilityDecision:
+    """Validate every observed invocation against the authorized capability set."""
+
+    mismatch = RequiredCapabilityDecision(False, "required_tool_completion_evidence_mismatch", "", "")
+    if not isinstance(evidence, list):
+        return mismatch
+    try:
+        records = [RequiredCapabilityEvidence.from_payload(item) for item in evidence]
+    except RequiredToolContractError:
+        return mismatch
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    call_owners: dict[str, tuple[str, str]] = {}
+    for record in records:
+        key = (record.capability_kind, record.canonical_identity)
+        call_id = record.tool_call_id
+        if key not in available_capabilities or not isinstance(call_id, str) or not call_id:
+            return mismatch
+        if call_owners.setdefault(call_id, key) != key:
+            return mismatch
+        groups.setdefault((*key, call_id), []).append(asdict(record))
+    for (capability_kind, canonical_identity, _call_id), invocation in groups.items():
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind=capability_kind,
+            canonical_identity=canonical_identity,
+        )
+        decision = selected_capability_completion_decision(
+            declarations=[declaration],
+            binding=binding,
+            evidence=invocation,
+            allow_terminal_failure_capabilities=allow_terminal_failure_capabilities,
+        )
+        if not decision.allowed:
+            return decision
+    reason = "required_tool_completion_evidence_valid" if groups else "required_capability_not_selected"
+    return RequiredCapabilityDecision(True, reason, "", "")
+
+
 def completion_evidence_from_executor_payload(
     executor_payload: object,
 ) -> dict[str, Any] | None:
