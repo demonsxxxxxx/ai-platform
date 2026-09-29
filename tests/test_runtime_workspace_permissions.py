@@ -10,6 +10,7 @@ from app.runtime.sandbox.workspace_permissions import (
     WorkspacePermissionError,
     _OpenWorkspaceNode,
     _migrate_workspace_owners,
+    _normalize_platform_private_skill_modes,
     _probe_runtime_workspace,
     initialize_runtime_workspace,
     validate_workspace_snapshot,
@@ -141,6 +142,13 @@ def test_workspace_snapshot_rejects_unreadable_namespace_before_runtime_prepare(
         (node("socket", mode=stat.S_IFSOCK | 0o600), "unsupported workspace entry type"),
         (node("device", device=8), "workspace entry crosses filesystem boundary"),
         (node("world-write", mode=stat.S_IFREG | 0o602), "unsafe workspace mode"),
+        (
+            node(
+                "tenants/t/workspaces/w/users/u/sessions/s/runs/r/attempts/a/workspace/.pins",
+                mode=stat.S_IFDIR | 0o770,
+            ),
+            "unsafe workspace mode",
+        ),
         (node("set-id", mode=stat.S_IFREG | stat.S_ISUID | 0o600), "unsafe workspace mode"),
         (node("sticky", mode=stat.S_IFREG | stat.S_ISVTX | 0o600), "unsafe workspace mode"),
         (node("hard-link", link_count=2), "workspace hard links are not allowed"),
@@ -204,6 +212,96 @@ def test_workspace_initializer_preserves_real_read_only_skill_tree_and_output(tm
                 path.chmod(0o755)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
+def test_workspace_initializer_normalizes_only_platform_private_skill_modes(tmp_path, monkeypatch):
+    from app.runtime.sandbox import workspace_permissions
+
+    workspace = tmp_path.joinpath(
+        "tenants",
+        "t",
+        "workspaces",
+        "w",
+        "users",
+        "u",
+        "sessions",
+        "s",
+        "runs",
+        "r",
+        "attempts",
+        "a",
+        "workspace",
+    )
+    pinned_file = workspace / ".pins" / "report" / "SKILL.md"
+    staged_file = workspace / ".claude" / "skills" / "report" / "SKILL.md"
+    for path, content in ((pinned_file, "pinned\n"), (staged_file, "staged\n")):
+        path.parent.mkdir(parents=True)
+        path.write_text(content, encoding="utf-8")
+        path.chmod(0o660)
+    for path in (
+        workspace / ".pins",
+        pinned_file.parent,
+        workspace / ".claude",
+        workspace / ".claude" / "skills",
+        staged_file.parent,
+    ):
+        path.chmod(0o770)
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_UID", os.geteuid())
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_GID", os.getegid())
+    monkeypatch.setattr(workspace_permissions, "_drop_runtime_privileges", lambda: None)
+
+    initialize_runtime_workspace()
+
+    assert pinned_file.read_text(encoding="utf-8") == "pinned\n"
+    assert staged_file.read_text(encoding="utf-8") == "staged\n"
+    assert stat.S_IMODE((workspace / ".pins").stat().st_mode) == 0o750
+    assert stat.S_IMODE(pinned_file.parent.stat().st_mode) == 0o750
+    assert stat.S_IMODE(pinned_file.stat().st_mode) == 0o640
+    assert stat.S_IMODE((workspace / ".claude").stat().st_mode) == 0o750
+    assert stat.S_IMODE(staged_file.parent.stat().st_mode) == 0o750
+    assert stat.S_IMODE(staged_file.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
+def test_workspace_initializer_keeps_group_write_outside_platform_private_skill_roots_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    from app.runtime.sandbox import workspace_permissions
+
+    workspace = tmp_path.joinpath(
+        "tenants",
+        "t",
+        "workspaces",
+        "w",
+        "users",
+        "u",
+        "sessions",
+        "s",
+        "runs",
+        "r",
+        "attempts",
+        "a",
+        "workspace",
+    )
+    unsafe = workspace / "zz-unsafe"
+    unsafe.mkdir(parents=True)
+    unsafe.chmod(0o770)
+    private = workspace / ".pins"
+    private.mkdir()
+    private.chmod(0o770)
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_UID", os.geteuid())
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_GID", os.getegid())
+    monkeypatch.setattr(workspace_permissions, "_drop_runtime_privileges", lambda: None)
+
+    with pytest.raises(WorkspacePermissionError, match=r"unsafe workspace mode: .*workspace/zz-unsafe"):
+        initialize_runtime_workspace()
+
+    assert stat.S_IMODE(unsafe.stat().st_mode) == 0o770
+    assert stat.S_IMODE(private.stat().st_mode) == 0o770
+
+
 def test_runtime_workspace_probe_removes_its_sentinel_after_readback_failure(monkeypatch):
     from app.runtime.sandbox import workspace_permissions
 
@@ -223,6 +321,54 @@ def test_runtime_workspace_probe_removes_its_sentinel_after_readback_failure(mon
         _probe_runtime_workspace(9)
 
     assert unlinked == [(".ai-platform-runtime-write-probe", 9)]
+
+
+def test_platform_private_skill_mode_migration_clears_acls_and_group_write_by_inode_handle(monkeypatch):
+    from app.runtime.sandbox import workspace_permissions
+
+    path = "tenants/t/workspaces/w/users/u/sessions/s/runs/r/attempts/a/workspace/.pins"
+    original = node(path, mode=stat.S_IFDIR | 0o770)
+    original = WorkspaceNode(**{**original.__dict__, "inode": 17})
+    handle = _OpenWorkspaceNode(node=original, parent_fd=7, name=".pins", fd=41)
+    state = {"mode": original.mode}
+    removed = []
+    chmods = []
+
+    def current_stat():
+        return type(
+            "CurrentStat",
+            (),
+            {
+                "st_dev": original.device,
+                "st_ino": original.inode,
+                "st_uid": original.uid,
+                "st_gid": original.gid,
+                "st_mode": state["mode"],
+                "st_nlink": original.link_count,
+            },
+        )()
+
+    def fchmod(fd, mode):
+        chmods.append((fd, mode))
+        state["mode"] = stat.S_IFDIR | mode
+
+    monkeypatch.setattr(workspace_permissions.os, "fstat", lambda fd: current_stat())
+    monkeypatch.setattr(
+        workspace_permissions.os,
+        "removexattr",
+        lambda fd, name: removed.append((fd, name)),
+        raising=False,
+    )
+    monkeypatch.setattr(workspace_permissions.os, "fchmod", fchmod)
+
+    normalized = _normalize_platform_private_skill_modes(root_device=7, handles=[handle])
+
+    assert removed == [
+        (41, "system.posix_acl_default"),
+        (41, "system.posix_acl_access"),
+    ]
+    assert chmods == [(41, 0o750)]
+    assert normalized[0].node.mode == stat.S_IFDIR | 0o750
 
 
 def test_workspace_migration_uses_verified_inode_handle_not_name(monkeypatch):

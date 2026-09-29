@@ -92,7 +92,7 @@ from app.skills.pinning import (
     MAX_SKILL_SNAPSHOT_TOTAL_BYTES,
 )
 from app.skills.registry import BuiltinSkill, skill_content_hash
-from app.skills.stager import SkillStager
+from app.skills.stager import SkillStager, ensure_skill_staging_directory, write_skill_staging_file
 from app.storage import ObjectStorage, ObjectStorageSizeLimitError, run_storage_io
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
@@ -1590,11 +1590,11 @@ def _materialize_pinned_skill(skill_name: str, pin: dict[str, Any], snapshot_roo
     if not expected_hash:
         raise ValueError(f"pinned skill missing content hash: {skill_name}")
     target = snapshot_root / skill_name
-    workspace_root = snapshot_root.parents[1]
+    workspace_root = snapshot_root.parent
     ensure_creatable_inside(workspace_root, target, "pinned skill path must stay inside the run workspace")
     if target.exists():
         shutil.rmtree(target)
-    target.mkdir(parents=True, exist_ok=True)
+    ensure_skill_staging_directory(workspace_root, target)
     ensure_creatable_inside(workspace_root, target, "pinned skill path must stay inside the run workspace")
     total_bytes = 0
     for item in pin.get("files") or []:
@@ -1615,8 +1615,8 @@ def _materialize_pinned_skill(skill_name: str, pin: dict[str, Any], snapshot_roo
             raise ValueError(f"pinned skill snapshot too large: {skill_name}")
         output = target / relative_path
         ensure_creatable_inside(target, output, f"invalid pinned skill file path: {skill_name}")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(content)
+        ensure_skill_staging_directory(target, output.parent)
+        write_skill_staging_file(output, content)
     if not (target / "SKILL.md").is_file():
         raise ValueError(f"pinned skill missing SKILL.md: {skill_name}")
     actual_hash = skill_content_hash(target)
