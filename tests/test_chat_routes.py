@@ -3786,7 +3786,7 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
         "skill_release_decision",
     ]
     assert product_events[0]["payload"]["visible_to_user"] is True
-    assert product_events[1]["payload"]["selected_capability"] == "document_review"
+    assert product_events[1]["payload"]["selected_capability"] == "general_chat"
     assert product_events[2]["payload"]["skill_id"] == "qa-file-reviewer"
     assert product_events[3]["payload"]["file_ids"] == ["file_doc"]
     assert any(
@@ -3930,7 +3930,7 @@ async def test_chat_stream_redacts_raw_skill_id_from_ordinary_user_response(monk
     )
 
     assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "document_review"
+    assert response.intent_decision.selected_capability == "general_chat"
     assert response.intent_decision.skill_id is None
 
 
@@ -4023,7 +4023,7 @@ async def test_general_chat_queues_claude_agent_worker_executor(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_lambchat_word_review_attachment_routes_to_qa_agent(monkeypatch):
+async def test_lambchat_docx_attachment_stays_with_general_agent(monkeypatch):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -4074,15 +4074,15 @@ async def test_lambchat_word_review_attachment_routes_to_qa_agent(monkeypatch):
     )
 
     assert response.run_id == "run_review"
-    assert ("resolve", "qa-word-review", "qa-file-reviewer") in calls
-    assert ("session", "qa-word-review") in calls
-    assert ("run", "qa-word-review", "qa-file-reviewer", ["file_review"]) in calls
+    assert not any(call[0] == "resolve" for call in calls)
+    assert ("session", "general-agent") in calls
+    assert ("run", "general-agent", None, ["file_review"]) in calls
     assert ("files", ["file_review"]) in calls
-    assert ("queue", "qa-word-review", "qa-file-reviewer", ["file_review"]) in calls
+    assert ("queue", "general-agent", None, ["file_review"]) in calls
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_word_review_file_id_routes_to_qa_agent(monkeypatch):
+async def test_chat_stream_docx_file_id_stays_with_general_agent(monkeypatch):
     calls = []
 
     async def fake_get_file(conn, *, tenant_id, file_id):
@@ -4139,11 +4139,11 @@ async def test_chat_stream_word_review_file_id_routes_to_qa_agent(monkeypatch):
 
     assert response.run_id == "run_review_file_id"
     assert ("get_file", "tenant-a", "file_review") in calls
-    assert ("resolve", "qa-word-review", "qa-file-reviewer") in calls
-    assert ("session", "qa-word-review") in calls
-    assert ("run", "qa-word-review", "qa-file-reviewer", ["file_review"]) in calls
+    assert not any(call[0] == "resolve" for call in calls)
+    assert ("session", "general-agent") in calls
+    assert ("run", "general-agent", None, ["file_review"]) in calls
     assert ("files", ["file_review"]) in calls
-    assert ("queue", "qa-word-review", "qa-file-reviewer", ["file_review"]) in calls
+    assert ("queue", "general-agent", None, ["file_review"]) in calls
 
 
 @pytest.mark.parametrize(
@@ -5446,116 +5446,8 @@ async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
     assert ("queue", "general-agent", None, ["file_txt"]) in calls
 
 
-@pytest.mark.asyncio
-async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creating_run(monkeypatch):
-    calls = []
-
-    async def admission_lock(conn, *, tenant_id, user_id):
-        calls.append(("admission_lock", tenant_id, user_id))
-
-    async def forbidden_limit_check(*_args, **_kwargs):
-        raise AssertionError("needs_confirmation must precede active-run limit rejection")
-
-    async def fail_resolve_agent_skill(*args, **kwargs):
-        calls.append("resolve")
-        raise AssertionError("ambiguous request must not resolve skill")
-
-    async def fail_create_run(*args, **kwargs):
-        calls.append("create_run")
-        raise AssertionError("ambiguous request must not create run")
-
-    async def fail_enqueue_run(payload):
-        calls.append("enqueue")
-        raise AssertionError("ambiguous request must not enqueue run")
-
-    async def all_principal_agents(conn, **kwargs):
-        return [
-            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer"},
-            {"id": "general-agent", "default_skill_id": "general-chat"},
-        ]
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fail_resolve_agent_skill)
-    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
-    monkeypatch.setattr(
-        'app.runs.infrastructure.postgres.acquire_user_active_run_admission_lock',
-        admission_lock,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        'app.runs.infrastructure.postgres.enforce_user_active_run_admission_under_lock',
-        forbidden_limit_check,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        'app.agent_apps.infrastructure.principal_catalog_postgres.list_principal_lambchat_agents',
-        all_principal_agents,
-        raising=False,
-    )
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="处理一下这个文件",
-            attachments=[{"key": "file_docx", "name": "demo.docx"}],
-        ),
-        principal=principal(),
-    )
-
-    assert response.status == "needs_confirmation"
-    assert response.run_id is None
-    assert [item.capability_id for item in response.suggestions] == [
-        "document_review",
-        "general_chat",
-    ]
-    assert calls == [("admission_lock", "tenant-a", "user-a")]
 
 
-@pytest.mark.asyncio
-async def test_chat_stream_filters_confirmation_suggestions_through_principal_projection(monkeypatch):
-    calls = []
-
-    async def principal_agents(conn, **kwargs):
-        calls.append(kwargs)
-        return [
-            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer"},
-            {"id": "general-agent", "default_skill_id": "general-chat"},
-        ]
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(
-        'app.agent_apps.infrastructure.principal_catalog_postgres.list_principal_lambchat_agents',
-        principal_agents,
-        raising=False,
-    )
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="处理一下这个文件",
-            attachments=[{"key": "file_docx", "name": "demo.docx"}],
-        ),
-        principal=principal(department_id="QA", roles=["QA-OPERATOR"]),
-    )
-
-    assert response.status == "needs_confirmation"
-    assert [item.capability_id for item in response.suggestions] == [
-        "document_review",
-        "general_chat",
-    ]
-    assert [item.capability_id for item in response.intent_decision.suggestions] == [
-        "document_review",
-        "general_chat",
-    ]
-    assert calls == [
-        {
-            "tenant_id": "tenant-a",
-            "actor_user_id": "user-a",
-            "department_id": "QA",
-            "roles": ["QA-OPERATOR"],
-            "is_admin": False,
-            "permissions": [],
-        }
-    ]
 
 
 @pytest.mark.asyncio
@@ -5822,59 +5714,6 @@ async def test_chat_stream_implicit_rag_backing_mcp_failure_falls_back_to_genera
     ]
 
 
-@pytest.mark.asyncio
-async def test_chat_stream_never_suggests_archived_default_skill_from_principal_projection(monkeypatch):
-    async def fake_list_agents(conn, *, tenant_id):
-        assert tenant_id == "tenant-a"
-        return [
-            {"id": "general-agent", "default_skill_id": "general-chat", "status": "active"},
-            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer", "status": "active"},
-        ]
-
-    async def fake_list_distributions(conn, **kwargs):
-        return [
-            {
-                "capability_kind": "skill",
-                "capability_id": "general-chat",
-                "status": "active",
-                "visible_to_user": True,
-                "scope_mode": "allowlist",
-                "department_ids": [],
-                "allowed_roles": [],
-                "metadata_json": {},
-            },
-            {
-                "capability_kind": "skill",
-                "capability_id": "qa-file-reviewer",
-                "status": "disabled",
-                "visible_to_user": False,
-                "scope_mode": "allowlist",
-                "department_ids": [],
-                "allowed_roles": [],
-                "metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"},
-            },
-        ]
-
-    async def fake_append_audit(conn, **kwargs):
-        return "audit"
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(principal_catalog_persistence, "list_lambchat_agents", fake_list_agents)
-    monkeypatch.setattr(principal_catalog_persistence, "list_capability_distribution_rows", fake_list_distributions)
-    monkeypatch.setattr(principal_catalog_persistence, "append_audit_log", fake_append_audit)
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="处理一下这个文件",
-            attachments=[{"key": "file_docx", "name": "demo.docx"}],
-        ),
-        principal=principal(department_id="platform", roles=["admin"]),
-    )
-
-    assert response.status == "needs_confirmation"
-    assert [item.capability_id for item in response.suggestions] == [
-        "general_chat",
-    ]
 
 
 @pytest.mark.asyncio
@@ -5917,16 +5756,16 @@ async def test_chat_stream_records_intent_decision_and_confirmed_event(monkeypat
     response = await chat_stream(
         ChatStreamRequest(
             message="处理一下这个文件",
-            confirmed_capability_id="document_review",
+            confirmed_capability_id="general_chat",
             attachments=[{"key": "file_review", "name": "demo.docx"}],
         ),
         principal=principal(),
     )
 
     assert response.status == "queued"
-    assert response.intent_decision.selected_capability == "document_review"
+    assert response.intent_decision.selected_capability == "general_chat"
     assert response.intent_decision.confirmed_by_user is True
-    assert run_inputs[0]["intent"]["selected_capability"] == "document_review"
+    assert run_inputs[0]["intent"]["selected_capability"] == "general_chat"
     assert "intent_detected" in events
     assert "intent_confirmed" in events
 
@@ -6001,14 +5840,14 @@ async def test_chat_stream_maps_unreleased_skill_version_conflict_to_409(monkeyp
     with pytest.raises(Exception) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                message="审核这个文档", confirmed_capability_id="document_review"
+                message="查询知识库", confirmed_capability_id="knowledge_answer"
             ),
             principal=principal(user_id="user-skill-status", tenant_id="tenant-a"),
         )
 
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "skill_version_not_released"
-    assert calls == [("resolve", "tenant-a", "qa-word-review", "qa-file-reviewer")]
+    assert calls == [("resolve", "tenant-a", "sop-assistant", "ragflow-knowledge-search")]
 
 
 @pytest.mark.asyncio
@@ -6032,7 +5871,7 @@ async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403
         "skill_status": "active",
         "skill_version_status": "active",
         "executor_type": "claude-agent-worker",
-        "default_skill_id": "qa-file-reviewer",
+        "default_skill_id": "ragflow-knowledge-search",
     }
     row[row_field] = row_value
     execute_params = []
@@ -6077,7 +5916,7 @@ async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                message="审核这个文档", confirmed_capability_id="document_review"
+                message="查询知识库", confirmed_capability_id="knowledge_answer"
             ),
             principal=principal(
                 user_id="user-skill-status",
@@ -6089,5 +5928,5 @@ async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "capability_not_authorized"
-    assert execute_params == [("qa-file-reviewer", "tenant-a", "qa-word-review")]
-    assert audits == [("chat_stream", "qa-file-reviewer", "capability_not_authorized")]
+    assert execute_params == [("ragflow-knowledge-search", "tenant-a", "sop-assistant")]
+    assert audits == [("chat_stream", "ragflow-knowledge-search", "capability_not_authorized")]

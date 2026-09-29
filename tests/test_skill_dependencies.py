@@ -14,7 +14,7 @@ def test_skill_dependency_policy_does_not_infer_dependencies_from_skill_id():
 
     assert skill_dependency_policy("qa-file-reviewer", available) == {
         "skill_id": "qa-file-reviewer",
-        "public": True,
+        "public": False,
         "internal_dependency": False,
         "dependency_ids": [],
         "dependency_details": [],

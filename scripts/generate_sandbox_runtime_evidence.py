@@ -45,11 +45,8 @@ INSPECTION_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-skill-mount-inspection
 BOOTSTRAP_EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime.bootstrap-error.v2"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
-INSPECTION_PROFILES = ("platform-controlled", "sdk-native")
-INSPECTION_AUTHORIZED_SKILLS = {
-    "platform-controlled": "qa-file-reviewer",
-    "sdk-native": "minimax-docx",
-}
+INSPECTION_PROFILES = ("sdk-native",)
+INSPECTION_AUTHORIZED_SKILLS = {"sdk-native": "minimax-docx"}
 INSPECTION_WORKSPACE_BASE_NAME = "sv"
 INSPECTION_ATTACKS = (
     "direct_write",
@@ -473,11 +470,7 @@ def _inspection_profile_manifest(profile: str) -> dict[str, Any]:
         "catalog": "implicit",
         "primary_skill": authorized_skill,
         "authorized_implicit_skill": authorized_skill,
-        "primary_execution_strategy": (
-            "sandbox_full_local"
-            if profile == "sdk-native"
-            else "platform_controlled"
-        ),
+        "primary_execution_strategy": "sandbox_full_local" if native_expected else "",
         "authorized_skill_count": 1,
         "native_sidecar_expected": native_expected,
         "authorization_basis": "deterministic_verifier_fixture",
@@ -485,7 +478,7 @@ def _inspection_profile_manifest(profile: str) -> dict[str, Any]:
     }
 
 
-def _inspection_check_defaults(profile: str) -> dict[str, bool]:
+def _inspection_check_defaults() -> dict[str, bool]:
     names = [
         "implicit_catalog_fixed",
         "authoritative_catalog_aggregation",
@@ -518,12 +511,6 @@ def _inspection_check_defaults(profile: str) -> dict[str, bool]:
             "native_sidecar_authenticated_health",
             "primary_native_socket_present",
             "primary_native_authenticated_health",
-        ]
-        if profile == "sdk-native"
-        else [
-            "native_sidecar_absent",
-            "primary_native_credentials_absent",
-            "primary_native_socket_absent",
         ]
     )
     return {name: False for name in names}
@@ -563,7 +550,7 @@ def _new_inspection_evidence(
             "primary_count": 0,
             "native_sidecar_count": 0,
         },
-        "checks": _inspection_check_defaults(profile),
+        "checks": _inspection_check_defaults(),
         "hashes": {
             "staged_skill": "",
             "skill_before": "",
@@ -757,21 +744,20 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
         authorized_skill_manifests=[authorized_manifest],
         authorized_skill_names=[authorized_skill],
     )
-    if profile == "sdk-native":
-        subjects = with_boundary_sandbox_local_tool_subjects(
-            subjects,
-            decision=ExecutionBoundaryDecision(
-                requires_real_sandbox=True,
-                accepted_providers=frozenset({"docker"}),
-                permission_policy=SANDBOX_BROKERED_PERMISSION_POLICY,
-                evidence_source=REAL_SANDBOX_EVIDENCE_SOURCE,
-                evidence_class=REAL_SANDBOX_EVIDENCE_CLASS,
-                local_sdk_allowed=False,
-                fail_closed=False,
-                reason="deterministic_verifier_fixture",
-            ),
-            sandbox_provider="docker",
-        )
+    subjects = with_boundary_sandbox_local_tool_subjects(
+        subjects,
+        decision=ExecutionBoundaryDecision(
+            requires_real_sandbox=True,
+            accepted_providers=frozenset({"docker"}),
+            permission_policy=SANDBOX_BROKERED_PERMISSION_POLICY,
+            evidence_source=REAL_SANDBOX_EVIDENCE_SOURCE,
+            evidence_class=REAL_SANDBOX_EVIDENCE_CLASS,
+            local_sdk_allowed=False,
+            fail_closed=False,
+            reason="deterministic_verifier_fixture",
+        ),
+        sandbox_provider="docker",
+    )
     by_identity = {
         str(subject.get("identity") or ""): subject
         for subject in subjects
@@ -780,11 +766,7 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     persisted_profile = authorized_manifest["execution_profile"]
     runtime_profile = effective_skill_execution_profile(authorized_manifest)
     declared_builtins = list(persisted_profile["builtin_tool_identities"])
-    expected_identities = (
-        {"Skill", *declared_builtins}
-        if profile == "platform-controlled"
-        else {"Skill", *SANDBOX_LOCAL_TOOL_IDENTITIES}
-    )
+    expected_identities = {"Skill", *SANDBOX_LOCAL_TOOL_IDENTITIES}
     if set(by_identity) != expected_identities or len(subjects) != len(by_identity):
         raise _InspectionCheckFailed("authoritative catalog subject aggregation mismatch")
     skill_subject = by_identity.get("Skill", {})
@@ -799,48 +781,24 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
         )
     ):
         raise _InspectionCheckFailed("authoritative catalog Skill subject mismatch")
-    runtime_builtins = (
-        declared_builtins
-        if profile == "platform-controlled"
-        else list(SANDBOX_LOCAL_TOOL_IDENTITIES)
-    )
+    runtime_builtins = list(SANDBOX_LOCAL_TOOL_IDENTITIES)
     for identity in runtime_builtins:
         subject = by_identity.get(identity, {})
-        expected_subject_strategy = (
-            runtime_profile["strategy"]
-            if profile == "platform-controlled"
-            else SANDBOX_FULL_LOCAL
-        )
+        expected_subject_strategy = SANDBOX_FULL_LOCAL
         expected_subject_isolation = (
-            runtime_profile["command_isolation"]
-            if profile == "platform-controlled"
-            else (
-                NATIVE_COMMAND_ISOLATION
-                if identity == CANONICAL_REQUIRED_TOOL_IDENTITY
-                else "sandbox-process-v1"
-            )
+            NATIVE_COMMAND_ISOLATION
+            if identity == CANONICAL_REQUIRED_TOOL_IDENTITY
+            else "sandbox-process-v1"
         )
-        expected_workspace_contract = (
-            runtime_profile["workspace_contract"]
-            if profile == "platform-controlled"
-            else SKILL_WORKSPACE_CONTRACT_VERSION
-        )
+        expected_workspace_contract = SKILL_WORKSPACE_CONTRACT_VERSION
         if (
             subject.get("execution_strategy") != expected_subject_strategy
             or subject.get("command_isolation") != expected_subject_isolation
             or subject.get("workspace_contract") != expected_workspace_contract
         ):
             raise _InspectionCheckFailed("authoritative catalog builtin subject mismatch")
-    expected_strategy = (
-        "platform_controlled"
-        if profile == "platform-controlled"
-        else SANDBOX_FULL_LOCAL
-    )
-    expected_isolation = (
-        "minimal-environment-v1"
-        if profile == "platform-controlled"
-        else "real-sandbox-boundary-v1"
-    )
+    expected_strategy = SANDBOX_FULL_LOCAL
+    expected_isolation = "real-sandbox-boundary-v1"
     if (
         runtime_profile["strategy"] != expected_strategy
         or runtime_profile["command_isolation"] != expected_isolation
@@ -1257,7 +1215,6 @@ def _build_inspection_runtime(
 def _inspection_result_projection(
     raw: object,
     *,
-    profile: str,
     staged_hash: str,
     native_tool_required: bool,
 ) -> dict[str, Any]:
@@ -1295,7 +1252,7 @@ def _inspection_result_projection(
     expected_mounts = {
         "/workspace": "rw",
         "/workspace/.claude": "ro",
-        **({"/workspace/.ai-platform": "rw"} if profile == "sdk-native" else {}),
+        "/workspace/.ai-platform": "rw",
     }
     topology_exact = len(observed_mounts) == len(safe_mountinfo) and observed_mounts == expected_mounts
     attack_categories: dict[str, str] = {}
@@ -1329,28 +1286,18 @@ def _inspection_result_projection(
         checks[f"attack_{attack}_kernel_blocked"] = (
             attack_result.get("blocked") is True and category == "erofs"
         )
-    native_expected = profile == "sdk-native"
-    checks["native_sidecar_expectation_matches_profile"] = native_tool_required is native_expected
-    if native_expected:
-        checks.update(
-            {
-                "native_sidecar_present": sidecar.get("present") is True and sidecar_count == 1,
-                "native_sidecar_token_paired": sidecar.get("token_paired") is True,
-                "native_sidecar_socket_paired": sidecar.get("socket_paired") is True,
-                "native_sidecar_admission_paired": sidecar.get("admission_paired") is True,
-                "native_sidecar_authenticated_health": sidecar.get("authenticated_health_probe") is True,
-                "primary_native_socket_present": sidecar.get("primary_socket_present") is True,
-                "primary_native_authenticated_health": sidecar.get("primary_authenticated_health") is True,
-            }
-        )
-    else:
-        checks.update(
-            {
-                "native_sidecar_absent": sidecar.get("absent") is True and sidecar_count == 0,
-                "primary_native_credentials_absent": sidecar.get("primary_native_credentials_absent") is True,
-                "primary_native_socket_absent": sidecar.get("primary_socket_absent") is True,
-            }
-        )
+    checks["native_sidecar_expectation_matches_profile"] = native_tool_required is True
+    checks.update(
+        {
+            "native_sidecar_present": sidecar.get("present") is True and sidecar_count == 1,
+            "native_sidecar_token_paired": sidecar.get("token_paired") is True,
+            "native_sidecar_socket_paired": sidecar.get("socket_paired") is True,
+            "native_sidecar_admission_paired": sidecar.get("admission_paired") is True,
+            "native_sidecar_authenticated_health": sidecar.get("authenticated_health_probe") is True,
+            "primary_native_socket_present": sidecar.get("primary_socket_present") is True,
+            "primary_native_authenticated_health": sidecar.get("primary_authenticated_health") is True,
+        }
+    )
     return {
         "checks": checks,
         "hashes": {
@@ -1539,7 +1486,6 @@ def _run_skill_mount_inspection(
                 raw = await raw
             projection = _inspection_result_projection(
                 raw,
-                profile=profile,
                 staged_hash=staged_hash,
                 native_tool_required=(
                     str(lease.labels.get("ai-platform.native_tool_required") or "") == "true"
@@ -3048,8 +2994,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(INSPECTION_PROFILES),
         default="",
         help=(
-            "Run the fixed staged-Skill mount inspection with either the implicit platform-controlled "
-            "catalog or the implicit sdk-native catalog plus governed Bash."
+            "Run the fixed staged-Skill mount inspection with the implicit sdk-native catalog and governed Bash."
         ),
     )
     parser.add_argument(

@@ -230,14 +230,8 @@ def test_skill_mount_and_native_bash_admission_are_independently_derived():
 
     staged_skill = native_tool_subjects()[0]
     native_bash = native_tool_subjects()[1]
-    controlled_bash = {
-        **native_bash,
-        "execution_strategy": "platform_controlled",
-        "command_isolation": "minimal-environment-v1",
-    }
     cases = (
         ("implicit_native_catalog", [staged_skill, native_bash], True, True),
-        ("implicit_platform_controlled_catalog", [staged_skill, controlled_bash], True, False),
         ("staged_catalog_without_bash", [staged_skill], True, False),
         ("native_bash_without_catalog", [native_bash], False, True),
         ("no_catalog_no_bash", [], False, False),
@@ -2259,18 +2253,13 @@ async def test_docker_provider_retains_health_probe_outcome_before_cleanup(clean
 
 
 @pytest.mark.asyncio
-async def test_platform_controlled_implicit_catalog_mounts_claude_without_native_sidecar(tmp_path):
+async def test_staged_skill_catalog_mounts_claude_without_native_sidecar(tmp_path):
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
     workspace_path = tmp_path / "run" / "workspace"
     workspace_path.mkdir(parents=True)
     leased_workspace = workspace(workspace_host_path=str(workspace_path))
-    staged_skill, native_bash = native_tool_subjects()
-    controlled_bash = {
-        **native_bash,
-        "execution_strategy": "platform_controlled",
-        "command_isolation": "minimal-environment-v1",
-    }
+    staged_skill = native_tool_subjects()[0]
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
@@ -2278,7 +2267,7 @@ async def test_platform_controlled_implicit_catalog_mounts_claude_without_native
     )
 
     lease = await provider.create_or_reuse(
-        request(tool_policy_subjects=[staged_skill, controlled_bash]),
+        request(tool_policy_subjects=[staged_skill]),
         leased_workspace,
     )
 

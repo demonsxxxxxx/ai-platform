@@ -308,17 +308,10 @@ def fixture_agent_id(account: Account) -> str:
     return fixture_agent_id_for_skill(account, "general-chat")
 
 
-def _skill_id_for_agent(agent_id: str) -> str:
-    return {
-        "qa-word-review": "qa-file-reviewer",
-        "document-review": "qa-file-reviewer",
-    }.get(agent_id, "general-chat")
-
-
 def _agent_id_for_case(account: Account, agent_id: str, *, use_fixture_agents: bool) -> str:
     if not use_fixture_agents:
         return agent_id
-    return fixture_agent_id_for_skill(account, _skill_id_for_agent(agent_id))
+    return fixture_agent_id(account)
 
 
 def fixture_retry_source_run_id(account: Account) -> str:
@@ -747,7 +740,6 @@ def build_foundation_runtime_fixture_sql(
 
     skill_names = {
         "general-chat": "General Chat",
-        "qa-file-reviewer": "Document Review",
     }
     tenant_rows: list[str] = []
     workspace_rows: list[str] = []
@@ -2328,9 +2320,9 @@ def build_foundation_runtime_case_specs(
         raise ValueError("foundation runtime evidence requires at least two accounts")
     templates = [
         ("general-chat", "run_creation", "general-agent", "并发创建运行验收，请简短回复。", False),
-        ("word-review", "execution", "qa-word-review", "审核一下这个文档", True),
+        ("word-review", "execution", "general-agent", "审核一下这个文档", True),
         ("cancel-probe", "cancel", "general-agent", "创建后取消路径验收，请简短回复。", False),
-        ("retry-probe", "retry", "qa-word-review", "审核一下这个文档，用于 retry 路径验收。", True),
+        ("retry-probe", "retry", "general-agent", "审核一下这个文档，用于 retry 路径验收。", True),
     ]
     specs: list[CaseSpec] = []
     scenario_seen = {scenario: 0 for _case_name, scenario, _agent_id, _message, _uses_docx in templates}
@@ -2341,7 +2333,7 @@ def build_foundation_runtime_case_specs(
         scenario_index = scenario_seen[scenario]
         scenario_seen[scenario] += 1
         account = accounts[(template_index + scenario_index) % len(accounts)]
-        skill_id = _skill_id_for_agent(agent_id)
+        skill_id = "general-chat"
         specs.append(
             CaseSpec(
                 account=account,

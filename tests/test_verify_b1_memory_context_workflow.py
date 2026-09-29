@@ -214,8 +214,8 @@ class B1MemoryContextWorkflowHandler(BaseHTTPRequestHandler):
                 {
                     "run_id": self.run_id,
                     "session_id": self.session_id,
-                    "agent_id": "document-review",
-                    "capability_id": "document_review",
+                    "agent_id": "general-agent",
+                    "capability_id": "general_chat",
                     "status": "succeeded",
                     "artifacts": [{"artifact_id": "artifact-1", "kind": "document_review"}],
                     "events": [{"type": "run_started"}],
@@ -239,8 +239,8 @@ class B1MemoryContextWorkflowHandler(BaseHTTPRequestHandler):
                     "run": {
                         "run_id": self.run_id,
                         "session_id": self.session_id,
-                        "agent_id": "document-review",
-                        "capability_id": "document_review",
+                        "agent_id": "general-agent",
+                        "capability_id": "general_chat",
                         "status": "succeeded",
                     },
                     "events": [{"event_type": "worker_started"}],
@@ -398,8 +398,8 @@ def test_b1_memory_context_workflow_smoke_verifies_policy_context_delete_and_pro
     assert payload["checks"]["deleted_memory_absent_from_future_context"]["passed"] is True
     assert payload["checks"]["long_term_memory_fail_closed"]["passed"] is True
     assert payload["checks"]["no_private_projection_leakage"]["passed"] is True
-    assert payload["workflow"]["agent_id"] == "document-review"
-    assert payload["workflow"]["capability_id"] == "document_review"
+    assert payload["workflow"]["agent_id"] == "general-agent"
+    assert payload["workflow"]["capability_id"] == "general_chat"
     assert payload["live_worker_payload"]["live_worker_run_observed"] is True
     assert payload["live_worker_payload"]["context_snapshot_id_present"] is True
     assert payload["provenance"]["context_snapshot_public_provenance"] is True
@@ -551,8 +551,8 @@ def test_b1_verifier_contract_fixture_outputs_safe_local_source_contract():
     assert payload["target"] == "source_contract_fixture"
     assert payload["does_not_run_live_target"] is True
     assert payload["does_not_close_b1_gate"] is True
-    assert payload["workflow"]["agent_id"] == "document-review"
-    assert payload["workflow"]["capability_id"] == "document_review"
+    assert payload["workflow"]["agent_id"] == "general-agent"
+    assert payload["workflow"]["capability_id"] == "general_chat"
     assert payload["admin_visibility"]["ordinary_user_admin_overview_denied"] is True
     assert payload["same_tenant_boundary"]["cross_tenant_context_denied"] is True
     assert payload["rollback_disable"]["memory_policy_disabled_blocks_create"] is True

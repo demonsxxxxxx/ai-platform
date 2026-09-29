@@ -18,6 +18,16 @@ materialization uses the authorized database Skill version and its immutable
 snapshot only. The Admin builtin synchronization endpoint, repository asset
 copying in release images, and builtin-only runtime configuration are retired.
 
+The dedicated `qa-file-reviewer` controlled executor, its invocation-evidence
+producer, fixed document-review routing, and name-derived Word artifact
+requirement are also retired. Authorized uploaded Skills use the same SDK
+execution path, including uploaded packages that reuse a historical Skill name.
+The runtime mount inspection supports the current SDK path only. The multiuser
+and memory-context verifiers default to the general Agent and do not provision
+or select the retired QA capability. An explicit
+executor artifact requirement remains enforceable; Skill availability or list
+order does not create one.
+
 Schema-seeded rows, historical Run identities, immutable snapshots, audit rows,
 and redaction mappings remain readable for compatibility. Repository-backed
 versions are inactive; each tenant's workbench, distribution, Agent Profile, and
@@ -33,6 +43,11 @@ Runs whose historical source has no complete immutable snapshot fail closed with
 `skill_version_not_materializable`; the worker does not reconstruct them from a
 repository directory. New deployments do not expose the retired builtins or the
 RAGFlow builtin tool policy.
+
+Immutable v1 controlled-profile metadata and completed invocation receipts remain
+decodable for historical records. This does not restore the removed runner.
+Schema seeds, applied migrations, and public redaction mappings retain their
+historical identities.
 
 No migration physically deletes historical Skill or Run data. A future data
 retention change must be handled as a separate, explicitly authorized migration.

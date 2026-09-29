@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Callable, ClassVar
 
 from app import control_plane_contracts as run_controls
-from app.capabilities import required_artifact_types_for_skill
 from app.context_builder import executor_context_pack_from_snapshot
 from app.context.api import (
     ContextFileContentError,
@@ -271,11 +270,6 @@ def _execution_boundary_decision(payload: RunPayload) -> ExecutionBoundaryDecisi
 
 def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
     return _execution_boundary_decision(payload).requires_real_sandbox
-
-
-def _required_artifact_types(payload: RunPayload) -> tuple[str, ...]:
-    """Resolve the capability-owned artifact contract for this selected Skill."""
-    return required_artifact_types_for_skill(payload.skill_id)
 
 
 def _sandbox_workspace(settings: object, payload: RunPayload) -> Path:
@@ -1194,7 +1188,6 @@ class ClaudeAgentWorkerAdapter:
         used_skill_names = _sdk_used_skill_names(
             runtime_sdk_result,
             prepared.staged_skill_names,
-            allow_platform_controlled_runner=selected_capability_error is None,
         )
         used_skills_source = _sdk_used_skills_source(runtime_sdk_result, used_skill_names)
         skill_manifests = (
@@ -1225,7 +1218,6 @@ class ClaudeAgentWorkerAdapter:
             "skill_manifests": skill_manifests,
             "sandbox_provider": sandbox_provider,
             "sandbox_runtime_used": True,
-            "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
             "capability_evidence": capability_evidence,
             **runtime_tool_evidence.private_payload(),
@@ -1475,7 +1467,7 @@ class ClaudeAgentWorkerAdapter:
             response_files=response_files,
             response_file_descriptors=response_file_descriptors,
             allowed_skill_names=allowed_skill_names,
-            required_artifact_types=_required_artifact_types(payload),
+            required_artifact_types=(),
             artifact_factory=ArtifactManifest,
             storage_factory=ObjectStorage,
             ensure_inside=ensure_path_inside,
@@ -1559,14 +1551,9 @@ def _prepare_run_workspace(workspace_root: str | Path, workspace: Path) -> None:
 def _sdk_used_skill_names(
     sdk_result: object,
     staged_skill_names: list[str],
-    *,
-    allow_platform_controlled_runner: bool = False,
 ) -> list[str]:
     source = str(getattr(sdk_result, "used_skills_source", "") or "").strip()
-    trusted_sources = {"executor_hook"}
-    if allow_platform_controlled_runner:
-        trusted_sources.add("platform_controlled_runner")
-    if source not in trusted_sources:
+    if source != "executor_hook":
         return []
     raw = getattr(sdk_result, "used_skills", None)
     if not isinstance(raw, list):

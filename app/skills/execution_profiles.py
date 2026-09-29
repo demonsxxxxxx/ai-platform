@@ -15,13 +15,11 @@ from app.tool_policy import BUILTIN_TOOL_IDENTITIES
 SKILL_EXECUTION_PROFILE_SCHEMA_VERSION = "ai-platform.skill-execution-profile.v1"
 SKILL_WORKSPACE_CONTRACT_VERSION = "ai-platform.skill-workspace.v1"
 
-PLATFORM_CONTROLLED = "platform_controlled"
 SDK_NATIVE = "sdk_native"
 SDK_RESTRICTED = "sdk_restricted"
 SANDBOX_FULL_LOCAL = "sandbox_full_local"
 
 NATIVE_COMMAND_ISOLATION = "sibling-tool-sandbox-v1"
-CONTROLLED_COMMAND_ISOLATION = "minimal-environment-v1"
 SANDBOX_BOUNDARY_COMMAND_ISOLATION = "real-sandbox-boundary-v1"
 OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION = "opensandbox-workspace-v1"
 
@@ -29,9 +27,7 @@ _EXPLICIT_SKILL_BASH_IDENTITY = ("Bash",)
 _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS = {
     "ctd-32s73-stability-template-fill": ("Write",),
     "minimax-docx": ("Write",),
-    "qa-file-reviewer": ("Write",),
 }
-_PLATFORM_CONTROLLED_SKILLS = frozenset({"qa-file-reviewer"})
 _NATIVE_UPLOADED_TOOL_IDENTITIES = (
     "Read",
     "Glob",
@@ -51,6 +47,8 @@ class SkillExecutionProfile(TypedDict):
     """Canonical server-owned runtime authority for one pinned Skill version."""
 
     schema_version: str
+    # ``platform_controlled`` is retained only to decode immutable historical
+    # v1 snapshots; new profiles never resolve to it.
     strategy: Literal["platform_controlled", "sdk_native", "sdk_restricted"]
     trust_basis: str
     builtin_tool_identities: list[str]
@@ -61,7 +59,7 @@ class SkillExecutionProfile(TypedDict):
 class EffectiveSkillExecutionProfile(TypedDict):
     """Runtime strategy derived from one validated immutable Skill profile."""
 
-    strategy: Literal["platform_controlled", "sandbox_full_local", "sdk_restricted"]
+    strategy: Literal["sandbox_full_local", "sdk_restricted"]
     trust_basis: str
     workspace_contract: str
     command_isolation: str
@@ -77,22 +75,15 @@ def _known_tool_identities(values: tuple[str, ...]) -> list[str]:
     return [identity for identity in values if identity in BUILTIN_TOOL_IDENTITIES]
 
 
-def _builtin_execution_profile(skill_id: str, identities: list[str]) -> SkillExecutionProfile:
-    controlled = skill_id in _PLATFORM_CONTROLLED_SKILLS
+def _builtin_execution_profile(identities: list[str]) -> SkillExecutionProfile:
     return {
         "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
-        "strategy": (
-            PLATFORM_CONTROLLED
-            if controlled
-            else SDK_NATIVE if identities else SDK_RESTRICTED
-        ),
+        "strategy": SDK_NATIVE if identities else SDK_RESTRICTED,
         "trust_basis": "repository_builtin",
         "builtin_tool_identities": identities,
         "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
         "command_isolation": (
-            CONTROLLED_COMMAND_ISOLATION
-            if controlled
-            else NATIVE_COMMAND_ISOLATION if "Bash" in identities else "none"
+            NATIVE_COMMAND_ISOLATION if "Bash" in identities else "none"
         ),
     }
 
@@ -115,7 +106,7 @@ def resolve_skill_execution_profile(
             _EXPLICIT_SKILL_BASH_IDENTITY
             + _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS.get(skill_id, ())
         )
-        return _builtin_execution_profile(skill_id, identities)
+        return _builtin_execution_profile(identities)
     if source_kind == "uploaded" and normalized_status in _TRUSTED_UPLOADED_STATUSES:
         return {
             "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
@@ -148,7 +139,7 @@ def legacy_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutionPr
             if skill_id in _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS
             else ()
         )
-        return _builtin_execution_profile(skill_id, _known_tool_identities(legacy_declarations))
+        return _builtin_execution_profile(_known_tool_identities(legacy_declarations))
     return resolve_skill_execution_profile(
         skill_id=str(manifest.get("skill_id") or ""),
         source_kind=source_kind,
@@ -157,7 +148,7 @@ def legacy_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutionPr
 
 
 def canonical_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutionProfile:
-    """Validate and return the immutable server-derived execution profile."""
+    """Validate immutable metadata, including one historical profile for decoding."""
 
     raw = manifest.get("execution_profile")
     if raw is None:
@@ -181,7 +172,26 @@ def canonical_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutio
         "command_isolation": str(raw.get("command_isolation") or ""),
     }
     if normalized != expected:
-        raise SkillExecutionProfileError("run_skill_snapshot_execution_profile_mismatch")
+        source_kind = str(source.get("kind") or "")
+        is_historical_controlled_profile = (
+            str(manifest.get("skill_id") or "") == "qa-file-reviewer"
+            and source_kind == "builtin"
+            and normalized
+            == {
+                "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
+                "strategy": "platform_controlled",
+                "trust_basis": "repository_builtin",
+                "builtin_tool_identities": ["Bash", "Write"],
+                "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
+                "command_isolation": "minimal-environment-v1",
+            }
+        )
+        # Snapshot JSON is immutable. Postgres uses this decoder when projecting
+        # old run provenance; the worker's effective profile maps trusted builtin
+        # metadata to the current sandbox strategy below.
+        if not is_historical_controlled_profile:
+            raise SkillExecutionProfileError("run_skill_snapshot_execution_profile_mismatch")
+        return normalized  # type: ignore[return-value]
     return expected
 
 
@@ -191,14 +201,6 @@ def effective_skill_execution_profile(
     """Translate immutable v1 metadata into its governed runtime strategy."""
 
     persisted = canonical_skill_execution_profile(manifest)
-    if persisted["strategy"] == PLATFORM_CONTROLLED:
-        return {
-            "strategy": PLATFORM_CONTROLLED,
-            "trust_basis": persisted["trust_basis"],
-            "workspace_contract": persisted["workspace_contract"],
-            "command_isolation": persisted["command_isolation"],
-        }
-
     source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
     source_kind = str(source.get("kind") or "")
     skill_id = str(manifest.get("skill_id") or "")
@@ -227,9 +229,3 @@ def effective_skill_execution_profile(
         "workspace_contract": persisted["workspace_contract"],
         "command_isolation": "none",
     }
-
-
-def is_platform_controlled_profile(manifest: dict[str, Any]) -> bool:
-    """Return whether a pinned manifest selects the controlled runner."""
-
-    return canonical_skill_execution_profile(manifest)["strategy"] == PLATFORM_CONTROLLED

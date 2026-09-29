@@ -61,7 +61,7 @@ def test_affirmative_confirmed_capability_does_not_require_bash():
     assert decision.required_tool is None
 
 
-def test_docx_review_routes_to_document_review():
+def test_docx_review_request_uses_general_chat():
     decision = route_intent(
         message="帮我审核这个 Word，按 QA 标准审查",
         files=[
@@ -74,11 +74,10 @@ def test_docx_review_routes_to_document_review():
     )
 
     assert decision.status == "selected"
-    assert decision.intent == "document_review"
-    assert decision.selected_capability == "document_review"
-    assert decision.agent_id == "qa-word-review"
-    assert decision.skill_id == "qa-file-reviewer"
-    assert decision.confidence >= 0.85
+    assert decision.intent == "general_chat"
+    assert decision.selected_capability == "general_chat"
+    assert decision.agent_id == "general-agent"
+    assert decision.skill_id is None
     assert decision.confirmed_by_user is False
 
 
@@ -134,7 +133,7 @@ def test_implicit_route_fallback_uses_non_confirmed_general_chat_decision():
     assert decision.confirmed_by_user is False
 
 
-def test_ambiguous_docx_request_returns_suggestions_without_run_selection():
+def test_ambiguous_docx_request_does_not_require_confirmation():
     decision = route_intent(
         message="处理一下这个文件",
         files=[
@@ -146,9 +145,21 @@ def test_ambiguous_docx_request_returns_suggestions_without_run_selection():
         ],
     )
 
-    assert decision.status == "needs_confirmation"
-    assert decision.selected_capability is None
-    assert [item.capability_id for item in decision.suggestions] == [
-        "document_review",
-        "general_chat",
-    ]
+    assert decision.status == "selected"
+    assert decision.selected_capability == "general_chat"
+    assert decision.agent_id == "general-agent"
+    assert decision.skill_id is None
+    assert decision.suggestions == []
+
+
+def test_retired_capability_confirmation_falls_back_to_general_chat():
+    decision = route_intent(
+        message="处理一下这个文件",
+        files=[],
+        confirmed_capability_id="document_review",
+    )
+
+    assert decision.status == "selected"
+    assert decision.selected_capability == "general_chat"
+    assert decision.agent_id == "general-agent"
+    assert decision.skill_id is None
