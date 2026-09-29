@@ -43,7 +43,6 @@ from app.executors.base import (
     RunExecutionOwner,
     RunPayload,
 )
-from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.mcp.infrastructure import postgres as mcp_postgres

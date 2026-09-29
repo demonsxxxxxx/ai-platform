@@ -44,8 +44,9 @@ Runs whose historical source has no complete immutable snapshot fail closed with
 repository directory. New deployments do not expose the retired builtins or the
 RAGFlow builtin tool policy.
 
-Immutable v1 controlled-profile metadata and completed invocation receipts remain
-decodable for historical records. This does not restore the removed runner.
+Historical profile metadata remains readable from persisted snapshot JSON;
+completed invocation receipts remain decodable. Retired controlled profiles are
+not translated into SDK execution profiles for replay.
 Schema seeds, applied migrations, and public redaction mappings retain their
 historical identities.
 

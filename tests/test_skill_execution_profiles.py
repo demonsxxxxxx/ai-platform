@@ -7,6 +7,7 @@ from app.skills.execution_profiles import (
     SANDBOX_FULL_LOCAL,
     SDK_NATIVE,
     SDK_RESTRICTED,
+    SkillExecutionProfileError,
     canonical_skill_execution_profile,
     effective_skill_execution_profile,
     resolve_skill_execution_profile,
@@ -115,7 +116,7 @@ def test_retired_qa_builtin_uses_only_the_generic_sdk_profile():
     assert subjects["Skill"]["execution_strategy"] == SANDBOX_FULL_LOCAL
 
 
-def test_historical_controlled_v1_profile_is_decoded_but_runs_through_sandbox():
+def test_retired_controlled_profile_cannot_be_reactivated_as_sdk():
     manifest = build_skill_version_manifest_pin(_builtin_skill_version("qa-file-reviewer"))
     historical_profile = {
         "schema_version": "ai-platform.skill-execution-profile.v1",
@@ -128,15 +129,9 @@ def test_historical_controlled_v1_profile_is_decoded_but_runs_through_sandbox():
     manifest["execution_profile"] = historical_profile
     manifest["builtin_tool_identities"] = ["Bash", "Write"]
 
-    decoded = canonical_skill_execution_profile(manifest)
-    runtime_profile = effective_skill_execution_profile(manifest)
-    subjects = _worker_subjects(manifest)
-
-    assert decoded == historical_profile
-    assert runtime_profile["strategy"] == SANDBOX_FULL_LOCAL
-    assert runtime_profile["command_isolation"] == "real-sandbox-boundary-v1"
-    assert set(subjects) == {"Skill"}
-    assert subjects["Skill"]["execution_strategy"] == SANDBOX_FULL_LOCAL
+    for resolve in (canonical_skill_execution_profile, effective_skill_execution_profile):
+        with pytest.raises(SkillExecutionProfileError, match="run_skill_snapshot_execution_profile_mismatch"):
+            resolve(manifest)
 
 
 def test_reviewed_uploaded_skill_keeps_v1_native_snapshot():

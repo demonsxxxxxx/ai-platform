@@ -47,9 +47,7 @@ class SkillExecutionProfile(TypedDict):
     """Canonical server-owned runtime authority for one pinned Skill version."""
 
     schema_version: str
-    # ``platform_controlled`` is retained only to decode immutable historical
-    # v1 snapshots; new profiles never resolve to it.
-    strategy: Literal["platform_controlled", "sdk_native", "sdk_restricted"]
+    strategy: Literal["sdk_native", "sdk_restricted"]
     trust_basis: str
     builtin_tool_identities: list[str]
     workspace_contract: str
@@ -148,7 +146,7 @@ def legacy_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutionPr
 
 
 def canonical_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutionProfile:
-    """Validate immutable metadata, including one historical profile for decoding."""
+    """Validate and return the immutable server-derived execution profile."""
 
     raw = manifest.get("execution_profile")
     if raw is None:
@@ -172,26 +170,7 @@ def canonical_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutio
         "command_isolation": str(raw.get("command_isolation") or ""),
     }
     if normalized != expected:
-        source_kind = str(source.get("kind") or "")
-        is_historical_controlled_profile = (
-            str(manifest.get("skill_id") or "") == "qa-file-reviewer"
-            and source_kind == "builtin"
-            and normalized
-            == {
-                "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
-                "strategy": "platform_controlled",
-                "trust_basis": "repository_builtin",
-                "builtin_tool_identities": ["Bash", "Write"],
-                "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
-                "command_isolation": "minimal-environment-v1",
-            }
-        )
-        # Snapshot JSON is immutable. Postgres uses this decoder when projecting
-        # old run provenance; the worker's effective profile maps trusted builtin
-        # metadata to the current sandbox strategy below.
-        if not is_historical_controlled_profile:
-            raise SkillExecutionProfileError("run_skill_snapshot_execution_profile_mismatch")
-        return normalized  # type: ignore[return-value]
+        raise SkillExecutionProfileError("run_skill_snapshot_execution_profile_mismatch")
     return expected
 
 

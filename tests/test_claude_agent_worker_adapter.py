@@ -270,7 +270,6 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "JWT-Authorization": "Bearer runtime-jwt",
         },
     }
-    subjects_by_identity = {subject["identity"]: subject for subject in builtin_subjects}
     boundary_payload = types.SimpleNamespace(
         executor_type="claude-agent-worker",
         input={},

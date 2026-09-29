@@ -116,7 +116,7 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
                     "status": "active",
                     "visible_to_user": True,
                     "source_json": {
-                        "kind": "builtin",
+                        "kind": "uploaded",
                         "tags": ["document"],
                         "files": [{"relative_path": "SKILL.md", "content_base64": "IyBRQQ=="}],
                     },
@@ -162,7 +162,7 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
     assert "tenant_workbench_skills" not in conn.sql
     assert "skills.status = 'active'" in conn.sql
     assert conn.params[0:2] == ("default", "default")
-    assert "qa-file-reviewer" in conn.params[2]
+    assert "qa-file-reviewer" not in conn.params[2]
     assert "minimax-docx" not in conn.params[2]
 
 
