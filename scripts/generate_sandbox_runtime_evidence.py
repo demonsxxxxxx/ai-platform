@@ -651,14 +651,14 @@ def _inspection_pinned_manifest(skill_id: str, *, files: dict[str, str]) -> dict
     version = _deterministic_skill_hash(files)
     execution_profile = resolve_skill_execution_profile(
         skill_id=skill_id,
-        source_kind="builtin",
+        source_kind="uploaded",
         lifecycle_status="released",
     )
     return {
         "skill_id": skill_id,
         "version": version,
         "content_hash": version,
-        "source": {"kind": "builtin", "asset_dir": skill_id},
+        "source": {"kind": "uploaded", "storage_key": f"verifier-fixtures/{skill_id}/package.zip"},
         "files": [
             {
                 "relative_path": relative_path,
