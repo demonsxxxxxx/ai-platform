@@ -7,9 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from app.sandbox.api import PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME
-
-
 RUNTIME_UID = 10001
 RUNTIME_GID = 10001
 RUNTIME_USER = "ai-platform"
@@ -43,16 +40,14 @@ class _OpenWorkspaceNode:
     fd: int | None = None
 
 
-def _is_platform_read_only_instruction(node: WorkspaceNode) -> bool:
-    parts = node.relative_path.split("/")
-    return (
-        stat.S_ISREG(node.mode)
-        and stat.S_IMODE(node.mode) == 0o444
-        and len(parts) == 14
-        and tuple(parts[0:13:2])
-        == ("tenants", "workspaces", "users", "sessions", "runs", "attempts", "workspace")
-        and all(parts[index] for index in range(1, 12, 2))
-        and parts[-1] == PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME
+def _is_workspace_namespace_directory(relative_path: str) -> bool:
+    if relative_path == ".":
+        return True
+    components = relative_path.split("/")
+    namespace = ("tenants", "workspaces", "users", "sessions", "runs", "attempts")
+    return len(components) <= 2 * len(namespace) and all(
+        component and (index % 2 == 1 or component == namespace[index // 2])
+        for index, component in enumerate(components)
     )
 
 
@@ -75,10 +70,20 @@ def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNo
             raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
         if node.mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
-        if not node.mode & stat.S_IWUSR and not _is_platform_read_only_instruction(node):
-            raise WorkspacePermissionError(f"workspace entry is not owner-writable: {node.relative_path}")
+        # Retained attempt data may be intentionally read-only. Only the root
+        # must accept new work; dispatch prepares its scoped directories anew.
+        if node.relative_path == "." and not node.mode & stat.S_IWUSR:
+            raise WorkspacePermissionError("runtime workspace root is not owner-writable")
         if stat.S_ISDIR(node.mode) and not node.mode & stat.S_IXUSR:
             raise WorkspacePermissionError(f"workspace directory is not owner-searchable: {node.relative_path}")
+        # Scoped prepare opens shared namespace directories before hardening
+        # their modes. The runtime identity must be able to obtain that handle.
+        if (
+            stat.S_ISDIR(node.mode)
+            and _is_workspace_namespace_directory(node.relative_path)
+            and not node.mode & stat.S_IRUSR
+        ):
+            raise WorkspacePermissionError(f"workspace namespace directory is not owner-readable: {node.relative_path}")
 
 
 def _node_from_stat(relative_path: str, stat_result: os.stat_result) -> WorkspaceNode:
