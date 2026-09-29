@@ -96,6 +96,7 @@ services:
     cap_add:
       - CHOWN
       - DAC_READ_SEARCH
+      - FOWNER
       - SETUID
       - SETGID
     volumes:
