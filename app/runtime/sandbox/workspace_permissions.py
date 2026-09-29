@@ -40,6 +40,17 @@ class _OpenWorkspaceNode:
     fd: int | None = None
 
 
+def _is_workspace_namespace_directory(relative_path: str) -> bool:
+    if relative_path == ".":
+        return True
+    components = relative_path.split("/")
+    namespace = ("tenants", "workspaces", "users", "sessions", "runs", "attempts")
+    return len(components) <= 2 * len(namespace) and all(
+        component and (index % 2 == 1 or component == namespace[index // 2])
+        for index, component in enumerate(components)
+    )
+
+
 def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNode]) -> None:
     """Validate a complete no-follow workspace snapshot before any ownership mutation."""
 
@@ -65,6 +76,14 @@ def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNo
             raise WorkspacePermissionError("runtime workspace root is not owner-writable")
         if stat.S_ISDIR(node.mode) and not node.mode & stat.S_IXUSR:
             raise WorkspacePermissionError(f"workspace directory is not owner-searchable: {node.relative_path}")
+        # Scoped prepare opens shared namespace directories before hardening
+        # their modes. The runtime identity must be able to obtain that handle.
+        if (
+            stat.S_ISDIR(node.mode)
+            and _is_workspace_namespace_directory(node.relative_path)
+            and not node.mode & stat.S_IRUSR
+        ):
+            raise WorkspacePermissionError(f"workspace namespace directory is not owner-readable: {node.relative_path}")
 
 
 def _node_from_stat(relative_path: str, stat_result: os.stat_result) -> WorkspaceNode:

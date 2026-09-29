@@ -166,9 +166,11 @@ this `CLAUDE.md`. It requires the workspace root to be owner-writable and verifi
 write/read/delete after switching to the runtime identity. Ownership, no-follow
 inode checks, single-link regular files, filesystem boundaries, searchable
 directories, and rejection of special modes or group/other write access still
-apply to the complete retained tree. It changes ownership where required and
-preserves permission modes; preparing an attempt owns the writable modes of its
-scoped directories.
+apply to the complete retained tree. Shared namespace directories from `tenants/`
+through `attempts/{attempt_id}` must also be owner-readable so scoped preparation
+can open them before restoring their writable modes. The initializer changes
+ownership where required and preserves permission modes; preparing an attempt
+owns the writable modes of its scoped directories.
 
 Skill writes are allowed anywhere else in the assigned workspace. The protected
 roots remain `inputs/`, `.claude/`, `.ai-platform/`, the runtime configuration

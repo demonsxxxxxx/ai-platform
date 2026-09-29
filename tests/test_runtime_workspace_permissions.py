@@ -114,6 +114,23 @@ def test_workspace_snapshot_requires_writable_root(mode):
 
 
 @pytest.mark.parametrize(
+    "path",
+    [
+        ".",
+        "tenants",
+        "tenants/tenant-a/workspaces",
+        "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs",
+        "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/attempt-a",
+    ],
+)
+def test_workspace_snapshot_rejects_unreadable_namespace_before_runtime_prepare(path):
+    unreadable = node(path, mode=stat.S_IFDIR | 0o300)
+    nodes = [unreadable] if path == "." else [node(".", mode=stat.S_IFDIR | 0o755), unreadable]
+    with pytest.raises(WorkspacePermissionError, match="workspace namespace directory is not owner-readable"):
+        validate_workspace_snapshot(root_device=7, nodes=nodes)
+
+
+@pytest.mark.parametrize(
     ("unsafe_node", "message"),
     [
         (node("foreign", uid=1000, gid=1000), "foreign workspace owner"),
@@ -140,9 +157,10 @@ def test_workspace_snapshot_rejects_unsafe_entries_before_migration(unsafe_node,
 
 @pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
 def test_workspace_initializer_preserves_real_read_only_skill_tree_and_output(tmp_path, monkeypatch):
-    from app.runtime.sandbox import workspace_permissions
+    from app.runtime.sandbox import workspace_manager, workspace_permissions
 
-    workspace = tmp_path / "tenants/t/workspaces/w/users/u/sessions/s/runs/r/attempts/a/workspace"
+    shared_components = ("tenants", "t", "workspaces", "w", "users", "u", "sessions", "s", "runs", "r", "attempts")
+    workspace = tmp_path.joinpath(*shared_components, "a", "workspace")
     skill = workspace / ".claude/skills/report"
     skill.mkdir(parents=True)
     skill_file = skill / "SKILL.md"
@@ -151,6 +169,7 @@ def test_workspace_initializer_preserves_real_read_only_skill_tree_and_output(tm
     output.parent.mkdir()
     output.write_text("retained report\n", encoding="utf-8")
     retained_modes = {
+        **{tmp_path.joinpath(*shared_components[:index]): 0o555 for index in range(1, len(shared_components) + 1)},
         workspace / ".claude": 0o555,
         skill.parent: 0o555,
         skill: 0o555,
@@ -170,6 +189,14 @@ def test_workspace_initializer_preserves_real_read_only_skill_tree_and_output(tm
         assert output.read_text(encoding="utf-8") == "retained report\n"
         assert all(stat.S_IMODE(path.stat().st_mode) == mode for path, mode in retained_modes.items())
         assert not (tmp_path / ".ai-platform-runtime-write-probe").exists()
+        root_fd = os.open(tmp_path, workspace_manager._secure_directory_flags())
+        try:
+            workspace_manager._secure_workspace_directory_tree(root_fd, shared_components + ("next", "workspace"))
+        finally:
+            os.close(root_fd)
+        assert tmp_path.joinpath(*shared_components, "next", "workspace").is_dir()
+        assert stat.S_IMODE(skill_file.stat().st_mode) == 0o444
+        assert stat.S_IMODE(output.stat().st_mode) == 0o400
     finally:
         # Restore fixture directory write access for pytest cleanup.
         for path in retained_modes:
