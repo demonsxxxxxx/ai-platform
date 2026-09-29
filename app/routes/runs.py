@@ -52,7 +52,6 @@ from app.platform.postgres.errors import (
 from app.product_events import initial_run_event_specs
 from app.projection_redaction import (
     capability_id_from_skill,
-    internal_agent_id_for_request,
     public_agent_id_for_projection,
     public_execution_kind_for_projection,
     redact_raw_skill_references,
@@ -801,7 +800,7 @@ async def prepare_copied_run_for_queue(
 
 
 def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) -> tuple[str, str | None]:
-    requested_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
+    requested_agent_id = request.agent_id
     if request.selected_skill is not None:
         if request.skill_id:
             raise HTTPException(status_code=400, detail="skill_selector_conflict")
@@ -815,7 +814,9 @@ def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) ->
             raise HTTPException(status_code=400, detail="general_chat_is_not_a_skill")
         return requested_agent_id, request.skill_id
 
-    capability_id = request.capability_id or capability_id_from_skill(None, requested_agent_id)
+    capability_id = request.capability_id or (
+        "general_chat" if requested_agent_id == "general-agent" else None
+    )
     capability = get_capability(str(capability_id)) if capability_id else None
     if capability is None:
         raise HTTPException(status_code=400, detail="capability_required")

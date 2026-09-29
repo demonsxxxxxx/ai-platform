@@ -301,14 +301,14 @@ def test_agent_profile_uses_only_the_canonical_skill_set():
 
 
 @pytest.mark.parametrize("skill_id", ["minimax-docx", "reference-fact-extraction"])
-def test_agent_profile_rejects_internal_dependency_skill_as_root(skill_id):
-    with pytest.raises(ValueError, match="internal dependency"):
-        AgentProfileDraftRequest.model_validate(
-            {
-                **profile_draft_payload("Private instruction"),
-                "skill_set": [{"skill_id": skill_id}],
-            }
-        )
+def test_agent_profile_accepts_former_internal_dependency_name_as_root(skill_id):
+    definition = AgentProfileDraftRequest.model_validate(
+        {
+            **profile_draft_payload("Private instruction"),
+            "skill_set": [{"skill_id": skill_id}],
+        }
+    )
+    assert [skill["skill_id"] for skill in definition.skill_set] == [skill_id]
 
 
 def test_agent_profile_rejects_duplicate_skill_names():

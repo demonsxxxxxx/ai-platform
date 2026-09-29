@@ -63,7 +63,6 @@ from app.identity.infrastructure import postgres as identity_postgres
 from app.intent_router import (
     FileSummary,
     classify_execution_polarity,
-    fallback_to_general_chat,
     route_intent,
 )
 from app.mcp.api import authorize_selected_chat_mcp_tools
@@ -93,8 +92,6 @@ from app.product_events import initial_run_event_specs, intent_event_specs
 from app.projection_redaction import (
     RETIRED_INTERNAL_AGENT_IDS,
     capability_id_from_skill,
-    default_skill_id_for_public_agent,
-    internal_agent_id_for_request,
     public_agent_id_for_projection,
     public_skill_display_label,
     sanitize_user_control_input,
@@ -1126,33 +1123,9 @@ def _normalized_query_agent_id(agent_id: str | None) -> str | None:
     return agent_id if isinstance(agent_id, str) and agent_id else None
 
 
-def _normalize_request_selector(
-    agent_id: str,
-    skill_id: str | None,
-    *,
-    allow_raw_skill_agent_id: bool = True,
-) -> tuple[str, str | None]:
-    if not allow_raw_skill_agent_id and capability_id_from_skill(agent_id):
-        return "general-agent", None
-    internal_agent_id = internal_agent_id_for_request(agent_id) or agent_id
-    return internal_agent_id, skill_id or default_skill_id_for_public_agent(agent_id)
-
-
 def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, object] | None:
     if not skill_id and agent_id == "general-agent":
         return None
-    if skill_id == "ragflow-knowledge-search" or agent_id == "sop-assistant":
-        return {
-            "status": "selected",
-            "intent": "knowledge_answer",
-            "confidence": 1.0,
-            "reason": "请求指定了知识库问答能力",
-            "selected_capability": "knowledge_answer",
-            "agent_id": agent_id,
-            "skill_id": skill_id or "ragflow-knowledge-search",
-            "confirmed_by_user": True,
-            "suggestions": [],
-        }
     return {
         "status": "selected",
         "intent": "general_chat",
@@ -1217,7 +1190,7 @@ async def create_chat_session(
     request: ChatSessionRequest,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSessionResponse:
-    resolved_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
+    resolved_agent_id = request.agent_id
     if resolved_agent_id in RETIRED_INTERNAL_AGENT_IDS:
         raise HTTPException(status_code=409, detail="agent_inactive")
     async with transaction() as conn:
@@ -1385,11 +1358,6 @@ async def chat_stream(
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=400, code="skill_selector_conflict")
         raise HTTPException(status_code=400, detail="skill_selector_conflict")
-    requested_agent_id, requested_skill_id = _normalize_request_selector(
-        requested_agent_id,
-        requested_skill_id,
-        allow_raw_skill_agent_id=is_ai_admin(principal),
-    )
     try:
         requested_model_selection = parse_requested_model_selection(request.agent_options)
     except ValueError as exc:
@@ -1734,14 +1702,7 @@ async def chat_stream(
                 )
 
             explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
-            is_terminal_implicit_decision = False
             if explicit_payload is None:
-                continuation_capability = (
-                    capability_id_from_skill(None, requested_agent_id)
-                    if continuation_session is not None
-                    and allowed
-                    else None
-                )
                 decision = route_intent(
                     request.message,
                     await _file_summaries_for_intent(
@@ -1749,22 +1710,11 @@ async def chat_stream(
                         request,
                         principal,
                         workspace_id=effective_workspace_id,
-                    )
-                    if continuation_capability is None
-                    else [],
-                    confirmed_capability_id=continuation_capability
-                    or request.confirmed_capability_id,
+                    ),
+                    confirmed_capability_id=request.confirmed_capability_id,
                     execution_polarity=execution_polarity,
                 )
                 decision_payload = decision.as_payload()
-                is_terminal_implicit_decision = (
-                    continuation_session is None
-                    and selected_skill_for_execution is None
-                    and request.skill_id is None
-                    and selected_mcp_tool_ids_for_execution is None
-                    and not decision.confirmed_by_user
-                    and decision.status == "selected"
-                )
                 if decision.status == "needs_confirmation":
                     agent_rows = await agent_apps_principal_catalog.list_principal_lambchat_agents(
                         conn,
@@ -1858,26 +1808,6 @@ async def chat_stream(
                 if resolved_skill_id is not None
                 else None
             )
-            implicit_skill = None
-            if is_terminal_implicit_decision and authorization_kwargs is not None:
-                strict_implicit_authorization_kwargs = {
-                    **authorization_kwargs,
-                    "is_admin": False,
-                }
-                try:
-                    implicit_skill = await runs_capability_admission.authorize_run_capabilities(
-                        conn,
-                        **strict_implicit_authorization_kwargs,
-                    )
-                except platform_errors.RepositoryAuthorizationError:
-                    if decision.selected_capability == "general_chat":
-                        raise
-                    decision = fallback_to_general_chat()
-                    decision_payload = decision.as_payload()
-                    resolved_agent_id = str(decision.agent_id)
-                    resolved_skill_id = decision.skill_id
-                    execution_kind = RUN_EXECUTION_KIND_HARNESS_CHAT
-                    authorization_kwargs = None
             if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
                 harness_agent = await agent_apps_catalog.get_agent(
                     conn,
@@ -1894,8 +1824,6 @@ async def chat_stream(
                 skill = None
                 executor_type = HARNESS_CHAT_EXECUTOR_TYPE
                 input_modes = ["chat"]
-            elif implicit_skill is not None:
-                skill = implicit_skill
             elif selected_skill_for_execution is not None:
                 assert authorization_kwargs is not None
                 skill = await runs_capability_admission.authorize_selected_run_capabilities(

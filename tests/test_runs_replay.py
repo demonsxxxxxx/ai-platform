@@ -9,8 +9,14 @@ import app.runs.infrastructure.capability_admission_postgres as capability_admis
 import app.runs.infrastructure.replay_postgres as replay_persistence
 from app.platform.postgres.limits import RUN_INPUT_MAX_BYTES
 from app.skills.infrastructure import postgres as skill_persistence
+from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.platform.postgres.errors import RepositoryConflictError
 from tests.support.repository_fixtures import RecordingConnection
+
+
+_UPLOADED_PROFILE = resolve_skill_execution_profile(
+    skill_id="uploaded-test-skill", source_kind="uploaded", lifecycle_status="released"
+)
 
 
 @pytest.mark.asyncio
@@ -68,6 +74,9 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
                 "version": "hash-v1",
                 "content_hash": "hash-v1",
                 "source": {"kind": "uploaded"},
+                "lifecycle_status": "released",
+                "execution_profile": _UPLOADED_PROFILE,
+                "builtin_tool_identities": _UPLOADED_PROFILE["builtin_tool_identities"],
                 "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
                 "dependency_ids": [],
                 "mcp_tool_ids": [],
@@ -129,6 +138,9 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
                     "version": "hash-v1",
                     "content_hash": "hash-v1",
                     "source": {"kind": "uploaded"},
+                    "lifecycle_status": "released",
+                    "execution_profile": _UPLOADED_PROFILE,
+                    "builtin_tool_identities": _UPLOADED_PROFILE["builtin_tool_identities"],
                     "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
                     "dependency_ids": [],
                     "mcp_tool_ids": [],
@@ -178,6 +190,9 @@ async def test_authorize_replay_run_capabilities_reauthorizes_harness_pinned_mcp
                 "version": "hash-v1",
                 "content_hash": "hash-v1",
                 "source": {"kind": "uploaded"},
+                "lifecycle_status": "released",
+                "execution_profile": _UPLOADED_PROFILE,
+                "builtin_tool_identities": _UPLOADED_PROFILE["builtin_tool_identities"],
                 "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
                 "dependency_ids": [],
                 "mcp_tool_ids": ["historical-search"],
@@ -228,6 +243,9 @@ async def test_copy_run_as_new_task_rejects_malformed_skill_manifest_transport_b
         "version": "hash-v1",
         "content_hash": "hash-v1",
         "source": {"kind": "uploaded"},
+        "lifecycle_status": "released",
+        "execution_profile": _UPLOADED_PROFILE,
+        "builtin_tool_identities": _UPLOADED_PROFILE["builtin_tool_identities"],
         "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
         "dependency_ids": [],
         "mcp_tool_ids": [],
@@ -276,6 +294,9 @@ async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writ
         "version": "hash-v1",
         "content_hash": "hash-v1",
         "source": {"kind": "uploaded"},
+        "lifecycle_status": "released",
+        "execution_profile": _UPLOADED_PROFILE,
+        "builtin_tool_identities": _UPLOADED_PROFILE["builtin_tool_identities"],
         "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
         "dependency_ids": [],
         "mcp_tool_ids": [],
@@ -330,6 +351,9 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
         "version": "hash-v1",
         "content_hash": "hash-v1",
         "source": {"kind": "uploaded"},
+        "lifecycle_status": "released",
+        "execution_profile": _UPLOADED_PROFILE,
+        "builtin_tool_identities": _UPLOADED_PROFILE["builtin_tool_identities"],
         "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
         "dependency_ids": [],
         "mcp_tool_ids": [],
@@ -583,6 +607,10 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
             "skill_id": "skill-a",
             "version": "hash-a",
             "content_hash": "hash-a",
+            "source": {"kind": "uploaded"},
+            "lifecycle_status": "released",
+            "execution_profile": _UPLOADED_PROFILE,
+            "builtin_tool_identities": _UPLOADED_PROFILE["builtin_tool_identities"],
             "files": [{}],
             "dependency_ids": [],
             "mcp_tool_ids": ["mcp:a"],
@@ -591,6 +619,10 @@ async def test_validate_replay_skill_manifests_aggregates_root_skill_mcp_pins(mo
             "skill_id": "skill-b",
             "version": "hash-b",
             "content_hash": "hash-b",
+            "source": {"kind": "uploaded"},
+            "lifecycle_status": "released",
+            "execution_profile": _UPLOADED_PROFILE,
+            "builtin_tool_identities": _UPLOADED_PROFILE["builtin_tool_identities"],
             "files": [{}],
             "dependency_ids": [],
             "mcp_tool_ids": ["mcp:b"],

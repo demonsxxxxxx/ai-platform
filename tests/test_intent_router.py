@@ -33,7 +33,7 @@ def test_non_execution_vetoes_confirmed_capability():
     decision = route_intent(
         "不要调用知识库，只解释流程",
         [],
-        confirmed_capability_id="knowledge_answer",
+        confirmed_capability_id="general_chat",
     )
 
     assert decision.execution_polarity == "non_execution"
@@ -81,14 +81,14 @@ def test_docx_review_request_uses_general_chat():
     assert decision.confirmed_by_user is False
 
 
-def test_knowledge_question_routes_to_knowledge_answer():
+def test_knowledge_question_uses_general_chat_without_implicit_skill():
     decision = route_intent(message="SOP 里账号权限申请流程是什么？", files=[])
 
     assert decision.status == "selected"
-    assert decision.intent == "knowledge_answer"
-    assert decision.selected_capability == "knowledge_answer"
-    assert decision.agent_id == "sop-assistant"
-    assert decision.skill_id == "ragflow-knowledge-search"
+    assert decision.intent == "general_chat"
+    assert decision.selected_capability == "general_chat"
+    assert decision.agent_id == "general-agent"
+    assert decision.skill_id is None
 
 
 def test_plain_question_routes_to_general_chat():

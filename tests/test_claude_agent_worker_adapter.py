@@ -61,8 +61,8 @@ from app.sandbox.domain.runtime_diagnostics import (
     normalize_sdk_runtime_diagnostics,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
-from app.skills.pinning import build_skill_manifest_pins
-from app.skills.registry import BuiltinSkillRegistry
+from app.skills.pinning import build_uploaded_skill_manifest_pin
+from app.skills.registry import BuiltinSkillRegistry, iter_skill_files
 from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
 
@@ -446,11 +446,50 @@ def _primary_manifest_version(skill_id, manifests):
 
 
 def _registry_pins(root, *, skill_id, input_payload=None):
-    return build_skill_manifest_pins(
-        skill_id=skill_id,
-        input_payload=input_payload or {},
-        builtin_skills=BuiltinSkillRegistry(root).list_builtin_skills(),
-    )
+    skills = {
+        skill.name: skill for skill in BuiltinSkillRegistry(root).list_builtin_skills()
+    }
+    payload = input_payload if isinstance(input_payload, dict) else {}
+    requested = [skill_id]
+    skill_ids = payload.get("skill_ids")
+    if isinstance(skill_ids, list):
+        requested.extend(str(item) for item in skill_ids)
+    pins = []
+    for requested_id in dict.fromkeys(requested):
+        skill = skills.get(requested_id)
+        if skill is None:
+            continue
+        files = []
+        for path in sorted(
+            iter_skill_files(skill.path),
+            key=lambda item: item.relative_to(skill.path).as_posix(),
+        ):
+            content = path.read_bytes()
+            files.append(
+                {
+                    "relative_path": path.relative_to(skill.path).as_posix(),
+                    "content_base64": base64.b64encode(content).decode("ascii"),
+                    "size_bytes": len(content),
+                }
+            )
+        pins.append(
+            build_uploaded_skill_manifest_pin(
+                {
+                    "skill_id": skill.name,
+                    "version": skill.version,
+                    "content_hash": skill.version,
+                    "description": skill.description,
+                    "source": {
+                        "kind": "uploaded",
+                        "storage_key": f"test-fixtures/{skill.name}/package.zip",
+                        "files": files,
+                    },
+                    "dependency_ids": [],
+                    "status": "released",
+                }
+            )
+        )
+    return pins
 
 
 def payload(**overrides):
@@ -1934,7 +1973,7 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert manifest["skill_id"] == "qa-file-reviewer"
     assert manifest["version"]
     assert manifest["content_hash"] == manifest["version"]
-    assert manifest["source"]["kind"] == "builtin"
+    assert manifest["source"]["kind"] == "uploaded"
     assert manifest["allowed"] is True
     assert manifest["staged"] is True
     assert manifest["used"] is True
@@ -3538,11 +3577,7 @@ async def test_agent_run_stages_pinned_skill_snapshot_after_filesystem_drift(mon
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
     (skill_dir / "references").mkdir()
     (skill_dir / "references" / "guide.md").write_text("review guide", encoding="utf-8")
-    pins = build_skill_manifest_pins(
-        skill_id="qa-file-reviewer",
-        input_payload={},
-        builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
-    )
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={})
     (skill_dir / "SKILL.md").write_text(
         "---\nname: qa-file-reviewer\ndescription: Changed.\n---\n\n# changed\n",
         encoding="utf-8",
@@ -3574,11 +3609,7 @@ async def test_agent_run_fails_closed_when_dependency_pin_is_missing(monkeypatch
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
-    pins = build_skill_manifest_pins(
-        skill_id="qa-file-reviewer",
-        input_payload={},
-        builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
-    )
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={})
     primary_pin = [item for item in pins if item["skill_id"] == "qa-file-reviewer"]
     primary_pin[0]["dependency_ids"] = ["minimax-docx"]
     async def no_files(payload, workspace):
@@ -3683,11 +3714,7 @@ async def test_agent_run_rejects_tampered_pinned_skill_snapshot_hash(monkeypatch
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
-    pins = build_skill_manifest_pins(
-        skill_id="qa-file-reviewer",
-        input_payload={},
-        builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
-    )
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={})
     pins[0]["files"][0]["content_base64"] = base64.b64encode(
         b"---\nname: qa-file-reviewer\ndescription: Tampered.\n---\n\n# tampered\n"
     ).decode("ascii")
@@ -3728,11 +3755,7 @@ async def test_agent_run_rejects_pinned_skill_snapshot_size_mismatch(monkeypatch
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
-    pins = build_skill_manifest_pins(
-        skill_id="qa-file-reviewer",
-        input_payload={},
-        builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
-    )
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={})
     pins[0]["files"][0]["size_bytes"] = int(pins[0]["files"][0]["size_bytes"]) + 1
     async def no_files(payload, workspace):
         return []
@@ -3759,11 +3782,7 @@ async def test_agent_run_rejects_pinned_skill_snapshot_file_over_worker_cap(monk
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
-    pins = build_skill_manifest_pins(
-        skill_id="qa-file-reviewer",
-        input_payload={},
-        builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
-    )
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={})
     monkeypatch.setattr("app.executors.claude_agent_worker.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
     async def no_files(payload, workspace):
         return []

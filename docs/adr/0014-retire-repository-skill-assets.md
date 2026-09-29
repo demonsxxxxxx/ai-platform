@@ -44,11 +44,28 @@ Runs whose historical source has no complete immutable snapshot fail closed with
 repository directory. New deployments do not expose the retired builtins or the
 RAGFlow builtin tool policy.
 
-Historical profile metadata remains readable from persisted snapshot JSON;
-completed invocation receipts remain decodable. Retired controlled profiles are
-not translated into SDK execution profiles for replay.
+Historical profile metadata remains readable from persisted snapshot JSON.
+Current execution accepts SDK-hook Skill invocation receipts only; the retired
+controlled-runner evidence source and missing-profile fallback are deleted.
+Retired controlled profiles are not translated into SDK execution profiles for replay.
 Schema seeds, applied migrations, and public redaction mappings retain their
 historical identities.
+
+New requests use the supplied current Agent identity and explicit Skill selection.
+Public aliases do not map back to retired Agent names or inject a default Skill;
+SOP keywords do not select a fixed knowledge Skill. The unused filesystem pin
+builder and builtin version lookup stub are deleted.
+
+Dependency validation uses declared IDs and complete immutable dependency pins.
+Root and dependency versions each require current tenant distribution authority;
+there are no public/internal Skill name lists, name-derived tool grants, or
+name-derived MCP requirements. MCP execution accepts Server-qualified references
+only; the RAGFlow bare-ID dispatch and metadata exceptions are deleted.
+New tenant distribution backfill uses existing
+explicit assignments and does not grant a fixed set of builtin Skill names.
+Admin dependency responses no longer expose the obsolete public/internal name
+classification fields.
+
 
 No migration physically deletes historical Skill or Run data. A future data
 retention change must be handled as a separate, explicitly authorized migration.

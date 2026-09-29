@@ -3,7 +3,6 @@ import app.identity.infrastructure.audit_postgres as _owner_identity_infrastruct
 import app.identity.infrastructure.capability_distributions_postgres as _owner_identity_infrastructure_capability_distributions_postgres
 import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
 import app.mcp.infrastructure.registry_postgres as _owner_mcp_infrastructure_registry_postgres
-import app.mcp.repository as _owner_mcp_repository
 import app.platform.postgres.errors as _owner_platform_postgres_errors
 import base64
 from contextlib import asynccontextmanager
@@ -370,19 +369,6 @@ def install_mcp_route_fakes(
                 "metadata_json": {},
             }
 
-    async def fake_list(conn, *, tenant_id, include_disabled=True):
-        calls.append(
-            (
-                "list",
-                {
-                    "tenant_id": tenant_id,
-                    "include_disabled": include_disabled,
-                    "conn_type": type(conn).__name__,
-                },
-            )
-        )
-        return [dict(row) for row in registry_tools]
-
     async def fake_get_authorized_session(conn, **kwargs):
         calls.append(("get_authorized_session", dict(kwargs)))
         if kwargs["session_id"] != "session-1":
@@ -600,7 +586,6 @@ def install_mcp_route_fakes(
         lambda **_kwargs: "sealed-mcp-credential-envelope",
     )
     monkeypatch.setattr(mcp, "transaction", fake_transaction)
-    monkeypatch.setattr(_owner_mcp_repository, 'list_workbench_mcp_tools', fake_list, raising=False)
     monkeypatch.setattr(
         _owner_conversations_infrastructure_session_queries_postgres,
         'get_authorized_session',

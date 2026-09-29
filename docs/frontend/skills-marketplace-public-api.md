@@ -42,7 +42,7 @@ Backed routes:
 
 `GET /api/skills/` returns the frontend list contract with `skills`, `total`, `skip`, `limit`, `available_tags`, and `effective_permissions`. Catalog data is projected from public workbench skills, tenant availability, and the effective skill version snapshot.
 
-`PATCH /api/skills/{skill_name}/toggle` maps to tenant skill availability in `tenant_workbench_skills`; it does not invoke admin promote or rollback.
+`PATCH /api/skills/{skill_name}/toggle` updates the tenant capability distribution; it does not invoke admin promote or rollback.
 
 No public `/api/skills/{skill_name}/publish` route is backed. Global Skill release remains exclusively under the Admin review, materialization, promote, and rollback lifecycle at `/api/ai/admin/skills/*`.
 
@@ -105,7 +105,7 @@ Backed routes:
 - `PATCH /api/marketplace/{skill_name}/activate`
 - `DELETE /api/marketplace/{skill_name}`
 
-Marketplace list/detail/files are projected only from globally active public workbench skills. Tenant-disabled skills remain visible in the marketplace projection so users with `skill:write` can install/update them back to active. Internal dependencies are not exposed as ordinary marketplace entries.
+Marketplace list/detail/files use active Skill versions and explicit tenant capability distributions. Dependency membership comes from each version snapshot and does not classify a package by its name. Runtime discovery includes the configured root Skills; authorized dependency packages are staged through their pinned dependency closure.
 
 `install` and `update` enable the selected public skill in tenant availability and write audit evidence. They do not expose package upload, release promote, rollback, MCP lifecycle, or tool execution controls to ordinary users.
 
@@ -123,9 +123,9 @@ controls; they cannot create an active version or redirect a release policy.
 catalog only. Every returned aggregate has `lifecycle_status: "active"`;
 distribution and version lifecycle remain separate fields. Retired global rows
 stay in PostgreSQL for historical Run, Session, snapshot, and audit references,
-while the management catalog excludes them. Built-in synchronization is bounded
-to Skills classified as public workbench capabilities or internal dependencies,
-so historical synthetic identities such as `general-chat` cannot be republished.
+while the management catalog excludes them. Repository builtin synchronization
+is retired. Admin dependency responses report declared IDs and availability;
+they no longer classify fixed package names as public or internal.
 
 ## MCP Routes
 
@@ -152,8 +152,8 @@ while each Gateway owns its internal catalog and ACL caching. A single
 unavailable Server does not hide tools from other Servers. Responses expose
 stable `mcp_server_id::public_tool_name`
 references and bounded display metadata, never JWTs, static headers, Gateway
-internal IDs, or cache keys. The code-owned RAGFlow row remains the only local
-`mcp_tools` compatibility entry while its built-in dependency is retained.
+internal IDs, or cache keys. Execution resolves only Server-qualified references.
+The former RAGFlow bare-ID registry path and metadata exception are deleted.
 
 Server lifecycle writes require a platform-admin principal. They persist only
 tenant-scoped registry metadata, allowed roles, department enablement, quotas,

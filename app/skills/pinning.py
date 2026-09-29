@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from pathlib import Path
 import re
 from typing import Any
 
@@ -11,7 +10,6 @@ from app.skills.api import skill_snapshot_components_fit
 from app.skills.dependencies import validate_skill_dependency_ids
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.skills.lifecycle import is_admin_materializable_status
-from app.skills.registry import BuiltinSkill, iter_skill_files
 
 MAX_SKILL_SNAPSHOT_FILE_BYTES = 8 * 1024 * 1024
 MAX_SKILL_SNAPSHOT_TOTAL_BYTES = 16 * 1024 * 1024
@@ -46,39 +44,6 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
-
-
-def _requested_skill_ids(skill_id: str, input_payload: dict[str, Any]) -> list[str]:
-    requested = _string_list(input_payload.get("skill_ids"))
-    if skill_id:
-        requested.insert(0, skill_id)
-    return list(dict.fromkeys(requested))
-
-
-def _snapshot_files(path: Path) -> list[dict[str, Any]]:
-    files: list[dict[str, Any]] = []
-    total_bytes = 0
-    for item in sorted(
-        iter_skill_files(path),
-        key=lambda child: child.relative_to(path).as_posix(),
-    ):
-        relative_path = item.relative_to(path).as_posix()
-        if relative_path.startswith("../") or relative_path == "..":
-            raise ValueError("skill snapshot path escaped skill root")
-        content = item.read_bytes()
-        if len(content) > MAX_SKILL_SNAPSHOT_FILE_BYTES:
-            raise ValueError(f"skill snapshot file too large: {relative_path}")
-        total_bytes += len(content)
-        if total_bytes > MAX_SKILL_SNAPSHOT_TOTAL_BYTES:
-            raise ValueError("skill snapshot too large")
-        files.append(
-            {
-                "relative_path": relative_path,
-                "content_base64": base64.b64encode(content).decode("ascii"),
-                "size_bytes": len(content),
-            }
-        )
-    return files
 
 
 def _safe_manifest_file_summary(item: dict[str, Any]) -> dict[str, Any]:
@@ -260,45 +225,6 @@ def validate_skill_manifest_refs(value: object) -> list[dict[str, Any]]:
     if len({ref["skill_id"] for ref in refs}) != len(refs):
         raise SkillVersionMaterializationError("skill_version_not_materializable")
     return refs
-
-
-def build_skill_manifest_pins(
-    *,
-    skill_id: str,
-    input_payload: dict[str, Any],
-    builtin_skills: list[BuiltinSkill],
-) -> list[dict[str, Any]]:
-    by_id = {skill.name: skill for skill in builtin_skills}
-    available = set(by_id)
-    selected = [item for item in _requested_skill_ids(skill_id, input_payload) if item in available]
-    if not selected:
-        return []
-    manifests: list[dict[str, Any]] = []
-    for item in selected:
-        skill = by_id[item]
-        execution_profile = resolve_skill_execution_profile(
-            skill_id=skill.name,
-            source_kind=str(skill.source.get("kind") or "") if isinstance(skill.source, dict) else "",
-            lifecycle_status="released",
-        )
-        manifests.append(
-            {
-                "skill_id": skill.name,
-                "description": skill.description,
-                "version": skill.version,
-                "content_hash": skill.version,
-                "source": skill.source,
-                "files": _snapshot_files(skill.path),
-                "dependency_ids": [],
-                "lifecycle_status": "released",
-                "execution_profile": execution_profile,
-                "builtin_tool_identities": execution_profile["builtin_tool_identities"],
-                "allowed": True,
-                "staged": False,
-                "used": False,
-            }
-        )
-    return manifests
 
 
 def _materialization_error() -> SkillVersionMaterializationError:

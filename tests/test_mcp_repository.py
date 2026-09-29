@@ -1,4 +1,3 @@
-import app.mcp.infrastructure.tool_policies_postgres as _owner_mcp_infrastructure_tool_policies_postgres
 import app.mcp.repository as _owner_mcp_repository
 import json
 from pathlib import Path
@@ -318,58 +317,15 @@ async def test_invalid_dynamic_reference_never_queries_database():
 
 
 @pytest.mark.asyncio
-async def test_builtin_ragflow_keeps_strict_code_owned_registry_path(monkeypatch):
-    row = {
-        "tool_id": "ragflow-knowledge-search",
-        "server_id": "ragflow",
-        "name": "RAGFlow Search",
-        "description": "Search governed knowledge.",
-        "transport_type": "http",
-        "endpoint": "",
-        "auth_mode": "platform-managed",
-        "allowed_tools": ["ragflow_search"],
-        "registry_status": "active",
-        "policy_status": "active",
-        "registry_write_capable": False,
-        "policy_write_capable": False,
-        "registry_risk_level": "low",
-        "policy_risk_level": "low",
-        "registry_visible_to_user": True,
-        "policy_visible_to_user": True,
-    }
-
+async def test_retired_bare_mcp_id_never_queries_database():
     class Connection:
-        async def execute(self, query, params):
-            assert "from mcp_tools" in query
-            assert "ragflow-knowledge-search" in query
-            assert params == (
-                "tenant-a",
-                "ragflow-knowledge-search",
-                "tenant-a",
-            )
-            return _Cursor(row)
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("retired bare references must fail before database access")
 
-    monkeypatch.setattr(
-        _owner_mcp_infrastructure_tool_policies_postgres,
-        '_tool_policy_projection',
-        lambda value, *, tenant_id: {
-            **value,
-            "tenant_id": tenant_id,
-            "effective_status": "active",
-            "write_capable": False,
-            "risk_level": "low",
-            "visible_to_user": True,
-        },
-    )
-    entry = await _owner_mcp_repository.get_mcp_tool_registry_entry(
-        Connection(),
-        tenant_id="tenant-a",
-        tool_id="ragflow-knowledge-search",
-    )
-
-    assert entry is not None
-    assert mcp_repository.is_trusted_builtin_mcp_tool(entry)
-    assert mcp_repository.mcp_runtime_metadata_usable(entry)
+    for repository in (_owner_mcp_repository, mcp_repository):
+        assert await repository.get_mcp_tool_registry_entry(
+            Connection(), tenant_id="tenant-a", tool_id="ragflow-knowledge-search"
+        ) is None
 
 
 @pytest.mark.asyncio
@@ -391,24 +347,17 @@ async def test_runtime_target_requires_active_server_and_distribution():
     ) == {"transport": "streamable_http", "credential_envelope": "sealed"}
 
 
-def test_only_code_owned_ragflow_has_legacy_mcp_tools_authority():
-    authority_sql = mcp_repository.mcp_tool_tenant_authority_sql()
-    assert "ragflow-knowledge-search" in authority_sql
-    assert "ragflow_search" in authority_sql
-    assert "mcp_tool_catalog_entries" not in authority_sql
-
-    builtin = {
-        "tool_id": "ragflow-knowledge-search",
-        "server_id": "ragflow",
-        "transport_type": "http",
-        "endpoint": "",
-        "auth_mode": "platform-managed",
-        "allowed_tools": ["ragflow_search"],
-        "write_capable": False,
-    }
-    assert mcp_repository.is_trusted_builtin_mcp_tool(builtin)
-    assert not mcp_repository.is_trusted_builtin_mcp_tool(
-        {**builtin, "server_id": "forged"}
+def test_runtime_metadata_rejects_retired_bare_mcp_identity():
+    assert not mcp_repository.mcp_runtime_metadata_usable(
+        {
+            "tool_id": "ragflow-knowledge-search",
+            "server_id": "ragflow",
+            "transport_type": "http",
+            "endpoint": "",
+            "auth_mode": "platform-managed",
+            "allowed_tools": ["ragflow_search"],
+            "write_capable": False,
+        }
     )
 
 

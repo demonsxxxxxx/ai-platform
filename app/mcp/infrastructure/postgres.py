@@ -20,10 +20,6 @@ from app.mcp.infrastructure.registry_postgres import (
 from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 
 
-TRUSTED_BUILTIN_MCP_TOOL_ID = "ragflow-knowledge-search"
-TRUSTED_BUILTIN_MCP_SERVER_ID = "ragflow"
-TRUSTED_BUILTIN_MCP_REMOTE_NAME = "ragflow_search"
-TRUSTED_BUILTIN_MCP_TOOL_REFERENCE = "ragflow::ragflow_search"
 __all__ = ["mcp_runtime_metadata_usable"]
 
 _ARCHIVED_AT_TIMESTAMP_PATTERN = re.compile(
@@ -475,35 +471,6 @@ async def get_mcp_server_runtime_target(
     return dict(row) if row is not None else None
 
 
-def mcp_tool_tenant_authority_sql() -> str:
-    """Restrict legacy ``mcp_tools`` consumers to the code-owned RAGFlow tool."""
-
-    return f"""
-      mcp_tools.id = '{TRUSTED_BUILTIN_MCP_TOOL_ID}'
-      and mcp_tools.server_id = '{TRUSTED_BUILTIN_MCP_SERVER_ID}'
-      and mcp_tools.transport_type = 'http'
-      and mcp_tools.endpoint = ''
-      and mcp_tools.auth_mode = 'platform-managed'
-      and mcp_tools.allowed_tools = '[\"{TRUSTED_BUILTIN_MCP_REMOTE_NAME}\"]'::jsonb
-      and mcp_tools.write_capable = false
-      and %s::text <> ''
-    """
-
-
-def is_trusted_builtin_mcp_tool(tool: dict[str, Any]) -> bool:
-    """Recognize only the code-owned RAGFlow registry provenance."""
-
-    return (
-        str(tool.get("tool_id") or tool.get("id") or "") == TRUSTED_BUILTIN_MCP_TOOL_ID
-        and str(tool.get("server_id") or "") == TRUSTED_BUILTIN_MCP_SERVER_ID
-        and str(tool.get("transport_type") or "") == "http"
-        and str(tool.get("endpoint") or "") == ""
-        and str(tool.get("auth_mode") or "") == "platform-managed"
-        and tool.get("allowed_tools") == [TRUSTED_BUILTIN_MCP_REMOTE_NAME]
-        and bool(tool.get("write_capable")) is False
-    )
-
-
 async def get_mcp_tool_registry_entry(
     conn: AsyncConnection,
     *,
@@ -511,9 +478,6 @@ async def get_mcp_tool_registry_entry(
     tool_id: str,
 ) -> dict[str, Any] | None:
     """Resolve a lightweight reference through its registered MCP Server only."""
-
-    if tool_id == TRUSTED_BUILTIN_MCP_TOOL_ID:
-        return None
 
     try:
         server_id, public_tool_name = parse_mcp_tool_reference(tool_id)

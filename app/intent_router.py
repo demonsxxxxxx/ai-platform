@@ -144,15 +144,6 @@ def _selected(
 
 
 def confirm_capability(capability_id: str) -> IntentDecision:
-    if capability_id == "knowledge_answer":
-        return _selected(
-            "knowledge_answer",
-            capability_id,
-            1.0,
-            "用户确认按知识库问答处理",
-            confirmed_by_user=True,
-            execution_polarity="affirmative",
-        )
     if capability_id == "general_chat":
         return _selected(
             "general_chat",
@@ -197,33 +188,6 @@ def route_intent(
 
     text = (message or "").lower()
     has_docx = _has_docx(files)
-    knowledge_tokens = (
-        "sop",
-        "知识库",
-        "制度",
-        "流程",
-        "规范",
-        "账号",
-        "权限",
-        "申请",
-        "knowledge base",
-        "procedure",
-        "policy",
-        "access",
-    )
-
-    if (
-        polarity == "affirmative"
-        and not has_docx
-        and any(token in text for token in knowledge_tokens)
-    ):
-        return _selected(
-            "knowledge_answer",
-            "knowledge_answer",
-            0.82,
-            "检测到知识库或 SOP 问答意图",
-            execution_polarity=polarity,
-        )
     if not has_docx and _looks_like_long_task(text):
         return _selected(
             "long_task",

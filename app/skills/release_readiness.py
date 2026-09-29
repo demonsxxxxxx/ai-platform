@@ -11,8 +11,6 @@ import re
 from typing import Any
 
 from app.skills.dependencies import (
-    INTERNAL_DEPENDENCY_SKILL_IDS,
-    PUBLIC_WORKBENCH_SKILL_IDS,
     skill_dependency_policy,
 )
 from app.skills.release_dashboard_readiness import (
@@ -1340,8 +1338,6 @@ def build_skill_release_readiness(
         skill_items.append(
             {
                 "skill_id": skill.name,
-                "public": skill.name in PUBLIC_WORKBENCH_SKILL_IDS,
-                "internal_dependency": skill.name in INTERNAL_DEPENDENCY_SKILL_IDS,
                 "content_hash": skill.version,
                 "manifest": {
                     "present": True,
@@ -1372,7 +1368,7 @@ def build_skill_release_readiness(
         "status": "partial_blocked" if open_gaps else "ready_for_verification",
         "source": {
             "mode": "offline_external_skill_inventory",
-            "root": str(root) if root is not None else None,
+            "root": root.name if root is not None else None,
             "inventory_present": inventory_present,
             "external_evidence": {
                 "mode": "optional_external_release_evidence",
@@ -1382,8 +1378,6 @@ def build_skill_release_readiness(
         },
         "summary": {
             "total_skills": len(skill_items),
-            "public_workbench_skills": sum(1 for item in skill_items if item["public"]),
-            "internal_dependency_skills": sum(1 for item in skill_items if item["internal_dependency"]),
             "skills_with_declared_dependencies": sum(
                 1 for item in skill_items if item["dependency_policy"]["dependency_ids"]
             ),

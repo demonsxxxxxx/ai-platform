@@ -313,8 +313,6 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert readiness["status"] == "partial_blocked"
     assert readiness["summary"] == {
         "total_skills": 2,
-        "public_workbench_skills": 1,
-        "internal_dependency_skills": 1,
         "skills_with_declared_dependencies": 0,
         "skills_with_package_metadata": 1,
         "skills_with_requirements": 1,
@@ -411,8 +409,8 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert dashboard["does_not_close_g6"] is True
 
     qa_skill = next(item for item in readiness["skills"] if item["skill_id"] == "qa-file-reviewer")
-    assert qa_skill["public"] is True
-    assert qa_skill["internal_dependency"] is False
+    assert "public" not in qa_skill
+    assert "internal_dependency" not in qa_skill
     assert qa_skill["manifest"]["description_present"] is True
     assert qa_skill["dependency_policy"]["dependency_ids"] == []
     assert qa_skill["dependency_policy"]["dependency_details"] == []
@@ -421,8 +419,8 @@ def test_skill_release_readiness_records_policy_gaps_without_secret_or_absolute_
     assert "dependency_vulnerability_evidence_missing" in qa_skill["blockers"]
 
     internal_skill = next(item for item in readiness["skills"] if item["skill_id"] == "minimax-docx")
-    assert internal_skill["public"] is False
-    assert internal_skill["internal_dependency"] is True
+    assert "public" not in internal_skill
+    assert "internal_dependency" not in internal_skill
     assert internal_skill["package_evidence"]["metadata_files"] == ["_meta.json"]
     assert internal_skill["package_evidence"]["requirements_files"] == ["requirements.txt"]
 

@@ -559,7 +559,7 @@ async def test_runtime_catalog_rejects_identity_swap_and_manifest_set_expansion(
         expected_binding=binding,
     )
     assert loaded is not None
-    assert loaded.snapshot.available_skill_ids == ("ctd-32s73-stability-template-fill",)
+    assert loaded.snapshot.available_skill_ids == ("ctd-32s73-stability-template-fill", "minimax-docx")
     assert loaded.materialized_skill_ids == (
         "ctd-32s73-stability-template-fill",
         "reference-fact-extraction",
@@ -688,13 +688,13 @@ async def test_worker_overwrites_injected_catalog_without_authorizing_discovery_
 
 
 @pytest.mark.asyncio
-async def test_worker_dispatch_authorizes_only_selected_private_dependency_closure(monkeypatch):
+async def test_worker_dispatch_authorizes_only_selected_dependency_closure(monkeypatch):
     rows = [
         _skill_row(
             "ctd-32s73-stability-template-fill",
-            dependency_ids=["reference-fact-extraction"],
+            dependency_ids=["private-report-helper"],
         ),
-        _skill_row("reference-fact-extraction"),
+        _skill_row("private-report-helper"),
         _skill_row("minimax-docx"),
         _skill_row("skill-a"),
     ]
@@ -805,13 +805,14 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
     assert loaded is not None
     assert set(loaded.snapshot.available_skill_ids) == {
         "ctd-32s73-stability-template-fill",
+        "minimax-docx",
         "skill-a",
     }
-    assert loaded.snapshot.entry("reference-fact-extraction") is None
-    assert loaded.snapshot.entry("minimax-docx") is None
+    assert loaded.snapshot.entry("private-report-helper") is None
+    assert loaded.snapshot.entry("minimax-docx") is not None
     assert loaded.materialized_skill_ids == (
         "ctd-32s73-stability-template-fill",
-        "reference-fact-extraction",
+        "private-report-helper",
     )
     skill_subject = next(
         subject
@@ -820,7 +821,7 @@ async def test_worker_dispatch_authorizes_only_selected_private_dependency_closu
     )
     assert skill_subject["allowed_skill_names"] == [
         "ctd-32s73-stability-template-fill",
-        "reference-fact-extraction",
+        "private-report-helper",
     ]
     assert "minimax-docx" not in skill_subject["allowed_skill_names"]
     assert observed["catalog"]["tenant_id"] == "tenant-a"
@@ -1208,10 +1209,11 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     )
     assert resolution.snapshot.available_skill_ids == (
         "ctd-32s73-stability-template-fill",
+        "minimax-docx",
         "skill-a",
     )
     assert resolution.snapshot.entry("reference-fact-extraction") is None
-    assert resolution.snapshot.entry("minimax-docx") is None
+    assert resolution.snapshot.entry("minimax-docx") is not None
     assert resolution.snapshot.materialized_skill_ids == (
         "ctd-32s73-stability-template-fill",
         "reference-fact-extraction",
@@ -1282,7 +1284,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     assert "BODY_ONLY_REFERENCE" not in prepared.system_prompt
     assert "BODY_ONLY_UNRELATED" not in prepared.system_prompt
     assert "reference-fact-extraction" not in prepared.system_prompt
-    assert "minimax-docx" not in prepared.system_prompt
+    assert "minimax-docx" in prepared.system_prompt
     diagnostics = project_sdk_turn_diagnostics(
         {
             "counters": {"skill_invocations": 2},

@@ -43,7 +43,6 @@ from app.platform.postgres.errors import (
     RepositoryNotFoundError,
 )
 from app.projection_redaction import (
-    internal_agent_id_for_request,
     public_agent_id_for_projection,
 )
 from app.runs.infrastructure import creation_postgres as runs_creation
@@ -341,9 +340,9 @@ async def _effective_session_agent_id(
     session_id: str | None,
     agent_id: str | None,
 ) -> str | None:
-    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
+    requested_agent_id = agent_id or None
     if not session_id:
-        return internal_agent_id
+        return requested_agent_id
     session = await conversations_session_queries.get_authorized_session(
         conn,
         tenant_id=principal.tenant_id,
@@ -355,9 +354,9 @@ async def _effective_session_agent_id(
     session_agent_id = str(session.get("agent_id") or "")
     if not session_agent_id:
         raise RepositoryNotFoundError("session_not_found")
-    if internal_agent_id and internal_agent_id != session_agent_id:
+    if requested_agent_id and requested_agent_id != session_agent_id:
         raise RepositoryNotFoundError("session_not_found")
-    return internal_agent_id or session_agent_id
+    return requested_agent_id or session_agent_id
 
 
 @router.post("/runs/{run_id}/context/snapshots")
@@ -620,7 +619,7 @@ async def create_memory_record(
 ) -> dict[str, object]:
     if not request.session_id:
         raise HTTPException(status_code=400, detail="memory_session_id_required")
-    internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
+    requested_agent_id = request.agent_id or None
     denied_by_policy = False
     try:
         async with transaction() as conn:
@@ -636,7 +635,7 @@ async def create_memory_record(
                 principal=principal,
                 workspace_id=request.workspace_id,
                 session_id=request.session_id,
-                agent_id=internal_agent_id,
+                agent_id=requested_agent_id,
             )
             policy = await context_postgres.get_effective_memory_policy(
                 conn,
@@ -698,7 +697,7 @@ async def list_memory_records(
 ) -> dict[str, object]:
     workspace_id = _safe_query_id(workspace_id, "workspace_id")
     agent_id = _safe_query_id(agent_id, "agent_id") if agent_id else None
-    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
+    requested_agent_id = agent_id or None
     session_id = _safe_query_id(session_id, "session_id") if session_id else None
     if not session_id:
         raise HTTPException(status_code=400, detail="memory_session_id_required")
@@ -709,7 +708,7 @@ async def list_memory_records(
                 principal=principal,
                 workspace_id=workspace_id,
                 session_id=session_id,
-                agent_id=internal_agent_id,
+                agent_id=requested_agent_id,
             )
             policy = await context_postgres.get_effective_memory_policy(
                 conn,
@@ -746,7 +745,7 @@ async def delete_memory_record(
     record_id = _safe_query_id(record_id, "record_id")
     workspace_id = _safe_query_id(workspace_id, "workspace_id")
     agent_id = _safe_query_id(agent_id, "agent_id") if agent_id else None
-    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
+    requested_agent_id = agent_id or None
     session_id = _safe_query_id(session_id, "session_id") if session_id else None
     if not session_id:
         raise HTTPException(status_code=400, detail="memory_session_id_required")
@@ -757,7 +756,7 @@ async def delete_memory_record(
                 principal=principal,
                 workspace_id=workspace_id,
                 session_id=session_id,
-                agent_id=internal_agent_id,
+                agent_id=requested_agent_id,
             )
             row = await context_postgres.delete_memory_record(
                 conn,
@@ -801,15 +800,15 @@ async def get_memory_policy(
 ) -> dict[str, object]:
     workspace_id = _safe_query_id(workspace_id, "workspace_id")
     agent_id = _safe_query_id(agent_id, "agent_id") if agent_id else None
-    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
+    requested_agent_id = agent_id or None
     try:
         async with transaction() as conn:
             await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
-            if internal_agent_id:
+            if requested_agent_id:
                 target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
-                    agent_id=internal_agent_id,
+                    agent_id=requested_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
@@ -818,7 +817,7 @@ async def get_memory_policy(
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
                 user_id=principal.user_id,
-                agent_id=internal_agent_id,
+                agent_id=requested_agent_id,
             )
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -834,16 +833,16 @@ async def update_memory_policy(
     if request.long_term_memory_enabled:
         raise HTTPException(status_code=409, detail="long_term_memory_not_available")
     reason = _audit_reason(request.reason, redaction_mode=request.redaction_mode)
-    internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
-    public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
+    requested_agent_id = request.agent_id or None
+    public_agent_id = public_agent_id_for_projection(requested_agent_id) if requested_agent_id else None
     try:
         async with transaction() as conn:
             await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
-            if internal_agent_id:
+            if requested_agent_id:
                 target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
-                    agent_id=internal_agent_id,
+                    agent_id=requested_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
@@ -858,7 +857,7 @@ async def update_memory_policy(
                 tenant_id=principal.tenant_id,
                 workspace_id=request.workspace_id,
                 user_id=principal.user_id,
-                agent_id=internal_agent_id,
+                agent_id=requested_agent_id,
                 memory_enabled=request.memory_enabled,
                 long_term_memory_enabled=False,
                 retention_days=request.retention_days,
@@ -908,15 +907,15 @@ async def admin_list_memory_policies(
     workspace_id = _safe_query_id(workspace_id, "workspace_id")
     user_id = _safe_query_id(user_id, "user_id") if user_id else None
     agent_id = _safe_query_id(agent_id, "agent_id") if agent_id else None
-    internal_agent_id = internal_agent_id_for_request(agent_id) if agent_id else None
+    requested_agent_id = agent_id or None
     try:
         async with transaction() as conn:
             await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=workspace_id)
-            if internal_agent_id:
+            if requested_agent_id:
                 target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
-                    agent_id=internal_agent_id,
+                    agent_id=requested_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
@@ -925,7 +924,7 @@ async def admin_list_memory_policies(
                 tenant_id=principal.tenant_id,
                 workspace_id=workspace_id,
                 user_id=user_id,
-                agent_id=internal_agent_id,
+                agent_id=requested_agent_id,
                 limit=limit,
             )
     except RepositoryNotFoundError as exc:
@@ -935,7 +934,7 @@ async def admin_list_memory_policies(
         "summary": {
             "workspace_id": workspace_id,
             "user_id": user_id,
-            "agent_id": public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None,
+            "agent_id": public_agent_id_for_projection(requested_agent_id) if requested_agent_id else None,
             "returned_count": len(rows),
             "limit": limit,
         },
@@ -950,8 +949,8 @@ async def admin_preview_memory_redaction(
     """Preview memory redaction policy output without writing memory content."""
     if not _is_memory_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_memory_admin")
-    internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
-    public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
+    requested_agent_id = request.agent_id or None
+    public_agent_id = public_agent_id_for_projection(requested_agent_id) if requested_agent_id else None
     content_preview = _redacted_memory_text_preview(request.content, redaction_mode=request.redaction_mode)
     metadata_preview = _redacted_memory_metadata_preview(request.metadata, redaction_mode=request.redaction_mode)
     reason_preview = _redacted_memory_text_preview(request.reason, redaction_mode=request.redaction_mode)
@@ -963,11 +962,11 @@ async def admin_preview_memory_redaction(
     try:
         async with transaction() as conn:
             await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
-            if internal_agent_id:
+            if requested_agent_id:
                 target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
-                    agent_id=internal_agent_id,
+                    agent_id=requested_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
@@ -1022,19 +1021,19 @@ async def admin_set_memory_policy(
         raise HTTPException(status_code=409, detail="long_term_memory_not_available")
     target_user_id = assert_safe_id(target_user_id, "target_user_id")
     reason = _audit_reason(request.reason, redaction_mode=request.redaction_mode)
-    internal_agent_id = internal_agent_id_for_request(request.agent_id) if request.agent_id else None
-    public_agent_id = public_agent_id_for_projection(internal_agent_id) if internal_agent_id else None
+    requested_agent_id = request.agent_id or None
+    public_agent_id = public_agent_id_for_projection(requested_agent_id) if requested_agent_id else None
     try:
         async with transaction() as conn:
             await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
             target_user = await identity_postgres.get_user(conn, tenant_id=principal.tenant_id, user_id=target_user_id)
             if target_user is None:
                 raise RepositoryNotFoundError("user_not_found")
-            if internal_agent_id:
+            if requested_agent_id:
                 target_agent = await agent_apps_catalog.get_agent(
                     conn,
                     tenant_id=principal.tenant_id,
-                    agent_id=internal_agent_id,
+                    agent_id=requested_agent_id,
                 )
                 if target_agent is None:
                     raise RepositoryNotFoundError("agent_not_found")
@@ -1043,7 +1042,7 @@ async def admin_set_memory_policy(
                 tenant_id=principal.tenant_id,
                 workspace_id=request.workspace_id,
                 user_id=target_user_id,
-                agent_id=internal_agent_id,
+                agent_id=requested_agent_id,
                 memory_enabled=request.memory_enabled,
                 long_term_memory_enabled=False,
                 retention_days=request.retention_days,

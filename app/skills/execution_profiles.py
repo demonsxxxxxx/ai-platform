@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, TypedDict
 
-from app.control_plane_contracts import LEGACY_SYNTHETIC_CHAT_SKILL_ID
 from app.skills.lifecycle import (
-    SKILL_VERSION_LEGACY_ACTIVE,
     SKILL_VERSION_RELEASED,
     SKILL_VERSION_REVIEWED,
     normalize_skill_version_status,
@@ -23,11 +21,6 @@ NATIVE_COMMAND_ISOLATION = "sibling-tool-sandbox-v1"
 SANDBOX_BOUNDARY_COMMAND_ISOLATION = "real-sandbox-boundary-v1"
 OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION = "opensandbox-workspace-v1"
 
-_EXPLICIT_SKILL_BASH_IDENTITY = ("Bash",)
-_SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS = {
-    "ctd-32s73-stability-template-fill": ("Write",),
-    "minimax-docx": ("Write",),
-}
 _NATIVE_UPLOADED_TOOL_IDENTITIES = (
     "Read",
     "Glob",
@@ -38,9 +31,6 @@ _NATIVE_UPLOADED_TOOL_IDENTITIES = (
     "Grep",
 )
 _TRUSTED_UPLOADED_STATUSES = frozenset({SKILL_VERSION_REVIEWED, SKILL_VERSION_RELEASED})
-_TRUSTED_BUILTIN_STATUSES = frozenset(
-    {SKILL_VERSION_LEGACY_ACTIVE, SKILL_VERSION_RELEASED, SKILL_VERSION_REVIEWED}
-)
 
 
 class SkillExecutionProfile(TypedDict):
@@ -73,19 +63,6 @@ def _known_tool_identities(values: tuple[str, ...]) -> list[str]:
     return [identity for identity in values if identity in BUILTIN_TOOL_IDENTITIES]
 
 
-def _builtin_execution_profile(identities: list[str]) -> SkillExecutionProfile:
-    return {
-        "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
-        "strategy": SDK_NATIVE if identities else SDK_RESTRICTED,
-        "trust_basis": "repository_builtin",
-        "builtin_tool_identities": identities,
-        "workspace_contract": SKILL_WORKSPACE_CONTRACT_VERSION,
-        "command_isolation": (
-            NATIVE_COMMAND_ISOLATION if "Bash" in identities else "none"
-        ),
-    }
-
-
 def resolve_skill_execution_profile(
     *,
     skill_id: str,
@@ -95,16 +72,6 @@ def resolve_skill_execution_profile(
     """Resolve the server-owned runtime strategy for one immutable Skill version."""
 
     normalized_status = normalize_skill_version_status(lifecycle_status)
-    if (
-        source_kind == "builtin"
-        and skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
-        and normalized_status in _TRUSTED_BUILTIN_STATUSES
-    ):
-        identities = _known_tool_identities(
-            _EXPLICIT_SKILL_BASH_IDENTITY
-            + _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS.get(skill_id, ())
-        )
-        return _builtin_execution_profile(identities)
     if source_kind == "uploaded" and normalized_status in _TRUSTED_UPLOADED_STATUSES:
         return {
             "schema_version": SKILL_EXECUTION_PROFILE_SCHEMA_VERSION,
@@ -124,33 +91,10 @@ def resolve_skill_execution_profile(
     }
 
 
-def legacy_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutionProfile:
-    """Preserve the tool authority of a pin created before profiles existed."""
-
-    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
-    source_kind = str(source.get("kind") or "")
-    if source_kind == "builtin":
-        skill_id = str(manifest.get("skill_id") or "")
-        legacy_declarations = (
-            _EXPLICIT_SKILL_BASH_IDENTITY
-            + _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS.get(skill_id, ())
-            if skill_id in _SERVER_BUILTIN_NON_BASH_TOOL_DECLARATIONS
-            else ()
-        )
-        return _builtin_execution_profile(_known_tool_identities(legacy_declarations))
-    return resolve_skill_execution_profile(
-        skill_id=str(manifest.get("skill_id") or ""),
-        source_kind=source_kind,
-        lifecycle_status="draft",
-    )
-
-
 def canonical_skill_execution_profile(manifest: dict[str, Any]) -> SkillExecutionProfile:
     """Validate and return the immutable server-derived execution profile."""
 
     raw = manifest.get("execution_profile")
-    if raw is None:
-        return legacy_skill_execution_profile(manifest)
     if not isinstance(raw, dict):
         raise SkillExecutionProfileError("run_skill_snapshot_execution_profile_mismatch")
     source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
@@ -182,20 +126,14 @@ def effective_skill_execution_profile(
     persisted = canonical_skill_execution_profile(manifest)
     source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
     source_kind = str(source.get("kind") or "")
-    skill_id = str(manifest.get("skill_id") or "")
     lifecycle_status = normalize_skill_version_status(
         str(manifest.get("lifecycle_status") or "")
-    )
-    trusted_builtin = (
-        source_kind == "builtin"
-        and skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID
-        and lifecycle_status in _TRUSTED_BUILTIN_STATUSES
     )
     trusted_uploaded = (
         source_kind == "uploaded"
         and lifecycle_status in _TRUSTED_UPLOADED_STATUSES
     )
-    if trusted_builtin or trusted_uploaded:
+    if trusted_uploaded:
         return {
             "strategy": SANDBOX_FULL_LOCAL,
             "trust_basis": persisted["trust_basis"],

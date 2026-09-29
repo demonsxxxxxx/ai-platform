@@ -16,7 +16,6 @@ from app.models import (
 )
 from app.platform.postgres import errors as platform_errors
 from app.skills.api import (
-    INTERNAL_DEPENDENCY_SKILL_IDS,
     AdminSkillListResponse,
     list_uploaded_skill_display_version_rows,
     lock_skill_for_version_upload,
@@ -74,10 +73,6 @@ def _require_skill_upload_admin(principal: AuthPrincipal) -> None:
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
 
-def _current_builtin_skill_version(skill_id: str) -> str | None:
-    return None
-
-
 def _safe_skill_id(skill_id: str) -> str:
     try:
         return assert_safe_id(skill_id, "skill_id")
@@ -124,21 +119,17 @@ def _require_rollback_target_skill_version(version: dict[str, object]) -> None:
     raise HTTPException(status_code=409, detail="skill_version_inactive")
 
 
-def _available_dependency_skill_ids(skill_id: str) -> set[str]:
-    return {skill_id, *INTERNAL_DEPENDENCY_SKILL_IDS}
-
-
 def _require_materializable_skill_version(skill_id: str, version: dict[str, object]) -> None:
     source = version.get("source")
     if not isinstance(source, dict):
         raise HTTPException(status_code=409, detail="skill_version_not_materializable")
     try:
         build_skill_version_manifest_pin(version)
+        dependency_pins = build_skill_version_dependency_manifest_pins(version)
         validate_skill_version_dependency_policy(
             version,
-            available_skill_ids=_available_dependency_skill_ids(skill_id),
+            available_skill_ids={pin["skill_id"] for pin in dependency_pins},
         )
-        build_skill_version_dependency_manifest_pins(version)
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
 
@@ -164,11 +155,11 @@ def _require_reusable_uploaded_skill_version(skill_id: str, version: dict[str, o
             skill_id=skill_id,
             content_hash=str(version.get("content_hash") or ""),
         )
+        dependency_pins = build_skill_version_dependency_manifest_pins(version)
         validate_skill_version_dependency_policy(
             version,
-            available_skill_ids=_available_dependency_skill_ids(skill_id),
+            available_skill_ids={pin["skill_id"] for pin in dependency_pins},
         )
-        build_skill_version_dependency_manifest_pins(version)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
     except SkillVersionMaterializationError as exc:

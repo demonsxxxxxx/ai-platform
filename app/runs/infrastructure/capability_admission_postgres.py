@@ -11,7 +11,6 @@ from app.capability_distribution import resolve_capability_access
 from app.identity.infrastructure.capability_distributions_postgres import _capability_not_authorized
 from app.identity.infrastructure.capability_distributions_postgres import get_capability_distribution_row
 from app.identity.infrastructure.capability_distributions_postgres import is_capability_distribution_archived
-from app.mcp import repository as _mcp_repository
 from app.mcp.repository import get_mcp_tool_registry_entry
 from app.platform.postgres.errors import RepositoryAuthorizationError
 from app.platform.postgres.errors import RepositoryConflictError
@@ -72,10 +71,7 @@ def run_mcp_tool_ids_for_skill(skill: dict[str, Any], normalized_input: dict[str
     """Return one canonical MCP authorization set for a Harness-backed Skill."""
 
     requested_tool_ids: list[str] = []
-    skill_id = str(skill.get("skill_id") or "").strip()
     backing_tool_id = str(skill.get("backing_mcp_tool_id") or "").strip()
-    if skill_id == _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID and not backing_tool_id:
-        raise _capability_not_authorized()
     if backing_tool_id:
         requested_tool_ids.append(backing_tool_id)
     for tool_id in extract_run_mcp_tool_ids(normalized_input):
@@ -435,11 +431,6 @@ def pinned_replay_mcp_tool_ids(
     ):
         raise _capability_not_authorized()
     pinned_mcp_tool_ids = list(dict.fromkeys(raw_mcp_tool_ids))
-    if (
-        skill_id == _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID
-        and _mcp_repository.TRUSTED_BUILTIN_MCP_TOOL_ID not in pinned_mcp_tool_ids
-    ):
-        raise _capability_not_authorized()
     return pinned_mcp_tool_ids
 
 

@@ -814,15 +814,17 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
     primary = primary_manifest("general-chat", "hash-general")
     catalog_profile = resolve_skill_execution_profile(
         skill_id="minimax-docx",
-        source_kind="builtin",
+        source_kind="uploaded",
         lifecycle_status="released",
     )
     catalog_manifest = primary_manifest("minimax-docx", "hash-minimax")
     catalog_manifest.update(
         {
+            "source": {"kind": "uploaded", "storage_key": "test-fixtures/minimax-docx/package.zip"},
             "lifecycle_status": "released",
             "execution_profile": catalog_profile,
             "builtin_tool_identities": catalog_profile["builtin_tool_identities"],
+            "snapshot_governance": snapshot_governance("hash-minimax", source_kind="uploaded"),
         }
     )
     payload = parse_queue_payload(
@@ -854,7 +856,7 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
 def test_worker_keeps_bash_available_without_required_completion():
     profile = resolve_skill_execution_profile(
         skill_id="qa-file-reviewer",
-        source_kind="builtin",
+        source_kind="uploaded",
         lifecycle_status="released",
     )
     payload = parse_queue_payload(
@@ -867,8 +869,15 @@ def test_worker_keeps_bash_available_without_required_completion():
             skill_manifests=[
                 {
                     **primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer"),
+                    "source": {
+                        "kind": "uploaded",
+                        "storage_key": "test-fixtures/qa-file-reviewer/package.zip",
+                    },
                     "execution_profile": profile,
                     "builtin_tool_identities": profile["builtin_tool_identities"],
+                    "snapshot_governance": snapshot_governance(
+                        "hash-qa-file-reviewer", source_kind="uploaded"
+                    ),
                 }
             ],
             context_snapshot={
@@ -933,44 +942,33 @@ def test_worker_keeps_bash_available_without_required_completion():
     assert missing.reason == "required_tool_not_declared"
 
 
-def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
+def test_worker_rejects_skill_snapshot_without_execution_profile():
     manifest = primary_manifest("native-review", "hash-native")
-    manifest["source"] = {"kind": "uploaded"}
-    manifest.pop("lifecycle_status")
     manifest.pop("execution_profile")
-    manifest["builtin_tool_identities"] = []
-    manifest["dependency_ids"] = ["minimax-docx"]
-    dependency = primary_manifest("minimax-docx", "hash-minimax")
-    dependency["builtin_tool_identities"] = ["Bash", "Write"]
     payload = parse_queue_payload(
         base_payload(
             _leased=False,
             skill_id="native-review",
             skill_version="hash-native",
-            skill_manifests=[manifest, dependency],
+            skill_manifests=[manifest],
         )
     )
 
-    subjects = worker_module._builtin_capability_subjects(
-        payload=payload,
-        run_identity={"skill_id": "native-review"},
-        skill={"skill_id": "native-review", "skill_status": "active"},
-        skill_decision=types.SimpleNamespace(usable=True),
-    )
-
-    assert [subject["identity"] for subject in subjects] == ["Skill"]
-    assert subjects[0]["execution_strategy"] == "sdk_restricted"
-    assert not container_provider._native_tool_required(
-        types.SimpleNamespace(tool_policy_subjects=subjects)
-    )
+    with pytest.raises(ValueError, match="run_skill_snapshot_execution_profile_mismatch"):
+        worker_module._builtin_capability_subjects(
+            payload=payload,
+            run_identity={"skill_id": "native-review"},
+            skill={"skill_id": "native-review", "skill_status": "active"},
+            skill_decision=types.SimpleNamespace(usable=True),
+        )
 
 
-def snapshot_governance(digest: str = "hash-a") -> dict:
+def snapshot_governance(digest: str = "hash-a", *, source_kind: str = "builtin") -> dict:
     return {
         "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
         "snapshot_source": "platform_release_lock",
         "release_lock": {"schema_version": RELEASE_DECISION_SCHEMA_VERSION, "mode": "manifest_pin"},
-        "manifest": {"source_kind": "builtin", "selected_file_count": 1},
+        "manifest": {"source_kind": source_kind, "selected_file_count": 1},
         "selected_files": [
             {
                 "relative_path": "SKILL.md",
@@ -8957,6 +8955,13 @@ async def test_worker_immutable_skill_snapshot_mismatch_blocks_before_stage_or_a
 async def test_worker_rejects_unlocked_builtin_identity_queue_projection_before_adapter(monkeypatch, projection):
     raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch)
     locked_manifest = state["locked_run"]["input_json"]["skill_manifests"][0]
+    locked_manifest["source"] = {"kind": "uploaded"}
+    locked_manifest["lifecycle_status"] = "released"
+    profile = resolve_skill_execution_profile(
+        skill_id=locked_manifest["skill_id"], source_kind="uploaded", lifecycle_status="released"
+    )
+    locked_manifest["execution_profile"] = profile
+    locked_manifest["builtin_tool_identities"] = profile["builtin_tool_identities"]
     expected_source = _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         locked_manifest,
         release_decision=state["locked_run"]["input_json"]["release_decision"],
@@ -9138,7 +9143,7 @@ async def test_worker_rejects_external_mcp_before_non_claude_executor_dispatch(m
 
 
 @pytest.mark.asyncio
-async def test_worker_rejects_ragflow_backing_mcp_before_adapter_dispatch(monkeypatch):
+async def test_worker_rejects_retired_bare_mcp_before_adapter_dispatch(monkeypatch):
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"mode": "file"},
@@ -9178,7 +9183,7 @@ async def test_worker_rejects_ragflow_backing_mcp_before_adapter_dispatch(monkey
     )
     assert denied_event["payload"]["capability_kind"] == "mcp_tool"
     assert denied_event["payload"]["capability_id"] == backing_tool_id
-    assert denied_event["payload"]["reason"] == "mcp_sandbox_executor_required"
+    assert denied_event["payload"]["reason"] == "mcp_runtime_metadata_invalid"
     assert "caller-forged-search" not in json.dumps(calls)
 
 

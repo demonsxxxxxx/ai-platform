@@ -44,19 +44,8 @@ def assert_mcp_tool_reference(value: str, field_name: str = "mcp_tool_id") -> st
 
 
 def mcp_runtime_metadata_usable(tool: dict[str, object]) -> bool:
-    """Accept the code-owned builtin or one lightweight Server-qualified reference."""
+    """Accept one lightweight Server-qualified reference."""
 
-    if (
-        str(tool.get("tool_id") or tool.get("id") or "")
-        == "ragflow-knowledge-search"
-        and str(tool.get("server_id") or "") == "ragflow"
-        and str(tool.get("transport_type") or "") == "http"
-        and str(tool.get("endpoint") or "") == ""
-        and str(tool.get("auth_mode") or "") == "platform-managed"
-        and tool.get("allowed_tools") == ["ragflow_search"]
-        and bool(tool.get("write_capable")) is False
-    ):
-        return True
     server_id = str(tool.get("server_id") or "")
     tool_id = str(tool.get("tool_id") or "")
     allowed_tools = tool.get("allowed_tools")

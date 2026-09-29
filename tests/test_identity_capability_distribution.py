@@ -3,7 +3,6 @@ import app.agent_apps.infrastructure.principal_catalog_postgres as _repo_owner_a
 import app.identity.infrastructure.capability_distributions_postgres as _repo_owner_app_identity_infrastructure_capability_distributions_postgres
 import app.platform.postgres.errors as _repo_owner_app_platform_postgres_errors
 import app.runs.infrastructure.capability_admission_postgres as _repo_owner_app_runs_infrastructure_capability_admission_postgres
-import app.skills.dependencies as _repo_owner_app_skills_dependencies
 import app.agent_apps.infrastructure.principal_catalog_postgres as principal_catalog_persistence
 import app.identity.infrastructure.capability_distributions_postgres as distribution_persistence
 import app.runs.infrastructure.capability_admission_postgres as capability_admission_persistence
@@ -222,9 +221,10 @@ async def test_capability_distribution_backfill_marks_completion_and_never_recre
     assert completion_update[1] == ("tenant-a",)
     assert rerun_check == initial_check
     assert "from tenant_workbench_skills" in skill_sql
-    assert "from skills" in skill_sql
-    assert skill_sql.count("skills.status = 'active'") == 2
+    assert "join skills" in skill_sql
+    assert skill_sql.count("skills.status = 'active'") == 1
     assert "on conflict (tenant_id, capability_kind, capability_id) do nothing" in skill_sql
+    assert "builtin_public_skill" not in skill_sql
     assert "do update" not in skill_sql
     assert "from mcp_servers" in mcp_sql
     assert "department_ids" in mcp_sql
@@ -241,13 +241,7 @@ async def test_capability_distribution_backfill_marks_completion_and_never_recre
     assert "do update" not in mcp_sql
     assert skill_sql.count("%s") == len(skill_params)
     assert mcp_sql.count("%s") == len(mcp_params)
-    assert skill_params == (
-        "tenant-a",
-        "tenant-a",
-        "tenant-a",
-        "tenant-a",
-        sorted(_repo_owner_app_skills_dependencies.PUBLIC_WORKBENCH_SKILL_IDS),
-    )
+    assert skill_params == ("tenant-a",)
     assert sum("from tenant_workbench_skills" in sql for sql, _ in conn.calls) == 1
     assert sum("from mcp_servers" in sql for sql, _ in conn.calls) == 1
 
@@ -1451,7 +1445,7 @@ async def test_harness_skill_authorization_derives_canonical_backing_tool_withou
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "denial",
-    ["backing_missing", "tool_missing", "hidden", "disabled", "department", "role", "parent_disabled"],
+    ["tool_missing", "hidden", "disabled", "department", "role", "parent_disabled"],
 )
 async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_current_parent_and_tool_state(
     monkeypatch,
@@ -1462,7 +1456,7 @@ async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_curre
             "skill_id": skill_id,
             "skill_status": "active",
             "executor_type": "claude-agent-worker",
-            "backing_mcp_tool_id": None if denial == "backing_missing" else "tenant-search",
+            "backing_mcp_tool_id": "tenant-search",
         }
 
     async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
@@ -1780,3 +1774,10 @@ async def test_capability_distribution_mcp_revocation_after_original_run_denies_
         ("tool", "revoked-tool"),
         ("mcp_server", "qa-mcp"),
     ]
+
+
+@pytest.mark.parametrize("skill_id", ["ragflow-knowledge-search", "uploaded-search"])
+def test_skill_name_does_not_require_implicit_mcp_binding(skill_id):
+    assert capability_admission_persistence.run_mcp_tool_ids_for_skill(
+        {"skill_id": skill_id}, {}
+    ) == []

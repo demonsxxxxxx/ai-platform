@@ -14,9 +14,9 @@ from collections.abc import Collection, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from app.control_plane_contracts import LEGACY_SYNTHETIC_CHAT_SKILL_ID
 from app.execution_boundary import ExecutionBoundaryDecision
 from app.skills.execution_profiles import (
-    LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     NATIVE_COMMAND_ISOLATION,
     OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,
     SANDBOX_FULL_LOCAL,
@@ -110,17 +110,10 @@ _AUTHORIZED_SUBJECT_EVIDENCE_SOURCE = "server_authorized_subject"
 _AUTHORIZED_SUBJECT_TRUST_BASIS = "server_derived_authorized_subject"
 SDK_HOOK_EVIDENCE_SOURCE = "claude_agent_sdk_hook"
 TOOL_CALL_TRUST_BASIS = "tool_call_bound_invocation"
-CONTROLLED_RUNNER_EVIDENCE_SOURCE = "controlled_skill_runner"
-PROCESS_BOUND_TRUST_BASIS = "process_bound_invocation"
 _EVIDENCE_TRUST_MATRIX = {
     "builtin": frozenset({("executor_private_payload", "attempt_bound_tool_invocation")}),
     "mcp": frozenset({(SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS)}),
-    "skill": frozenset(
-        {
-            (SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS),
-            (CONTROLLED_RUNNER_EVIDENCE_SOURCE, PROCESS_BOUND_TRUST_BASIS),
-        }
-    ),
+    "skill": frozenset({(SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS)}),
 }
 _AFFIRMATIVE_EXECUTION = re.compile(
     r"(?:请|帮我|麻烦|立即|现在|直接|please\s+)?"

@@ -13,7 +13,6 @@ from app.platform.postgres.errors import RepositoryConflictError
 from app.platform.postgres.errors import RepositoryNotFoundError
 from app.platform.postgres.values import dumps_json
 from app.platform.postgres.values import new_id
-from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS
 from psycopg import AsyncConnection
 from typing import Any
 import json
@@ -263,32 +262,13 @@ async def ensure_tenant_capability_distribution_backfill(
           join skills on skills.id = tenant_workbench_skills.skill_id
           where tenant_workbench_skills.tenant_id = %s
             and skills.status = 'active'
-          union all
-          select
-            'capdist_' || substr(md5(%s || ':skill:' || skills.id), 1, 24),
-            %s,
-            'skill',
-            skills.id,
-            'active',
-            true,
-            'allowlist',
-            array[]::text[],
-            '[]'::jsonb,
-            '{"legacy_source":"builtin_public_skill"}'::jsonb
-          from skills
-          left join tenant_workbench_skills
-            on tenant_workbench_skills.tenant_id = %s
-           and tenant_workbench_skills.skill_id = skills.id
-          where skills.id = any(%s)
-            and skills.status = 'active'
-            and tenant_workbench_skills.skill_id is null
         ) as source_rows(
           id, tenant_id, capability_kind, capability_id, status, visible_to_user,
           scope_mode, department_ids, allowed_roles, metadata_json
         )
         on conflict (tenant_id, capability_kind, capability_id) do nothing
         """,
-        (tenant_id, tenant_id, tenant_id, tenant_id, sorted(PUBLIC_WORKBENCH_SKILL_IDS)),
+        (tenant_id,),
     )
     await conn.execute(
         """

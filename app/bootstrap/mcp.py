@@ -7,7 +7,6 @@ from typing import Any
 
 from app.identity.infrastructure import capability_distributions_postgres as identity_capability_distributions_postgres
 from app.mcp.infrastructure import chat_access_postgres as mcp_chat_access_postgres
-from app.mcp import repository as mcp_repository
 
 from app.capability_distribution import (
     CapabilityDistributionSubject,
@@ -81,8 +80,6 @@ class _McpRuntimeServices:
         return mcp_runtime.open_mcp_server_credentials(**kwargs)
 
     async def _get_tool(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None:
-        if kwargs.get("tool_id") == mcp_postgres.TRUSTED_BUILTIN_MCP_TOOL_ID:
-            return await mcp_repository.get_mcp_tool_registry_entry(conn, **kwargs)
         return await mcp_postgres.get_mcp_tool_registry_entry(conn, **kwargs)
 
     async def _authorize_tools(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
