@@ -32,75 +32,75 @@ def write_skill(root, name, description):
 
 
 def test_build_skill_manifest_pins_keeps_primary_independent_from_available_internal_skills(tmp_path):
-    write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    write_skill(tmp_path, "example-skill", "Review Word documents.")
     write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
-    (tmp_path / "qa-file-reviewer" / "references").mkdir()
-    (tmp_path / "qa-file-reviewer" / "references" / "guide.md").write_text("review guide", encoding="utf-8")
+    (tmp_path / "example-skill" / "references").mkdir()
+    (tmp_path / "example-skill" / "references" / "guide.md").write_text("review guide", encoding="utf-8")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
 
     pins = build_skill_manifest_pins(
-        skill_id="qa-file-reviewer",
+        skill_id="example-skill",
         input_payload={},
         builtin_skills=skills,
     )
 
-    assert [item["skill_id"] for item in pins] == ["qa-file-reviewer"]
+    assert [item["skill_id"] for item in pins] == ["example-skill"]
     assert pins[0]["version"] == pins[0]["content_hash"]
     assert pins[0]["dependency_ids"] == []
-    assert pins[0]["source"]["asset_dir"] == "qa-file-reviewer"
+    assert pins[0]["source"]["asset_dir"] == "example-skill"
     assert [item["relative_path"] for item in pins[0]["files"]] == ["SKILL.md", "references/guide.md"]
     assert pins[0]["files"][0]["content_base64"]
     assert pins[0]["files"][0]["size_bytes"] == len(base64.b64decode(pins[0]["files"][0]["content_base64"]))
     assert pins[0]["allowed"] is True
     assert pins[0]["staged"] is False
     assert pins[0]["used"] is False
-    assert pins[0]["builtin_tool_identities"] == ["Bash", "Write"]
+    assert pins[0]["builtin_tool_identities"] == ["Bash"]
 
 
 def test_builtin_tool_identity_snapshot_comes_from_server_skill_declaration_not_input(tmp_path):
-    write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    write_skill(tmp_path, "example-skill", "Review Word documents.")
     write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
 
     pins = build_skill_manifest_pins(
-        skill_id="qa-file-reviewer",
+        skill_id="example-skill",
         input_payload={"builtin_tool_identities": ["WebFetch", "Agent"]},
         builtin_skills=skills,
     )
 
     assert len(pins) == 1
-    assert pins[0]["builtin_tool_identities"] == ["Bash", "Write"]
+    assert pins[0]["builtin_tool_identities"] == ["Bash"]
 
 
 def test_snapshot_source_locks_canonical_builtin_tool_identities(tmp_path):
-    write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    write_skill(tmp_path, "example-skill", "Review Word documents.")
     write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
     manifest = build_skill_manifest_pins(
-        skill_id="qa-file-reviewer",
+        skill_id="example-skill",
         input_payload={},
         builtin_skills=skills,
     )[0]
 
     expected = _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(manifest)
-    reordered = {**manifest, "builtin_tool_identities": ["Write", "Bash", "Write"]}
+    duplicated = {**manifest, "builtin_tool_identities": ["Bash", "Bash"]}
 
-    assert _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(reordered) == expected
+    assert _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(duplicated) == expected
     for forged_identity in ("Agent", "WebFetch"):
         with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
             _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
-                {**manifest, "builtin_tool_identities": ["Bash", "Write", forged_identity]}
+                {**manifest, "builtin_tool_identities": ["Bash", forged_identity]}
             )
 
 
 def test_build_skill_snapshot_governance_summarizes_files_without_package_bytes():
     pin = {
-        "skill_id": "qa-file-reviewer",
+        "skill_id": "example-skill",
         "version": "hash-primary",
         "content_hash": "hash-primary",
         "source": {
             "kind": "uploaded",
-            "storage_key": "tenants/default/skills/qa-file-reviewer/package.zip",
+            "storage_key": "tenants/default/skills/example-skill/package.zip",
         },
         "files": [
             {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5},
@@ -188,7 +188,7 @@ def test_skill_manifest_ref_binds_complete_package_without_file_content():
     manifest = attach_skill_snapshot_governance(
         [
             {
-                "skill_id": "qa-file-reviewer",
+                "skill_id": "example-skill",
                 "version": "hash-primary",
                 "content_hash": "hash-primary",
                 "source": {"kind": "uploaded", "storage_key": "private/package.zip"},
@@ -211,7 +211,7 @@ def test_skill_manifest_ref_binds_complete_package_without_file_content():
 
     assert ref == {
         "schema_version": "ai-platform.skill-materialization-ref.v1",
-        "skill_id": "qa-file-reviewer",
+        "skill_id": "example-skill",
         "version": "hash-primary",
         "content_hash": "hash-primary",
         "materialization_sha256": ref["materialization_sha256"],
@@ -234,7 +234,7 @@ def test_skill_manifest_ref_binds_complete_package_without_file_content():
 def test_skill_manifest_ref_transport_rejects_full_mixed_and_malformed_payloads():
     valid = {
         "schema_version": "ai-platform.skill-materialization-ref.v1",
-        "skill_id": "qa-file-reviewer",
+        "skill_id": "example-skill",
         "version": "hash-primary",
         "content_hash": "hash-primary",
         "materialization_sha256": "a" * 64,
@@ -242,7 +242,7 @@ def test_skill_manifest_ref_transport_rejects_full_mixed_and_malformed_payloads(
 
     assert validate_skill_manifest_refs([valid]) == [valid]
     for invalid in (
-        [{"skill_id": "qa-file-reviewer", "files": []}],
+        [{"skill_id": "example-skill", "files": []}],
         [valid, {"skill_id": "dependency", "files": []}],
         [{**valid, "unexpected": True}],
         [{**valid, "content_hash": "different"}],
@@ -258,7 +258,7 @@ def test_skill_manifest_ref_transport_rejects_full_mixed_and_malformed_payloads(
 
 def test_build_skill_snapshot_governance_rejects_invalid_or_escaped_file_entries():
     base_manifest = {
-        "skill_id": "qa-file-reviewer",
+        "skill_id": "example-skill",
         "version": "hash-primary",
         "content_hash": "hash-primary",
         "source": {"kind": "uploaded"},
@@ -300,22 +300,22 @@ def test_build_skill_manifest_pins_keeps_ragflow_skill_as_single_zero_dependency
 
 
 def test_build_skill_manifest_pins_keeps_explicit_peer_skills_independent(tmp_path):
-    write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    write_skill(tmp_path, "example-skill", "Review Word documents.")
     write_skill(tmp_path, "peer-skill", "Peer documents.")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
 
     pins = build_skill_manifest_pins(
-        skill_id="qa-file-reviewer",
+        skill_id="example-skill",
         input_payload={"skill_ids": ["peer-skill"]},
         builtin_skills=skills,
     )
 
-    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer", "peer-skill"]
+    assert [pin["skill_id"] for pin in pins] == ["example-skill", "peer-skill"]
     assert [pin["dependency_ids"] for pin in pins] == [[], []]
 
 
 def test_build_skill_manifest_pins_returns_empty_for_non_builtin_skill(tmp_path):
-    write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    write_skill(tmp_path, "example-skill", "Review Word documents.")
     skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
 
     assert build_skill_manifest_pins(
@@ -333,7 +333,7 @@ def test_build_uploaded_skill_manifest_pin_uses_source_snapshot_files():
 
     pin = build_uploaded_skill_manifest_pin(
         {
-            "skill_id": "qa-file-reviewer",
+            "skill_id": "example-skill",
             "version": "hash-uploaded",
             "content_hash": "hash-uploaded",
             "description": "Review Word documents.",
@@ -382,7 +382,7 @@ def test_build_uploaded_skill_manifest_pin_rejects_overlong_utf8_path_component(
     ):
         build_uploaded_skill_manifest_pin(
             {
-                "skill_id": "qa-file-reviewer",
+                "skill_id": "example-skill",
                 "version": "hash-uploaded",
                 "content_hash": "hash-uploaded",
                 "description": "Review Word documents.",
@@ -402,35 +402,35 @@ def test_build_skill_version_manifest_pin_uses_builtin_snapshot_files():
 
     pin = build_skill_version_manifest_pin(
         {
-            "skill_id": "qa-file-reviewer",
+            "skill_id": "example-skill",
             "version": "hash-builtin",
             "content_hash": "hash-builtin",
             "description": "Review Word documents.",
-            "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-builtin", "files": files},
+            "source": {"kind": "builtin", "asset_dir": "example-skill", "version": "hash-builtin", "files": files},
             "dependency_ids": [],
             "status": "released",
         }
     )
 
-    assert pin["source"] == {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-builtin"}
+    assert pin["source"] == {"kind": "builtin", "asset_dir": "example-skill", "version": "hash-builtin"}
     assert pin["files"] == files
     assert pin["lifecycle_status"] == "released"
     assert pin["execution_profile"] == {
         "schema_version": "ai-platform.skill-execution-profile.v1",
-        "strategy": "platform_controlled",
+        "strategy": "sdk_native",
         "trust_basis": "repository_builtin",
-        "builtin_tool_identities": ["Bash", "Write"],
+        "builtin_tool_identities": ["Bash"],
         "workspace_contract": "ai-platform.skill-workspace.v1",
-        "command_isolation": "minimal-environment-v1",
+        "command_isolation": "sibling-tool-sandbox-v1",
     }
-    assert pin["builtin_tool_identities"] == ["Bash", "Write"]
+    assert pin["builtin_tool_identities"] == ["Bash"]
 
 
 def test_snapshot_source_rejects_forged_uploaded_execution_profile():
     files = [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}]
     manifest = build_uploaded_skill_manifest_pin(
         {
-            "skill_id": "qa-file-reviewer",
+            "skill_id": "example-skill",
             "version": "hash-uploaded",
             "content_hash": "hash-uploaded",
             "description": "Review Word documents.",
@@ -444,7 +444,7 @@ def test_snapshot_source_rejects_forged_uploaded_execution_profile():
         **manifest,
         "execution_profile": {
             **manifest["execution_profile"],
-            "strategy": "platform_controlled",
+            "strategy": "sandbox_full_local",
             "trust_basis": "repository_builtin",
         },
     }
@@ -458,23 +458,23 @@ def test_build_skill_version_policy_manifest_pins_accepts_zero_dependency_builti
 
     pins = build_skill_version_policy_manifest_pins(
         {
-            "skill_id": "qa-file-reviewer",
+            "skill_id": "example-skill",
             "version": "hash-builtin",
             "content_hash": "hash-builtin",
             "description": "Review Word documents.",
             "source": {
                 "kind": "builtin",
-                "asset_dir": "qa-file-reviewer",
+                "asset_dir": "example-skill",
                 "version": "hash-builtin",
                 "files": files,
             },
             "dependency_ids": [],
             "status": "active",
         },
-        available_skill_ids={"qa-file-reviewer", "minimax-docx"},
+        available_skill_ids={"example-skill", "minimax-docx"},
     )
 
-    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer"]
+    assert [pin["skill_id"] for pin in pins] == ["example-skill"]
     assert pins[0]["dependency_ids"] == []
 
 
@@ -483,7 +483,7 @@ def test_build_skill_version_policy_manifest_pins_accepts_zero_dependency_upload
 
     pins = build_skill_version_policy_manifest_pins(
         {
-            "skill_id": "qa-file-reviewer",
+            "skill_id": "example-skill",
             "version": "hash-uploaded",
             "content_hash": "hash-uploaded",
             "description": "Review Word documents.",
@@ -495,10 +495,10 @@ def test_build_skill_version_policy_manifest_pins_accepts_zero_dependency_upload
             "dependency_ids": [],
             "status": "active",
         },
-        available_skill_ids={"qa-file-reviewer", "minimax-docx"},
+        available_skill_ids={"example-skill", "minimax-docx"},
     )
 
-    assert [pin["skill_id"] for pin in pins] == ["qa-file-reviewer"]
+    assert [pin["skill_id"] for pin in pins] == ["example-skill"]
     assert pins[0]["dependency_ids"] == []
 
 
@@ -507,7 +507,7 @@ def test_build_skill_version_dependency_manifest_pins_uses_versioned_dependency_
 
     pins = build_skill_version_dependency_manifest_pins(
         {
-            "skill_id": "qa-file-reviewer",
+            "skill_id": "example-skill",
             "version": "hash-primary",
             "content_hash": "hash-primary",
             "source": {
@@ -551,7 +551,7 @@ def test_build_skill_version_dependency_manifest_pins_rejects_missing_dependency
     with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
         build_skill_version_dependency_manifest_pins(
             {
-                "skill_id": "qa-file-reviewer",
+                "skill_id": "example-skill",
                 "version": "hash-primary",
                 "content_hash": "hash-primary",
                 "source": {
@@ -568,7 +568,7 @@ def test_build_uploaded_skill_manifest_pin_rejects_missing_files():
     with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
         build_uploaded_skill_manifest_pin(
             {
-                "skill_id": "qa-file-reviewer",
+                "skill_id": "example-skill",
                 "version": "hash-uploaded",
                 "content_hash": "hash-uploaded",
                 "description": "Review Word documents.",
@@ -583,7 +583,7 @@ def test_build_uploaded_skill_manifest_pin_rejects_inactive_version():
     with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
         build_uploaded_skill_manifest_pin(
             {
-                "skill_id": "qa-file-reviewer",
+                "skill_id": "example-skill",
                 "version": "hash-uploaded",
                 "content_hash": "hash-uploaded",
                 "description": "Review Word documents.",
@@ -601,7 +601,7 @@ def test_build_uploaded_skill_manifest_pin_rejects_inactive_version():
 def test_governed_locked_skill_version_requires_primary_pin_when_release_policy_exists():
     with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
         governed_locked_skill_version(
-            skill_id="qa-file-reviewer",
+            skill_id="example-skill",
             skill_manifests=[],
             fallback_version="hash-release",
             release_policy_version="hash-release",
@@ -611,10 +611,10 @@ def test_governed_locked_skill_version_requires_primary_pin_when_release_policy_
 def test_governed_locked_skill_version_rejects_primary_pin_that_differs_from_release_policy():
     with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
         governed_locked_skill_version(
-            skill_id="qa-file-reviewer",
+            skill_id="example-skill",
             skill_manifests=[
                 {
-                    "skill_id": "qa-file-reviewer",
+                    "skill_id": "example-skill",
                     "version": "current-hash",
                     "content_hash": "current-hash",
                 }
@@ -627,7 +627,7 @@ def test_governed_locked_skill_version_rejects_primary_pin_that_differs_from_rel
 def test_governed_locked_skill_version_requires_primary_pin_without_release_policy():
     with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
         governed_locked_skill_version(
-            skill_id="qa-file-reviewer",
+            skill_id="example-skill",
             skill_manifests=[],
             fallback_version="db-version",
         )
@@ -636,10 +636,10 @@ def test_governed_locked_skill_version_requires_primary_pin_without_release_poli
 def test_governed_locked_skill_version_keeps_legacy_pin_behavior_without_release_policy():
     assert (
         governed_locked_skill_version(
-            skill_id="qa-file-reviewer",
+            skill_id="example-skill",
             skill_manifests=[
                 {
-                    "skill_id": "qa-file-reviewer",
+                    "skill_id": "example-skill",
                     "version": "current-hash",
                     "content_hash": "current-hash",
                 }
@@ -658,7 +658,7 @@ def _symlink_or_skip(target, link):
 
 
 def test_builtin_skill_registry_rejects_symlinked_files(tmp_path):
-    skill_dir = write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    skill_dir = write_skill(tmp_path, "example-skill", "Review Word documents.")
     outside = tmp_path / "outside.md"
     outside.write_text("outside", encoding="utf-8")
     _symlink_or_skip(outside, skill_dir / "references-link.md")
@@ -668,7 +668,7 @@ def test_builtin_skill_registry_rejects_symlinked_files(tmp_path):
 
 
 def test_build_skill_manifest_pins_rejects_symlinked_files(tmp_path):
-    skill_dir = write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    skill_dir = write_skill(tmp_path, "example-skill", "Review Word documents.")
     dependency_dir = write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
     outside = tmp_path / "outside.md"
     outside.write_text("outside", encoding="utf-8")
@@ -676,15 +676,15 @@ def test_build_skill_manifest_pins_rejects_symlinked_files(tmp_path):
 
     with pytest.raises(ValueError, match="symlink"):
         build_skill_manifest_pins(
-            skill_id="qa-file-reviewer",
+            skill_id="example-skill",
             input_payload={},
             builtin_skills=[
                 BuiltinSkill(
-                    name="qa-file-reviewer",
+                    name="example-skill",
                     description="Review Word documents.",
                     path=skill_dir,
                     version="hash",
-                    source={"kind": "builtin", "asset_dir": "qa-file-reviewer"},
+                    source={"kind": "builtin", "asset_dir": "example-skill"},
                     entry={"kind": "filesystem", "path": str(skill_dir)},
                 ),
                 BuiltinSkill(
@@ -700,7 +700,7 @@ def test_build_skill_manifest_pins_rejects_symlinked_files(tmp_path):
 
 
 def test_build_skill_manifest_pins_rejects_oversized_file(monkeypatch, tmp_path):
-    skill_dir = write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    skill_dir = write_skill(tmp_path, "example-skill", "Review Word documents.")
     write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
     large = skill_dir / "large.bin"
     large.write_bytes(b"0123456789")
@@ -708,14 +708,14 @@ def test_build_skill_manifest_pins_rejects_oversized_file(monkeypatch, tmp_path)
 
     with pytest.raises(ValueError, match="file too large"):
         build_skill_manifest_pins(
-            skill_id="qa-file-reviewer",
+            skill_id="example-skill",
             input_payload={},
             builtin_skills=BuiltinSkillRegistry(tmp_path).list_builtin_skills(),
         )
 
 
 def test_build_skill_manifest_pins_rejects_oversized_total(monkeypatch, tmp_path):
-    skill_dir = write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    skill_dir = write_skill(tmp_path, "example-skill", "Review Word documents.")
     write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
     (skill_dir / "a.bin").write_bytes(b"12345")
     (skill_dir / "b.bin").write_bytes(b"67890")
@@ -724,7 +724,7 @@ def test_build_skill_manifest_pins_rejects_oversized_total(monkeypatch, tmp_path
 
     with pytest.raises(ValueError, match="snapshot too large"):
         build_skill_manifest_pins(
-            skill_id="qa-file-reviewer",
+            skill_id="example-skill",
             input_payload={},
             builtin_skills=BuiltinSkillRegistry(tmp_path).list_builtin_skills(),
         )

@@ -8,7 +8,7 @@ import json
 import types
 from types import SimpleNamespace
 from contextlib import asynccontextmanager
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -43,7 +43,6 @@ from app.executors.base import (
     RunExecutionOwner,
     RunPayload,
 )
-from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.mcp.infrastructure import postgres as mcp_postgres
@@ -54,11 +53,7 @@ from app.platform.sandbox.errors import (
     ExecutorHealthTimeoutError,
 )
 from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
-from app.required_tool_contract import (
-    RequiredCapabilityDeclaration,
-    RequiredCapabilityEvidence,
-    declaration_from_input,
-)
+from app.required_tool_contract import declaration_from_input
 from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
@@ -739,6 +734,11 @@ def release_decision(version: str) -> dict:
 
 
 def primary_manifest(skill_id: str, version: str) -> dict:
+    execution_profile = resolve_skill_execution_profile(
+        skill_id=skill_id,
+        source_kind="builtin",
+        lifecycle_status="released",
+    )
     return {
         "skill_id": skill_id,
         "version": version,
@@ -746,7 +746,9 @@ def primary_manifest(skill_id: str, version: str) -> dict:
         "source": {"kind": "builtin", "asset_dir": skill_id},
         "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
         "dependency_ids": [],
-        "builtin_tool_identities": ["Bash", "Write"] if skill_id == "qa-file-reviewer" else [],
+        "lifecycle_status": "released",
+        "execution_profile": execution_profile,
+        "builtin_tool_identities": execution_profile["builtin_tool_identities"],
         "mcp_tool_ids": [skill_id] if skill_id == "ragflow-knowledge-search" else [],
         "snapshot_governance": snapshot_governance(version),
         "allowed": True,
@@ -850,6 +852,11 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
 
 
 def test_worker_keeps_bash_available_without_required_completion():
+    profile = resolve_skill_execution_profile(
+        skill_id="qa-file-reviewer",
+        source_kind="builtin",
+        lifecycle_status="released",
+    )
     payload = parse_queue_payload(
         base_payload(
             _leased=False,
@@ -857,7 +864,13 @@ def test_worker_keeps_bash_available_without_required_completion():
             input={"message": "请执行 Bash 命令 pwd"},
             skill_id="qa-file-reviewer",
             skill_version="hash-qa-file-reviewer",
-            skill_manifests=[primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")],
+            skill_manifests=[
+                {
+                    **primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer"),
+                    "execution_profile": profile,
+                    "builtin_tool_identities": profile["builtin_tool_identities"],
+                }
+            ],
             context_snapshot={
                 "schema_version": "ai-platform.context-snapshot.v1",
                 "context_snapshot_id": "ctx-existing",
@@ -876,19 +889,16 @@ def test_worker_keeps_bash_available_without_required_completion():
         skill_decision=types.SimpleNamespace(usable=True),
     )
     by_identity = {subject["identity"]: subject for subject in subjects}
-    assert set(by_identity) == {"Bash", "Write", "Skill"}
-    assert by_identity["Bash"]["declared"] is True
-    assert by_identity["Bash"]["required_parameter_keys"] == ["command"]
+    assert set(by_identity) == {"Skill"}
+    assert by_identity["Skill"]["execution_strategy"] == "sandbox_full_local"
     sandbox_subjects = worker_module.with_boundary_sandbox_local_tool_subjects(
         subjects,
         decision=worker_module._worker_execution_boundary_decision(payload),
         sandbox_provider="opensandbox",
     )
-    assert {subject["identity"] for subject in sandbox_subjects} == {
-        "Bash",
-        "Write",
-        "Skill",
-    }
+    assert {"Bash", "Write", "Skill"}.issubset(
+        {subject["identity"] for subject in sandbox_subjects}
+    )
 
     authorization = worker_module.required_tool_authorization_for_run(
         payload=payload,
@@ -926,6 +936,8 @@ def test_worker_keeps_bash_available_without_required_completion():
 def test_worker_keeps_legacy_uploaded_skill_restricted_to_skill_loader():
     manifest = primary_manifest("native-review", "hash-native")
     manifest["source"] = {"kind": "uploaded"}
+    manifest.pop("lifecycle_status")
+    manifest.pop("execution_profile")
     manifest["builtin_tool_identities"] = []
     manifest["dependency_ids"] = ["minimax-docx"]
     dependency = primary_manifest("minimax-docx", "hash-minimax")
@@ -3372,13 +3384,13 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
 @pytest.mark.parametrize(
     ("case", "artifact_types", "required_artifact_types", "skill_id", "expected_status"),
     [
-        ("correct_type", ["result_docx"], [], "qa-file-reviewer", "succeeded"),
-        ("wrong_type_only", ["execution_log"], [], "qa-file-reviewer", "failed"),
-        ("mixed_types", ["execution_log", "result_docx"], [], "qa-file-reviewer", "succeeded"),
+        ("correct_type", ["result_docx"], ["result_docx"], "synthetic-artifact-skill", "succeeded"),
+        ("wrong_type_only", ["execution_log"], ["result_docx"], "synthetic-artifact-skill", "failed"),
+        ("mixed_types", ["execution_log", "result_docx"], ["result_docx"], "synthetic-artifact-skill", "succeeded"),
         ("non_required_non_claude", [], [], "general-chat", "succeeded"),
     ],
 )
-async def test_worker_enforces_declared_required_artifact_types(
+async def test_worker_enforces_executor_declared_required_artifact_types(
     monkeypatch,
     case,
     artifact_types,
@@ -3439,7 +3451,7 @@ async def test_worker_enforces_declared_required_artifact_types(
     outcome = await process_run_payload(
         base_payload(
             skill_id=skill_id,
-            agent_id="general-agent" if skill_id == "general-chat" else "qa-word-review",
+            agent_id="general-agent" if skill_id == "general-chat" else "synthetic-artifact-agent",
             file_ids=[] if skill_id == "general-chat" else ["file-a"],
         ),
         AdapterRegistry({"fake": ArtifactContractAdapter()}),
@@ -3450,7 +3462,7 @@ async def test_worker_enforces_declared_required_artifact_types(
         assert (
             "fail",
             "required_artifact_missing",
-            "The file-required Skill did not produce every required artifact type.",
+            "The executor did not produce every declared required artifact type.",
         ) in calls
         assert not any(call[0] == "complete" for call in calls)
     else:
@@ -3459,119 +3471,6 @@ async def test_worker_enforces_declared_required_artifact_types(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("case", "skill_id", "agent_id", "file_ids", "artifacts", "expected_status"),
-    [
-        ("document_without_artifact", "qa-file-reviewer", "qa-word-review", ["file-a"], [], "failed"),
-        (
-            "document_with_result_docx",
-            "qa-file-reviewer",
-            "qa-word-review",
-            ["file-a"],
-            [
-                ArtifactManifest(
-                    artifact_type="result_docx",
-                    label="Word 文件",
-                    content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
-                    size_bytes=1024,
-                )
-            ],
-            "succeeded",
-        ),
-        ("general_chat_without_artifact", "general-chat", "general-agent", [], [], "succeeded"),
-    ],
-)
-async def test_worker_enforces_capability_artifact_contract_without_executor_requirements(
-    monkeypatch,
-    case,
-    skill_id,
-    agent_id,
-    file_ids,
-    artifacts,
-    expected_status,
-):
-    calls = []
-    class ExecutorAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            # An executor cannot override the selected Skill's artifact
-            # contract by returning an empty requirements list.
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="test-adapter/1",
-                executor_type="test-executor",
-                executor_version="test",
-                capabilities={},
-                result={"message": "completed"},
-                artifacts=artifacts,
-                executor_payload={"required_artifact_types": []},
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
-        calls.append(("repository_terminal", error_code, error_message))
-        return RunTerminalizationProgress(
-            completed=True,
-            status="failed",
-            did_transition=True,
-        )
-
-    async def complete_run(conn, *, tenant_id, run_id, result_json):
-        calls.append(("complete", run_id))
-        return True
-
-    async def create_artifact(conn, **kwargs):
-        calls.append(("artifact", kwargs["artifact_type"]))
-
-    async def list_run_steps(conn, *, tenant_id, run_id):
-        return []
-
-    async def append_event(conn, **kwargs):
-        calls.append(("worker_event", kwargs["event_type"], kwargs["stage"]))
-        return "evt-a"
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
-    monkeypatch.setattr('app.runs.infrastructure.steps_postgres.list_run_steps', list_run_steps)
-    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-
-    outcome = await process_run_payload(
-        base_payload(
-            skill_id=skill_id,
-            agent_id=agent_id,
-            file_ids=file_ids,
-            input={
-                "message": "review",
-            },
-        ),
-        AdapterRegistry({"fake": ExecutorAdapter()}),
-    )
-
-    assert outcome.status == expected_status, case
-    if expected_status == "failed":
-        assert calls.count(
-            (
-                "repository_terminal",
-                "required_artifact_missing",
-                "The file-required Skill did not produce every required artifact type.",
-            )
-        ) == 1
-        assert not any(call[0] == "complete" for call in calls)
-        assert not any(call[1] == "run_failed" for call in calls if call[0] == "worker_event")
-    else:
-        assert ("complete", "run-a") in calls
-        assert {call[1] for call in calls if call[0] == "artifact"} == {
-            artifact.artifact_type for artifact in artifacts
-        }
-        assert not any(call[0] == "repository_terminal" for call in calls)
-
-
 @pytest.mark.asyncio
 async def test_worker_does_not_append_success_terminal_events_when_run_is_already_terminal(monkeypatch):
     calls = []
@@ -6905,315 +6804,6 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
 
 
 @pytest.mark.asyncio
-async def test_worker_persists_platform_controlled_runner_as_actually_used(monkeypatch):
-    snapshots = []
-
-    class ControlledRunnerSkillAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-                capability_kind="skill",
-                canonical_identity="qa-file-reviewer",
-            )
-            binding = {
-                field: getattr(payload, field)
-                for field in (
-                    "tenant_id",
-                    "workspace_id",
-                    "user_id",
-                    "session_id",
-                    "run_id",
-                    "attempt_id",
-                )
-            }
-            capability_evidence = [
-                asdict(
-                    RequiredCapabilityEvidence.from_controlled_runner(
-                        declaration=declaration,
-                        binding=binding,
-                        tool_call_id="controlled-skill-call",
-                        lifecycle_phase=phase,
-                    )
-                )
-                for phase in ("invocation_requested", "completed")
-            ]
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="test-adapter/1",
-                executor_type="claude-agent-worker",
-                executor_version="test-executor/1",
-                capabilities={"skills": True},
-                result={
-                    "message": "controlled runner completed",
-                    "allowed_skills": ["qa-file-reviewer", "minimax-docx"],
-                    "staged_skills": ["qa-file-reviewer", "minimax-docx"],
-                },
-                artifacts=[reviewed_docx_artifact()],
-                executor_payload={
-                    "used_skills": ["qa-file-reviewer", "unstaged-hostile-skill"],
-                    "used_skills_source": "platform_controlled_runner",
-                    "staged_skills": ["qa-file-reviewer", "minimax-docx"],
-                    "capability_evidence": capability_evidence,
-                    "skill_manifests": [
-                        {
-                            "skill_id": "qa-file-reviewer",
-                            "version": "hash-reviewer",
-                            "content_hash": "hash-reviewer",
-                            "source": {"kind": "builtin"},
-                            "dependency_ids": ["minimax-docx"],
-                            "allowed": True,
-                            "staged": True,
-                            "used": True,
-                        },
-                        {
-                            "skill_id": "minimax-docx",
-                            "version": "hash-docx",
-                            "content_hash": "hash-docx",
-                            "source": {"kind": "builtin"},
-                            "dependency_ids": [],
-                            "allowed": True,
-                            "staged": True,
-                            "used": False,
-                        },
-                    ],
-                },
-            )
-
-    controlled_adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr(
-        controlled_adapter,
-        "submit_run",
-        ControlledRunnerSkillAdapter().submit_run,
-    )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        return "evt-a"
-
-    async def complete_run(conn, **kwargs):
-        return True
-
-    async def upsert_run_skill_snapshot(conn, **kwargs):
-        snapshots.append(kwargs)
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-    monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
-
-    outcome = await process_run_payload(
-        base_payload(
-            agent_id="agt_support",
-            agent_profile={
-                "agent_id": "agt_support",
-                "revision": 7,
-                "content_hash": "a" * 64,
-                "instructions": "Use the fixed enterprise expert policy.",
-                "required_skill_id": "qa-file-reviewer",
-                "required_skill_version": "hash-reviewer",
-            },
-            skill_manifests=[
-                {
-                    **primary_manifest("qa-file-reviewer", "hash-reviewer"),
-                    "dependency_ids": ["minimax-docx"],
-                },
-                {
-                    **primary_manifest("minimax-docx", "hash-docx"),
-                    "builtin_tool_identities": ["Bash", "Write"],
-                },
-            ]
-        ),
-        AdapterRegistry({"fake": controlled_adapter}),
-    )
-
-    assert outcome.status == "succeeded"
-    assert snapshots[0]["skill_id"] == "qa-file-reviewer"
-    assert snapshots[0]["used"] is True
-    assert snapshots[0]["used_skills_source"] == "platform_controlled_runner"
-    assert snapshots[1]["skill_id"] == "minimax-docx"
-    assert snapshots[1]["used"] is False
-    assert snapshots[1]["used_skills_source"] == ""
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "source",
-    ["executor_native", "untrusted_claim", "platform_controlled_runner"],
-)
-async def test_optional_agent_skill_claim_cannot_bypass_required_artifact_contract(monkeypatch, source):
-    failures = []
-
-    class NonHookAgentAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            executor_payload = {}
-            if source == "platform_controlled_runner":
-                declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-                    capability_kind="skill",
-                    canonical_identity="qa-file-reviewer",
-                )
-                binding = {
-                    field: getattr(payload, field)
-                    for field in (
-                        "tenant_id",
-                        "workspace_id",
-                        "user_id",
-                        "session_id",
-                        "run_id",
-                        "attempt_id",
-                    )
-                }
-                binding["attempt_id"] = "stale-attempt"
-                executor_payload = {
-                    "staged_skills": ["qa-file-reviewer"],
-                    "used_skills": ["qa-file-reviewer"],
-                    "used_skills_source": source,
-                    "capability_evidence": [
-                        asdict(
-                            RequiredCapabilityEvidence.from_controlled_runner(
-                                declaration=declaration,
-                                binding=binding,
-                                tool_call_id="stale-controlled-call",
-                                lifecycle_phase=phase,
-                            )
-                        )
-                        for phase in ("invocation_requested", "completed")
-                    ],
-                }
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="test-adapter/1",
-                executor_type="claude-agent-worker",
-                executor_version="test-executor/1",
-                capabilities={"skills": True},
-                result={
-                    "message": "executor claimed success",
-                    "staged_skills": ["qa-file-reviewer"],
-                    "used_skills": ["qa-file-reviewer"],
-                    "used_skills_source": source,
-                },
-                executor_payload=executor_payload,
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        return "evt-a"
-
-    async def fail_run(conn, **kwargs):
-        failures.append(kwargs)
-        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-
-    selected_adapter = NonHookAgentAdapter()
-    if source == "platform_controlled_runner":
-        trusted_adapter = ClaudeAgentWorkerAdapter()
-        monkeypatch.setattr(
-            trusted_adapter,
-            "submit_run",
-            selected_adapter.submit_run,
-        )
-        selected_adapter = trusted_adapter
-
-    outcome = await process_run_payload(
-        base_payload(
-            agent_id="agt_support",
-            agent_profile={
-                "agent_id": "agt_support",
-                "revision": 7,
-                "content_hash": "a" * 64,
-                "instructions": "Use the fixed enterprise expert policy.",
-                "required_skill_id": "qa-file-reviewer",
-                "required_skill_version": "hash-qa-file-reviewer",
-            }
-        ),
-        AdapterRegistry({"fake": selected_adapter}),
-    )
-
-    assert outcome.status == "failed", outcome.error_message
-    assert outcome.error_code == "required_artifact_missing"
-    assert failures[0]["error_code"] == "required_artifact_missing"
-    assert "capability_state" not in failures[0]["result_json"]
-    serialized = str(failures[0]["result_json"])
-    assert "used_skills_source" not in serialized
-    assert source not in serialized
-
-
-@pytest.mark.asyncio
-async def test_optional_agent_skill_claim_does_not_complete_platform_terminal_contracts(monkeypatch):
-    failures = []
-    events = []
-
-    class ExactHookWithoutRequiredArtifactAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="test-adapter/1",
-                executor_type="claude-agent-worker",
-                executor_version="test-executor/1",
-                capabilities={"skills": True},
-                result={"message": "executor claimed success"},
-                executor_payload={
-                    "staged_skills": ["qa-file-reviewer"],
-                    "used_skills": ["qa-file-reviewer"],
-                    "used_skills_source": "executor_hook",
-                    "sdk_used": True,
-                },
-            )
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def append_event(conn, **kwargs):
-        events.append(kwargs["event_type"])
-        return "evt-a"
-
-    async def fail_run(conn, **kwargs):
-        failures.append(kwargs)
-        return RunTerminalizationProgress(
-            completed=True,
-            status="failed",
-            did_transition=True,
-        )
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-
-    outcome = await process_run_payload(
-        base_payload(
-            agent_id="agt_support",
-            agent_profile={
-                "agent_id": "agt_support",
-                "revision": 7,
-                "content_hash": "a" * 64,
-                "instructions": "Use the fixed enterprise expert policy.",
-                "required_skill_id": "qa-file-reviewer",
-                "required_skill_version": "hash-qa-file-reviewer",
-            }
-        ),
-        AdapterRegistry({"fake": ExactHookWithoutRequiredArtifactAdapter()}),
-    )
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "required_artifact_missing"
-    assert "capability_state" not in failures[0]["result_json"]
-    assert "capability_actually_invoked" not in events
-    assert "capability_completed" not in events
-    assert "artifact_ready" not in events
-
-
-@pytest.mark.asyncio
 async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     snapshots = []
     completed = {}
@@ -7228,15 +6818,15 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
                 capabilities={"skills": True},
                 result={
                     "message": "done",
-                    "allowed_skills": ["qa-file-reviewer"],
-                    "staged_skills": ["qa-file-reviewer"],
-                    "used_skills": ["qa-file-reviewer"],
+                    "allowed_skills": ["synthetic-hook-skill"],
+                    "staged_skills": ["synthetic-hook-skill"],
+                    "used_skills": ["synthetic-hook-skill"],
                     "used_skills_source": "untrusted_claim",
                     "skill_manifests": [
                         {
-                            "skill_id": "qa-file-reviewer",
-                            "version": "hash-a",
-                            "content_hash": "hash-a",
+                            "skill_id": "synthetic-hook-skill",
+                            "version": "hash-synthetic-hook-skill",
+                            "content_hash": "hash-synthetic-hook-skill",
                             "source": {"kind": "builtin"},
                             "dependency_ids": [],
                             "allowed": True,
@@ -7269,7 +6859,13 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": UntrustedSkillAdapter()}))
+    outcome = await process_run_payload(
+        base_payload(
+            skill_id="synthetic-hook-skill",
+            agent_id="synthetic-hook-agent",
+        ),
+        AdapterRegistry({"fake": UntrustedSkillAdapter()}),
+    )
 
     assert outcome.status == "succeeded"
     assert completed["result_json"]["used_skills"] == []
@@ -9354,7 +8950,7 @@ async def test_worker_immutable_skill_snapshot_mismatch_blocks_before_stage_or_a
     [
         None,
         ["Bash", "Write", "Agent"],
-        ["Bash"],
+        [],
     ],
 )
 @pytest.mark.asyncio

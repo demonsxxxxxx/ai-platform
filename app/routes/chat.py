@@ -1141,18 +1141,6 @@ def _normalize_request_selector(
 def _explicit_intent_payload(agent_id: str, skill_id: str | None) -> dict[str, object] | None:
     if not skill_id and agent_id == "general-agent":
         return None
-    if skill_id == "qa-file-reviewer" or agent_id in {"qa-word-review", "document-review"}:
-        return {
-            "status": "selected",
-            "intent": "document_review",
-            "confidence": 1.0,
-            "reason": "请求指定了文档审核能力",
-            "selected_capability": "document_review",
-            "agent_id": agent_id,
-            "skill_id": skill_id or "qa-file-reviewer",
-            "confirmed_by_user": True,
-            "suggestions": [],
-        }
     if skill_id == "ragflow-knowledge-search" or agent_id == "sop-assistant":
         return {
             "status": "selected",

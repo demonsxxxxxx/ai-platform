@@ -335,6 +335,14 @@ def allow_existing_run_route_tests_through_enqueue_authorization(monkeypatch):
     async def allow_persisted_run_reauthorization(*_args, **_kwargs):
         return None
 
+    async def allow_selected(conn, *, expected_version, rollout_key, **kwargs):
+        # These route tests exercise admission/queue outcomes with a selected
+        # uploaded Skill; optimistic version locking has its own contract tests.
+        return await _owner_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
+            conn, **kwargs
+        )
+
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_selected_run_capabilities', allow_selected)
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', allow, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_replay_run_capabilities', allow, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'update_run_auth_snapshot', update_auth_snapshot, raising=False)
@@ -4523,7 +4531,7 @@ def test_create_run_request_user_id_is_optional_legacy_field():
     request = CreateRunRequest(
         workspace_id="default",
         agent_id="qa-word-review",
-        capability_id="document_review",
+        selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
     )
 
     assert request.user_id is None
@@ -4533,13 +4541,23 @@ def test_resolve_run_selector_accepts_public_agent_ids_for_public_capabilities()
     agent_id, skill_id = resolve_run_selector(
         CreateRunRequest(
             workspace_id="default",
-            agent_id="document-review",
-            capability_id="document_review",
+            agent_id="knowledge-answer",
+            capability_id="knowledge_answer",
         ),
         principal=principal(),
     )
 
-    assert (agent_id, skill_id) == ("qa-word-review", "qa-file-reviewer")
+    assert (agent_id, skill_id) == ("sop-assistant", "ragflow-knowledge-search")
+
+
+def test_resolve_run_selector_rejects_retired_document_review_capability():
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_run_selector(
+            CreateRunRequest(workspace_id="default", agent_id="document-review", capability_id="document_review"),
+            principal(),
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "capability_required"
 
 
 @pytest.mark.asyncio
@@ -4616,7 +4634,7 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
             workspace_id="default",
             user_id="forged-user",
             agent_id="qa-word-review",
-            capability_id="document_review",
+            selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
         ),
         principal=principal(
             user_id="phaseb-smoke",
@@ -4768,7 +4786,7 @@ async def test_create_run_reconciles_enqueue_after_creation_commit(monkeypatch, 
                 CreateRunRequest(
                     workspace_id="default",
                     agent_id="qa-word-review",
-                    capability_id="document_review",
+                    selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
                 ),
                 http_request=request,
                 principal=principal(),
@@ -4779,7 +4797,7 @@ async def test_create_run_reconciles_enqueue_after_creation_commit(monkeypatch, 
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             ),
             http_request=request,
             principal=principal(),
@@ -4811,7 +4829,7 @@ async def test_create_run_reconciles_enqueue_after_creation_commit(monkeypatch, 
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             ),
             http_request=request,
             principal=principal(),
@@ -4979,7 +4997,7 @@ async def test_create_run_capability_distribution_denial_precedes_create_run(mon
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="document-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             ),
             principal=principal(department_id="finance", roles=["user"]),
         )
@@ -5022,7 +5040,7 @@ async def test_create_run_audits_capability_denial_after_source_transaction_roll
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="document-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             ),
             principal=principal(department_id="finance", roles=["user"]),
         )
@@ -5575,7 +5593,7 @@ async def test_create_run_maps_unreleased_skill_version_conflict_to_409(monkeypa
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             ),
             principal=principal(user_id="user-skill-status", tenant_id="default"),
         )
@@ -5653,7 +5671,7 @@ async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             ),
             principal=principal(
                 user_id="user-skill-status",
@@ -5683,7 +5701,7 @@ async def test_create_run_rejects_file_skill_without_files(monkeypatch):
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
                 file_ids=[],
             ),
             principal=principal(),
@@ -5760,7 +5778,7 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
             workspace_id="default",
             session_id="ses-existing",
             agent_id="qa-word-review",
-            capability_id="document_review",
+            selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
         ),
         principal=principal(),
     )
@@ -5896,7 +5914,7 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
         CreateRunRequest(
             workspace_id="default",
             agent_id="qa-word-review",
-            capability_id="document_review",
+            selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             input={"message": "审核"},
         ),
         principal=principal(),
@@ -5970,7 +5988,7 @@ async def test_create_run_uses_rollout_selected_previous_version(monkeypatch):
         CreateRunRequest(
             workspace_id="default",
             agent_id="qa-word-review",
-            capability_id="document_review",
+            selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             input={"message": "审核"},
         ),
         principal=principal(user_id="user-rollout"),
@@ -6041,7 +6059,7 @@ async def test_create_run_rejects_reviewed_rollout_previous_version(monkeypatch)
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
                 input={"message": "审核"},
             ),
             principal=principal(user_id="user-rollout"),
@@ -6077,7 +6095,7 @@ async def test_create_run_rejects_release_policy_version_that_differs_from_prima
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
                 input={"message": "审核"},
             ),
             principal=principal(),
@@ -6165,7 +6183,7 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
         CreateRunRequest(
             workspace_id="default",
             agent_id="qa-word-review",
-            capability_id="document_review",
+            selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             input={"message": "审核"},
         ),
         principal=principal(),
@@ -6265,7 +6283,7 @@ async def test_create_run_uses_builtin_snapshot_release_policy_manifest(monkeypa
         CreateRunRequest(
             workspace_id="default",
             agent_id="qa-word-review",
-            capability_id="document_review",
+            selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
             input={"message": "审核"},
         ),
         principal=principal(user_id="user-rollout-builtin"),
@@ -6338,7 +6356,7 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
                 input={"message": "审核"},
             ),
             principal=principal(),
@@ -6377,7 +6395,7 @@ async def test_create_run_rejects_unsafe_principal_user_id_before_persistence(mo
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
                 input={"message": "审核"},
             ),
             principal=principal(user_id="../alice@example.test"),
@@ -6417,7 +6435,7 @@ async def test_create_run_rejects_uploaded_release_policy_without_snapshot_files
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
                 input={"message": "审核"},
             ),
             principal=principal(),
@@ -6452,7 +6470,7 @@ async def test_create_run_maps_skill_snapshot_materialization_error_to_conflict(
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
                 input={"message": "审核"},
             ),
             principal=principal(),
@@ -6497,7 +6515,7 @@ async def test_create_run_rejects_invalid_snapshot_governance_manifest_as_materi
             CreateRunRequest(
                 workspace_id="default",
                 agent_id="qa-word-review",
-                capability_id="document_review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"},
                 input={"message": "审核"},
             ),
             principal=principal(),

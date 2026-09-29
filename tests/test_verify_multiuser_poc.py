@@ -748,7 +748,7 @@ def test_foundation_runtime_fixture_agents_use_isolated_ids_and_workspaces():
     assert len(specs) == 12
     assert all(spec.workspace_id.startswith("frc_test_") for spec in specs)
     assert all(spec.agent_id.startswith("frc_agent_") for spec in specs)
-    assert {spec.skill_id for spec in specs} == {"general-chat", "qa-file-reviewer"}
+    assert {spec.skill_id for spec in specs} == {"general-chat"}
     assert {
         module.fixture_agent_id_for_skill(spec.account, spec.skill_id)
         for spec in specs

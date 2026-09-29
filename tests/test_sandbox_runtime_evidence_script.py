@@ -3959,7 +3959,7 @@ class SandboxRuntimeCleanupError(RuntimeError):
     pass
 
 
-def inspection_args(generator, tmp_path, *, profile="platform-controlled", evidence_name="inspection.json"):
+def inspection_args(generator, tmp_path, *, profile="sdk-native", evidence_name="inspection.json"):
     return generator.build_parser().parse_args(
         [
             "--inspection-profile",
@@ -3995,19 +3995,14 @@ def passing_inspection_payload(*, workspace, profile, provider=None, lease=None)
 
     del provider, lease
 
-    authorized_skill = "qa-file-reviewer" if profile == "platform-controlled" else "minimax-docx"
+    authorized_skill = "minimax-docx"
     staged_skill = Path(workspace.workspace_host_path) / ".claude" / "skills" / authorized_skill
     fingerprint = skill_content_hash(staged_skill)
-    native = profile == "sdk-native"
     return {
         "mountinfo": [
             {"mount_point": "/workspace", "mode": "rw"},
             {"mount_point": "/workspace/.claude", "mode": "ro"},
-            *(
-                [{"mount_point": "/workspace/.ai-platform", "mode": "rw"}]
-                if native
-                else []
-            ),
+            {"mount_point": "/workspace/.ai-platform", "mode": "rw"},
         ],
         "mounts": {
             "workspace_rw": True,
@@ -4024,20 +4019,20 @@ def passing_inspection_payload(*, workspace, profile, provider=None, lease=None)
         "writes": {"outputs": True, "delivery": True},
         "provider_children": {
             "primary_count": 1,
-            "native_sidecar_count": 1 if native else 0,
+            "native_sidecar_count": 1,
         },
         "sidecar": {
-            "expected": native,
-            "present": native,
-            "absent": not native,
-            "primary_native_credentials_absent": not native,
-            "token_paired": native,
-            "socket_paired": native,
-            "admission_paired": native,
-            "authenticated_health_probe": native,
-            "primary_socket_present": native,
-            "primary_socket_absent": not native,
-            "primary_authenticated_health": native,
+            "expected": True,
+            "present": True,
+            "absent": False,
+            "primary_native_credentials_absent": False,
+            "token_paired": True,
+            "socket_paired": True,
+            "admission_paired": True,
+            "authenticated_health_probe": True,
+            "primary_socket_present": True,
+            "primary_socket_absent": False,
+            "primary_authenticated_health": True,
         },
     }
 
@@ -4139,81 +4134,61 @@ def fake_inspection_runtime_factory(*, mode="success", captured_requests=None):
     return factory
 
 
-def test_skill_mount_inspection_supports_exact_profiles_and_fixed_catalog(tmp_path, capsys):
+def test_skill_mount_inspection_uses_sdk_native_profile_and_fixed_catalog(tmp_path, capsys):
     generator = load_generator()
     captured_requests = []
 
-    for profile in ("platform-controlled", "sdk-native"):
-        args = inspection_args(generator, tmp_path, profile=profile, evidence_name=f"{profile}.json")
+    args = inspection_args(generator, tmp_path, evidence_name="sdk-native.json")
+    exit_code = run_inspection(
+        generator,
+        args,
+        _runtime_factory=fake_inspection_runtime_factory(captured_requests=captured_requests),
+        _inspection_callback=passing_inspection_payload,
+    )
 
-        exit_code = run_inspection(
-            generator,
-            args,
-            _runtime_factory=fake_inspection_runtime_factory(captured_requests=captured_requests),
-            _inspection_callback=passing_inspection_payload,
-        )
-
-        evidence_path = Path(args.evidence_file)
-        raw = evidence_path.read_text(encoding="utf-8")
-        evidence = json.loads(raw)
-        assert exit_code == 0
-        assert evidence["schema_version"] == "ai-platform.sandbox-skill-mount-inspection.v2"
-        assert evidence["stage"] == "completed"
-        assert evidence["profile"] == {
-            "selected": profile,
-            "catalog": "implicit",
-            "primary_skill": {
-                "platform-controlled": "qa-file-reviewer",
-                "sdk-native": "minimax-docx",
-            }[profile],
-            "authorized_implicit_skill": (
-                "qa-file-reviewer" if profile == "platform-controlled" else "minimax-docx"
-            ),
-            "primary_execution_strategy": (
-                "sandbox_full_local"
-                if profile == "sdk-native"
-                else "platform_controlled"
-            ),
-            "authorized_skill_count": 1,
-            "native_sidecar_expected": profile == "sdk-native",
-            "authorization_basis": "deterministic_verifier_fixture",
-            "production_authorization_proven": False,
-        }
-        assert evidence["counts"] == {
-            "mount_entries": 3 if profile == "sdk-native" else 2,
-            "attacks_attempted": 6,
-            "attacks_blocked": 6,
-        }
-        assert set(evidence["attack_errno_categories"].values()) == {"erofs"}
-        assert evidence["hashes"]["staged_skill"] == evidence["hashes"]["skill_before"]
-        assert evidence["hashes"]["skill_before"] == evidence["hashes"]["skill_after"]
-        assert all(evidence["checks"].values())
-        assert evidence["cleanup"] == {
-            "attempted": True,
-            "provider_stop_confirmed": True,
-            "lease_release_observed": True,
-            "post_cleanup_query_succeeded": True,
-            "post_cleanup_primary_count": 0,
-            "post_cleanup_native_sidecar_count": 0,
-            "result": "confirmed",
-        }
-        assert evidence["provider_child_creation"]["primary_count"] == 1
-        assert evidence["provider_child_creation"]["native_sidecar_count"] == (1 if profile == "sdk-native" else 0)
-        assert "never-record-this-secret" not in raw
-        assert str(tmp_path) not in raw
-        assert "exec-inspection-run-a" not in raw
-        assert not list(evidence_path.parent.glob(f".{evidence_path.name}.*.tmp"))
-
-    platform_request, native_request = captured_requests
-    assert platform_request.skill_ids == ["qa-file-reviewer"]
-    assert platform_request.mcp_tool_ids == []
-    platform_by_identity = {
-        subject["identity"]: subject for subject in platform_request.tool_policy_subjects
+    evidence_path = Path(args.evidence_file)
+    raw = evidence_path.read_text(encoding="utf-8")
+    evidence = json.loads(raw)
+    assert exit_code == 0
+    assert evidence["schema_version"] == "ai-platform.sandbox-skill-mount-inspection.v2"
+    assert evidence["stage"] == "completed"
+    assert evidence["profile"] == {
+        "selected": "sdk-native",
+        "catalog": "implicit",
+        "primary_skill": "minimax-docx",
+        "authorized_implicit_skill": "minimax-docx",
+        "primary_execution_strategy": "sandbox_full_local",
+        "authorized_skill_count": 1,
+        "native_sidecar_expected": True,
+        "authorization_basis": "deterministic_verifier_fixture",
+        "production_authorization_proven": False,
     }
-    assert set(platform_by_identity) == {"Skill", "Bash", "Write"}
-    assert platform_by_identity["Skill"]["allowed_skill_names"] == ["qa-file-reviewer"]
-    assert platform_by_identity["Bash"]["execution_strategy"] == "platform_controlled"
-    assert platform_by_identity["Bash"]["command_isolation"] == "minimal-environment-v1"
+    assert evidence["counts"] == {
+        "mount_entries": 3,
+        "attacks_attempted": 6,
+        "attacks_blocked": 6,
+    }
+    assert set(evidence["attack_errno_categories"].values()) == {"erofs"}
+    assert evidence["hashes"]["staged_skill"] == evidence["hashes"]["skill_before"]
+    assert evidence["hashes"]["skill_before"] == evidence["hashes"]["skill_after"]
+    assert all(evidence["checks"].values())
+    assert evidence["cleanup"] == {
+        "attempted": True,
+        "provider_stop_confirmed": True,
+        "lease_release_observed": True,
+        "post_cleanup_query_succeeded": True,
+        "post_cleanup_primary_count": 0,
+        "post_cleanup_native_sidecar_count": 0,
+        "result": "confirmed",
+    }
+    assert evidence["provider_child_creation"]["primary_count"] == 1
+    assert evidence["provider_child_creation"]["native_sidecar_count"] == 1
+    assert "never-record-this-secret" not in raw
+    assert str(tmp_path) not in raw
+    assert "exec-inspection-run-a" not in raw
+    assert not list(evidence_path.parent.glob(f".{evidence_path.name}.*.tmp"))
+
+    native_request = captured_requests[0]
     assert native_request.skill_ids == ["minimax-docx"]
     native_by_identity = {subject["identity"]: subject for subject in native_request.tool_policy_subjects}
     assert set(native_by_identity) == {
@@ -4348,7 +4323,7 @@ def test_skill_mount_inspection_records_cleanup_failure(tmp_path):
         "lease_release_observed": False,
         "post_cleanup_query_succeeded": True,
         "post_cleanup_primary_count": 1,
-        "post_cleanup_native_sidecar_count": 0,
+        "post_cleanup_native_sidecar_count": 1,
         "result": "owned_children_remain",
     }
 
@@ -4387,13 +4362,9 @@ def test_skill_mount_inspection_invalid_image_and_provider_fail_closed(tmp_path)
 def test_authoritative_inspection_catalog_cannot_be_replaced_with_forged_subjects(monkeypatch):
     generator = load_generator()
 
-    platform = generator._authoritative_inspection_catalog("platform-controlled")
     native = generator._authoritative_inspection_catalog("sdk-native")
-    assert platform["authorized_skill_names"] == ["qa-file-reviewer"]
     assert native["authorized_skill_names"] == ["minimax-docx"]
-    assert platform["authorized_manifest"]["execution_profile"]["command_isolation"] == "minimal-environment-v1"
     assert native["authorized_manifest"]["execution_profile"]["command_isolation"] == "sibling-tool-sandbox-v1"
-    assert platform["authorization_basis"] == "deterministic_verifier_fixture"
 
     monkeypatch.setattr(
         "app.worker._builtin_capability_subjects",
@@ -4538,6 +4509,7 @@ def test_inspection_rejects_unexpected_mount_delivery_cleanup_and_non_erofs_deni
         "mountinfo": [
             {"mount_point": "/workspace", "mode": "rw"},
             {"mount_point": "/workspace/.claude", "mode": "ro"},
+            {"mount_point": "/workspace/.ai-platform", "mode": "rw"},
         ],
         "mounts": {
             "workspace_rw": True,
@@ -4552,18 +4524,21 @@ def test_inspection_rejects_unexpected_mount_delivery_cleanup_and_non_erofs_deni
         "delivery_link_cleanup_succeeded": True,
         "hashes": {"skill_before": "a" * 64, "skill_after": "a" * 64},
         "writes": {"outputs": True, "delivery": True},
-        "provider_children": {"primary_count": 1, "native_sidecar_count": 0},
+        "provider_children": {"primary_count": 1, "native_sidecar_count": 1},
         "sidecar": {
-            "absent": True,
-            "primary_native_credentials_absent": True,
-            "primary_socket_absent": True,
+            "present": True,
+            "token_paired": True,
+            "socket_paired": True,
+            "admission_paired": True,
+            "authenticated_health_probe": True,
+            "primary_socket_present": True,
+            "primary_authenticated_health": True,
         },
     }
     passed = generator._inspection_result_projection(
         payload,
-        profile="platform-controlled",
         staged_hash="a" * 64,
-        native_tool_required=False,
+        native_tool_required=True,
     )
     assert passed["passed"] is True
 
@@ -4571,9 +4546,8 @@ def test_inspection_rejects_unexpected_mount_delivery_cleanup_and_non_erofs_deni
         payload["attacks"]["direct_write"] = {"blocked": True, "errno_category": category}
         rejected = generator._inspection_result_projection(
             payload,
-            profile="platform-controlled",
             staged_hash="a" * 64,
-            native_tool_required=False,
+            native_tool_required=True,
         )
         assert rejected["checks"]["attack_direct_write_kernel_blocked"] is False
         assert rejected["attack_errno_categories"]["direct_write"] == category
@@ -4581,18 +4555,16 @@ def test_inspection_rejects_unexpected_mount_delivery_cleanup_and_non_erofs_deni
     payload["mountinfo"].append({"mount_point": "/workspace/unexpected", "mode": "rw"})
     unexpected = generator._inspection_result_projection(
         payload,
-        profile="platform-controlled",
         staged_hash="a" * 64,
-        native_tool_required=False,
+        native_tool_required=True,
     )
     assert unexpected["checks"]["workspace_mount_topology_exact"] is False
     payload["mountinfo"].pop()
     payload["delivery_link_cleanup_succeeded"] = False
     unlink_failed = generator._inspection_result_projection(
         payload,
-        profile="platform-controlled",
         staged_hash="a" * 64,
-        native_tool_required=False,
+        native_tool_required=True,
     )
     assert unlink_failed["checks"]["delivery_link_cleanup_succeeded"] is False
 
@@ -4600,8 +4572,8 @@ def test_inspection_rejects_unexpected_mount_delivery_cleanup_and_non_erofs_deni
 @pytest.mark.parametrize(
     ("mode", "profile", "query_succeeded", "primary_count", "native_count", "release_observed"),
     [
-        ("enumeration_failure", "platform-controlled", False, None, None, True),
-        ("release_before_cleanup", "platform-controlled", True, 1, 0, True),
+        ("enumeration_failure", "sdk-native", False, None, None, True),
+        ("release_before_cleanup", "sdk-native", True, 1, 1, True),
         ("orphan_sidecar", "sdk-native", True, 0, 1, True),
     ],
 )
@@ -4675,7 +4647,7 @@ def test_generator_entrypoint_writes_bootstrap_evidence_for_dependency_import_fa
     exit_code = generator._entrypoint(
         [
             "--inspection-profile",
-            "platform-controlled",
+            "sdk-native",
             "--workspace-root",
             str(tmp_path / "workspaces"),
             "--sandbox-executor-image",
@@ -4780,8 +4752,8 @@ def test_live_skill_mount_inspector_proves_mount_only_and_native_pairing_without
                 {"exit_code": 0 if self.health_succeeds else 1, "output": b""},
             )()
 
-    for profile in ("platform-controlled", "sdk-native"):
-        native = profile == "sdk-native"
+    for profile in ("sdk-native",):
+        native = True
         base_payload["mountinfo"] = [
             {"mount_point": "/workspace", "mode": "rw"},
             {"mount_point": "/workspace/.claude", "mode": "ro"},
@@ -4897,9 +4869,4 @@ def test_live_skill_mount_inspector_proves_mount_only_and_native_pairing_without
             )
             assert failed_health["sidecar"]["primary_authenticated_health"] is False
             primary.health_succeeds = True
-        else:
-            assert result["sidecar"]["absent"] is True
-            assert result["sidecar"]["primary_native_credentials_absent"] is True
-            assert result["sidecar"]["primary_socket_absent"] is True
-        if token:
-            assert token not in json.dumps(result)
+        assert token not in json.dumps(result)

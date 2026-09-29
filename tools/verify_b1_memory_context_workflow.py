@@ -665,8 +665,8 @@ def build_b1_memory_context_workflow_contract_fixture(
     image: str = "",
     tenant_id: str = "default",
     workspace_id: str = "default",
-    agent_id: str = "document-review",
-    capability_id: str = "document_review",
+    agent_id: str = "general-agent",
+    capability_id: str = "general_chat",
 ) -> dict[str, Any]:
     """Build a local source-contract fixture without contacting a live API."""
     snapshot_summary = _public_context_summary(
@@ -913,8 +913,8 @@ def build_b1_memory_context_workflow_smoke(
     tenant_id: str = "default",
     other_tenant_id: str = "",
     workspace_id: str = "default",
-    agent_id: str = "document-review",
-    capability_id: str = "document_review",
+    agent_id: str = "general-agent",
+    capability_id: str = "general_chat",
     user_id: str = "b1-memory-smoke-user",
     cross_user_id: str = "b1-memory-smoke-cross-user",
     operator_user_id: str = "b1-memory-smoke-operator",
@@ -1571,8 +1571,8 @@ def main() -> int:
     parser.add_argument("--tenant-id", default="default")
     parser.add_argument("--other-tenant-id", default="")
     parser.add_argument("--workspace-id", default="default")
-    parser.add_argument("--agent-id", default="document-review")
-    parser.add_argument("--capability-id", default="document_review")
+    parser.add_argument("--agent-id", default="general-agent")
+    parser.add_argument("--capability-id", default="general_chat")
     parser.add_argument("--user-id", default="b1-memory-smoke-user")
     parser.add_argument("--cross-user-id", default="b1-memory-smoke-cross-user")
     parser.add_argument("--operator-user-id", default="b1-memory-smoke-operator")

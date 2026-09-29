@@ -5,7 +5,6 @@ from app.validation import assert_safe_id
 INVALID_DEPENDENCY_ID = "[invalid-skill-id]"
 
 PUBLIC_WORKBENCH_SKILL_IDS = {
-    "qa-file-reviewer",
     "ragflow-knowledge-search",
     "ctd-32s73-stability-template-fill",
 }

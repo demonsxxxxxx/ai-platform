@@ -33,7 +33,6 @@ from app.executors.claude_agent_worker import (
     PreparedSdkRun,
     _allowed_skill_names,
     _ordinary_run_requires_sandbox,
-    _required_artifact_types,
 )
 from app.executors.registry import AdapterRegistry
 from app.file_parser_contracts import (
@@ -47,6 +46,7 @@ from app.required_tool_contract import (
     RequiredCapabilityEvidence,
     ToolInvocationEvidence,
     parse_required_tool_declaration,
+    with_boundary_sandbox_local_tool_subjects,
     with_sandbox_local_tool_capability_subjects,
 )
 from app.runtime.kernel_contracts import AgentEvent
@@ -270,8 +270,24 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "JWT-Authorization": "Bearer runtime-jwt",
         },
     }
-    subjects_by_identity = {subject["identity"]: subject for subject in builtin_subjects}
-    subjects = [subjects_by_identity[identity] for identity in ("Bash", "Write", "Skill")] + [external_subject]
+    boundary_payload = types.SimpleNamespace(
+        executor_type="claude-agent-worker",
+        input={},
+        context_snapshot={"execution_tier": "sdk_only_writing"},
+    )
+    boundary_subjects = with_boundary_sandbox_local_tool_subjects(
+        builtin_subjects,
+        decision=worker_module._worker_execution_boundary_decision(boundary_payload),
+        sandbox_provider="opensandbox",
+        authorized_sandbox_tool_identities=("Bash", "Write"),
+    )
+    boundary_subjects_by_identity = {
+        subject["identity"]: subject for subject in boundary_subjects
+    }
+    subjects = [
+        boundary_subjects_by_identity[identity]
+        for identity in ("Bash", "Write", "Skill")
+    ] + [external_subject]
 
     async def acknowledge_tool_lifecycle(fact):
         lifecycle_facts.append((fact["invocation_id"], fact["lifecycle"]))
@@ -354,11 +370,11 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     )
     denied = await hook(
         {
-            "tool_name": "Bash",
-            "tool_input": {"command": "echo safe", "cwd": "other"},
-            "tool_use_id": "bash-call-2",
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "https://example.test"},
+            "tool_use_id": "web-call-2",
         },
-        "bash-call-2",
+        "web-call-2",
     )
     assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -598,33 +614,6 @@ def _selected_capability_evidence(request):
                 ).__dict__
             )
     return evidence
-
-
-def _controlled_skill_capability_evidence(request, skill_id):
-    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-        capability_kind="skill",
-        canonical_identity=skill_id,
-    )
-    binding = {
-        key: getattr(request, key)
-        for key in (
-            "tenant_id",
-            "workspace_id",
-            "user_id",
-            "session_id",
-            "run_id",
-            "attempt_id",
-        )
-    }
-    return [
-        RequiredCapabilityEvidence.from_controlled_runner(
-            declaration=declaration,
-            binding=binding,
-            tool_call_id="controlled-skill-call",
-            lifecycle_phase=phase,
-        ).__dict__
-        for phase in ("invocation_requested", "completed")
-    ]
 
 
 def _payload_skill_evidence(current_payload):
@@ -1146,8 +1135,7 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
         )
 
 
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
-def test_collect_workspace_artifacts_validates_required_docx(monkeypatch, tmp_path, skill_id):
+def test_collect_workspace_artifacts_validates_docx_before_upload(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
@@ -1166,7 +1154,7 @@ def test_collect_workspace_artifacts_validates_required_docx(monkeypatch, tmp_pa
     monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
 
     artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-        payload(skill_id=skill_id),
+        payload(skill_id="synthetic-document-skill", agent_id="synthetic-document-agent"),
         workspace,
         response_files=["output/document.docx"],
     )
@@ -1176,12 +1164,7 @@ def test_collect_workspace_artifacts_validates_required_docx(monkeypatch, tmp_pa
     assert stored[0][1] == content
 
 
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
-def test_collect_workspace_artifacts_rejects_fake_required_docx_before_upload(
-    monkeypatch,
-    tmp_path,
-    skill_id,
-):
+def test_collect_workspace_artifacts_rejects_invalid_docx_before_upload(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
@@ -1193,7 +1176,7 @@ def test_collect_workspace_artifacts_rejects_fake_required_docx_before_upload(
 
     with pytest.raises(ValueError, match="response DOCX file is invalid"):
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id=skill_id),
+            payload(skill_id="synthetic-document-skill", agent_id="synthetic-document-agent"),
             workspace,
             response_files=["output/document.docx"],
         )
@@ -1718,10 +1701,10 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
 
     result = await adapter.submit_run(
         sandbox_writing_payload(
-            skill_id="qa-file-reviewer",
-            agent_id="qa-word-review",
+            skill_id="synthetic-agent-skill",
+            agent_id="synthetic-agent",
             skill_manifests=[
-                _test_skill_manifest("qa-file-reviewer", dependency_ids=["legacy-helper"]),
+                _test_skill_manifest("synthetic-agent-skill", dependency_ids=["legacy-helper"]),
                 _test_skill_manifest("legacy-helper"),
             ],
         )
@@ -1729,11 +1712,10 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
 
     assert current_policy_helper.is_dir()
     assert result.status == "succeeded"
-    assert runtime_requests[0].skill_ids == ["qa-file-reviewer", "legacy-helper"]
+    assert runtime_requests[0].skill_ids == ["synthetic-agent-skill", "legacy-helper"]
     assert runtime_requests[0].attempt_id == "qat-test-attempt"
     assert runtime_requests[0].context_manifest["queue_attempt_id"] == "qat-test-attempt"
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
-    assert result.executor_payload["required_artifact_types"] == ["result_docx"]
 
 
 def test_general_chat_does_not_stage_all_platform_skills_by_default():
@@ -1743,11 +1725,6 @@ def test_general_chat_does_not_stage_all_platform_skills_by_default():
     )
 
     assert selected == []
-
-
-def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
-    assert _required_artifact_types(payload(skill_id="qa-file-reviewer")) == ("result_docx",)
-    assert _required_artifact_types(payload(skill_id="general-chat", file_ids=[])) == ()
 
 
 @pytest.mark.asyncio
@@ -2027,89 +2004,14 @@ async def test_sandbox_runtime_request_carries_prepared_public_skill_metadata(
 
 
 @pytest.mark.asyncio
-async def test_sandbox_runtime_accepts_only_proven_controlled_skill_use(monkeypatch, tmp_path):
+async def test_sandbox_selected_skill_does_not_require_invocation_evidence(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
-    write_skill(tmp_path / "skills")
     write_skill(
         tmp_path / "skills",
-        name="minimax-docx",
-        description="Manipulate Word documents.",
+        name="synthetic-agent-skill",
+        description="Synthetic skill for adapter behavior.",
     )
-    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
-
-    async def no_files(_payload, _workspace):
-        return []
-
-    adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.get_settings",
-        lambda: current_settings,
-    )
-    monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    install_sandbox_runtime(
-        monkeypatch,
-        executor_response=lambda request: {
-            "status": "completed",
-            "message": "controlled runner completed",
-            "sdk_used": False,
-            "used_skills": ["qa-file-reviewer", "unstaged-hostile-skill"],
-            "used_skills_source": "platform_controlled_runner",
-            "capability_evidence": _controlled_skill_capability_evidence(
-                request,
-                "qa-file-reviewer",
-            ),
-        },
-    )
-
-    result = await adapter.submit_run(
-        payload(
-            skill_id="qa-file-reviewer",
-            agent_id="qa-word-review",
-            input={"message": "审核一下"},
-            skill_manifests=pins,
-            context_snapshot={"execution_tier": "sdk_only_writing"},
-            context_pack={"execution_tier": "sdk_only_writing"},
-        )
-    )
-
-    assert result.status == "succeeded"
-    assert result.result["used_skills"] == ["qa-file-reviewer"]
-    assert result.executor_payload["used_skills"] == ["qa-file-reviewer"]
-    assert (
-        result.executor_payload["used_skills_source"]
-        == "platform_controlled_runner"
-    )
-    assert [
-        item["lifecycle_phase"]
-        for item in result.executor_payload["capability_evidence"]
-    ] == ["invocation_requested", "completed"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("used_skills", "used_skills_source", "expected_status", "expected_error"),
-    [
-        ([], "none", "succeeded", None),
-        (
-            ["qa-file-reviewer"],
-            "platform_controlled_runner",
-            "succeeded",
-            None,
-        ),
-    ],
-)
-async def test_sandbox_selected_skill_does_not_require_invocation_evidence(
-    monkeypatch,
-    tmp_path,
-    used_skills,
-    used_skills_source,
-    expected_status,
-    expected_error,
-):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    write_skill(tmp_path / "skills")
-    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
-    pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
+    pins = _registry_pins(tmp_path / "skills", skill_id="synthetic-agent-skill")
 
     async def no_files(_payload, _workspace):
         return []
@@ -2123,26 +2025,26 @@ async def test_sandbox_selected_skill_does_not_require_invocation_evidence(
             "status": "completed",
             "message": "autonomous response",
             "sdk_used": False,
-            "used_skills": used_skills,
-            "used_skills_source": used_skills_source,
+            "used_skills": [],
+            "used_skills_source": "none",
         },
     )
 
     result = await adapter.submit_run(
         payload(
-            skill_id="qa-file-reviewer",
-            agent_id="general-agent",
-            input={"message": "审核结论"},
+            skill_id="synthetic-agent-skill",
+            agent_id="synthetic-agent",
+            input={"message": "continue"},
             skill_manifests=pins,
             context_snapshot={"execution_tier": "sdk_only_writing"},
             context_pack={"execution_tier": "sdk_only_writing"},
         )
     )
 
-    assert result.status == expected_status
-    assert result.result.get("error_code") == expected_error
-    assert result.result["used_skills"] == used_skills
-    assert result.executor_payload["used_skills_source"] == used_skills_source
+    assert result.status == "succeeded"
+    assert result.result.get("error_code") is None
+    assert result.result["used_skills"] == []
+    assert result.executor_payload["used_skills_source"] == "none"
 
 
 @pytest.mark.asyncio

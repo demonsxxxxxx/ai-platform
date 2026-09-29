@@ -19,7 +19,6 @@ from app.skills.execution_profiles import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     NATIVE_COMMAND_ISOLATION,
     OPEN_SANDBOX_GOVERNED_COMMAND_ISOLATION,
-    PLATFORM_CONTROLLED,
     SANDBOX_FULL_LOCAL,
     SKILL_WORKSPACE_CONTRACT_VERSION,
 )
@@ -297,43 +296,6 @@ class RequiredCapabilityEvidence:
             public_label=unbound["public_label"],
             public_status=unbound["public_status"],
             declaration_sha256=unbound["declaration_sha256"],
-        )
-
-    @classmethod
-    def from_controlled_runner(
-        cls,
-        *,
-        declaration: RequiredCapabilityDeclaration,
-        binding: Mapping[str, object],
-        tool_call_id: str,
-        lifecycle_phase: str,
-    ) -> RequiredCapabilityEvidence:
-        """Create one process-bound Skill fact from the controlled runner."""
-
-        _validate_declaration(declaration)
-        if declaration.capability_kind != "skill":
-            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        values = {field: binding.get(field) for field in _BINDING_FIELDS}
-        if any(not isinstance(value, str) or not value for value in values.values()):
-            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        if not _valid_tool_call_id(tool_call_id):
-            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        if lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
-            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
-        lifecycle_status = dict(_EVIDENCE_LIFECYCLE_PAIRS)[lifecycle_phase]
-        return cls(
-            schema_version=REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION,
-            **{field: str(values[field]) for field in _BINDING_FIELDS},
-            tool_call_id=tool_call_id,
-            capability_kind="skill",
-            canonical_identity=declaration.canonical_identity,
-            lifecycle_phase=lifecycle_phase,
-            lifecycle_status=lifecycle_status,
-            evidence_source=CONTROLLED_RUNNER_EVIDENCE_SOURCE,
-            trust_basis=PROCESS_BOUND_TRUST_BASIS,
-            public_label=_SAFE_PUBLIC_LABEL,
-            public_status=lifecycle_status,
-            declaration_sha256=declaration.declaration_sha256,
         )
 
     @classmethod
@@ -774,7 +736,6 @@ def builtin_capability_subjects(
     skill: Mapping[str, Any],
     skill_decision: Any,
     canonical_manifest: Any,
-    canonical_identities: Any,
     authorized_skill_manifests: list[dict[str, Any]] | None = None,
     authorized_skill_names: list[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -817,40 +778,14 @@ def builtin_capability_subjects(
             if str(candidate_profile.get("strategy") or "") == SANDBOX_FULL_LOCAL:
                 primary_profile = candidate_profile
                 break
-    primary_identities = _runtime_declared_builtin_identities(
-        primary_manifest,
-        profile=primary_profile,
-        canonical_identities=canonical_identities,
-    )
-    profiles_by_identity: dict[str, list[dict[str, Any]]] = {}
-    identities: set[str] = set()
     for manifest in manifests_by_id.values():
-        profile = canonical_manifest(manifest)
-        for identity in _runtime_declared_builtin_identities(
-            manifest,
-            profile=profile,
-            canonical_identities=canonical_identities,
-        ):
-            identities.add(identity)
-            profiles_by_identity.setdefault(identity, []).append(profile)
+        canonical_manifest(manifest)
+    identities: set[str] = set()
     if authorized_skill_names:
         identities.add("Skill")
     subjects: list[dict[str, Any]] = []
     for identity in sorted(identities):
         parameter_contract = BUILTIN_TOOL_PARAMETER_CONTRACTS[identity]
-        profiles = profiles_by_identity.get(identity, [])
-        profile = (
-            primary_profile
-            if identity == "Skill" or identity in primary_identities
-            else next(
-                (
-                    item
-                    for item in profiles
-                    if str(item.get("command_isolation") or "") == NATIVE_COMMAND_ISOLATION
-                ),
-                profiles[0] if profiles else None,
-            )
-        )
         subjects.append(
             _builtin_subject(
                 identity=identity,
@@ -863,7 +798,7 @@ def builtin_capability_subjects(
                     parameter_contract.required_parameter_keys
                 ),
                 allowed_skill_names=list(authorized_skill_names) if identity == "Skill" else [],
-                profile=profile,
+                profile=primary_profile if identity == "Skill" else None,
             )
         )
     try:
@@ -877,21 +812,6 @@ def builtin_capability_subjects(
         active=active,
         distributed=distributed,
     )
-
-
-def _runtime_declared_builtin_identities(
-    manifest: object,
-    *,
-    profile: Mapping[str, Any] | None,
-    canonical_identities: Any,
-) -> set[str]:
-    if (
-        not isinstance(manifest, dict)
-        or not isinstance(profile, Mapping)
-        or str(profile.get("strategy") or "") != PLATFORM_CONTROLLED
-    ):
-        return set()
-    return set(canonical_identities(manifest))
 
 
 def _builtin_subject(

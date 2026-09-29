@@ -3,12 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.skills.execution_profiles import (
-    CONTROLLED_COMMAND_ISOLATION,
     NATIVE_COMMAND_ISOLATION,
-    PLATFORM_CONTROLLED,
     SANDBOX_FULL_LOCAL,
     SDK_NATIVE,
     SDK_RESTRICTED,
+    SkillExecutionProfileError,
     canonical_skill_execution_profile,
     effective_skill_execution_profile,
     resolve_skill_execution_profile,
@@ -102,16 +101,37 @@ def test_trusted_explicit_builtin_lifecycle_keeps_v1_native_snapshot(lifecycle_s
     assert profile["command_isolation"] == NATIVE_COMMAND_ISOLATION
 
 
-def test_platform_controlled_builtin_retains_controlled_strategy_and_existing_tools():
-    profile = resolve_skill_execution_profile(
-        skill_id="qa-file-reviewer",
-        source_kind="builtin",
-        lifecycle_status="released",
-    )
+def test_retired_qa_builtin_uses_only_the_generic_sdk_profile():
+    manifest = build_skill_version_manifest_pin(_builtin_skill_version("qa-file-reviewer"))
 
-    assert profile["strategy"] == PLATFORM_CONTROLLED
-    assert profile["builtin_tool_identities"] == ["Bash", "Write"]
-    assert profile["command_isolation"] == CONTROLLED_COMMAND_ISOLATION
+    profile = canonical_skill_execution_profile(manifest)
+    runtime_profile = effective_skill_execution_profile(manifest)
+    subjects = _worker_subjects(manifest)
+
+    assert profile["strategy"] == SDK_NATIVE
+    assert profile["builtin_tool_identities"] == ["Bash"]
+    assert profile["command_isolation"] == NATIVE_COMMAND_ISOLATION
+    assert runtime_profile["strategy"] == SANDBOX_FULL_LOCAL
+    assert set(subjects) == {"Skill"}
+    assert subjects["Skill"]["execution_strategy"] == SANDBOX_FULL_LOCAL
+
+
+def test_retired_controlled_profile_cannot_be_reactivated_as_sdk():
+    manifest = build_skill_version_manifest_pin(_builtin_skill_version("qa-file-reviewer"))
+    historical_profile = {
+        "schema_version": "ai-platform.skill-execution-profile.v1",
+        "strategy": "platform_controlled",
+        "trust_basis": "repository_builtin",
+        "builtin_tool_identities": ["Bash", "Write"],
+        "workspace_contract": "ai-platform.skill-workspace.v1",
+        "command_isolation": "minimal-environment-v1",
+    }
+    manifest["execution_profile"] = historical_profile
+    manifest["builtin_tool_identities"] = ["Bash", "Write"]
+
+    for resolve in (canonical_skill_execution_profile, effective_skill_execution_profile):
+        with pytest.raises(SkillExecutionProfileError, match="run_skill_snapshot_execution_profile_mismatch"):
+            resolve(manifest)
 
 
 def test_reviewed_uploaded_skill_keeps_v1_native_snapshot():

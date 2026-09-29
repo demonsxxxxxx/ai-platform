@@ -23,11 +23,11 @@ from app.bootstrap.worker_attempt_lifecycle import (
     build_worker_attempt_lifecycle_ports,
 )
 from app.agent_apps.capability_state import (
-    bind_validated_controlled_skill_evidence, exact_invoked_skills, project_agent_capability_state,
+    exact_invoked_skills,
+    project_agent_capability_state,
 )
 from app.agent_apps.api import reauthorize_bound_profile_for_worker_dispatch
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
-from app.capabilities import required_artifact_types_for_skill
 from app.capability_distribution import (
     CapabilityAccessContext,
     CapabilityAccessDecision,
@@ -794,7 +794,6 @@ def _mcp_tool_lifecycle_status(tool: dict[str, Any]) -> str:
 _builtin_capability_subjects = _partial(
     builtin_capability_subjects,
     canonical_manifest=effective_skill_execution_profile,
-    canonical_identities=skills_postgres.canonical_builtin_tool_identities,
 )
 
 
@@ -2259,7 +2258,6 @@ async def process_run_payload(
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
         result = _normalize_sandbox_reported_failure(result)
-        result = replace(result, executor_payload=bind_validated_controlled_skill_evidence(payload, result, attempt_id, adapter))
         if capability_authorization is None:
             raise RuntimeError("worker_capability_authorization_missing")
         required_tool_decision = capability_authorization.required_tool_decision or RequiredCapabilityDecision(
@@ -2460,10 +2458,8 @@ async def process_run_payload(
                 claim_token=reconciliation.claim_token,
             ):
                 raise RuntimeError("executor_reconciliation_claim_lost")
-            # The selected platform Skill owns this contract.  Preserve an
-            # adapter's additional declared requirements, but never let an
-            # executor omit the capability requirement on resume or retry.
-            required_artifact_types = set(required_artifact_types_for_skill(payload.skill_id)) | {
+            # Enforce artifact requirements only when the executor declares them.
+            required_artifact_types = {
                 str(value)
                 for value in result.executor_payload.get("required_artifact_types", [])
                 if isinstance(value, str) and value
@@ -2473,7 +2469,7 @@ async def process_run_payload(
             missing_required_artifact = result.status == "succeeded" and bool(missing_required_artifact_types)
             if missing_required_artifact:
                 error_code = "required_artifact_missing"
-                error_message = "The file-required Skill did not produce every required artifact type."
+                error_message = "The executor did not produce every declared required artifact type."
                 result = replace(
                     result,
                     status="failed",
