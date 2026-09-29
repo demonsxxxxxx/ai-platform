@@ -26,7 +26,10 @@ from app.agent_apps.capability_state import (
     exact_invoked_skills,
     project_agent_capability_state,
 )
-from app.agent_apps.api import reauthorize_bound_profile_for_worker_dispatch
+from app.agent_apps.api import (
+    locked_agent_profile_identity_valid,
+    reauthorize_bound_profile_for_worker_dispatch,
+)
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capability_distribution import (
     CapabilityAccessContext,
@@ -134,7 +137,7 @@ from app.skills.catalog import (
 )
 from app.skills.execution_profiles import effective_skill_execution_profile
 from app.tool_policy import evaluate_tool_policy
-from app.validation import assert_canonical_sha256, assert_safe_id
+from app.validation import assert_safe_id
 from app.worker_principal_authority import (
     _identity_mismatch_fields,
     _locked_run_identity,
@@ -645,57 +648,6 @@ def _payload_from_locked_run(
         return None
 
 
-def _locked_agent_profile_identity_valid(
-    agent_profile: dict[str, Any],
-    locked_run: object,
-) -> bool:
-    if not isinstance(locked_run, dict):
-        return False
-    pin_fields = (
-        "admitted_agent_profile_revision",
-        "admitted_agent_profile_hash",
-        "session_admitted_agent_profile_revision",
-        "session_admitted_agent_profile_hash",
-    )
-    if not all(field in locked_run for field in pin_fields):
-        return False
-    pinned_revision = locked_run.get("admitted_agent_profile_revision")
-    pinned_hash = locked_run.get("admitted_agent_profile_hash")
-    session_pinned_revision = locked_run.get("session_admitted_agent_profile_revision")
-    session_pinned_hash = locked_run.get("session_admitted_agent_profile_hash")
-    if not agent_profile:
-        return all(
-            value is None
-            for value in (
-                pinned_revision,
-                pinned_hash,
-                session_pinned_revision,
-                session_pinned_hash,
-            )
-        )
-    try:
-        if (
-            not isinstance(pinned_revision, int)
-            or isinstance(pinned_revision, bool)
-            or pinned_revision < 1
-            or not isinstance(session_pinned_revision, int)
-            or isinstance(session_pinned_revision, bool)
-            or session_pinned_revision < 1
-        ):
-            return False
-        assert_canonical_sha256(pinned_hash, "agent_profile_hash_invalid")
-        assert_canonical_sha256(session_pinned_hash, "agent_profile_hash_invalid")
-    except ValueError:
-        return False
-    return (
-        agent_profile.get("agent_id") == locked_run.get("agent_id")
-        and agent_profile.get("revision") == pinned_revision
-        and agent_profile.get("content_hash") == pinned_hash
-        and pinned_revision == session_pinned_revision
-        and pinned_hash == session_pinned_hash
-    )
-
-
 def _agent_profile_snapshot_matches_authority(
     payload: QueueRunPayload,
     admission: object,
@@ -708,13 +660,11 @@ def _agent_profile_snapshot_matches_authority(
     ):
         return False
     try:
-        queued_mcp_tool_ids = tuple(runs_capability_admission_postgres.extract_run_mcp_tool_ids(payload.input))
+        runs_capability_admission_postgres.extract_run_mcp_tool_ids(payload.input)
     except (
         platform_errors.RepositoryAuthorizationError,
         platform_errors.RepositoryConflictError,
     ):
-        return False
-    if queued_mcp_tool_ids != authority_mcp_tool_ids:
         return False
     # Durable snapshot validation owns the Run's primary Skill identity and pins.
     # This comparison owns the Profile instructions, Skill set and MCP selection.
@@ -889,9 +839,8 @@ async def _reauthorize_mcp_capabilities(
                 tool_id,
                 _denied_capability_decision("distribution_missing"),
             )
-            return _WorkerCapabilityAuthorization(
-                payload, principal, tuple(decisions), denial
-            )
+            decisions.append(denial)
+            continue
         server_id = str(tool.get("server_id") or "").strip()
         if not server_id:
             denial = _worker_capability_record(
@@ -899,9 +848,8 @@ async def _reauthorize_mcp_capabilities(
                 tool_id,
                 _denied_capability_decision("distribution_inheritance_missing"),
             )
-            return _WorkerCapabilityAuthorization(
-                payload, principal, tuple(decisions), denial
-            )
+            decisions.append(denial)
+            continue
         try:
             server_distribution = await identity_capability_distributions_postgres.get_capability_distribution_row(
                 conn,
@@ -934,9 +882,7 @@ async def _reauthorize_mcp_capabilities(
         )
         decisions.append(tool_record)
         if not distribution_decision.usable:
-            return _WorkerCapabilityAuthorization(
-                payload, principal, tuple(decisions), tool_record
-            )
+            continue
 
         mcp_subject = _mcp_capability_subject(tool, distribution_decision)
         if mcp_subject is None:
@@ -948,9 +894,8 @@ async def _reauthorize_mcp_capabilities(
                     source=distribution_decision,
                 ),
             )
-            return _WorkerCapabilityAuthorization(
-                payload, principal, tuple(decisions), denial
-            )
+            decisions.append(denial)
+            continue
 
         tool_gate = evaluate_tool_policy(
             tool={
@@ -985,13 +930,8 @@ async def _reauthorize_mcp_capabilities(
                     tool_gate.reason, source=distribution_decision
                 ),
             )
-            return _WorkerCapabilityAuthorization(
-                payload,
-                principal,
-                tuple(decisions),
-                denial,
-                tool_policy_audits=tuple(tool_policy_audits),
-            )
+            decisions.append(denial)
+            continue
         allowed_entries.append(tool)
         tool_policy_subjects.append(mcp_subject)
 
@@ -1253,10 +1193,13 @@ async def _reauthorize_worker_capabilities(
         )
 
     try:
-        requested_tool_ids = runs_capability_admission_postgres.run_mcp_tool_ids_for_skill(skill, payload.input)
-        for tool_id in pinned_mcp_tool_ids or []:
-            if tool_id not in requested_tool_ids:
-                requested_tool_ids.append(tool_id)
+        if payload.agent_profile:
+            requested_tool_ids = runs_capability_admission_postgres.extract_run_mcp_tool_ids(payload.input)
+        else:
+            requested_tool_ids = runs_capability_admission_postgres.run_mcp_tool_ids_for_skill(skill, payload.input)
+            for tool_id in pinned_mcp_tool_ids or []:
+                if tool_id not in requested_tool_ids:
+                    requested_tool_ids.append(tool_id)
     except platform_errors.RepositoryAuthorizationError:
         denial = _worker_capability_record(
             "mcp_tool",
@@ -1884,7 +1827,7 @@ async def process_run_payload(
                     v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
                 )
                 return terminal_after_transaction.outcome
-            if not _locked_agent_profile_identity_valid(locked_payload.agent_profile or {}, locked) or (
+            if not locked_agent_profile_identity_valid(locked_payload.agent_profile or {}, locked) or (
                 reconciliation is not None
                 and not _reconciliation_agent_profile_binding_matches(payload.input, locked_payload.agent_profile or {})):
                 terminal_after_transaction = await _fail_locked_run_snapshot(
@@ -1961,6 +1904,25 @@ async def process_run_payload(
                         policy="agent_profile_authority",
                     )
                     return terminal_after_transaction.outcome
+                else:
+                    admitted_mcp_tool_ids = tuple(profile_admission.mcp_tool_ids)
+                    queued_mcp_tool_ids = tuple(
+                        runs_capability_admission_postgres.extract_run_mcp_tool_ids(
+                            locked_payload.input
+                        )
+                    )
+                    admitted_mcp_tool_ids = tuple(
+                        item for item in queued_mcp_tool_ids if item in admitted_mcp_tool_ids
+                    )
+                    if queued_mcp_tool_ids != admitted_mcp_tool_ids:
+                        local_input = dict(locked_payload.input)
+                        if admitted_mcp_tool_ids:
+                            local_input["mcp_tool_ids"] = list(admitted_mcp_tool_ids)
+                        else:
+                            local_input["mcp_tool_ids"] = []
+                        locked_payload = locked_payload.model_copy(
+                            update={"input": local_input}
+                        )
             payload = locked_payload
             capability_authorization = await _reauthorize_worker_capabilities(
                 conn,

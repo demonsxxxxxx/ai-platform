@@ -6,300 +6,178 @@ import pytest
 from app.runtime.sandbox.workspace_permissions import (
     RUNTIME_GID,
     RUNTIME_UID,
-    WorkspaceNode,
     WorkspacePermissionError,
-    _OpenWorkspaceNode,
-    _migrate_workspace_owners,
-    _normalize_platform_private_skill_modes,
+    _drop_runtime_privileges,
     _probe_runtime_workspace,
+    _validate_namespace_directory_identity,
     initialize_runtime_workspace,
-    validate_workspace_snapshot,
 )
 
 
-def node(
-    path: str,
-    *,
-    uid: int = 0,
-    gid: int = 0,
-    mode: int = stat.S_IFREG | 0o600,
-    device: int = 7,
-    link_count: int = 1,
-) -> WorkspaceNode:
-    return WorkspaceNode(
-        relative_path=path,
-        uid=uid,
-        gid=gid,
-        mode=mode,
-        device=device,
-        link_count=link_count,
-    )
-
-
-def test_runtime_identity_is_fixed_and_non_root():
-    assert (RUNTIME_UID, RUNTIME_GID) == (10001, 10001)
-
-
-def test_workspace_snapshot_accepts_only_root_or_target_owned_regular_tree():
-    validate_workspace_snapshot(
-        root_device=7,
-        nodes=[
-            node(".", mode=stat.S_IFDIR | 0o755),
-            node("runtime", uid=RUNTIME_UID, gid=RUNTIME_GID, mode=stat.S_IFDIR | 0o700),
-            node("runtime/meta.json", mode=stat.S_IFREG | 0o600),
-        ],
-    )
-
-
-def test_workspace_snapshot_accepts_read_only_platform_instruction():
-    validate_workspace_snapshot(
-        root_device=7,
-        nodes=[
-            node(".", mode=stat.S_IFDIR | 0o755),
-            node(
-                "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
-                "runs/run-a/attempts/attempt-a/workspace/CLAUDE.md",
-                uid=RUNTIME_UID,
-                gid=RUNTIME_GID,
-                mode=stat.S_IFREG | 0o444,
-            ),
-        ],
-    )
-
-
-@pytest.mark.parametrize(
-    ("path", "mode"),
-    [
-        ("CLAUDE.md", 0o444),
-        (
-            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
-            "runs/run-a/attempts/attempt-a/workspace/nested/CLAUDE.md",
-            0o444,
-        ),
-        (
-            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
-            "runs/run-a/attempts/attempt-a/workspace/README.md",
-            0o444,
-        ),
-        (
-            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
-            "runs/run-a/attempts/attempt-a/workspace/CLAUDE.md",
-            0o400,
-        ),
-        (
-            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
-            "runs/run-a/attempts/attempt-a/workspace/.claude/skills/report/SKILL.md",
-            0o444,
-        ),
-        (
-            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
-            "runs/run-a/attempts/attempt-a/workspace/outputs/report.txt",
-            0o400,
-        ),
-    ],
-)
-def test_workspace_snapshot_preserves_read_only_retained_files(path, mode):
-    validate_workspace_snapshot(
-        root_device=7,
-        nodes=[
-            node(".", mode=stat.S_IFDIR | 0o755),
-            node(path, mode=stat.S_IFREG | mode),
-        ],
-    )
-
-
-@pytest.mark.parametrize("mode", [0o500, 0o555])
-def test_workspace_snapshot_requires_writable_root(mode):
-    with pytest.raises(WorkspacePermissionError, match="runtime workspace root is not owner-writable"):
-        validate_workspace_snapshot(root_device=7, nodes=[node(".", mode=stat.S_IFDIR | mode)])
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        ".",
+def _attempt_workspace(root):
+    attempt = root.joinpath(
         "tenants",
-        "tenants/tenant-a/workspaces",
-        "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs",
-        "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/attempts/attempt-a",
-    ],
-)
-def test_workspace_snapshot_rejects_unreadable_namespace_before_runtime_prepare(path):
-    unreadable = node(path, mode=stat.S_IFDIR | 0o300)
-    nodes = [unreadable] if path == "." else [node(".", mode=stat.S_IFDIR | 0o755), unreadable]
-    with pytest.raises(WorkspacePermissionError, match="workspace namespace directory is not owner-readable"):
-        validate_workspace_snapshot(root_device=7, nodes=nodes)
+        "tenant-a",
+        "workspaces",
+        "workspace-a",
+        "users",
+        "user-a",
+        "sessions",
+        "session-a",
+        "runs",
+        "run-a",
+        "attempts",
+        "attempt-a",
+    )
+    workspace = attempt / "workspace"
+    workspace.mkdir(parents=True)
+    return attempt, workspace
 
 
-@pytest.mark.parametrize(
-    ("unsafe_node", "message"),
-    [
-        (node("foreign", uid=1000, gid=1000), "foreign workspace owner"),
-        (node("root-user-only", uid=0, gid=10001), "foreign workspace owner"),
-        (node("target-user-only", uid=10001, gid=0), "foreign workspace owner"),
-        (node("link", mode=stat.S_IFLNK | 0o777), "unsupported workspace entry type"),
-        (node("pipe", mode=stat.S_IFIFO | 0o600), "unsupported workspace entry type"),
-        (node("socket", mode=stat.S_IFSOCK | 0o600), "unsupported workspace entry type"),
-        (node("device", device=8), "workspace entry crosses filesystem boundary"),
-        (node("world-write", mode=stat.S_IFREG | 0o602), "unsafe workspace mode"),
-        (
-            node(
-                "tenants/t/workspaces/w/users/u/sessions/s/runs/r/attempts/a/workspace/.pins",
-                mode=stat.S_IFDIR | 0o770,
-            ),
-            "unsafe workspace mode",
-        ),
-        (node("set-id", mode=stat.S_IFREG | stat.S_ISUID | 0o600), "unsafe workspace mode"),
-        (node("sticky", mode=stat.S_IFREG | stat.S_ISVTX | 0o600), "unsafe workspace mode"),
-        (node("hard-link", link_count=2), "workspace hard links are not allowed"),
-        (node("bad-directory", mode=stat.S_IFDIR | 0o600), "workspace directory is not owner-searchable"),
-    ],
-)
-def test_workspace_snapshot_rejects_unsafe_entries_before_migration(unsafe_node, message):
-    with pytest.raises(WorkspacePermissionError, match=message):
-        validate_workspace_snapshot(
-            root_device=7,
-            nodes=[node(".", mode=stat.S_IFDIR | 0o755), unsafe_node],
-        )
+def _use_current_runtime_identity(monkeypatch, root):
+    from app.runtime.sandbox import workspace_permissions
 
-
-@pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
-def test_workspace_initializer_preserves_real_read_only_skill_tree_and_output(tmp_path, monkeypatch):
-    from app.runtime.sandbox import workspace_manager, workspace_permissions
-
-    shared_components = ("tenants", "t", "workspaces", "w", "users", "u", "sessions", "s", "runs", "r", "attempts")
-    workspace = tmp_path.joinpath(*shared_components, "a", "workspace")
-    skill = workspace / ".claude/skills/report"
-    skill.mkdir(parents=True)
-    skill_file = skill / "SKILL.md"
-    skill_file.write_text("# Report\n", encoding="utf-8")
-    output = workspace / "outputs/report.txt"
-    output.parent.mkdir()
-    output.write_text("retained report\n", encoding="utf-8")
-    retained_modes = {
-        **{tmp_path.joinpath(*shared_components[:index]): 0o555 for index in range(1, len(shared_components) + 1)},
-        workspace / ".claude": 0o555,
-        skill.parent: 0o555,
-        skill: 0o555,
-        skill_file: 0o444,
-        output: 0o400,
-    }
-    for path, mode in retained_modes.items():
-        path.chmod(mode)
-    monkeypatch.setattr(workspace_permissions, "RUNTIME_WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_WORKSPACE_ROOT", root)
     monkeypatch.setattr(workspace_permissions, "RUNTIME_UID", os.geteuid())
     monkeypatch.setattr(workspace_permissions, "RUNTIME_GID", os.getegid())
     monkeypatch.setattr(workspace_permissions, "_drop_runtime_privileges", lambda: None)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
+def test_initializer_prepares_namespace_and_ignores_workspace_contents(tmp_path, monkeypatch):
+    from app.runtime.sandbox import workspace_permissions
+
+    attempt, workspace = _attempt_workspace(tmp_path)
+    payload = workspace / "payload.txt"
+    payload.write_text("retained\n", encoding="utf-8")
+    payload.chmod(0o666)
+    hard_link = workspace / "payload-copy.txt"
+    os.link(payload, hard_link)
+    same_directory_link = workspace / "payload-link"
+    same_directory_link.symlink_to(payload.name)
+    opaque_directory = workspace / "opaque"
+    opaque_directory.mkdir()
+    opaque_directory.chmod(0o000)
+    workspace.chmod(0o777)
+    retained = {
+        workspace: stat.S_IMODE(workspace.stat().st_mode),
+        payload: stat.S_IMODE(payload.stat().st_mode),
+        opaque_directory: stat.S_IMODE(opaque_directory.stat().st_mode),
+    }
+    workspace_inode = workspace.stat().st_ino
+    real_scandir = os.scandir
+
+    def reject_workspace_scan(path):
+        if isinstance(path, int) and os.fstat(path).st_ino == workspace_inode:
+            pytest.fail("initializer must not enumerate attempt workspace contents")
+        return real_scandir(path)
+
+    _use_current_runtime_identity(monkeypatch, tmp_path)
+    monkeypatch.setattr(workspace_permissions.os, "scandir", reject_workspace_scan)
 
     try:
         initialize_runtime_workspace()
-        assert skill_file.read_text(encoding="utf-8") == "# Report\n"
-        assert output.read_text(encoding="utf-8") == "retained report\n"
-        assert all(stat.S_IMODE(path.stat().st_mode) == mode for path, mode in retained_modes.items())
+
+        assert payload.read_text(encoding="utf-8") == "retained\n"
+        assert os.readlink(same_directory_link) == payload.name
+        assert os.stat(payload).st_nlink == 2
+        assert {path: stat.S_IMODE(path.stat().st_mode) for path in retained} == retained
         assert not (tmp_path / ".ai-platform-runtime-write-probe").exists()
-        root_fd = os.open(tmp_path, workspace_manager._secure_directory_flags())
-        try:
-            workspace_manager._secure_workspace_directory_tree(root_fd, shared_components + ("next", "workspace"))
-        finally:
-            os.close(root_fd)
-        assert tmp_path.joinpath(*shared_components, "next", "workspace").is_dir()
-        assert stat.S_IMODE(skill_file.stat().st_mode) == 0o444
-        assert stat.S_IMODE(output.stat().st_mode) == 0o400
+        assert stat.S_IMODE(attempt.stat().st_mode) == 0o700
+        assert workspace.is_dir()
     finally:
-        # Restore fixture directory write access for pytest cleanup.
-        for path in retained_modes:
-            if path.is_dir():
-                path.chmod(0o755)
+        opaque_directory.chmod(0o700)
+        workspace.chmod(0o700)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
-def test_workspace_initializer_normalizes_only_platform_private_skill_modes(tmp_path, monkeypatch):
-    from app.runtime.sandbox import workspace_permissions
+def test_initializer_rejects_root_symlink_without_following_it(tmp_path, monkeypatch):
+    target = tmp_path / "target"
+    target.mkdir()
+    marker = target / "marker.txt"
+    marker.write_text("untouched\n", encoding="utf-8")
+    root_link = tmp_path / "workspace-root-link"
+    root_link.symlink_to(target, target_is_directory=True)
+    _use_current_runtime_identity(monkeypatch, root_link)
 
-    workspace = tmp_path.joinpath(
-        "tenants",
-        "t",
-        "workspaces",
-        "w",
-        "users",
-        "u",
-        "sessions",
-        "s",
-        "runs",
-        "r",
-        "attempts",
-        "a",
-        "workspace",
-    )
-    pinned_file = workspace / ".pins" / "report" / "SKILL.md"
-    staged_file = workspace / ".claude" / "skills" / "report" / "SKILL.md"
-    for path, content in ((pinned_file, "pinned\n"), (staged_file, "staged\n")):
-        path.parent.mkdir(parents=True)
-        path.write_text(content, encoding="utf-8")
-        path.chmod(0o660)
-    for path in (
-        workspace / ".pins",
-        pinned_file.parent,
-        workspace / ".claude",
-        workspace / ".claude" / "skills",
-        staged_file.parent,
-    ):
-        path.chmod(0o770)
-    monkeypatch.setattr(workspace_permissions, "RUNTIME_WORKSPACE_ROOT", tmp_path)
-    monkeypatch.setattr(workspace_permissions, "RUNTIME_UID", os.geteuid())
-    monkeypatch.setattr(workspace_permissions, "RUNTIME_GID", os.getegid())
-    monkeypatch.setattr(workspace_permissions, "_drop_runtime_privileges", lambda: None)
-
-    initialize_runtime_workspace()
-
-    assert pinned_file.read_text(encoding="utf-8") == "pinned\n"
-    assert staged_file.read_text(encoding="utf-8") == "staged\n"
-    assert stat.S_IMODE((workspace / ".pins").stat().st_mode) == 0o750
-    assert stat.S_IMODE(pinned_file.parent.stat().st_mode) == 0o750
-    assert stat.S_IMODE(pinned_file.stat().st_mode) == 0o640
-    assert stat.S_IMODE((workspace / ".claude").stat().st_mode) == 0o750
-    assert stat.S_IMODE(staged_file.parent.stat().st_mode) == 0o750
-    assert stat.S_IMODE(staged_file.stat().st_mode) == 0o640
-
-
-@pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
-def test_workspace_initializer_keeps_group_write_outside_platform_private_skill_roots_fail_closed(
-    tmp_path,
-    monkeypatch,
-):
-    from app.runtime.sandbox import workspace_permissions
-
-    workspace = tmp_path.joinpath(
-        "tenants",
-        "t",
-        "workspaces",
-        "w",
-        "users",
-        "u",
-        "sessions",
-        "s",
-        "runs",
-        "r",
-        "attempts",
-        "a",
-        "workspace",
-    )
-    unsafe = workspace / "zz-unsafe"
-    unsafe.mkdir(parents=True)
-    unsafe.chmod(0o770)
-    private = workspace / ".pins"
-    private.mkdir()
-    private.chmod(0o770)
-    monkeypatch.setattr(workspace_permissions, "RUNTIME_WORKSPACE_ROOT", tmp_path)
-    monkeypatch.setattr(workspace_permissions, "RUNTIME_UID", os.geteuid())
-    monkeypatch.setattr(workspace_permissions, "RUNTIME_GID", os.getegid())
-    monkeypatch.setattr(workspace_permissions, "_drop_runtime_privileges", lambda: None)
-
-    with pytest.raises(WorkspacePermissionError, match=r"unsafe workspace mode: .*workspace/zz-unsafe"):
+    with pytest.raises(WorkspacePermissionError, match="runtime workspace root is unavailable"):
         initialize_runtime_workspace()
 
-    assert stat.S_IMODE(unsafe.stat().st_mode) == 0o770
-    assert stat.S_IMODE(private.stat().st_mode) == 0o770
+    assert marker.read_text(encoding="utf-8") == "untouched\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
+def test_initializer_rejects_namespace_symlink_without_following_it(tmp_path, monkeypatch):
+    root = tmp_path / "workspace-root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "marker.txt"
+    marker.write_text("untouched\n", encoding="utf-8")
+    outside_mode = stat.S_IMODE(outside.stat().st_mode)
+    (root / "tenants").symlink_to(outside, target_is_directory=True)
+    _use_current_runtime_identity(monkeypatch, root)
+
+    with pytest.raises(WorkspacePermissionError, match="workspace namespace entry is a symbolic link"):
+        initialize_runtime_workspace()
+
+    assert marker.read_text(encoding="utf-8") == "untouched\n"
+    assert stat.S_IMODE(outside.stat().st_mode) == outside_mode
+
+
+@pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
+def test_initializer_fails_explicitly_when_workspace_root_is_not_owner_writable(tmp_path, monkeypatch):
+    _use_current_runtime_identity(monkeypatch, tmp_path)
+    tmp_path.chmod(0o555)
+
+    try:
+        with pytest.raises(WorkspacePermissionError, match="runtime workspace root is not owner-writable"):
+            initialize_runtime_workspace()
+        assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o555
+    finally:
+        tmp_path.chmod(0o700)
+
+
+@pytest.mark.parametrize(
+    ("uid", "gid"),
+    [(1000, 1000), (0, RUNTIME_GID), (RUNTIME_UID, 0)],
+)
+def test_namespace_identity_rejects_foreign_or_mixed_owners(uid, gid):
+    with pytest.raises(WorkspacePermissionError, match="foreign workspace namespace owner"):
+        _validate_namespace_directory_identity(
+            "tenants/tenant-a",
+            device=7,
+            uid=uid,
+            gid=gid,
+            root_device=7,
+        )
+
+
+def test_namespace_identity_rejects_cross_filesystem_directory():
+    with pytest.raises(WorkspacePermissionError, match="workspace namespace crosses filesystem boundary"):
+        _validate_namespace_directory_identity(
+            "tenants/tenant-a",
+            device=8,
+            uid=0,
+            gid=0,
+            root_device=7,
+        )
+
+
+def test_runtime_identity_drop_checks_effective_uid_and_gid(monkeypatch):
+    from app.runtime.sandbox import workspace_permissions
+
+    events = []
+    monkeypatch.setattr(workspace_permissions.os, "setgroups", lambda groups: events.append(("groups", groups)))
+    monkeypatch.setattr(workspace_permissions.os, "setgid", lambda gid: events.append(("gid", gid)))
+    monkeypatch.setattr(workspace_permissions.os, "setuid", lambda uid: events.append(("uid", uid)))
+    monkeypatch.setattr(workspace_permissions.os, "geteuid", lambda: RUNTIME_UID + 1)
+    monkeypatch.setattr(workspace_permissions.os, "getegid", lambda: RUNTIME_GID)
+
+    with pytest.raises(WorkspacePermissionError, match="runtime identity drop did not take effect"):
+        _drop_runtime_privileges()
+
+    assert events == [("groups", []), ("gid", RUNTIME_GID), ("uid", RUNTIME_UID)]
 
 
 def test_runtime_workspace_probe_removes_its_sentinel_after_readback_failure(monkeypatch):
@@ -321,173 +199,3 @@ def test_runtime_workspace_probe_removes_its_sentinel_after_readback_failure(mon
         _probe_runtime_workspace(9)
 
     assert unlinked == [(".ai-platform-runtime-write-probe", 9)]
-
-
-def test_platform_private_skill_mode_migration_clears_acls_and_group_write_by_inode_handle(monkeypatch):
-    from app.runtime.sandbox import workspace_permissions
-
-    path = "tenants/t/workspaces/w/users/u/sessions/s/runs/r/attempts/a/workspace/.pins"
-    original = node(path, mode=stat.S_IFDIR | 0o770)
-    original = WorkspaceNode(**{**original.__dict__, "inode": 17})
-    handle = _OpenWorkspaceNode(node=original, parent_fd=7, name=".pins", fd=41)
-    state = {"mode": original.mode}
-    removed = []
-    chmods = []
-
-    def current_stat():
-        return type(
-            "CurrentStat",
-            (),
-            {
-                "st_dev": original.device,
-                "st_ino": original.inode,
-                "st_uid": original.uid,
-                "st_gid": original.gid,
-                "st_mode": state["mode"],
-                "st_nlink": original.link_count,
-            },
-        )()
-
-    def fchmod(fd, mode):
-        chmods.append((fd, mode))
-        state["mode"] = stat.S_IFDIR | mode
-
-    monkeypatch.setattr(workspace_permissions.os, "fstat", lambda fd: current_stat())
-    monkeypatch.setattr(
-        workspace_permissions.os,
-        "removexattr",
-        lambda fd, name: removed.append((fd, name)),
-        raising=False,
-    )
-    monkeypatch.setattr(workspace_permissions.os, "fchmod", fchmod)
-
-    normalized = _normalize_platform_private_skill_modes(root_device=7, handles=[handle])
-
-    assert removed == [
-        (41, "system.posix_acl_default"),
-        (41, "system.posix_acl_access"),
-    ]
-    assert chmods == [(41, 0o750)]
-    assert normalized[0].node.mode == stat.S_IFDIR | 0o750
-
-
-def test_workspace_migration_uses_verified_inode_handle_not_name(monkeypatch):
-    from app.runtime.sandbox import workspace_permissions
-
-    original = node("payload.txt", link_count=1)
-    handle = _OpenWorkspaceNode(node=original, parent_fd=7, name="payload.txt", fd=41)
-    current = type(
-        "CurrentStat",
-        (),
-        {
-            "st_dev": original.device,
-            "st_ino": original.inode,
-            "st_uid": original.uid,
-            "st_gid": original.gid,
-            "st_mode": original.mode,
-            "st_nlink": original.link_count,
-        },
-    )()
-    fchown_calls = []
-    monkeypatch.setattr(workspace_permissions.os, "fstat", lambda fd: current)
-    monkeypatch.setattr(workspace_permissions.os, "stat", lambda *args, **kwargs: current)
-    monkeypatch.setattr(
-        workspace_permissions.os,
-        "fchown",
-        lambda fd, uid, gid: fchown_calls.append((fd, uid, gid)),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        workspace_permissions.os,
-        "chown",
-        lambda *args, **kwargs: pytest.fail("migration must not use name-based chown"),
-        raising=False,
-    )
-
-    _migrate_workspace_owners([handle])
-
-    assert fchown_calls == [(41, 10001, 10001)]
-
-
-def test_workspace_migration_rejects_link_count_change_before_fchown(monkeypatch):
-    from app.runtime.sandbox import workspace_permissions
-
-    original = node("payload.txt", link_count=1)
-    handle = _OpenWorkspaceNode(node=original, parent_fd=7, name="payload.txt", fd=41)
-    changed = type(
-        "ChangedStat",
-        (),
-        {
-            "st_dev": original.device,
-            "st_ino": original.inode,
-            "st_uid": original.uid,
-            "st_gid": original.gid,
-            "st_mode": original.mode,
-            "st_nlink": 2,
-        },
-    )()
-    monkeypatch.setattr(workspace_permissions.os, "fstat", lambda fd: changed)
-    monkeypatch.setattr(workspace_permissions.os, "stat", lambda *args, **kwargs: changed)
-    monkeypatch.setattr(
-        workspace_permissions.os,
-        "fchown",
-        lambda *args: pytest.fail("changed inode metadata must not be mutated"),
-        raising=False,
-    )
-    monkeypatch.setattr(workspace_permissions.os, "chown", lambda *args, **kwargs: None, raising=False)
-
-    with pytest.raises(WorkspacePermissionError, match="changed during migration"):
-        _migrate_workspace_owners([handle])
-
-
-def test_workspace_migration_does_not_chown_existing_target_owner(monkeypatch):
-    from app.runtime.sandbox import workspace_permissions
-
-    original = node("payload.txt", uid=RUNTIME_UID, gid=RUNTIME_GID)
-    handle = _OpenWorkspaceNode(node=original, parent_fd=7, name="payload.txt", fd=41)
-    current = type(
-        "CurrentStat",
-        (),
-        {
-            "st_dev": original.device,
-            "st_ino": original.inode,
-            "st_uid": original.uid,
-            "st_gid": original.gid,
-            "st_mode": original.mode,
-            "st_nlink": original.link_count,
-        },
-    )()
-    monkeypatch.setattr(workspace_permissions.os, "fstat", lambda fd: current)
-    monkeypatch.setattr(
-        workspace_permissions.os,
-        "fchown",
-        lambda *args: pytest.fail("target-owned inode must not be changed"),
-        raising=False,
-    )
-
-    _migrate_workspace_owners([handle])
-
-
-def test_workspace_initializer_orders_migration_drop_and_runtime_probe_and_closes_handles(monkeypatch):
-    from app.runtime.sandbox import workspace_permissions
-
-    handles = [
-        _OpenWorkspaceNode(node=node(".", mode=stat.S_IFDIR | 0o700), parent_fd=None, name=None, fd=40),
-        _OpenWorkspaceNode(node=node("payload.txt"), parent_fd=40, name="payload.txt", fd=41),
-    ]
-    events = []
-    monkeypatch.setattr(workspace_permissions, "_capture_workspace_tree", lambda root: (40, handles))
-    monkeypatch.setattr(workspace_permissions, "_migrate_workspace_owners", lambda value: events.append(("migrate", value)))
-    monkeypatch.setattr(workspace_permissions, "_drop_runtime_privileges", lambda: events.append(("drop", None)))
-    monkeypatch.setattr(workspace_permissions, "_probe_runtime_workspace", lambda fd: events.append(("probe", fd)))
-    monkeypatch.setattr(workspace_permissions.os, "close", lambda fd: events.append(("close", fd)))
-
-    initialize_runtime_workspace()
-
-    assert events == [
-        ("migrate", handles),
-        ("drop", None),
-        ("probe", 40),
-        ("close", 41),
-        ("close", 40),
-    ]

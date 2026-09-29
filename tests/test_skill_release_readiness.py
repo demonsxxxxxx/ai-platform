@@ -467,7 +467,7 @@ def test_skill_release_readiness_cli_outputs_json_without_secret_markers(tmp_pat
     skills_root = tmp_path / "skills"
     _write_skill(skills_root, "general-chat", "Default chat capability.")
     env = os.environ.copy()
-    env["SKILL_STAGING_SUBDIR"] = ".claude/skills/token=secret"
+    env["PRIVATE_TEST_DIRECTORY"] = ".claude/skills/token=secret"
 
     result = subprocess.run(
         [
@@ -499,7 +499,7 @@ def test_skill_release_readiness_cli_outputs_json_without_secret_markers(tmp_pat
 
 def test_skill_release_dashboard_readiness_cli_outputs_json_without_secret_markers():
     env = os.environ.copy()
-    env["SKILL_STAGING_SUBDIR"] = ".claude/skills/token=secret"
+    env["PRIVATE_TEST_DIRECTORY"] = ".claude/skills/token=secret"
 
     result = subprocess.run(
         [

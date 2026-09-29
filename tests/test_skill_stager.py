@@ -115,9 +115,9 @@ def test_stager_replaces_existing_staged_skill(tmp_path):
     assert (workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
 
 
-def test_stager_rejects_workspace_escape_subdir():
-    with pytest.raises(ValueError, match="inside the run workspace"):
-        SkillStager("../skills")
+def test_stager_has_one_native_sdk_location():
+    with pytest.raises(TypeError):
+        SkillStager(".claude/alternate")
 
 
 def test_stager_rejects_skill_without_skill_markdown(tmp_path):

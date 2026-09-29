@@ -10,7 +10,6 @@ import { mergeProjectedSessionFiles } from "../sessionInputFiles.ts";
 
 const agentProfile = {
   agent_id: "agent/support",
-  expected_revision: 12,
 };
 
 const inputFile: SessionInputFile = {
@@ -27,7 +26,7 @@ test("keeps Agent workspace Chat routes and run-bound file affordances together"
   const workspaceBasePath = buildAgentMarketWorkspacePath(agentProfile);
   assert.equal(
     buildAgentMarketWorkspacePath(agentProfile, "agent/session"),
-    "/agent-market/agent%2Fsupport/12/chat/agent%2Fsession",
+    "/agent-market/agent%2Fsupport/chat/agent%2Fsession",
   );
   assert.deepEqual(
     getSessionRouteSyncAction({

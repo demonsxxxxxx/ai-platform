@@ -88,7 +88,6 @@ async def test_agent_history_keeps_revision_hash_binding_and_descending_keyset()
         tenant_id="tenant-a",
         user_id="user-a",
         agent_id="agent-a",
-        revision=7,
         cursor=(updated_at, created_at, "session-a"),
         limit=21,
     )
@@ -96,14 +95,13 @@ async def test_agent_history_keeps_revision_hash_binding_and_descending_keyset()
     assert rows == []
     sql, params = conn.calls[0]
     assert "profile.content_hash = sessions.admitted_agent_profile_hash" in sql
-    assert "sessions.admitted_agent_profile_revision = %s" in sql
+    assert "profile.revision = sessions.admitted_agent_profile_revision" in sql
     assert "sessions.purpose = 'conversation'" in sql
     assert "order by sessions.updated_at desc, sessions.created_at desc, sessions.id desc" in sql
     assert params == (
         "tenant-a",
         "user-a",
         "agent-a",
-        7,
         updated_at,
         updated_at,
         created_at,

@@ -13,7 +13,6 @@ import {
 
 const profile: AgentProfilePublicProjection = {
   agent_id: "agt_support",
-  expected_revision: 4,
   name: "支持助手",
   description: "在授权范围内处理企业支持请求。",
   starter_prompts: ["帮我处理支持请求", "支持请求分流"],
@@ -24,27 +23,27 @@ const profile: AgentProfilePublicProjection = {
   published_at: "2026-08-04T01:00:00Z",
 };
 
-test("market accepts only the exact published profile revision from its route", () => {
-  assert.equal(selectPublishedMarketProfile([profile], "agt_support", "4"), profile);
-  assert.equal(selectPublishedMarketProfile([profile], "agt_support", "5"), null);
-  assert.equal(selectPublishedMarketProfile([profile], "agt_support", "not-a-revision"), null);
+test("market resolves the current published profile by Agent id", () => {
+  assert.equal(selectPublishedMarketProfile([profile], "agt_support"), profile);
+  assert.equal(selectPublishedMarketProfile([profile], "agt_other"), null);
+  assert.equal(selectPublishedMarketProfile([profile], undefined), null);
 });
 
-test("market detail uses only the exact published profile identity", () => {
+test("market detail uses the Agent id without a publication version segment", () => {
   assert.equal(
     buildAgentMarketDetailPath(profile),
-    "/agent-market/agt_support/4",
+    "/agent-market/agt_support",
   );
 });
 
-test("market workspace deep links preserve the immutable published revision", () => {
+test("market workspace deep links use only Agent and Session ids", () => {
   assert.equal(
     buildAgentMarketWorkspacePath(profile),
-    "/agent-market/agt_support/4/chat",
+    "/agent-market/agt_support/chat",
   );
   assert.equal(
     buildAgentMarketWorkspacePath(profile, "session/42"),
-    "/agent-market/agt_support/4/chat/session%2F42",
+    "/agent-market/agt_support/chat/session%2F42",
   );
 });
 
@@ -54,14 +53,12 @@ test("market tag filters select the union of all clicked tags", () => {
     {
       ...profile,
       agent_id: "agt_finance",
-      expected_revision: 2,
       name: "财务助手",
       market_tags: ["财务"],
     },
     {
       ...profile,
       agent_id: "agt_hr",
-      expected_revision: 3,
       name: "人事助手",
       market_tags: ["人力资源"],
     },
@@ -80,7 +77,6 @@ test("market search covers the safe public identity and use fields", () => {
     {
       ...profile,
       agent_id: "agt_finance",
-      expected_revision: 2,
       name: "财务助手",
       description: "核对企业财务单据和报销材料。",
       starter_prompts: ["报销材料核验"],

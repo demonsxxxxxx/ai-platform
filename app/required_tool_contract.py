@@ -14,7 +14,6 @@ from collections.abc import Collection, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app.control_plane_contracts import LEGACY_SYNTHETIC_CHAT_SKILL_ID
 from app.execution_boundary import ExecutionBoundaryDecision
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
@@ -759,20 +758,26 @@ def builtin_capability_subjects(
             and primary_manifest["source"].get("kind") in {"builtin", "uploaded"}
             else []
         )
-    primary_manifest = manifests_by_id.get(run_identity["skill_id"])
-    primary_profile = (
-        canonical_manifest(primary_manifest)
-        if isinstance(primary_manifest, dict)
-        else None
+    profiles_by_id = {
+        skill_id: canonical_manifest(manifest)
+        for skill_id, manifest in manifests_by_id.items()
+    }
+    selected_profiles = [
+        profiles_by_id[skill_id]
+        for skill_id in authorized_skill_names
+        if skill_id in profiles_by_id
+    ]
+    primary_profile = profiles_by_id.get(run_identity["skill_id"])
+    full_local_profile = next(
+        (
+            profile
+            for profile in selected_profiles
+            if str(profile.get("strategy") or "") == SANDBOX_FULL_LOCAL
+        ),
+        None,
     )
-    if str(run_identity.get("skill_id") or "") == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
-        for manifest in authorized_skill_manifests or []:
-            candidate_profile = canonical_manifest(manifest)
-            if str(candidate_profile.get("strategy") or "") == SANDBOX_FULL_LOCAL:
-                primary_profile = candidate_profile
-                break
-    for manifest in manifests_by_id.values():
-        canonical_manifest(manifest)
+    if full_local_profile is not None:
+        primary_profile = full_local_profile
     identities: set[str] = set()
     if authorized_skill_names:
         identities.add("Skill")
@@ -1107,8 +1112,9 @@ def selected_capability_completion_decision(
     declarations: list[RequiredCapabilityDeclaration],
     binding: Mapping[str, object],
     evidence: object,
+    allow_terminal_failure_capabilities: Collection[tuple[str, str]] = (),
 ) -> RequiredCapabilityDecision:
-    """Validate one exact invoking-to-completed sequence for every selection."""
+    """Validate exact invocation sequences, allowing only named safe failures."""
 
     if not declarations:
         return RequiredCapabilityDecision(True, "required_capability_not_selected", "", "")
@@ -1178,12 +1184,24 @@ def selected_capability_completion_decision(
         invoking = [item for item in matching if item[1].lifecycle_phase == "invocation_requested"]
         completed = [item for item in matching if item[1].lifecycle_phase == "completed"]
         failed = [item for item in matching if item[1].lifecycle_phase == "failed"]
+        valid_completed = (
+            len(invoking) == 1
+            and len(completed) == 1
+            and not failed
+            and invoking[0][0] < completed[0][0]
+            and invoking[0][1].tool_call_id == completed[0][1].tool_call_id
+        )
+        valid_allowed_failure = (
+            (declaration.capability_kind, declaration.canonical_identity)
+            in allow_terminal_failure_capabilities
+            and len(invoking) == 1
+            and not completed
+            and len(failed) == 1
+            and invoking[0][0] < failed[0][0]
+            and invoking[0][1].tool_call_id == failed[0][1].tool_call_id
+        )
         if (
-            len(invoking) != 1
-            or len(completed) != 1
-            or failed
-            or invoking[0][0] >= completed[0][0]
-            or invoking[0][1].tool_call_id != completed[0][1].tool_call_id
+            not (valid_completed or valid_allowed_failure)
             or any(
                 record.declaration_sha256 != declaration.declaration_sha256
                 or not _binding_matches(binding, asdict(record))
@@ -1202,6 +1220,49 @@ def selected_capability_completion_decision(
         "",
         "",
     )
+
+
+def capability_invocation_completion_decision(
+    available_capabilities: Collection[tuple[str, str]],
+    *,
+    binding: Mapping[str, object],
+    evidence: object,
+    allow_terminal_failure_capabilities: Collection[tuple[str, str]] = frozenset(),
+) -> RequiredCapabilityDecision:
+    """Validate every observed invocation against the authorized capability set."""
+
+    mismatch = RequiredCapabilityDecision(False, "required_tool_completion_evidence_mismatch", "", "")
+    if not isinstance(evidence, list):
+        return mismatch
+    try:
+        records = [RequiredCapabilityEvidence.from_payload(item) for item in evidence]
+    except RequiredToolContractError:
+        return mismatch
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    call_owners: dict[str, tuple[str, str]] = {}
+    for record in records:
+        key = (record.capability_kind, record.canonical_identity)
+        call_id = record.tool_call_id
+        if key not in available_capabilities or not isinstance(call_id, str) or not call_id:
+            return mismatch
+        if call_owners.setdefault(call_id, key) != key:
+            return mismatch
+        groups.setdefault((*key, call_id), []).append(asdict(record))
+    for (capability_kind, canonical_identity, _call_id), invocation in groups.items():
+        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+            capability_kind=capability_kind,
+            canonical_identity=canonical_identity,
+        )
+        decision = selected_capability_completion_decision(
+            declarations=[declaration],
+            binding=binding,
+            evidence=invocation,
+            allow_terminal_failure_capabilities=allow_terminal_failure_capabilities,
+        )
+        if not decision.allowed:
+            return decision
+    reason = "required_tool_completion_evidence_valid" if groups else "required_capability_not_selected"
+    return RequiredCapabilityDecision(True, reason, "", "")
 
 
 def completion_evidence_from_executor_payload(

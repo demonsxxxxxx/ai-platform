@@ -55,9 +55,6 @@ from app.sandbox.domain.workspace_policy import (
 from app.sandbox.domain.workspace_policy import (
     workspace_read_allowed as workspace_read_allowed,
 )
-from app.sandbox.domain.workspace_policy import (
-    workspace_read_name_private as workspace_read_name_private,
-)
 from app.sandbox.domain.workspace_delivery import (
     opensandbox_delivery_files as opensandbox_delivery_files,
 )

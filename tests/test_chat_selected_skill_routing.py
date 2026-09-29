@@ -1,3 +1,4 @@
+from tests.support.skill_admission import admitted_skill
 import app.conversations.infrastructure.postgres as _owner_conversations_infrastructure_postgres
 import app.conversations.infrastructure.session_queries_postgres as _owner_conversations_infrastructure_session_queries_postgres
 import app.files.infrastructure.run_bindings_postgres as _owner_files_infrastructure_run_bindings_postgres
@@ -221,7 +222,7 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
 
     async def governed_manifests(*_args, **kwargs):
         calls["manifest_skill_id"] = kwargs["skill_id"]
-        return [dict(manifests[kwargs["skill_id"]])]
+        return admitted_skill(kwargs["skill"], kwargs["tenant_id"], kwargs["rollout_key"], [dict(manifests[kwargs["skill_id"]])])
 
     async def create_session(*_args, **_kwargs):
         return "ses-explicit-skill"
@@ -261,7 +262,7 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
         authorize_selected,
     )
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', authorize_default)
-    monkeypatch.setattr(SkillRunAdmissionService, "_materialize_manifest_pins", governed_manifests)
+    monkeypatch.setattr(SkillRunAdmissionService, "admit", governed_manifests)
     monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', noop)
     monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'create_session', create_session)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'create_run', create_run)

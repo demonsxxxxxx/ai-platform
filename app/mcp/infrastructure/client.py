@@ -124,11 +124,13 @@ async def list_mcp_tools(session):
     for _ in range(MCP_DISCOVERY_PAGE_LIMIT):
         page = await session.list_tools(cursor=cursor)
         for tool in page.tools:
-            _canonical_live_definition(tool.model_dump(by_alias=True, exclude_none=True))
+            definition = _canonical_live_definition(
+                tool.model_dump(by_alias=True, exclude_none=True)
+            )
             if tool.name in names:
                 raise McpToolDiscoveryError("protocol_error")
             names.add(tool.name)
-            tools.append(tool)
+            tools.append(tool.model_copy(update={"description": definition["description"]}))
         cursor = page.nextCursor
         if cursor is None:
             return tools

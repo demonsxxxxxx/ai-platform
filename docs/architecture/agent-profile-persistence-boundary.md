@@ -111,28 +111,25 @@ Publication metadata and aggregate pointers are not hash inputs.
 
 ## 5. Admission And Reauthorization
 
-New conversations resolve the current published profile. Existing conversations
-and Runs resolve their exact persisted `(agent_id, revision, content_hash)` pin.
-Every admission and replay:
+Every new Run resolves the current published profile by `agent_id`. A Session
+retains expert identity and native history; its creation revision is provenance.
+Accepted Runs resolve their exact `(agent_id, revision, content_hash)` and package
+pins for dispatch, retry and resume. Current access still applies.
 
-1. authorizes the current principal and profile ACL;
-2. verifies that the Agent identity remains active;
-3. validates the immutable profile definition;
-4. resolves current Skill and MCP authority;
-5. materializes exact governed Skill versions;
-6. produces the executor-private profile input; and
-7. preserves the exact profile pin on Session and Run records.
+Admission resolves each authorized root once, then `app.skills.api.admit_skill_set`
+resolves one shared current dependency graph and saves an immutable closure of at
+most 64 manifests. Missing or cyclic dependencies reject before Run persistence.
+Embedded package dependency snapshots are not an admission source. Model and
+thinking choices pass through the dedicated expert transport.
 
-Single-Skill release selection, manifest materialization, version locking, and
-snapshot governance use `app.skills.api.admit_skill_run`, shared by Chat and Run
-creation. Bootstrap assembles its policy and catalog dependencies once. Agent
-Apps supplies each expected version and owns multi-Skill conflict detection and
-primary-Skill selection. The expected version is checked before snapshot
-governance and MCP pinning; the caller's transaction remains the shared scope.
+Optional MCP availability filters executable capabilities. Dispatch intersects
+the accepted set with current availability; a restored tool is not added to an
+accepted Run. Revocation does not invalidate the immutable profile snapshot.
+The original normalized submission request owns its stable fingerprint; replay
+returns the existing outcome before capacity and resource admission.
 
-Historical tool calls do not restore current capabilities. Worker dispatch and
-Run replay reauthorize the exact profile pin against current principal, Agent,
-Skill, and MCP authority before execution.
+See [ADR 0015](../adr/0015-agent-autonomy-and-effect-boundaries.md) for the governing
+policy and graduated effect boundaries.
 
 Executor reconciliation snapshots persist only the non-secret profile identity
 needed to bind recovery to the original admission: `agent_id`, immutable

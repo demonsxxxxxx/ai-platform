@@ -82,7 +82,7 @@ class _McpRuntimeServices:
     async def _get_tool(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None:
         return await mcp_postgres.get_mcp_tool_registry_entry(conn, **kwargs)
 
-    async def _authorize_tools(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    async def _authorize_tools(self, conn: Any, *, available_only: bool = False, **kwargs: Any) -> list[dict[str, Any]]:
         tenant_id = kwargs["tenant_id"]
         tool_ids = kwargs["tool_ids"]
         context = mcp_chat_access_postgres._chat_mcp_access_context(
@@ -102,6 +102,8 @@ class _McpRuntimeServices:
         for tool_id in tool_ids:
             tool = await self._get_tool(conn, tenant_id=tenant_id, tool_id=tool_id)
             if tool is None or not mcp_postgres.mcp_runtime_metadata_usable(tool):
+                if available_only:
+                    continue
                 raise identity_capability_distributions_postgres._capability_not_authorized(
                     context=context,
                     capability_kind="mcp_tool",
@@ -148,6 +150,8 @@ class _McpRuntimeServices:
                 }
             )
             if not decision.usable or not policy.allowed:
+                if available_only:
+                    continue
                 raise identity_capability_distributions_postgres._capability_not_authorized(
                     context=context,
                     capability_kind="mcp_tool",
@@ -158,6 +162,8 @@ class _McpRuntimeServices:
         return authorized
 
     async def repository_call(self, operation: str, conn: Any, **kwargs: Any) -> Any:
+        if operation == "authorize_available_chat_mcp_tools":
+            return await self._authorize_tools(conn, available_only=True, **kwargs)
         if operation == "authorize_selected_chat_mcp_tools":
             return await self._authorize_tools(conn, **kwargs)
         if operation == "get_mcp_tool_registry_entry":

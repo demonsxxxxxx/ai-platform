@@ -1,9 +1,10 @@
 import unicodedata
-from typing import Any
+from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import Request as HttpRequest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 
 from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -11,7 +12,6 @@ from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
 from app.department_directory import validate_profile_department_authorities
 from app.models import (
-    AgentAppRunRequest,
     AgentProfileDraftRequest,
     AgentProfileDraftTestRequest,
     AgentProfilePublishRequest,
@@ -27,6 +27,7 @@ from app.models import (
 )
 from app.platform.postgres import errors as platform_errors
 from app.validation import assert_safe_id
+from app.control_plane_contracts import ThinkingEffort, normalize_thinking_effort
 
 router = APIRouter()
 _authority = AgentProfileAuthority(
@@ -43,6 +44,26 @@ _DEDICATED_OVERRIDE_HEADERS = frozenset(
         "x-mcp-tool-ids",
     }
 )
+
+
+class AgentAppRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=100_000)
+    submission_id: UUID
+    file_ids: list[str] = Field(default_factory=list, max_length=32)
+    user_timezone: str | None = Field(default=None, max_length=128)
+    thinking_effort: Annotated[ThinkingEffort, BeforeValidator(normalize_thinking_effort)] = "auto"
+    model_id: str | None = Field(default=None, min_length=1, max_length=128)
+    model: str | None = Field(default=None, min_length=1, max_length=512)
+
+    @field_validator("file_ids")
+    @classmethod
+    def validate_file_ids(cls, value: list[str]):
+        normalized = [assert_safe_id(item, "file_ids") for item in value]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("file_ids contains duplicates")
+        return normalized
 
 
 class AgentProfileRetireRequest(BaseModel):
@@ -100,6 +121,11 @@ async def _submit_dedicated_agent_run(
     if str(session.get("agent_id") or "") != agent_id:
         raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
 
+    agent_options: dict[str, Any] = {"enable_thinking": request.thinking_effort}
+    if request.model_id is not None:
+        agent_options["model_id"] = request.model_id
+    if request.model is not None:
+        agent_options["model"] = request.model
     canonical_request = ChatStreamRequest(
         workspace_id=str(session["workspace_id"]),
         session_id=session_id,
@@ -107,7 +133,7 @@ async def _submit_dedicated_agent_run(
         file_ids=request.file_ids,
         submission_id=request.submission_id,
         user_timezone=request.user_timezone,
-        agent_options={"enable_thinking": request.thinking_effort},
+        agent_options=agent_options,
     )
     # Local import avoids making the Chat route depend on this adapter while
     # preserving one admission, Run, Queue, SSE, and artifact authority.
@@ -373,11 +399,10 @@ async def run_agent_profile_test(
     test_session_id = f"ses_test_{request.submission_id.hex}"
     selection = SelectedAgentProfileRequest(
         agent_id=safe_agent_id,
-        expected_revision=request.expected_revision,
     )
     try:
         async with transaction() as conn:
-            await _authority.create_conversation(
+            test_conversation = await _authority.create_conversation(
                 conn,
                 principal=principal,
                 workspace_id=request.workspace_id,
@@ -386,6 +411,11 @@ async def run_agent_profile_test(
                 session_id=test_session_id,
                 purpose="builder_test",
             )
+            if (
+                test_conversation.agent_conversation is None
+                or test_conversation.agent_conversation.revision != request.expected_revision
+            ):
+                raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
     except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_test_submission_conflict") from exc
     outcome = await _submit_dedicated_agent_run(

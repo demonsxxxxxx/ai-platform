@@ -55,33 +55,19 @@ _READ_PRIVATE_DIRECTORIES = frozenset(
 )
 
 
-def workspace_read_name_private(name: object) -> bool:
-    """Return whether one path component is private to the sandbox runtime."""
-
-    if not isinstance(name, str) or not name:
-        return True
-    lowered = name.casefold()
-    return lowered in _READ_PRIVATE_DIRECTORIES or lowered in _READ_PRIVATE_FILES
-
-
 def workspace_read_allowed(relative_path: str | PurePosixPath) -> bool:
-    """Keep platform-private workspace entries out of SDK read/search results."""
-
+    """Protect platform-owned roots while allowing ordinary task directories."""
     path = PurePosixPath(relative_path)
-    if path.is_absolute() or any(part in {"", ".."} for part in path.parts):
+    if path.is_absolute() or ".." in path.parts:
         return False
     if not path.parts:
         return True
     lowered = tuple(part.casefold() for part in path.parts)
     if lowered[0] == ".claude":
-        if len(lowered) < 2 or lowered[1] != "skills":
-            return False
-        searchable_parts = lowered[2:]
-    else:
-        searchable_parts = lowered
-    if any(workspace_read_name_private(part) for part in searchable_parts):
-        return False
-    return not workspace_read_name_private(lowered[-1])
+        return len(lowered) >= 2 and lowered[1] == "skills"
+    return lowered[0] not in _READ_PRIVATE_DIRECTORIES and not (
+        len(lowered) == 1 and lowered[0] in _READ_PRIVATE_FILES
+    )
 
 
 def workspace_mutation_allowed(relative_path: str | PurePosixPath) -> bool:
@@ -100,7 +86,7 @@ def workspace_collection_directory_allowed(relative_path: str | PurePosixPath) -
     path = PurePosixPath(relative_path)
     if not path.parts or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         return False
-    return not any(part.casefold() in _COLLECTION_PRIVATE_DIRECTORIES for part in path.parts)
+    return path.parts[0].casefold() not in _COLLECTION_PRIVATE_DIRECTORIES
 
 
 def workspace_collection_file_allowed(relative_path: str | PurePosixPath) -> bool:
@@ -109,9 +95,9 @@ def workspace_collection_file_allowed(relative_path: str | PurePosixPath) -> boo
     if not path.parts or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         return False
     lowered = tuple(part.casefold() for part in path.parts)
-    if any(part in _COLLECTION_PRIVATE_DIRECTORIES for part in lowered[:-1]):
-        return False
-    return lowered[-1] not in _COLLECTION_PRIVATE_FILES
+    return lowered[0] not in _COLLECTION_PRIVATE_DIRECTORIES and not (
+        len(lowered) == 1 and lowered[0] in _COLLECTION_PRIVATE_FILES
+    )
 
 
 def workspace_delivery_file_allowed(
@@ -144,7 +130,4 @@ def workspace_delivery_file_allowed(
     }
     if parts[2] not in allowed or parts[3].casefold() != "output":
         return False
-    descendants = tuple(part.casefold() for part in parts[4:])
-    if any(part in _COLLECTION_PRIVATE_DIRECTORIES for part in descendants[:-1]):
-        return False
-    return descendants[-1] not in _COLLECTION_PRIVATE_FILES
+    return True

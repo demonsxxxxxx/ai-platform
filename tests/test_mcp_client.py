@@ -1,5 +1,6 @@
 import asyncio
 import gzip
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import httpx
@@ -78,6 +79,21 @@ async def test_discovery_rejects_names_instead_of_silently_renaming(bad_name):
 
 
 @pytest.mark.asyncio
+async def test_long_unselected_tool_description_is_truncated_without_rejecting_catalog():
+    long_description = "x" * (catalog.MCP_TOOL_DESCRIPTION_MAX_LENGTH + 500)
+
+    async def list_tools(**_kwargs):
+        return ListToolsResult(tools=[
+            Tool(name="selected", description="selected description", inputSchema={}),
+            Tool(name="unselected", description=long_description, inputSchema={}),
+        ])
+
+    tools = await client.list_mcp_tools(SimpleNamespace(list_tools=list_tools))
+    assert [tool.name for tool in tools] == ["selected", "unselected"]
+    assert tools[1].description == long_description[:catalog.MCP_TOOL_DESCRIPTION_MAX_LENGTH]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["compressed", "redirect", "oversize"])
 @pytest.mark.parametrize("transport", ["http", "sse"])
 async def test_transport_rejects_unsafe_responses_before_followup(monkeypatch, case, transport):
@@ -114,7 +130,7 @@ async def test_transport_rejects_unsafe_responses_before_followup(monkeypatch, c
 
 
 @pytest.mark.asyncio
-async def test_runtime_rejects_retained_sandbox_transport_before_credentials(monkeypatch):
+async def test_runtime_drops_unsupported_server_before_credentials(monkeypatch):
     async def runtime_target(*_args, **_kwargs):
         return {"transport": "sandbox", "credential_envelope": "sealed"}
 
@@ -124,11 +140,104 @@ async def test_runtime_rejects_retained_sandbox_transport_before_credentials(mon
         "get_mcp_principal_jwt_store",
         lambda: (_ for _ in ()).throw(AssertionError("credentials must not be loaded")),
     )
-    payload = SimpleNamespace(
-        input={"_runtime_tool_policy_subjects": [{"identity": "mcp__gateway__tool", "mcp_server": "gateway"}]}
-    )
+    @dataclass
+    class Payload:
+        input: dict
+
+    payload = Payload(input={
+        "_runtime_tool_policy_subjects": [
+            {"identity": "mcp__gateway__tool", "mcp_server": "gateway"},
+            {"identity": "mcp__ai-platform-context__lookup", "mcp_server": "ai-platform-context"},
+        ]
+    })
     principal = SimpleNamespace(tenant_id="tenant", user_id="user")
-    with pytest.raises(McpRuntimeContextError, match="mcp_server_unsupported_transport"):
+    result = await mcp_runtime.attach_mcp_server_configs(
+        object(), principal=principal, run_payload=payload
+    )
+    assert result.input["_runtime_tool_policy_subjects"] == [
+        {"identity": "mcp__ai-platform-context__lookup", "mcp_server": "ai-platform-context"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_missing_target_or_jwt_only_removes_optional_external_subjects(monkeypatch):
+    @dataclass
+    class Payload:
+        input: dict
+
+    builtin = {"identity": "mcp__ai-platform-context__lookup", "mcp_server": "ai-platform-context"}
+    external = {"identity": "mcp__gateway__tool", "mcp_server": "gateway"}
+    principal = SimpleNamespace(tenant_id="tenant", user_id="user")
+
+    async def missing_target(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(mcp_runtime.mcp_postgres, "get_mcp_server_runtime_target", missing_target)
+    monkeypatch.setattr(
+        mcp_runtime,
+        "get_mcp_principal_jwt_store",
+        lambda: (_ for _ in ()).throw(AssertionError("JWT should not be loaded without targets")),
+    )
+    payload = Payload(input={"_runtime_tool_policy_subjects": [external, builtin]})
+    result = await mcp_runtime.attach_mcp_server_configs(object(), principal=principal, run_payload=payload)
+    assert result.input["_runtime_tool_policy_subjects"] == [builtin]
+
+    async def runtime_target(*_args, **_kwargs):
+        return {"transport": "streamable_http", "credential_envelope": "sealed"}
+
+    monkeypatch.setattr(mcp_runtime.mcp_postgres, "get_mcp_server_runtime_target", runtime_target)
+    monkeypatch.setattr(
+        mcp_runtime,
+        "open_mcp_server_credentials",
+        lambda **_kwargs: ("https://mcp.example/mcp", {"X-Static-Key": "synthetic"}),
+    )
+
+    class MissingJwt:
+        async def get(self, _principal):
+            raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
+
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: MissingJwt())
+    payload = Payload(input={"_runtime_tool_policy_subjects": [external, builtin]})
+    result = await mcp_runtime.attach_mcp_server_configs(object(), principal=principal, run_payload=payload)
+    assert result.input["_runtime_tool_policy_subjects"] == [builtin]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["database", "credential_corruption", "jwt_corruption"])
+async def test_runtime_does_not_hide_database_or_corrupt_credential_failures(monkeypatch, failure):
+    @dataclass
+    class Payload:
+        input: dict
+
+    async def runtime_target(*_args, **_kwargs):
+        if failure == "database":
+            raise RuntimeError("database failure")
+        return {"transport": "streamable_http", "credential_envelope": "sealed"}
+
+    monkeypatch.setattr(mcp_runtime.mcp_postgres, "get_mcp_server_runtime_target", runtime_target)
+    if failure == "credential_corruption":
+        def invalid_credentials(**_kwargs):
+            raise McpRuntimeContextError("mcp_server_credentials_invalid", status_code=503)
+
+        monkeypatch.setattr(mcp_runtime, "open_mcp_server_credentials", invalid_credentials)
+    else:
+        monkeypatch.setattr(
+            mcp_runtime,
+            "open_mcp_server_credentials",
+            lambda **_kwargs: ("https://mcp.example/mcp", {}),
+        )
+
+    class CorruptJwt:
+        async def get(self, _principal):
+            raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503)
+
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: CorruptJwt())
+    error = RuntimeError if failure == "database" else McpRuntimeContextError
+    principal = SimpleNamespace(tenant_id="tenant", user_id="user")
+    payload = Payload(input={
+        "_runtime_tool_policy_subjects": [{"identity": "mcp__gateway__tool", "mcp_server": "gateway"}]
+    })
+    with pytest.raises(error):
         await mcp_runtime.attach_mcp_server_configs(object(), principal=principal, run_payload=payload)
 
 

@@ -16,8 +16,8 @@ test("offline route layout smoke covers required routes, viewports, reachability
   for (const path of [
     "/skills",
     "/agent-market",
-    "/agent-market/agt_support/1",
-    "/agent-market/agt_support/1/chat",
+    "/agent-market/agt_support",
+    "/agent-market/agt_support/chat",
     "/agent-builder",
   ]) {
     assert.match(source, new RegExp(path.replaceAll("/", "\\/")));

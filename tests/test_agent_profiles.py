@@ -111,17 +111,17 @@ async def test_agent_skill_set_pinning_accepts_empty_primary_release_decision_pa
         "backing_mcp_tool_id": "tool-a",
     }
 
-    async def admit_skill_run(*_args, **kwargs):
-        assert kwargs["skill"] == skill
-        return SimpleNamespace(
+    async def admit_skill_set(*_args, **kwargs):
+        assert kwargs["roots"] == [("qa-review", skill, version)]
+        return [SimpleNamespace(
             skill_manifests=[{"skill_id": "qa-review", "content_hash": version}],
             skill_version=version,
             release_decision={},
-        )
+        )]
 
     monkeypatch.setattr(
-        "app.agent_apps.application.skill_set_pinning.admit_skill_run",
-        admit_skill_run,
+        "app.agent_apps.application.skill_set_pinning.admit_skill_set",
+        admit_skill_set,
     )
     monkeypatch.setattr(
         "app.agent_apps.application.skill_set_pinning.pin_skill_run_mcp_tools",
@@ -149,16 +149,16 @@ async def test_agent_skill_set_pinning_accepts_empty_primary_release_decision_pa
 async def test_agent_skill_set_checks_stale_version_before_mcp_selection(monkeypatch):
     from app.skills.api import SkillRunVersionMismatch
 
-    async def admit_skill_run(*_args, **kwargs):
-        assert kwargs["expected_version"] == "locked-v1"
+    async def admit_skill_set(*_args, **kwargs):
+        assert kwargs["roots"][0][2] == "locked-v1"
         raise SkillRunVersionMismatch("skill_run_version_mismatch")
 
     def fail_mcp_pin(*_args, **_kwargs):
         raise AssertionError("MCP selection must follow the expected-version check")
 
     monkeypatch.setattr(
-        "app.agent_apps.application.skill_set_pinning.admit_skill_run",
-        admit_skill_run,
+        "app.agent_apps.application.skill_set_pinning.admit_skill_set",
+        admit_skill_set,
     )
     monkeypatch.setattr(
         "app.agent_apps.application.skill_set_pinning.pin_skill_run_mcp_tools",
@@ -383,7 +383,7 @@ def test_selected_profile_rejects_client_owned_capability_selectors():
         message="Help me",
         selected_agent_profile=SelectedAgentProfileRequest(
             agent_id="agt_support",
-            expected_revision=4,
+
         ),
         selected_skill=SelectedSkillRequest(
             skill_id="support-skill",
@@ -409,17 +409,10 @@ def test_selected_profile_accepts_user_owned_model_selectors():
         AgentProfileAuthority.reject_profile_selector_conflicts(request, active=True)
 
 
-def test_selected_profile_is_an_optimistic_revision_lock():
-    request = ChatStreamRequest(
-        message="Help me",
-        selected_agent_profile=SelectedAgentProfileRequest(
-            agent_id="agt_support",
-            expected_revision=4,
-        ),
-    )
-
-    assert request.selected_agent_profile.agent_id == "agt_support"
-    assert request.selected_agent_profile.expected_revision == 4
+def test_selected_profile_is_identity_only_and_rejects_client_version_locks():
+    assert SelectedAgentProfileRequest(agent_id="agt_support").model_dump() == {"agent_id": "agt_support"}
+    with pytest.raises(ValueError):
+        SelectedAgentProfileRequest.model_validate({"agent_id": "agt_support", "expected_revision": 7})
 
 
 def test_selected_profile_rejects_client_owned_definition_hash():
@@ -799,10 +792,7 @@ def test_agent_conversation_creation_maps_repository_failures_to_safe_4xx(
         headers=ordinary_headers(),
         json={
             "workspace_id": "workspace-a",
-            "selected_agent_profile": {
-                "agent_id": "agt_support",
-                "expected_revision": 4,
-            },
+            "selected_agent_profile": {"agent_id": "agt_support"},
             "operation_id": "11111111-1111-4111-8111-111111111111",
         },
     )
@@ -835,10 +825,7 @@ def test_agent_conversation_creation_binds_one_stable_operation_identity(monkeyp
     )
     body = {
         "workspace_id": "workspace-a",
-        "selected_agent_profile": {
-            "agent_id": "agt_support",
-            "expected_revision": 4,
-        },
+        "selected_agent_profile": {"agent_id": "agt_support"},
         "operation_id": "33333333-3333-4333-8333-333333333333",
     }
     client = TestClient(create_app())
@@ -880,10 +867,7 @@ def test_agent_conversation_creation_rejects_non_v4_operation_identity(monkeypat
         headers=ordinary_headers(),
         json={
             "workspace_id": "workspace-a",
-            "selected_agent_profile": {
-                "agent_id": "agt_support",
-                "expected_revision": 4,
-            },
+            "selected_agent_profile": {"agent_id": "agt_support"},
             "operation_id": operation_id,
         },
     )
@@ -1144,7 +1128,7 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
 
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', get_run)
     authority = AgentProfileAuthority()
-    monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
+    monkeypatch.setattr(authority, "resolve_pinned_profile_for_replay", resolve_bound)
 
     await authority.reauthorize_pinned_run_for_replay(
         object(),
@@ -1273,11 +1257,13 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
                 {
                     "skill_id": "profile-skill",
                     "skill_version": locked_version,
+                    "backing_mcp_tool_id": "profile-tool",
                     "executor_type": "claude-agent-worker",
                 },
                 {
                     "skill_id": "profile-skill-secondary",
                     "skill_version": secondary_locked_version,
+                    "backing_mcp_tool_id": "profile-tool-secondary",
                     "executor_type": "claude-agent-worker",
                 },
             ),
@@ -1312,7 +1298,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         materialize_run_skill_manifests,
     )
     authority = AgentProfileAuthority()
-    monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
+    monkeypatch.setattr(authority, "resolve_pinned_profile_for_replay", resolve_bound)
 
     await authority.reauthorize_pinned_run_for_replay(
         object(),
@@ -1470,7 +1456,7 @@ async def test_replay_authority_accepts_legacy_required_skill_snapshot_without_c
     monkeypatch.setattr('app.skills.infrastructure.postgres.validate_replay_skill_manifests', validate)
     monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.require_replay_source_identity', lambda **_kwargs: None)
     authority = AgentProfileAuthority()
-    monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
+    monkeypatch.setattr(authority, "resolve_pinned_profile_for_replay", resolve_bound)
 
     await authority.reauthorize_pinned_run_for_replay(
         object(),
@@ -1659,7 +1645,7 @@ async def test_harness_profile_replay_preserves_skillless_run_identity(monkeypat
     monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", get_run)
     monkeypatch.setattr("app.skills.infrastructure.run_snapshots_postgres.materialize_run_skill_manifests", materialize)
     authority = AgentProfileAuthority()
-    monkeypatch.setattr(authority, "resolve_bound_for_submission", resolve_bound)
+    monkeypatch.setattr(authority, "resolve_pinned_profile_for_replay", resolve_bound)
     operation = authority.reauthorize_pinned_run_for_replay(
         object(), principal=AuthPrincipal(user_id="user-a", display_name="User", tenant_id="tenant-a", roles=["user"]),
         run_id="harness-run",

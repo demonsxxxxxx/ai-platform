@@ -68,7 +68,6 @@ test("loads only the safe public Agent Profile projection", async () => {
         {
           ...defaultEnterpriseProjection,
           agent_id: "agt_support",
-          expected_revision: 7,
           name: "支持助手",
           description: "处理已授权的支持请求。",
           avatar_ref: "builtin:assistant",
@@ -145,7 +144,7 @@ test("published authorization reads bypass cache and preserve transport failures
   }
 });
 
-test("lists only server-authorized conversations with their immutable safe identity", async () => {
+test("lists server-authorized conversations across publication revisions by Agent id", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; cache?: RequestCache }> = [];
   globalThis.fetch = (async (input, init) => {
@@ -179,12 +178,12 @@ test("lists only server-authorized conversations with their immutable safe ident
 
   try {
     const page = await agentProfileApi.listConversations(
-      { agent_id: "agt_support", expected_revision: 7 },
+      { agent_id: "agt_support" },
       { limit: 20 },
     );
     assert.deepEqual(calls, [
       {
-        url: "/api/ai/chat/sessions?agent_id=agt_support&revision=7&limit=20",
+        url: "/api/ai/chat/sessions?agent_id=agt_support&limit=20",
         cache: "no-store",
       },
     ]);
@@ -215,12 +214,12 @@ test("lists only server-authorized conversations with their immutable safe ident
     assert.equal("model_id" in page.sessions[0]!.agent_conversation!, false);
 
     await agentProfileApi.listConversations(
-      { agent_id: "agt_support", expected_revision: 7 },
+      { agent_id: "agt_support" },
       { cursor: "cursor+page/2=", limit: 50 },
     );
     assert.equal(
       calls[1]?.url,
-      "/api/ai/chat/sessions?agent_id=agt_support&revision=7&limit=50&cursor=cursor%2Bpage%2F2%3D",
+      "/api/ai/chat/sessions?agent_id=agt_support&limit=50&cursor=cursor%2Bpage%2F2%3D",
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -262,7 +261,6 @@ test("creates a durable Agent Conversation with one caller-owned operation ident
   try {
     const response = await agentProfileApi.createConversation({
       agent_id: "agt_support",
-      expected_revision: 7,
     }, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
     assert.deepEqual(calls, [
       {
@@ -271,7 +269,6 @@ test("creates a durable Agent Conversation with one caller-owned operation ident
         body: JSON.stringify({
           selected_agent_profile: {
             agent_id: "agt_support",
-            expected_revision: 7,
           },
           operation_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
         }),
@@ -405,7 +402,6 @@ test("uses the current admin profile contract without retired file-type transpor
 test("rejects incomplete hard-cut projections instead of repairing them", () => {
   const publicProfile = {
     agent_id: "agt_support",
-    expected_revision: 7,
     name: "支持助手",
     description: "处理已授权的支持请求。",
     starter_prompts: [],
@@ -417,7 +413,7 @@ test("rejects incomplete hard-cut projections instead of repairing them", () => 
   };
   const conversationIdentity = {
     agent_id: publicProfile.agent_id,
-    revision: publicProfile.expected_revision,
+    revision: 7,
     name: publicProfile.name,
     description: publicProfile.description,
     starter_prompts: publicProfile.starter_prompts,
@@ -435,7 +431,7 @@ test("rejects incomplete hard-cut projections instead of repairing them", () => 
 });
 
 
-test("preserves typed 403 and stale revision failures from conversation admission", async () => {
+test("preserves typed authorization and unavailable failures from conversation admission", async () => {
   const originalFetch = globalThis.fetch;
   let status = 403;
   globalThis.fetch = (async () =>
@@ -449,7 +445,7 @@ test("preserves typed 403 and stale revision failures from conversation admissio
   try {
     await assert.rejects(
       agentProfileApi.createConversation(
-        { agent_id: "agt_support", expected_revision: 7 },
+        { agent_id: "agt_support" },
         "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       ),
       (error: unknown) =>
@@ -460,7 +456,7 @@ test("preserves typed 403 and stale revision failures from conversation admissio
     status = 409;
     await assert.rejects(
       agentProfileApi.createConversation(
-        { agent_id: "agt_support", expected_revision: 7 },
+        { agent_id: "agt_support" },
         "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       ),
       (error: unknown) =>

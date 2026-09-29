@@ -226,6 +226,28 @@ async def test_canonical_profile_lifecycle_persists_and_queries_exact_publicatio
         )
         assert [row["agent_id"] for row in rows] == ["agt_support"]
 
+        await conn.execute("""
+            create table sessions (
+                id text primary key, tenant_id text, user_id text, workspace_id text,
+                agent_id text, title text, title_source text, purpose text, status text,
+                admitted_agent_profile_revision bigint, admitted_agent_profile_hash text,
+                created_at timestamptz default now(), updated_at timestamptz default now()
+            );
+            create table messages (
+                id text primary key, tenant_id text, session_id text, role text,
+                content text, created_at timestamptz default now()
+            );
+        """)
+        for session_id, user_id in (("ses-one", "admin-a"), ("ses-two", "admin-a"), ("ses-private", "other-user")):
+            await conn.execute(
+                """insert into sessions (
+                    id, tenant_id, user_id, workspace_id, agent_id, title, title_source,
+                    purpose, status, admitted_agent_profile_revision, admitted_agent_profile_hash
+                ) values (%s, 'tenant-a', %s, 'default', 'agt_support', 'History', 'manual',
+                          'conversation', 'active', 2, %s)""",
+                (session_id, user_id, "b" * 64),
+            )
+
         withdrawn = await _append_revision(
             conn,
             status="withdrawn",
@@ -241,6 +263,19 @@ async def test_canonical_profile_lifecycle_persists_and_queries_exact_publicatio
         assert await profile_repository.get_current_published_agent_profile(
             conn, tenant_id="tenant-a", agent_id="agt_support"
         ) is None
+        await conn.execute("update agents set status = 'inactive' where id = 'agt_support'")
+        from app.conversations.infrastructure.postgres import list_authorized_agent_conversations
+
+        history = await list_authorized_agent_conversations(
+            conn, tenant_id="tenant-a", user_id="admin-a", agent_id="agt_support",
+            cursor=None, limit=20,
+        )
+        assert {row["id"] for row in history} == {"ses-one", "ses-two"}
+        assert {row["admitted_agent_profile_revision"] for row in history} == {2}
+        assert await list_authorized_agent_conversations(
+            conn, tenant_id="tenant-b", user_id="admin-a", agent_id="agt_support",
+            cursor=None, limit=20,
+        ) == []
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()

@@ -3,36 +3,25 @@ import type {
   SelectedAgentProfileRequest,
 } from "../../types";
 
-/** Resolve a route selection only when the catalog still exposes that exact revision. */
+/** Resolve a route selection only when the catalog still exposes that Agent. */
 export function selectPublishedMarketProfile(
   profiles: readonly AgentProfilePublicProjection[],
   agentId: string | undefined,
-  revisionText: string | undefined,
 ): AgentProfilePublicProjection | null {
-  const expectedRevision = Number(revisionText);
-  if (
-    !agentId?.trim() ||
-    !Number.isSafeInteger(expectedRevision) ||
-    expectedRevision < 1
-  ) {
-    return null;
-  }
+  if (!agentId?.trim()) return null;
   return (
-    profiles.find(
-      (profile) =>
-        profile.agent_id === agentId && profile.expected_revision === expectedRevision,
-    ) ?? null
+    profiles.find((profile) => profile.agent_id === agentId) ?? null
   );
 }
 
-/** Build the shareable detail URL for one immutable published revision. */
+/** Build the shareable detail URL for one published Agent. */
 export function buildAgentMarketDetailPath(
   profile: SelectedAgentProfileRequest,
 ): string {
-  return `/agent-market/${encodeURIComponent(profile.agent_id)}/${profile.expected_revision}`;
+  return `/agent-market/${encodeURIComponent(profile.agent_id)}`;
 }
 
-/** Build the dedicated, revision-bound workspace path for an Agent Conversation. */
+/** Build the dedicated workspace path for an Agent Conversation. */
 export function buildAgentMarketWorkspacePath(
   profile: SelectedAgentProfileRequest,
   sessionId?: string,

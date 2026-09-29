@@ -811,7 +811,7 @@ test("useAgent defers the locked Skill label until the server projects it", asyn
 });
 
 test("Agent first-send URL canonicalization keeps the live SSE owner", async () => {
-  const routeBasePath = "/agent-market/agt_support/7/chat";
+  const routeBasePath = "/agent-market/agt_support/chat";
   const harness = await loadReactHarness({
     sessionRouteLifecycle: true,
     sessionRouteBasePath: routeBasePath,
@@ -6877,7 +6877,7 @@ test("useAgent rehydrates durable partial text and one fixed failure card", asyn
 });
 
 test("Agent route restores a high-watermark history owner after unmount and replay", async () => {
-  const routeBasePath = "/agent-market/agt_replay/7/chat";
+  const routeBasePath = "/agent-market/agt_replay/chat";
   const sessionId = "session-route-replay";
   const runId = "run-route-replay";
   const { sessionApi } = await import("../../../services/api/session.ts");

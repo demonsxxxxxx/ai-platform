@@ -22,9 +22,7 @@ from app.runs.infrastructure import capability_admission_postgres as runs_capabi
 from app.runs.infrastructure import creation_postgres as runs_creation_postgres
 from app.runs.infrastructure import replay_postgres as runs_replay_postgres
 from app.skills.infrastructure import postgres as skills_postgres
-from app.skills.infrastructure import resolution_postgres as skills_resolution_postgres
 from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots_postgres
-from app.skills import release_policy as skills_release_policy
 
 from app.agent_apps.api import (
     AGENT_PROFILE_AVATAR_REFS,
@@ -241,24 +239,11 @@ async def _authorize_current_profile_skill(
             principal_roles=principal_roles, is_admin=is_admin, permissions=permissions,
         )
         return {**skill, "skill_version": pinned_version, "skill_content_hash": pinned_version}
-    skill = await skills_resolution_postgres.resolve_selected_skill(
+    return await runs_capability_admission_postgres.authorize_current_selected_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=agent_id,
         skill_id=skill_id,
-    )
-    expected_version = skills_release_policy.resolve_rollout_skill_decision(
-        skill,
-        tenant_id=tenant_id,
-        skill_id=skill_id,
-        rollout_key=rollout_key,
-    ).selected_version
-    return await runs_capability_admission_postgres.authorize_selected_run_capabilities(
-        conn,
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        skill_id=skill_id,
-        expected_version=expected_version,
         rollout_key=rollout_key,
         normalized_input={},
         principal_department_id=principal_department_id,
@@ -519,6 +504,7 @@ class AgentProfileAuthority:
         agent_id: str,
         definition: AgentProfileDraftRequest,
         skill_pins: dict[str, str] | None = None,
+        check_mcp_configuration: bool = True,
     ) -> tuple[dict[str, Any], ...]:
         """Revalidate current Skill and MCP authorization for a definition."""
 
@@ -550,7 +536,7 @@ class AgentProfileAuthority:
                     for selected_skill in definition.skill_set
                 ]
             )
-            for server_id in server_ids:
+            for server_id in server_ids if check_mcp_configuration else ():
                 server = await mcp_api.get_mcp_server_registry_entry(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -614,6 +600,7 @@ class AgentProfileAuthority:
             agent_id=agent_id,
             definition=definition,
             skill_pins={item["skill_id"]: item["expected_version"] for item in run_skill_set},
+            check_mcp_configuration=False,
         )
         return tuple(
             {
@@ -1117,6 +1104,7 @@ class AgentProfileAuthority:
             principal=principal,
             agent_id=str(row["agent_id"]),
             definition=_draft_from_row(row),
+            check_mcp_configuration=False,
         )
 
     async def resolve_for_admission(
@@ -1134,7 +1122,6 @@ class AgentProfileAuthority:
             conn,
             tenant_id=principal.tenant_id,
             agent_id=selection.agent_id,
-            expected_revision=selection.expected_revision,
             for_update=True,
         )
         if row is None:
@@ -1150,7 +1137,7 @@ class AgentProfileAuthority:
             )
         return admission
 
-    async def resolve_bound_for_submission(
+    async def resolve_pinned_profile_for_replay(
         self,
         conn,
         *,
@@ -1165,7 +1152,7 @@ class AgentProfileAuthority:
         submitted_request: ChatStreamRequest | None = None,
         query_agent_id: str | None = None,
     ) -> AgentProfileAdmission:
-        """Reauthorize a conversation's immutable publication while its Agent is live."""
+        """Reauthorize the immutable Profile snapshot already accepted by one Run."""
 
         row = await agent_profile_repository.get_bound_published_agent_profile(
             conn,
@@ -1283,6 +1270,7 @@ class AgentProfileAuthority:
                 principal=principal,
                 agent_id=str(row["agent_id"]),
                 definition=definition,
+                check_mcp_configuration=False,
             )
         elif (
             pinned_skill_set is None
@@ -1314,13 +1302,34 @@ class AgentProfileAuthority:
             row,
             skills=skills,
         )
+        # Dispatch owns current tool authorization; do not resolve it twice in
+        # the same Worker transaction. Replay validates the accepted snapshot.
+        available_mcp_tool_ids: tuple[str, ...] = effective_mcp_tool_ids if pinned_skill_set is not None else ()
+        if effective_mcp_tool_ids and pinned_skill_set is None:
+            available_tools = await mcp_api.authorize_available_chat_mcp_tools(
+                conn,
+                tenant_id=principal.tenant_id,
+                tool_ids=list(effective_mcp_tool_ids),
+                principal_department_id=principal.department_id,
+                principal_roles=principal.roles,
+                is_admin=is_ai_admin(principal),
+                permissions=principal.permissions,
+            )
+            available_ids = {
+                str(item.get("tool_id") or "").strip()
+                for item in available_tools
+                if isinstance(item, dict)
+            }
+            available_mcp_tool_ids = tuple(
+                tool_id for tool_id in effective_mcp_tool_ids if tool_id in available_ids
+            )
         return AgentProfileAdmission(
             agent_id=agent_id,
             revision=revision,
             content_hash=content_hash,
             skill=skills[0],
             skills=skills,
-            mcp_tool_ids=effective_mcp_tool_ids,
+            mcp_tool_ids=available_mcp_tool_ids,
             private_execution_input={
                 "agent_id": agent_id,
                 "revision": revision,
@@ -1389,7 +1398,7 @@ class AgentProfileAuthority:
         execution_kind = str(snapshot.get("execution_kind") or run.get("execution_kind") or (
             "skill" if skill_manifests else "harness_chat"
         ))
-        admission = await self.resolve_bound_for_submission(
+        admission = await self.resolve_pinned_profile_for_replay(
             conn, principal=principal, agent_id=str(run.get("agent_id") or ""),
             revision=revision, content_hash=str(content_hash or ""),
             pinned_skill_set=pinned_skill_set,
@@ -1513,7 +1522,7 @@ class AgentProfileAuthority:
                     manifest_versions.get(skill_id) == version
                     for skill_id, version in authority_skill_versions.items()
                 )
-                and governed_mcp_tool_ids == admission.mcp_tool_ids
+                and governed_mcp_tool_ids == execution_mcp_tool_ids
             )
         elif execution_kind == "harness_chat":
             skill_identity_matches = run.get("skill_id") is None
@@ -1532,7 +1541,12 @@ class AgentProfileAuthority:
             or not skill_version_matches
             or str(snapshot.get("executor_type") or "")
             != str(admission.skill.get("executor_type") or "")
-            or execution_mcp_tool_ids != admission.mcp_tool_ids
+            or (bool(execution_mcp_tool_ids) and not set(execution_mcp_tool_ids).issubset(
+                _effective_mcp_tool_ids(
+                    {"mcp_tool_ids": list(admission.configured_mcp_tool_ids)},
+                    skills=admission.skills,
+                )[1]
+            ))
         ):
             raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid")
 
@@ -1575,7 +1589,6 @@ class AgentProfileAuthority:
                     str(existing.get("workspace_id") or "") != workspace_id
                     or str(existing.get("agent_id") or "") != selection.agent_id
                     or response.agent_conversation is None
-                    or response.agent_conversation.revision != selection.expected_revision
                     or response.purpose != purpose
                     or response.title != expected_title
                 ):
@@ -1680,7 +1693,6 @@ class AgentProfileAuthority:
         if "selected_agent_profile" in submitted_fields and (
             request.selected_agent_profile is None
             or request.selected_agent_profile.agent_id != admission.agent_id
-            or request.selected_agent_profile.expected_revision != admission.revision
         ):
             raise HTTPException(status_code=400, detail="agent_profile_selector_conflict")
         if "selected_mcp_tool_ids" in submitted_fields and request.selected_mcp_tool_ids:

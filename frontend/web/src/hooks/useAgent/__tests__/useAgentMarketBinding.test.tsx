@@ -305,7 +305,6 @@ test("useAgent forwards only an explicit Agent profile without inheriting it", a
   const originalMarkRead = sessionApi.markRead;
   const selectedAgentProfile = {
     agent_id: "agt_support",
-    expected_revision: 4,
   } as const;
 
   const harness = await loadHarness();
@@ -387,7 +386,7 @@ test("generic Chat never inherits an Agent Market binding", async () => {
   }
 });
 
-test("a recovered Agent Conversation owns every exact selector and fails closed", async () => {
+test("a recovered Agent Conversation keeps composer models and omits client capabilities", async () => {
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const originalMarkRead = sessionApi.markRead;
@@ -457,14 +456,18 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
       assert.equal(
         (
           await harness.hook.sendMessage(
-            "bound first",
-            { model_id: "client-model", enable_thinking: "high" },
+          "bound first",
+            {
+              model_id: "client-model",
+              model: "provider/client-model",
+              enable_thinking: "high",
+            },
             undefined,
             {
               skill_id: "client-skill",
               expected_version: "client-version",
             },
-            { agent_id: "forged-agent", expected_revision: 99 },
+            { agent_id: "forged-agent" },
           )
         ).status,
         "accepted",
@@ -476,16 +479,18 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
     assert.equal(submissions.length, 2);
     assert.equal(submissions[0]?.[11], "high");
     assert.equal(submissions[1]?.[11], "auto");
+    assert.deepEqual(submissions[0]?.[2], {
+      model_id: "client-model",
+      model: "provider/client-model",
+    });
+    assert.deepEqual(submissions[1]?.[2], {});
     for (const submission of submissions) {
       assert.equal(submission[1], "session-agent");
-      assert.equal(submission[2], undefined, "model/Prompt options must be omitted");
+      assert.equal("enable_thinking" in (submission[2] as object), false);
       assert.equal(submission[4], undefined, "Skill selectors must be omitted");
       assert.equal(submission[6], undefined, "selected Skill must be omitted");
       assert.equal(submission[9], undefined, "MCP selectors must be omitted");
-      assert.deepEqual(submission[10], {
-        agent_id: "agt_support",
-        expected_revision: 7,
-      });
+      assert.deepEqual(submission[10], { agent_id: "agt_support" });
     }
 
     await harness.act(async () => {
@@ -500,7 +505,7 @@ test("a recovered Agent Conversation owns every exact selector and fails closed"
             { model_id: "generic-model" },
             undefined,
             null,
-            { agent_id: "forged-agent", expected_revision: 99 },
+            { agent_id: "forged-agent" },
           )
         ).status,
         "accepted",

@@ -3664,7 +3664,6 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
                 "claude_agent_workspace_root": "/tmp/ai-platform-agent-workspaces",
                 "claude_agent_sdk_skills": "general-chat,qa-file-reviewer",
                 "platform_skills_root": "skills",
-                "skill_staging_subdir": ".claude/skills",
                 "public_skill_file_overlay_max_bytes": 262144,
             },
         )(),

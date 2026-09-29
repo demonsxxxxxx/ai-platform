@@ -1934,7 +1934,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             });
           }
           const recoveredProfile = identity
-            ? { agent_id: identity.agent_id, expected_revision: identity.revision }
+            ? { agent_id: identity.agent_id }
             : null;
           sessionAgentIdRef.current = loadedAgentId;
           setSessionAgentId(loadedAgentId);
@@ -2507,13 +2507,22 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           ? undefined
           : options?.getDisabledMcpTools?.();
 
-        // Merge session-level agent options (e.g. model) with ChatInput values
+        // Agent App runs accept only the public model selection and Thinking
+        // level from the composer. Skills and MCP remain server-owned.
+        const mergedAgentOptions = {
+          ...options?.getAgentOptions?.(),
+          ...agentOptions,
+        };
         const fullAgentOptions = isBoundAgentConversation
-          ? undefined
-          : {
-              ...options?.getAgentOptions?.(),
-              ...agentOptions,
-            };
+          ? {
+              ...(typeof mergedAgentOptions.model_id === "string"
+                ? { model_id: mergedAgentOptions.model_id }
+                : {}),
+              ...(typeof mergedAgentOptions.model === "string"
+                ? { model: mergedAgentOptions.model }
+                : {}),
+            }
+          : mergedAgentOptions;
 
         // Option getters are application extension seams. A getter can
         // synchronously publish an auth-incarnation event, so validate the

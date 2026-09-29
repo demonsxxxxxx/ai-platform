@@ -91,21 +91,15 @@ def harden_skill_staging_tree(root: Path) -> None:
 
 
 class SkillStager:
-    def __init__(self, staging_subdir: str = ".claude/skills") -> None:
-        cleaned = staging_subdir.strip().strip("/") or ".claude/skills"
-        if Path(cleaned).is_absolute() or ".." in Path(cleaned).parts:
-            raise ValueError("skill staging subdir must stay inside the run workspace")
-        self.staging_subdir = cleaned
-
     def stage_skills(self, *, workspace: str | Path, skills: list[BuiltinSkill]) -> list[str]:
         workspace_path = Path(workspace)
         workspace_path.mkdir(parents=True, exist_ok=True)
         ensure_creatable_inside(
             workspace_path,
-            workspace_path / self.staging_subdir,
+            workspace_path / ".claude" / "skills",
             "skill staging path must stay inside the run workspace",
         )
-        target_root = workspace_path / self.staging_subdir
+        target_root = workspace_path / ".claude" / "skills"
         ensure_skill_staging_directory(workspace_path, target_root)
         ensure_creatable_inside(
             workspace_path,

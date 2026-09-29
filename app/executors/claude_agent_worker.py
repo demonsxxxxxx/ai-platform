@@ -3,7 +3,7 @@ import binascii
 import inspect
 import shutil
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
@@ -28,6 +28,7 @@ from app.execution_boundary import (
     ExecutionBoundaryDecision,
     decide_execution_boundary,
 )
+from app.executors.claude.capability_policy import _canonical_tool_policy_subjects
 from app.executors.base import (
     ArtifactManifest,
     ExecutorDispatchAccepted,
@@ -56,11 +57,7 @@ from app.execution.api import (
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.required_tool_contract import (
-    RequiredCapabilityDecision,
-    RequiredCapabilityDeclaration,
-    RequiredCapabilityEvidence,
-    RequiredToolContractError,
-    selected_capability_completion_decision,
+    capability_invocation_completion_decision,
     validate_runtime_tool_evidence,
 )
 from app.runtime.event_bridge import agent_event_to_executor_event
@@ -118,44 +115,6 @@ async def _emit_public_progress_event(
     )
 
 
-def _capability_completion_decision(
-    plan: CapabilityExecutionPlan, *, binding: dict[str, object], evidence: object
-) -> RequiredCapabilityDecision:
-    """Validate every observed invocation against the authorized capability set."""
-
-    mismatch = RequiredCapabilityDecision(False, "required_tool_completion_evidence_mismatch", "", "")
-    if not isinstance(evidence, list):
-        return mismatch
-    try:
-        records = [RequiredCapabilityEvidence.from_payload(item) for item in evidence]
-    except RequiredToolContractError:
-        return mismatch
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-    call_owners: dict[str, tuple[str, str]] = {}
-    for record in records:
-        key = (record.capability_kind, record.canonical_identity)
-        call_id = record.tool_call_id
-        if key not in plan.available or not isinstance(call_id, str) or not call_id:
-            return mismatch
-        if call_owners.setdefault(call_id, key) != key:
-            return mismatch
-        groups.setdefault((*key, call_id), []).append(asdict(record))
-    for (capability_kind, canonical_identity, _call_id), invocation in groups.items():
-        declaration = RequiredCapabilityDeclaration.from_authorized_subject(
-            capability_kind=capability_kind,
-            canonical_identity=canonical_identity,
-        )
-        decision = selected_capability_completion_decision(
-            declarations=[declaration],
-            binding=binding,
-            evidence=invocation,
-        )
-        if not decision.allowed:
-            return decision
-    reason = "required_tool_completion_evidence_valid" if groups else "required_capability_not_selected"
-    return RequiredCapabilityDecision(True, reason, "", "")
-
-
 def _capability_execution_error(
     payload: RunPayload,
     evidence: object,
@@ -168,8 +127,22 @@ def _capability_execution_error(
         payload.input.get("_runtime_tool_policy_subjects"),
         available_skill_identities=available_skill_identities,
     )
-    decision = _capability_completion_decision(
-        plan,
+    authorized_subjects = _canonical_tool_policy_subjects(
+        payload.input.get("_runtime_tool_policy_subjects")
+    )
+    allowed_terminal_failures = {
+        ("skill", identity)
+        for kind, identity in plan.available
+        if kind == "skill"
+    }
+    allowed_terminal_failures.update(
+        ("mcp", identity)
+        for identity, subject in authorized_subjects.items()
+        if ("mcp", identity) in plan.available
+        and subject.get("write_capable") is False
+    )
+    decision = capability_invocation_completion_decision(
+        plan.available,
         binding={
             "tenant_id": payload.tenant_id,
             "workspace_id": payload.workspace_id,
@@ -179,6 +152,7 @@ def _capability_execution_error(
             "attempt_id": payload.attempt_id,
         },
         evidence=evidence,
+        allow_terminal_failure_capabilities=allowed_terminal_failures,
     )
     return None if decision.allowed else decision.reason
 
@@ -809,7 +783,7 @@ class ClaudeAgentWorkerAdapter:
         staged_skill_names = (
             []
             if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
-            else SkillStager(settings.skill_staging_subdir).stage_skills(
+            else SkillStager().stage_skills(
                 workspace=resolved_workspace,
                 skills=selected_skills,
             )

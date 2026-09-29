@@ -188,7 +188,7 @@ const cases = [
     requiredRequests: ["/api/ai/agent-profiles"],
   },
   {
-    path: "/agent-market/agt_support/1",
+    path: "/agent-market/agt_support",
     selector: "[data-agent-market-detail]",
     name: "market-detail",
     scroller: "[data-agent-market-detail]",
@@ -199,7 +199,7 @@ const cases = [
     requiredRequests: ["/api/ai/agent-profiles/agt_support"],
   },
   {
-    path: "/agent-market/agt_support/1/chat",
+    path: "/agent-market/agt_support/chat",
     selector: "[data-agent-workspace-welcome], [data-workbench-region='thread']",
     name: "market-workspace",
     requiredSelectors: [

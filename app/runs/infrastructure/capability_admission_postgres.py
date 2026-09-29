@@ -293,21 +293,20 @@ async def authorize_run_capabilities(
     )
 
 
-async def authorize_selected_run_capabilities(
+async def _authorize_current_selected_run_capabilities(
     conn: AsyncConnection,
     *,
     tenant_id: str,
     agent_id: str,
     skill_id: str,
-    expected_version: str,
     rollout_key: str,
     normalized_input: dict[str, Any],
     principal_department_id: str,
     principal_roles: list[str] | None,
     is_admin: bool,
     permissions: list[str] | None,
-) -> dict[str, Any]:
-    """Authorize an ordinary selected Skill and validate its optimistic hash lock."""
+) -> tuple[dict[str, Any], str]:
+    """Resolve, roll out, and authorize one currently selected Skill once."""
 
     skill = await _authorize_run_capabilities(
         conn,
@@ -343,9 +342,73 @@ async def authorize_selected_run_capabilities(
         content_hash = str(skill.get("skill_content_hash") or materialized_version)
     if not materialized_version or materialized_version != selected_version or content_hash != materialized_version:
         raise _capability_not_authorized()
+    return (
+        {**skill, "skill_version": selected_version, "skill_content_hash": content_hash},
+        selected_version,
+    )
+
+
+async def authorize_current_selected_run_capabilities(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+    rollout_key: str,
+    normalized_input: dict[str, Any],
+    principal_department_id: str,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> dict[str, Any]:
+    """Authorize the current rollout version without a caller-supplied version lock."""
+
+    skill, _selected_version = await _authorize_current_selected_run_capabilities(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        rollout_key=rollout_key,
+        normalized_input=normalized_input,
+        principal_department_id=principal_department_id,
+        principal_roles=principal_roles,
+        is_admin=is_admin,
+        permissions=permissions,
+    )
+    return skill
+
+
+async def authorize_selected_run_capabilities(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+    expected_version: str,
+    rollout_key: str,
+    normalized_input: dict[str, Any],
+    principal_department_id: str,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> dict[str, Any]:
+    """Authorize one ordinary selected Skill and validate its optimistic hash lock."""
+
+    skill, selected_version = await _authorize_current_selected_run_capabilities(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        rollout_key=rollout_key,
+        normalized_input=normalized_input,
+        principal_department_id=principal_department_id,
+        principal_roles=principal_roles,
+        is_admin=is_admin,
+        permissions=permissions,
+    )
     if expected_version != selected_version:
         raise RepositoryConflictError("skill_selection_stale")
-    return {**skill, "skill_version": selected_version, "skill_content_hash": content_hash}
+    return skill
 
 
 async def authorize_skill_access(conn: AsyncConnection, **scope: Any) -> dict[str, Any]:

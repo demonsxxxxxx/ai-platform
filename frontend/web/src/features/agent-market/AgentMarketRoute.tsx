@@ -145,7 +145,6 @@ function getErrorStatus(error: unknown): number | undefined {
 function usePublishedAgentDetail(
   detailKey: string,
   agentId: string | undefined,
-  revision: string | undefined,
   enabled: boolean,
 ) {
   const [retry, setRetry] = useState(0);
@@ -153,7 +152,7 @@ function usePublishedAgentDetail(
 
   useEffect(() => {
     if (!enabled) return;
-    if (!agentId || !revision) {
+    if (!agentId) {
       setDetail(loadState(detailKey, null, "unavailable"));
       return;
     }
@@ -163,10 +162,10 @@ function usePublishedAgentDetail(
       .getPublished(agentId)
       .then((profile) => {
         if (!active) return;
-        const exact = selectPublishedMarketProfile([profile], agentId, revision);
+        const current = selectPublishedMarketProfile([profile], agentId);
         setDetail(
-          exact
-            ? { key: detailKey, phase: "ready", value: exact, error: null }
+          current
+            ? { key: detailKey, phase: "ready", value: current, error: null }
             : loadState(detailKey, null, "unavailable"),
         );
       })
@@ -180,7 +179,7 @@ function usePublishedAgentDetail(
         );
       });
     return () => { active = false; };
-  }, [agentId, detailKey, enabled, retry, revision]);
+  }, [agentId, detailKey, enabled, retry]);
 
   const refresh = useCallback(() => setRetry((current) => current + 1), []);
   return { detail: detail.key === detailKey ? detail : loadState(detailKey, null), refresh };
@@ -662,7 +661,7 @@ function AgentMarketCatalog({
             >
               {visibleProfiles.map((profile) => (
                 <ExpertMarketCard
-                  key={`${profile.agent_id}:${profile.expected_revision}`}
+                  key={profile.agent_id}
                   profile={profile}
                   view={view}
                   onToggleFavorite={(selectedProfile) => {
@@ -792,12 +791,12 @@ function AgentMarketDetail({
   );
 }
 
-/** Published Expert catalog and exact revision detail route. */
+/** Published Expert catalog and current Agent detail route. */
 export function AgentMarketRoute() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { agentId, revision } = useParams<{ agentId?: string; revision?: string }>();
-  const isDetailRoute = agentId !== undefined || revision !== undefined;
+  const { agentId } = useParams<{ agentId?: string }>();
+  const isDetailRoute = agentId !== undefined;
   const requestedTags = searchParams.getAll("tag").map((tag) => tag.trim()).filter(Boolean);
   const activeTags = [...new Set(requestedTags)];
   const activeTab = searchParams.get("tab") === "favorites" ? "favorites" : "tags";
@@ -810,11 +809,10 @@ export function AgentMarketRoute() {
     catalogKey,
     !isDetailRoute,
   );
-  const detailKey = `detail:${agentId ?? ""}:${revision ?? ""}`;
+  const detailKey = `detail:${agentId ?? ""}`;
   const { detail, refresh: refreshDetail } = usePublishedAgentDetail(
     detailKey,
     agentId,
-    revision,
     isDetailRoute,
   );
   const returnSearch = searchParams.toString();
@@ -859,7 +857,7 @@ export function AgentMarketRoute() {
           aria-live="polite"
           className="min-h-0 flex-1 overflow-y-auto px-4 py-10 text-sm text-[var(--theme-text-secondary)] sm:px-6"
         >
-          <div className="mx-auto max-w-2xl">正在校验当前发布版本…</div>
+          <div className="mx-auto max-w-2xl">正在校验当前专家…</div>
         </main>
       )}
     </AgentMarketShell>

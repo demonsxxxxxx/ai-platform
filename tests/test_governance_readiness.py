@@ -13,7 +13,6 @@ class SecretBearingSettings:
     sandbox_container_provider = "docker://token@internal/path"
     sandbox_callback_token = "callback-secret"
     sandbox_workspace_root = "/tmp/tenant-secret/workspaces"
-    skill_staging_subdir = ".claude/skills"
     claude_agent_allowed_tools = "Read,Glob,LS"
     claude_agent_disallowed_tools = "Write,Edit,NotebookEdit"
     claude_agent_permission_mode = "dontAsk"

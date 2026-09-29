@@ -30,13 +30,14 @@ from app.skills.pinning import (
     build_skill_version_manifest_pin,
     validate_skill_version_dependency_policy,
 )
+from app.skills.api import MAX_SKILL_RUN_MANIFESTS
 from app.validation import SAFE_ID_PATTERN
 
 
 AUTHORIZED_SKILL_CATALOG_SCHEMA_VERSION = "ai-platform.authorized-skill-catalog.v1"
 RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY = "_runtime_authorized_skill_catalog"
 RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY = "_runtime_authorized_skill_manifests"
-MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES = 64
+MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES = MAX_SKILL_RUN_MANIFESTS
 MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES = 32 * 1024
 MAX_AUTHORIZED_SKILL_NAME_BYTES = 256
 MAX_AUTHORIZED_SKILL_DESCRIPTION_BYTES = 1024
@@ -343,7 +344,7 @@ def parse_authorized_skill_catalog_snapshot(
     materialization_sha256 = str(value.get("materialization_sha256") or "")
     if (
         not isinstance(raw_materialized_skill_ids, list)
-        or len(raw_materialized_skill_ids) > MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES
+        or len(raw_materialized_skill_ids) > MAX_SKILL_RUN_MANIFESTS
         or any(
             not isinstance(skill_id, str)
             or SAFE_ID_PATTERN.fullmatch(skill_id) is None
@@ -851,6 +852,10 @@ def _selected_materialization_candidates(
         candidate = candidates.get(skill_id)
         if candidate is None:
             return False
+        if len(materialized_ids) >= MAX_SKILL_RUN_MANIFESTS:
+            raise AuthorizedSkillCatalogError(
+                "authorized_skill_catalog_materialization_invalid"
+            )
         manifest, availability = _manifest_for_row(
             candidate.row,
             pinned_by_id=pinned_by_id,
@@ -912,6 +917,43 @@ def _fixed_skill_query_scope(
         if isinstance(dependency_id, str)
     }
     return sorted(set(roots) | manifest_ids | dependency_ids)
+
+
+def is_current_skill_dependency_usable(
+    *,
+    tenant_id: str,
+    skill_id: str,
+    row: dict[str, Any],
+    department_id: str,
+    roles: list[str] | None,
+    permissions: list[str] | None,
+) -> bool:
+    """Require tenant distribution and fail closed when caller scope is unavailable."""
+
+    distribution = {
+        "status": row.get("status"),
+        "visible_to_user": row.get("visible_to_user"),
+        "department_ids": row.get("department_ids"),
+        "allowed_roles": row.get("allowed_roles"),
+    }
+    decision = resolve_capability_access(
+        CapabilityAccessContext(
+            tenant_id=tenant_id,
+            department_id=department_id,
+            roles=roles or [],
+            permissions=permissions or [],
+        ),
+        CapabilityDistributionSubject(
+            capability_kind="skill",
+            capability_id=skill_id,
+            lifecycle_status=str(row.get("lifecycle_status") or "disabled"),
+            distribution=distribution,
+        ),
+        intent="use",
+    )
+    return bool(
+        decision.usable and is_user_runnable_status(row.get("version_status"))
+    )
 
 
 async def resolve_authorized_skill_catalog(

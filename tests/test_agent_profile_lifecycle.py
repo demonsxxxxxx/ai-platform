@@ -41,6 +41,13 @@ for name in agent_apps.__all__:
     subprocess.run([sys.executable, "-c", program], check=True)
 
 
+@pytest.fixture(autouse=True)
+def available_profile_mcp(monkeypatch):
+    async def available(_conn, *, tool_ids, **_kwargs):
+        return [{"tool_id": item} for item in tool_ids]
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.authorize_available_chat_mcp_tools", available)
+
+
 def _principal(*, roles: list[str] | None = None, department_id: str = "") -> AuthPrincipal:
     return AuthPrincipal(
         user_id="user-a",
@@ -172,7 +179,7 @@ async def test_unpublished_profile_is_not_admitted_to_an_existing_agent_conversa
         await authority.resolve_for_admission(
             object(),
             principal=_principal(),
-            selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
+            selection=SelectedAgentProfileRequest(agent_id="agt_support"),
         )
 
     assert getattr(caught.value, "detail", None) == "agent_profile_not_available"
@@ -249,7 +256,7 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
         resolve_skill,
     )
     monkeypatch.setattr(
-        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
+        'app.runs.infrastructure.capability_admission_postgres.authorize_current_selected_run_capabilities',
         authorize_skill,
     )
     monkeypatch.setattr(
@@ -266,7 +273,7 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
 
     assert skills[0]["skill_id"] == "general-chat"
     assert skills[0]["skill_version"] == "version-b"
-    assert observed_skill["expected_version"] == "version-b"
+    assert "expected_version" not in observed_skill
     assert "allow_current_version" not in observed_skill
     assert observed == [("tenant-a", "gateway")]
 
@@ -287,7 +294,7 @@ async def test_profile_definition_preserves_repository_authorization_status(monk
         resolve_skill,
     )
     monkeypatch.setattr(
-        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
+        'app.runs.infrastructure.capability_admission_postgres.authorize_current_selected_run_capabilities',
         deny_skill,
     )
 
@@ -996,7 +1003,7 @@ async def test_public_catalog_and_admission_reject_a_tampered_publication(monkey
             principal=_principal(),
             selection=SelectedAgentProfileRequest(
                 agent_id="agt_support",
-                expected_revision=7,
+
             ),
         )
     assert (admission_error.value.status_code, admission_error.value.detail) == (
@@ -1036,7 +1043,7 @@ async def test_bound_profile_uses_current_acl_while_executing_the_pinned_revisio
     monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
 
     with pytest.raises(HTTPException) as caught:
-        await authority.resolve_bound_for_submission(
+        await authority.resolve_pinned_profile_for_replay(
             object(),
             principal=_principal(department_id="finance"),
             agent_id="agt_support",
@@ -1083,7 +1090,7 @@ async def test_bound_profile_rejects_a_tampered_current_acl(monkeypatch):
     monkeypatch.setattr(authority, "_validate_definition", forbidden_validation)
 
     with pytest.raises(HTTPException) as caught:
-        await authority.resolve_bound_for_submission(
+        await authority.resolve_pinned_profile_for_replay(
             object(),
             principal=_principal(),
             agent_id="agt_support",
@@ -1149,7 +1156,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
         object(),
         principal=_principal(department_id="药品注册"),
         workspace_id="default",
-        selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
+        selection=SelectedAgentProfileRequest(agent_id="agt_support"),
         title="",
     )
 
@@ -1249,7 +1256,7 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
     monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "_validate_definition", validate)
-    selection = SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7)
+    selection = SelectedAgentProfileRequest(agent_id="agt_support")
 
     first = await authority.create_conversation(
         object(),
@@ -1279,7 +1286,7 @@ async def test_agent_conversation_operation_replay_returns_one_pinned_session_wi
             object(),
             principal=_principal(),
             workspace_id="default",
-            selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=8),
+            selection=SelectedAgentProfileRequest(agent_id="agt_other"),
             title="",
             operation_id=operation_id,
         )
@@ -1339,140 +1346,12 @@ async def test_agent_conversation_operation_replay_rejects_exact_title_mismatch(
             object(),
             principal=_principal(),
             workspace_id="default",
-            selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
+            selection=SelectedAgentProfileRequest(agent_id="agt_support"),
             title=retry_title,
             operation_id=operation_id,
         )
 
 
-@pytest.mark.asyncio
-async def test_revision_bound_conversations_stay_on_their_publication_until_unpublish(monkeypatch):
-    """This in-memory mirror proves policy; the PostgreSQL test proves storage locking."""
-
-    from app.agent_apps import AgentProfileAuthority
-    from app.models import SelectedAgentProfileRequest
-
-    revision_7 = _profile_row(revision=7)
-    revision_9 = _profile_row(revision=9)
-    revision_9["instructions"] = "updated private instruction"
-    _seal_profile_row(revision_9)
-    publications = {7: revision_7, 9: revision_9}
-    hash_7 = str(revision_7["content_hash"])
-    hash_9 = str(revision_9["content_hash"])
-    state = {"current_revision": 7, "lifecycle_status": "published"}
-    observed: list[tuple[str, int, str | None, bool | None]] = []
-    created_sessions: list[dict[str, object]] = []
-
-    async def get_current(*_args, **kwargs):
-        revision = kwargs.get("expected_revision")
-        observed.append(("current", revision, None, kwargs.get("for_update")))
-        effective_revision = state["current_revision"] if revision is None else revision
-        if (
-            state["lifecycle_status"] != "published"
-            or effective_revision != state["current_revision"]
-        ):
-            return None
-        return publications[effective_revision]
-
-    async def get_bound(*_args, **kwargs):
-        revision = kwargs["revision"]
-        content_hash = kwargs["content_hash"]
-        observed.append(("bound", revision, content_hash, kwargs.get("for_update")))
-        row = publications.get(revision)
-        if (
-            state["lifecycle_status"] != "published"
-            or row is None
-            or row["content_hash"] != content_hash
-        ):
-            return None
-        return row
-
-    async def validate(*_args, **_kwargs):
-        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
-
-    async def noop(*_args, **_kwargs):
-        return None
-
-    async def create_session(*_args, **kwargs):
-        created_sessions.append(kwargs)
-        return f"ses_{len(created_sessions)}"
-
-    async def audit(*_args, **_kwargs):
-        return "aud_conversation"
-
-    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
-    monkeypatch.setattr(
-        "app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile",
-        get_bound,
-        raising=False,
-    )
-    monkeypatch.setattr('app.conversations.infrastructure.session_queries_postgres.ensure_workspace', noop)
-    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_submission_principal', noop)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', create_session)
-    monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', audit)
-    authority = AgentProfileAuthority()
-    monkeypatch.setattr(authority, "_validate_definition", validate)
-
-    first = await authority.create_conversation(
-        object(),
-        principal=_principal(),
-        workspace_id="default",
-        selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
-        title="",
-    )
-    # Publishing N+1 changes the current aggregate pointer but not the existing pin.
-    state["current_revision"] = 9
-    existing = await authority.resolve_bound_for_submission(
-        object(),
-        principal=_principal(),
-        agent_id="agt_support",
-        revision=7,
-        content_hash=hash_7,
-    )
-    second = await authority.create_conversation(
-        object(),
-        principal=_principal(),
-        workspace_id="default",
-        selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=9),
-        title="",
-    )
-
-    assert (first.agent_conversation.revision, existing.revision, second.agent_conversation.revision) == (7, 7, 9)
-    assert existing.content_hash == hash_7
-    assert [
-        (session["admitted_agent_profile_revision"], session["admitted_agent_profile_hash"])
-        for session in created_sessions
-    ] == [(7, hash_7), (9, hash_9)]
-    assert observed[-2:] == [
-        ("current", None, None, None),
-        ("current", 9, None, True),
-    ]
-
-    with pytest.raises(HTTPException, match="agent_profile_not_available"):
-        await authority.resolve_for_admission(
-            object(),
-            principal=_principal(),
-            selection=SelectedAgentProfileRequest(agent_id="agt_support", expected_revision=7),
-        )
-    with pytest.raises(HTTPException, match="agent_profile_not_available"):
-        await authority.resolve_bound_for_submission(
-            object(),
-            principal=_principal(),
-            agent_id="agt_support",
-            revision=7,
-            content_hash="forged-hash",
-        )
-
-    state["lifecycle_status"] = "withdrawn"
-    for revision, content_hash in ((7, hash_7), (9, hash_9)):
-        with pytest.raises(HTTPException, match="agent_profile_not_available"):
-            await authority.resolve_bound_for_submission(
-                object(),
-                principal=_principal(),
-                agent_id="agt_support",
-                revision=revision,
-                content_hash=content_hash,
-            )
 
 
 @pytest.mark.asyncio
@@ -1662,223 +1541,6 @@ async def test_worker_harness_profile_keeps_run_pin_without_skill_manifest(monke
     assert admission.skill["skill_version"] == "version-a"
 
 
-@pytest.mark.asyncio
-async def test_chat_route_uses_immutable_session_pin_and_rejects_revision_override(monkeypatch):
-    from contextlib import asynccontextmanager
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    import app.agent_apps.infrastructure.catalog_postgres as _repo_app_agent_apps_infrastructure_catalog_postgres
-    import app.context.file_continuity as _repo_app_context_file_continuity
-    import app.conversations.infrastructure.postgres as _repo_app_conversations_infrastructure_postgres
-    import app.conversations.infrastructure.session_queries_postgres as _repo_app_conversations_infrastructure_session_queries_postgres
-    import app.files.infrastructure.run_bindings_postgres as _repo_app_files_infrastructure_run_bindings_postgres
-    import app.identity.infrastructure.postgres as _repo_app_identity_infrastructure_postgres
-    import app.persistence.chat_submissions as _repo_app_persistence_chat_submissions
-    import app.runs.infrastructure.postgres as _repo_app_runs_infrastructure_postgres
-    from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
-    from app.execution.api import RunModelSelection
-    from app.main import create_app
-    from app.models import AgentConversationIdentity, ChatStreamRequest, SelectedAgentProfileRequest
-    from app.routes.chat import chat_stream as route_chat_stream
-
-    test_stream_request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(
-                run_stream_runtime=SimpleNamespace(worker_capabilities=object())
-            )
-        )
-    )
-
-    async def chat_stream(*args, **kwargs):
-        kwargs.setdefault("http_request", test_stream_request)
-        return await route_chat_stream(*args, **kwargs)
-
-    create_app()
-
-    @asynccontextmanager
-    async def transaction():
-        yield object()
-
-    bound_calls = []
-    harness_calls = []
-    noop = AsyncMock(return_value=None)
-
-    async def owned_session(*_args, **_kwargs):
-        return {
-            "id": "session-profile",
-            "workspace_id": "workspace-owned",
-            "agent_id": "agt_support",
-            "admitted_agent_profile_revision": 7,
-            "admitted_agent_profile_hash": "a" * 64,
-        }
-
-    async def bound_profile(*_args, **kwargs):
-        admission = AgentProfileAdmission(
-            agent_id="agt_support",
-            revision=7,
-            content_hash="a" * 64,
-            skill={"skill_id": "general-chat", "skill_version": "version-a"},
-            mcp_tool_ids=(),
-            private_execution_input={
-                "agent_id": "agt_support",
-                "revision": 7,
-                "content_hash": "a" * 64,
-                "instructions": "private",
-                "skill_set": [
-                    {"skill_id": "general-chat", "expected_version": "version-a"}
-                ],
-            },
-            public_identity=AgentConversationIdentity(
-                agent_id="agt_support",
-                revision=7,
-                name="Support assistant",
-                description="Approved support help.",
-            ),
-        )
-        AgentProfileAuthority.reject_profile_selector_conflicts(
-            kwargs["submitted_request"],
-            active=True,
-            query_agent_id=kwargs["query_agent_id"],
-            admission=admission,
-        )
-        bound_calls.append(kwargs)
-        return admission
-
-    async def claim_submission(*_args, **kwargs):
-        return (
-            {
-                "request_fingerprint_sha256": kwargs["request_fingerprint_sha256"],
-                "state": "queued",
-                "outcome_json": {
-                    "session_id": "session-profile",
-                    "run_id": "run-profile",
-                    "status": "queued",
-                    "submission_id": kwargs["submission_id"],
-                },
-            },
-            False,
-        )
-
-    async def harness_agent(*_args, **kwargs):
-        harness_calls.append(kwargs)
-        return {"id": "agt_support", "agent_type": "chat"}
-
-    async def lock_profile_skills(*_args, **_kwargs):
-        return (
-            [
-                {
-                    "skill_id": "general-chat",
-                    "version": "version-a",
-                    "content_hash": "version-a",
-                    "source": {"kind": "builtin", "asset_dir": "general-chat"},
-                    "files": [
-                        {
-                            "relative_path": "SKILL.md",
-                            "content_base64": "c2tpbGw=",
-                            "size_bytes": 5,
-                        }
-                    ],
-                    "dependency_ids": [],
-                    "mcp_tool_ids": [],
-                }
-            ],
-            "version-a",
-            {
-                "schema_version": "ai-platform.skill-release-decision.v1",
-                "policy_active": False,
-                "selected_version": "version-a",
-                "selected_track": "manifest_pin",
-            },
-        )
-
-    monkeypatch.setattr("app.routes.chat.transaction", transaction)
-    monkeypatch.setattr(
-        "app.execution.infrastructure.model_management.resolve_run_model",
-        AsyncMock(
-            return_value=RunModelSelection(
-                model_id="model-a",
-                model_value="model-a",
-                connection_revision=1,
-                max_input_tokens=32_000,
-                max_output_tokens=2_048,
-            )
-        ),
-    )
-    monkeypatch.setattr(_repo_app_persistence_chat_submissions, 'get_chat_submission', AsyncMock(return_value=None))
-    monkeypatch.setattr(_repo_app_identity_infrastructure_postgres, 'ensure_submission_principal', noop)
-    monkeypatch.setattr(_repo_app_conversations_infrastructure_session_queries_postgres, 'get_authorized_session', owned_session)
-    monkeypatch.setattr(_repo_app_runs_infrastructure_postgres, 'acquire_user_active_run_admission_lock', noop)
-    monkeypatch.setattr(_repo_app_conversations_infrastructure_session_queries_postgres, 'get_latest_authorized_session_run_input', noop)
-    monkeypatch.setattr(_repo_app_agent_apps_infrastructure_catalog_postgres, 'get_agent', harness_agent)
-    monkeypatch.setattr(_repo_app_runs_infrastructure_postgres, 'enforce_user_active_run_admission_under_lock', noop)
-    monkeypatch.setattr(_repo_app_conversations_infrastructure_postgres, 'ensure_workspace_belongs_to_tenant', noop)
-    monkeypatch.setattr(
-        _repo_app_context_file_continuity,
-        'list_authorized_session_input_files',
-        AsyncMock(return_value=[]),
-    )
-    monkeypatch.setattr(_repo_app_files_infrastructure_run_bindings_postgres, 'authorize_files_for_run', noop)
-    monkeypatch.setattr(_repo_app_persistence_chat_submissions, 'claim_chat_submission', claim_submission)
-    monkeypatch.setattr("app.routes.chat.pin_agent_skill_set", lock_profile_skills)
-    monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_bound_for_submission", bound_profile)
-    monkeypatch.setattr(
-        "app.routes.chat._agent_profile_authority.resolve_for_admission",
-        AsyncMock(side_effect=AssertionError("a continuation must not resolve the current publication")),
-    )
-
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="continue on revision seven",
-            session_id="session-profile",
-            submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
-        ),
-        principal=_principal(),
-    )
-
-    assert response.run_id == "run-profile"
-    assert harness_calls == [{"tenant_id": "tenant-a", "agent_id": "agt_support"}]
-    assert bound_calls[0]["principal"] == _principal()
-    assert (bound_calls[0]["agent_id"], bound_calls[0]["revision"], bound_calls[0]["content_hash"]) == (
-        "agt_support", 7, "a" * 64
-    )
-
-    with pytest.raises(HTTPException) as caught:
-        await chat_stream(
-            ChatStreamRequest(
-                message="try to move this session",
-                session_id="session-profile",
-                submission_id="854b63f1-89f8-46cb-bc76-bc25891ba717",
-                selected_agent_profile=SelectedAgentProfileRequest(
-                    agent_id="agt_support",
-                    expected_revision=9,
-                ),
-            ),
-            principal=_principal(),
-        )
-    assert caught.value.status_code == 409
-    assert caught.value.detail == {
-        "code": "agent_profile_session_mismatch",
-        "submission_disposition": "rejected_before_persist",
-    }
-    assert len(bound_calls) == 1
-
-    with pytest.raises(HTTPException) as selector_error:
-        await chat_stream(
-            ChatStreamRequest(
-                message="try to override the pinned Skill",
-                session_id="session-profile",
-                submission_id="e76e042e-744b-4612-9c8a-a7700f35904c",
-                selected_skill={"skill_id": "other-skill", "expected_version": "version-b"},
-            ),
-            principal=_principal(),
-        )
-    assert selector_error.value.status_code == 400
-    assert selector_error.value.detail == {
-        "code": "agent_profile_selector_conflict",
-        "submission_disposition": "rejected_before_persist",
-    }
-    assert len(bound_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -2163,20 +1825,15 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
         request_payload["session_id"] = "ses_profile"
         query_agent_id = "agt_support"
     else:
-        request_payload["selected_agent_profile"] = {
-            "agent_id": "agt_support",
-            "expected_revision": 7,
-        }
+        request_payload["selected_agent_profile"] = {"agent_id": "agt_support"}
         query_agent_id = "general-agent"
     request = ChatStreamRequest.model_validate(request_payload)
 
     if bound:
-        admission = await authority.resolve_bound_for_submission(
-            object(),
-            principal=_principal(),
-            agent_id="agt_support",
-            revision=7,
-            content_hash=str(profile_row["content_hash"]),
+        admission = await authority.resolve_for_admission(
+                object(),
+                principal=_principal(),
+                selection=SelectedAgentProfileRequest(agent_id="agt_support"),
             submitted_request=request,
             query_agent_id=query_agent_id,
         )
@@ -2186,7 +1843,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
             principal=_principal(),
             selection=SelectedAgentProfileRequest(
                 agent_id="agt_support",
-                expected_revision=7,
+
             ),
             submitted_request=request,
             query_agent_id=query_agent_id,
@@ -2194,11 +1851,7 @@ async def test_profile_authority_accepts_the_exact_canonical_frontend_transport_
 
     assert admission.agent_id == "agt_support"
     assert admission.revision == 7
-    assert observed == (
-        [("bound", True), ("current", None)]
-        if bound
-        else [("current", True)]
-    )
+    assert observed == [("current", True)]
 
 
 @pytest.mark.asyncio
@@ -2227,10 +1880,7 @@ async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_
     request = ChatStreamRequest.model_validate(
         {
             "message": "attempt to override the published expert",
-            "selected_agent_profile": {
-                "agent_id": "agt_support",
-                "expected_revision": 7,
-            },
+            "selected_agent_profile": {"agent_id": "agt_support"},
             "selected_mcp_tool_ids": ["gateway::profile-tool"],
             "submission_id": "8eb026d4-2839-44db-83dd-5196ed80d9e8",
         }
@@ -2242,7 +1892,7 @@ async def test_profile_authority_rejects_nonempty_client_mcp_selector_even_when_
             principal=_principal(),
             selection=SelectedAgentProfileRequest(
                 agent_id="agt_support",
-                expected_revision=7,
+
             ),
             submitted_request=request,
             query_agent_id="general-agent",
@@ -2296,10 +1946,7 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
     request = ChatStreamRequest.model_validate(
         {
             "message": "use the published expert",
-            "selected_agent_profile": {
-                "agent_id": "agt_support",
-                "expected_revision": 7,
-            },
+            "selected_agent_profile": {"agent_id": "agt_support"},
             "selected_mcp_tool_ids": [],
             "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
         }
@@ -2310,7 +1957,7 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         principal=_principal(),
         selection=SelectedAgentProfileRequest(
             agent_id="agt_support",
-            expected_revision=7,
+
         ),
         submitted_request=request,
         query_agent_id="general-agent",
@@ -2346,10 +1993,7 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
         ({"input": {"multiAgentSteps": [{"mcpServerIds": ["other-server"]}]}}, None),
         (
             {
-                "selectedAgentProfile": {
-                    "agent_id": "agt_support",
-                    "expected_revision": 7,
-                }
+                "selectedAgentProfile": {"agent_id": "agt_support"}
             },
             None,
         ),
@@ -2423,12 +2067,10 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
 
     with pytest.raises(HTTPException) as caught:
         if bound:
-            await authority.resolve_bound_for_submission(
+            await authority.resolve_for_admission(
                 object(),
                 principal=_principal(),
-                agent_id="agt_support",
-                revision=7,
-                content_hash=str(profile_row["content_hash"]),
+                selection=SelectedAgentProfileRequest(agent_id="agt_support"),
                 submitted_request=request,
                 query_agent_id=query_agent_id,
             )
@@ -2438,14 +2080,14 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
                 principal=_principal(),
                 selection=SelectedAgentProfileRequest(
                     agent_id="agt_support",
-                    expected_revision=7,
+
                 ),
                 submitted_request=request,
                 query_agent_id=query_agent_id,
             )
 
     assert (caught.value.status_code, caught.value.detail) == (400, "agent_profile_selector_conflict")
-    assert storage_reads == (["bound", "current"] if bound else ["current"])
+    assert storage_reads == ["current"]
 
 
 def test_session_recovery_projects_only_safe_agent_conversation_identity():
@@ -2489,7 +2131,7 @@ def test_session_recovery_projects_only_safe_agent_conversation_identity():
 async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(monkeypatch):
     from contextlib import asynccontextmanager
 
-    from app.models import AgentAppRunRequest
+    from app.routes.agent_profiles import AgentAppRunRequest
     from app.routes import agent_profiles
 
     connection = object()
@@ -2546,3 +2188,34 @@ async def test_dedicated_agent_run_forwards_http_request_to_chat_composition(mon
     assert observed["principal"] is principal
     assert observed["request"].session_id == "session-a"
     assert observed["request"].agent_options == {"enable_thinking": "high"}
+
+@pytest.mark.asyncio
+async def test_new_turn_uses_current_publication_and_accepted_run_replays_its_snapshot(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import SelectedAgentProfileRequest
+    old, current = _profile_row(revision=7), _profile_row(revision=9)
+    current["instructions"] = "current instructions"
+    _seal_profile_row(current)
+    state = {"current": old}
+    async def get_current(*_args, **_kwargs):
+        return state["current"]
+    async def get_bound(*_args, **kwargs):
+        assert kwargs["revision"] == 7 and kwargs["content_hash"] == old["content_hash"]
+        return old
+    async def validate(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_current)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile", get_bound)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    selected = SelectedAgentProfileRequest(agent_id="agt_support")
+    first = await authority.resolve_for_admission(object(), principal=_principal(), selection=selected)
+    state["current"] = current
+    next_turn = await authority.resolve_for_admission(object(), principal=_principal(), selection=selected)
+    replay = await authority.resolve_pinned_profile_for_replay(object(), principal=_principal(), agent_id="agt_support", revision=first.revision, content_hash=first.content_hash)
+    assert (first.revision, next_turn.revision, replay.revision) == (7, 9, 7)
+    assert next_turn.private_execution_input["instructions"] == "current instructions"
+    assert replay.private_execution_input == first.private_execution_input
+    state["current"] = None
+    with pytest.raises(HTTPException):
+        await authority.resolve_for_admission(object(), principal=_principal(), selection=selected)

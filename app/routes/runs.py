@@ -927,6 +927,7 @@ async def create_run(
                     input_payload=run_input,
                     tenant_id=tenant_id,
                     rollout_key=user_id,
+                    department_id=principal.department_id, roles=principal.roles, permissions=principal.permissions,
                 )
                 skill_manifests = admission.skill_manifests
                 skill_version = admission.skill_version

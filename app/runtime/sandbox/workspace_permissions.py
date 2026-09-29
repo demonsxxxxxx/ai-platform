@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import errno
 import os
 import stat
 import sys
-from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable
 
 RUNTIME_UID = 10001
 RUNTIME_GID = 10001
@@ -14,117 +11,24 @@ RUNTIME_USER = "ai-platform"
 RUNTIME_WORKSPACE_ROOT = Path("/runtime-workspaces")
 _SENTINEL_NAME = ".ai-platform-runtime-write-probe"
 _SENTINEL_PAYLOAD = b"ai-platform-runtime-workspace-v1\n"
-_WORKSPACE_NAMESPACE = ("tenants", "workspaces", "users", "sessions", "runs", "attempts")
-_ATTEMPT_WORKSPACE_PATH = _WORKSPACE_NAMESPACE + ("workspace",)
-_PLATFORM_PRIVATE_SKILL_ROOTS = {".claude", ".pins"}
-_POSIX_ACL_NAMES = ("system.posix_acl_default", "system.posix_acl_access")
+_NAMESPACE_LAYOUT = (
+    "tenants",
+    None,
+    "workspaces",
+    None,
+    "users",
+    None,
+    "sessions",
+    None,
+    "runs",
+    None,
+    "attempts",
+    None,
+)
 
 
 class WorkspacePermissionError(RuntimeError):
-    """Raised when the fixed runtime workspace cannot be migrated safely."""
-
-
-@dataclass(frozen=True)
-class WorkspaceNode:
-    """Immutable filesystem metadata captured before workspace migration."""
-
-    relative_path: str
-    uid: int
-    gid: int
-    mode: int
-    device: int
-    inode: int = 0
-    link_count: int = 1
-
-
-@dataclass(frozen=True)
-class _OpenWorkspaceNode:
-    node: WorkspaceNode
-    parent_fd: int | None
-    name: str | None
-    fd: int | None = None
-
-
-def _is_workspace_namespace_directory(relative_path: str) -> bool:
-    if relative_path == ".":
-        return True
-    components = relative_path.split("/")
-    return len(components) <= 2 * len(_WORKSPACE_NAMESPACE) and all(
-        component and (index % 2 == 1 or component == _WORKSPACE_NAMESPACE[index // 2])
-        for index, component in enumerate(components)
-    )
-
-
-def _is_platform_private_skill_path(relative_path: str) -> bool:
-    components = relative_path.split("/")
-    return (
-        len(components) >= 14
-        and tuple(components[0:13:2]) == _ATTEMPT_WORKSPACE_PATH
-        and all(components[index] for index in range(1, 12, 2))
-        and components[13] in _PLATFORM_PRIVATE_SKILL_ROOTS
-    )
-
-
-def _validate_workspace_snapshot(
-    *,
-    root_device: int,
-    nodes: Iterable[WorkspaceNode],
-    allow_private_skill_mode_migration: bool,
-) -> None:
-    snapshot = list(nodes)
-    if not snapshot or snapshot[0].relative_path != ".":
-        raise WorkspacePermissionError("workspace root snapshot is missing")
-    for node in snapshot:
-        if node.device != root_device:
-            raise WorkspacePermissionError(f"workspace entry crosses filesystem boundary: {node.relative_path}")
-        if (node.uid, node.gid) not in {(0, 0), (RUNTIME_UID, RUNTIME_GID)}:
-            raise WorkspacePermissionError(f"foreign workspace owner: {node.relative_path}")
-        if not (stat.S_ISDIR(node.mode) or stat.S_ISREG(node.mode)):
-            raise WorkspacePermissionError(f"unsupported workspace entry type: {node.relative_path}")
-        if stat.S_ISREG(node.mode) and node.link_count != 1:
-            raise WorkspacePermissionError(f"workspace hard links are not allowed: {node.relative_path}")
-        if node.mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX):
-            raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
-        if node.mode & (stat.S_IWGRP | stat.S_IWOTH) and not (
-            allow_private_skill_mode_migration and _is_platform_private_skill_path(node.relative_path)
-        ):
-            raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
-        # Retained attempt data may be intentionally read-only. Only the root
-        # must accept new work; dispatch prepares its scoped directories anew.
-        if node.relative_path == "." and not node.mode & stat.S_IWUSR:
-            raise WorkspacePermissionError("runtime workspace root is not owner-writable")
-        if stat.S_ISDIR(node.mode) and not node.mode & stat.S_IXUSR:
-            raise WorkspacePermissionError(f"workspace directory is not owner-searchable: {node.relative_path}")
-        # Scoped prepare opens shared namespace directories before hardening
-        # their modes. The runtime identity must be able to obtain that handle.
-        if (
-            stat.S_ISDIR(node.mode)
-            and _is_workspace_namespace_directory(node.relative_path)
-            and not node.mode & stat.S_IRUSR
-        ):
-            raise WorkspacePermissionError(f"workspace namespace directory is not owner-readable: {node.relative_path}")
-
-
-def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNode]) -> None:
-    """Validate a complete no-follow workspace snapshot before any ownership mutation."""
-
-    _validate_workspace_snapshot(
-        root_device=root_device,
-        nodes=nodes,
-        allow_private_skill_mode_migration=False,
-    )
-
-
-def _node_from_stat(relative_path: str, stat_result: os.stat_result) -> WorkspaceNode:
-    return WorkspaceNode(
-        relative_path=relative_path,
-        uid=int(stat_result.st_uid),
-        gid=int(stat_result.st_gid),
-        mode=int(stat_result.st_mode),
-        device=int(stat_result.st_dev),
-        inode=int(stat_result.st_ino),
-        link_count=int(stat_result.st_nlink),
-    )
+    """Raised when the runtime workspace namespace cannot be prepared safely."""
 
 
 def _secure_open_flags(*, directory: bool = False) -> int:
@@ -134,7 +38,147 @@ def _secure_open_flags(*, directory: bool = False) -> int:
     return flags
 
 
-def _capture_workspace_tree(root: Path) -> tuple[int, list[_OpenWorkspaceNode]]:
+def _validate_namespace_directory_identity(
+    relative_path: str,
+    *,
+    device: int,
+    uid: int,
+    gid: int,
+    root_device: int,
+) -> None:
+    if device != root_device:
+        raise WorkspacePermissionError(f"workspace namespace crosses filesystem boundary: {relative_path}")
+    if (uid, gid) not in {(0, 0), (RUNTIME_UID, RUNTIME_GID)}:
+        raise WorkspacePermissionError(f"foreign workspace namespace owner: {relative_path}")
+
+
+def _prepare_namespace_directory(
+    descriptor: int,
+    relative_path: str,
+    *,
+    root_device: int,
+    require_owner_write: bool = False,
+) -> None:
+    current = os.fstat(descriptor)
+    if not stat.S_ISDIR(current.st_mode):
+        raise WorkspacePermissionError(f"workspace namespace entry is not a directory: {relative_path}")
+    _validate_namespace_directory_identity(
+        relative_path,
+        device=int(current.st_dev),
+        uid=int(current.st_uid),
+        gid=int(current.st_gid),
+        root_device=root_device,
+    )
+    if require_owner_write and not current.st_mode & stat.S_IWUSR:
+        raise WorkspacePermissionError("runtime workspace root is not owner-writable")
+
+    if (current.st_uid, current.st_gid) != (RUNTIME_UID, RUNTIME_GID):
+        try:
+            os.fchown(descriptor, RUNTIME_UID, RUNTIME_GID)
+        except OSError as exc:
+            raise WorkspacePermissionError(f"workspace namespace ownership migration failed: {relative_path}") from exc
+    try:
+        # Keep platform path components private and make them traversable by the
+        # runtime identity. Attempt workspace contents are intentionally outside
+        # this initializer's scope.
+        os.fchmod(descriptor, 0o700)
+    except OSError as exc:
+        raise WorkspacePermissionError(f"workspace namespace permissions cannot be prepared: {relative_path}") from exc
+
+    updated = os.fstat(descriptor)
+    if (updated.st_dev, updated.st_uid, updated.st_gid) != (
+        root_device,
+        RUNTIME_UID,
+        RUNTIME_GID,
+    ):
+        raise WorkspacePermissionError(f"workspace namespace identity changed during initialization: {relative_path}")
+
+
+def _open_namespace_child(
+    parent_fd: int,
+    name: str,
+    relative_path: str,
+    *,
+    root_device: int,
+    required: bool,
+) -> int | None:
+    try:
+        before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise WorkspacePermissionError(f"workspace namespace entry cannot be inspected: {relative_path}") from exc
+
+    if stat.S_ISLNK(before.st_mode):
+        raise WorkspacePermissionError(f"workspace namespace entry is a symbolic link: {relative_path}")
+    if not stat.S_ISDIR(before.st_mode):
+        if required:
+            raise WorkspacePermissionError(f"workspace namespace entry is not a directory: {relative_path}")
+        return None
+
+    try:
+        descriptor = os.open(name, _secure_open_flags(directory=True), dir_fd=parent_fd)
+    except OSError as exc:
+        raise WorkspacePermissionError(f"workspace namespace directory cannot be opened safely: {relative_path}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise WorkspacePermissionError(f"workspace namespace entry changed during initialization: {relative_path}")
+        _prepare_namespace_directory(descriptor, relative_path, root_device=root_device)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _walk_workspace_namespace(directory_fd: int, relative_root: str, layout_index: int, root_device: int) -> None:
+    if layout_index == len(_NAMESPACE_LAYOUT):
+        return
+
+    expected = _NAMESPACE_LAYOUT[layout_index]
+    if expected is not None:
+        relative_path = expected if relative_root == "." else f"{relative_root}/{expected}"
+        child_fd = _open_namespace_child(
+            directory_fd,
+            expected,
+            relative_path,
+            root_device=root_device,
+            required=True,
+        )
+        if child_fd is None:
+            return
+        try:
+            _walk_workspace_namespace(child_fd, relative_path, layout_index + 1, root_device)
+        finally:
+            os.close(child_fd)
+        return
+
+    try:
+        with os.scandir(directory_fd) as entries:
+            names = sorted(entry.name for entry in entries)
+    except OSError as exc:
+        raise WorkspacePermissionError(f"workspace namespace directory cannot be read: {relative_root}") from exc
+
+    for name in names:
+        if name in {".", ".."} or "/" in name or "\\" in name:
+            raise WorkspacePermissionError("workspace namespace entry name is invalid")
+        relative_path = name if relative_root == "." else f"{relative_root}/{name}"
+        child_fd = _open_namespace_child(
+            directory_fd,
+            name,
+            relative_path,
+            root_device=root_device,
+            required=False,
+        )
+        if child_fd is None:
+            continue
+        try:
+            _walk_workspace_namespace(child_fd, relative_path, layout_index + 1, root_device)
+        finally:
+            os.close(child_fd)
+
+
+def _open_runtime_workspace_root(root: Path) -> tuple[int, int]:
     if os.name != "posix" or not getattr(os, "O_NOFOLLOW", 0) or not getattr(os, "O_DIRECTORY", 0):
         raise WorkspacePermissionError("secure workspace initialization requires POSIX no-follow filesystem support")
     try:
@@ -142,148 +186,21 @@ def _capture_workspace_tree(root: Path) -> tuple[int, list[_OpenWorkspaceNode]]:
     except OSError as exc:
         raise WorkspacePermissionError("runtime workspace root is unavailable") from exc
 
-    opened_fds: list[int] = [root_fd]
-    root_stat = os.fstat(root_fd)
-    handles = [_OpenWorkspaceNode(node=_node_from_stat(".", root_stat), parent_fd=None, name=None, fd=root_fd)]
-
-    def walk(directory_fd: int, relative_root: str) -> None:
-        try:
-            entries = sorted(os.scandir(directory_fd), key=lambda item: item.name)
-        except OSError as exc:
-            raise WorkspacePermissionError(f"workspace directory cannot be read: {relative_root}") from exc
-        for entry in entries:
-            name = entry.name
-            if name in {".", ".."} or "/" in name or "\\" in name:
-                raise WorkspacePermissionError("workspace entry name is invalid")
-            relative_path = name if relative_root == "." else f"{relative_root}/{name}"
-            try:
-                entry_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            except OSError as exc:
-                raise WorkspacePermissionError(f"workspace entry cannot be inspected: {relative_path}") from exc
-            node = _node_from_stat(relative_path, entry_stat)
-            if stat.S_ISDIR(node.mode):
-                try:
-                    child_fd = os.open(name, _secure_open_flags(directory=True), dir_fd=directory_fd)
-                except OSError as exc:
-                    raise WorkspacePermissionError(f"workspace directory cannot be opened safely: {relative_path}") from exc
-                opened_fds.append(child_fd)
-                verified = os.fstat(child_fd)
-                if _node_from_stat(relative_path, verified) != node:
-                    raise WorkspacePermissionError(f"workspace entry changed during validation: {relative_path}")
-                handles.append(_OpenWorkspaceNode(node=node, parent_fd=directory_fd, name=name, fd=child_fd))
-                walk(child_fd, relative_path)
-            else:
-                try:
-                    file_fd = os.open(
-                        name,
-                        _secure_open_flags() | getattr(os, "O_NONBLOCK", 0),
-                        dir_fd=directory_fd,
-                    )
-                except OSError as exc:
-                    raise WorkspacePermissionError(f"workspace file cannot be opened safely: {relative_path}") from exc
-                opened_fds.append(file_fd)
-                verified = os.fstat(file_fd)
-                if _node_from_stat(relative_path, verified) != node:
-                    raise WorkspacePermissionError(f"workspace entry changed during validation: {relative_path}")
-                handles.append(_OpenWorkspaceNode(node=node, parent_fd=directory_fd, name=name, fd=file_fd))
-
     try:
-        walk(root_fd, ".")
-        captured_nodes = [handle.node for handle in handles]
-        _validate_workspace_snapshot(
-            root_device=int(root_stat.st_dev),
-            nodes=captured_nodes,
-            allow_private_skill_mode_migration=True,
+        root_stat = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise WorkspacePermissionError("runtime workspace root is unavailable")
+        root_device = int(root_stat.st_dev)
+        _prepare_namespace_directory(
+            root_fd,
+            ".",
+            root_device=root_device,
+            require_owner_write=True,
         )
-        handles = _normalize_platform_private_skill_modes(root_device=int(root_stat.st_dev), handles=handles)
-        validate_workspace_snapshot(root_device=int(root_stat.st_dev), nodes=[handle.node for handle in handles])
-        return root_fd, handles
+        return root_fd, root_device
     except BaseException:
-        for opened_fd in reversed(opened_fds):
-            os.close(opened_fd)
+        os.close(root_fd)
         raise
-
-
-def _revalidate_node(handle: _OpenWorkspaceNode) -> os.stat_result:
-    if handle.fd is None:
-        raise WorkspacePermissionError(f"workspace inode handle is unavailable: {handle.node.relative_path}")
-    current = os.fstat(handle.fd)
-    expected = handle.node
-    if (
-        int(current.st_dev),
-        int(current.st_ino),
-        int(current.st_uid),
-        int(current.st_gid),
-        int(current.st_mode),
-        int(current.st_nlink),
-    ) != (expected.device, expected.inode, expected.uid, expected.gid, expected.mode, expected.link_count):
-        raise WorkspacePermissionError(f"workspace entry changed during migration: {expected.relative_path}")
-    return current
-
-
-def _normalize_platform_private_skill_modes(
-    *,
-    root_device: int,
-    handles: list[_OpenWorkspaceNode],
-) -> list[_OpenWorkspaceNode]:
-    normalized: list[_OpenWorkspaceNode] = []
-    removexattr = getattr(os, "removexattr", None)
-    for handle in handles:
-        node = handle.node
-        if not _is_platform_private_skill_path(node.relative_path):
-            normalized.append(handle)
-            continue
-        if removexattr is None:
-            raise WorkspacePermissionError("POSIX ACL removal is unavailable")
-        if node.device != root_device:
-            raise WorkspacePermissionError(f"workspace entry crosses filesystem boundary: {node.relative_path}")
-        if (node.uid, node.gid) not in {(0, 0), (RUNTIME_UID, RUNTIME_GID)}:
-            raise WorkspacePermissionError(f"foreign workspace owner: {node.relative_path}")
-        if not (stat.S_ISDIR(node.mode) or stat.S_ISREG(node.mode)):
-            raise WorkspacePermissionError(f"unsupported workspace entry type: {node.relative_path}")
-        if stat.S_ISREG(node.mode) and node.link_count != 1:
-            raise WorkspacePermissionError(f"workspace hard links are not allowed: {node.relative_path}")
-        if node.mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX):
-            raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
-        descriptor = handle.fd
-        if descriptor is None:
-            raise WorkspacePermissionError(f"workspace inode handle is unavailable: {node.relative_path}")
-        current = _revalidate_node(handle)
-        try:
-            for name in _POSIX_ACL_NAMES:
-                try:
-                    removexattr(descriptor, name)
-                except OSError as exc:
-                    if exc.errno not in {errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP}:
-                        raise
-            os.fchmod(descriptor, stat.S_IMODE(current.st_mode) & ~0o022)
-            updated = os.fstat(descriptor)
-        except OSError as exc:
-            raise WorkspacePermissionError(
-                f"platform-private workspace metadata migration failed: {node.relative_path}"
-            ) from exc
-        updated_node = _node_from_stat(node.relative_path, updated)
-        if (
-            updated_node.device,
-            updated_node.inode,
-            updated_node.uid,
-            updated_node.gid,
-            updated_node.link_count,
-        ) != (node.device, node.inode, node.uid, node.gid, node.link_count):
-            raise WorkspacePermissionError(f"workspace entry changed during migration: {node.relative_path}")
-        normalized.append(replace(handle, node=updated_node))
-    return normalized
-
-
-def _migrate_workspace_owners(handles: list[_OpenWorkspaceNode]) -> None:
-    for handle in reversed(handles):
-        current = _revalidate_node(handle)
-        if (current.st_uid, current.st_gid) == (RUNTIME_UID, RUNTIME_GID):
-            continue
-        try:
-            os.fchown(handle.fd, RUNTIME_UID, RUNTIME_GID)
-        except OSError as exc:
-            raise WorkspacePermissionError(f"workspace ownership migration failed: {handle.node.relative_path}") from exc
 
 
 def _drop_runtime_privileges() -> None:
@@ -335,16 +252,15 @@ def _probe_runtime_workspace(root_fd: int) -> None:
 
 
 def initialize_runtime_workspace() -> None:
-    """Safely migrate the fixed compose workspace and verify it as `10001:10001`."""
+    """Prepare only the runtime root and platform namespace directory chain."""
 
-    root_fd, handles = _capture_workspace_tree(RUNTIME_WORKSPACE_ROOT)
+    root_fd, root_device = _open_runtime_workspace_root(RUNTIME_WORKSPACE_ROOT)
     try:
-        _migrate_workspace_owners(handles)
+        _walk_workspace_namespace(root_fd, ".", 0, root_device)
         _drop_runtime_privileges()
         _probe_runtime_workspace(root_fd)
     finally:
-        for directory_fd in reversed([handle.fd for handle in handles if handle.fd is not None]):
-            os.close(directory_fd)
+        os.close(root_fd)
 
 
 def main() -> int:

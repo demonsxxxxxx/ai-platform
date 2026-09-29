@@ -6,7 +6,7 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.models import ChatStreamResponse
+from app.models import AgentConversationIdentity, ChatSessionResponse, ChatStreamResponse
 from app.runs.infrastructure import capability_admission_postgres as capability_admission_persistence
 
 
@@ -267,6 +267,18 @@ def test_builder_trial_run_is_idempotently_bound_to_one_test_session_and_canonic
 
     async def create_conversation(_conn, **kwargs):
         observed["conversations"].append(kwargs)
+        return ChatSessionResponse(
+            session_id=kwargs["session_id"],
+            workspace_id=kwargs["workspace_id"],
+            agent_id=kwargs["selection"].agent_id,
+            title=kwargs["title"],
+            purpose=kwargs["purpose"],
+            agent_conversation=AgentConversationIdentity(
+                agent_id=kwargs["selection"].agent_id,
+                revision=7,
+                name="Support assistant",
+            ),
+        )
 
     async def submit_run(**kwargs):
         observed["runs"].append(kwargs)
@@ -314,7 +326,6 @@ def test_builder_trial_run_is_idempotently_bound_to_one_test_session_and_canonic
     for call in observed["conversations"]:
         assert call["purpose"] == "builder_test"
         assert call["selection"].agent_id == "agt_support"
-        assert call["selection"].expected_revision == 7
     assert [call["session_id"] for call in observed["runs"]] == [
         expected_session_id,
         expected_session_id,

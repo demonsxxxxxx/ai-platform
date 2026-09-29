@@ -2,6 +2,7 @@ from app.skills.api import (
     configure_skill_display_version_persistence,
     configure_skill_run_admission,
 )
+from app.skills.catalog import is_current_skill_dependency_usable
 from app.skills.application.run_admission import (
     SkillRunAdmissionPorts,
     SkillRunAdmissionService,
@@ -33,6 +34,7 @@ def configure_skill_services() -> None:
                 resolve_release_decision=resolve_rollout_skill_decision,
                 release_decision_payload=release_decision_payload_for_locked_version,
                 is_user_runnable_status=is_user_runnable_status,
+                dependency_is_usable=is_current_skill_dependency_usable,
                 build_manifest_pins=build_skill_version_policy_manifest_pins,
                 lock_skill_version=governed_locked_skill_version,
                 attach_snapshot_governance=attach_skill_snapshot_governance,

@@ -309,15 +309,13 @@ def _canonical_pre_persistence_rejection_fingerprint(
     request: ChatStreamRequest,
     principal: AuthPrincipal,
     query_agent_id: str | None,
-    code: str,
 ) -> str:
-    """Hash the complete rejected request through the authoritative ledger contract."""
+    """Hash the normalized client request through the authoritative ledger contract."""
 
     return persistence_chat_submissions.chat_submission_fingerprint(
         {
             "request": request.model_dump(mode="json", exclude={"submission_id"}),
             "query_agent_id": query_agent_id,
-            "rejection_code": code,
         },
         tenant_id=principal.tenant_id,
         user_id=principal.user_id,
@@ -364,15 +362,7 @@ def _existing_chat_submission_response(
 
     if _is_preledger_recovery_tombstone(row, principal=principal):
         return _chat_stream_response_from_submission(row)
-    claimed_fingerprint = request_fingerprint
-    if row.get("state") == "rejected_before_persist":
-        claimed_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-            request=request,
-            principal=principal,
-            query_agent_id=query_agent_id,
-            code=str(row.get("rejection_code") or "chat_submission_rejected"),
-        )
-    if row.get("request_fingerprint_sha256") != claimed_fingerprint:
+    if row.get("request_fingerprint_sha256") != request_fingerprint:
         raise HTTPException(status_code=409, detail="submission_payload_mismatch")
     return _chat_stream_response_from_submission(row)
 
@@ -507,7 +497,6 @@ async def _persist_pre_persistence_rejection(
         request=request,
         principal=principal,
         query_agent_id=query_agent_id,
-        code=code,
     )
     async with transaction() as conn:
         await identity_postgres.ensure_submission_principal(
@@ -1272,6 +1261,8 @@ async def chat_stream(
         raise HTTPException(status_code=400, detail="invalid_principal_user_id") from exc
     query_agent_id = _normalized_query_agent_id(agent_id)
     submission_id = str(request.submission_id) if request.submission_id is not None else None
+    if request.selected_agent_profile is not None and submission_id is None:
+        submission_id = str(uuid4())
     request_fingerprint = None
     existing_submission_row = None
     if submission_id is not None:
@@ -1288,27 +1279,13 @@ async def chat_stream(
                 conn, tenant_id=principal.tenant_id, user_id=principal.user_id, submission_id=submission_id
             )
         if existing_submission_row:
-            if _is_preledger_recovery_tombstone(
+            return _existing_chat_submission_response(
                 existing_submission_row,
+                request=request,
                 principal=principal,
-            ):
-                return _chat_stream_response_from_submission(existing_submission_row)
-            fingerprint_matches = existing_submission_row.get("request_fingerprint_sha256") == (
-                _canonical_pre_persistence_rejection_fingerprint(
-                    request=request,
-                    principal=principal,
-                    query_agent_id=query_agent_id,
-                    code=str(existing_submission_row.get("rejection_code") or "chat_submission_rejected"),
-                )
-                if existing_submission_row.get("state") == "rejected_before_persist"
-                else request_fingerprint
+                query_agent_id=query_agent_id,
+                request_fingerprint=request_fingerprint,
             )
-            if request.session_id is None or request.selected_mcp_tool_ids is not None:
-                if not fingerprint_matches:
-                    raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-                return _chat_stream_response_from_submission(existing_submission_row)
-            if fingerprint_matches:
-                return _chat_stream_response_from_submission(existing_submission_row)
     if contains_platform_multi_agent_control(request.input):
         code = PLATFORM_MULTI_AGENT_NOT_SUPPORTED
         await _persist_pre_persistence_rejection(
@@ -1452,7 +1429,7 @@ async def chat_stream(
     admitted_agent_profile = None
     try:
         async with transaction() as conn:
-            # Global submission order: user advisory -> session row -> Agent
+            # Global admission order: user advisory -> session row -> Agent
             # profile aggregate. Every path takes this once before admission.
             await runs_postgres.acquire_user_active_run_admission_lock(
                 conn,
@@ -1465,6 +1442,25 @@ async def chat_stream(
                 user_id=principal.user_id,
                 display_name=principal.display_name,
             )
+            # Claim the client intent before capacity and resource admission.
+            # A concurrent retry can replay without resolving mutable state.
+            if submission_id is not None and request_fingerprint is not None:
+                claimed_submission, created_submission = await persistence_chat_submissions.claim_chat_submission(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    submission_id=submission_id,
+                    workspace_id=None,
+                    request_fingerprint_sha256=request_fingerprint,
+                )
+                if not created_submission:
+                    return _existing_chat_submission_response(
+                        claimed_submission,
+                        request=request,
+                        principal=principal,
+                        query_agent_id=query_agent_id,
+                        request_fingerprint=request_fingerprint,
+                    )
             continuation_session = None
             continuation_prior_runs: list[dict[str, Any]] = []
             continuation_latest_input_json: dict[str, Any] | None = None
@@ -1548,49 +1544,36 @@ async def chat_stream(
                 if isinstance(continuation_session, dict)
                 else None
             )
-            session_profile_hash = (
-                continuation_session.get("admitted_agent_profile_hash")
-                if isinstance(continuation_session, dict)
-                else None
-            )
             if request.session_id and isinstance(session_profile_revision, int) and session_profile_revision > 0:
                 session_profile_agent_id = str(continuation_session.get("agent_id") or "")
+                session_profile_hash = continuation_session.get("admitted_agent_profile_hash")
                 if not isinstance(session_profile_hash, str) or not session_profile_hash:
                     raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
                 if (
                     selected_agent_profile is not None
-                    and (
-                        selected_agent_profile.agent_id != session_profile_agent_id
-                        or selected_agent_profile.expected_revision != session_profile_revision
-                    )
+                    and selected_agent_profile.agent_id != session_profile_agent_id
                 ):
                     raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
                 selected_agent_profile = SelectedAgentProfileRequest(
                     agent_id=session_profile_agent_id,
-                    expected_revision=session_profile_revision,
                 )
             elif request.session_id and selected_agent_profile is not None:
                 raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
 
             if selected_agent_profile is not None:
-                if request.session_id and isinstance(session_profile_revision, int):
-                    admitted_agent_profile = await _agent_profile_authority.resolve_bound_for_submission(
-                        conn,
-                        principal=principal,
-                        agent_id=selected_agent_profile.agent_id,
-                        revision=selected_agent_profile.expected_revision,
-                        content_hash=session_profile_hash,
-                        submitted_request=request,
-                        query_agent_id=query_agent_id,
-                    )
-                else:
-                    admitted_agent_profile = await _agent_profile_authority.resolve_for_admission(
-                        conn,
-                        principal=principal,
-                        selection=selected_agent_profile,
-                        submitted_request=request,
-                        query_agent_id=query_agent_id,
-                    )
+                admitted_agent_profile = await _agent_profile_authority.resolve_for_admission(
+                    conn,
+                    principal=principal,
+                    selection=selected_agent_profile,
+                    submitted_request=request,
+                    query_agent_id=query_agent_id,
+                )
+                if (
+                    isinstance(continuation_session, dict)
+                    and continuation_session.get("purpose") == "builder_test"
+                    and admitted_agent_profile.revision != session_profile_revision
+                ):
+                    raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
                 requested_agent_id = admitted_agent_profile.agent_id
                 requested_skill_id = str(admitted_agent_profile.skill["skill_id"])
                 selected_skill_for_execution = SelectedSkillRequest(
@@ -1627,7 +1610,7 @@ async def chat_stream(
             # Authorize the final execution selection exactly once, after
             # explicit, inherited, and Agent-profile MCP sources have been
             # resolved, but before any Session or Run write is allowed.
-            if "mcp_tool_ids" in run_input:
+            if "mcp_tool_ids" in run_input and admitted_agent_profile is None:
                 await authorize_selected_chat_mcp_tools(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -1637,47 +1620,6 @@ async def chat_stream(
                     is_admin=is_ai_admin(principal),
                     permissions=principal.permissions,
                 )
-
-            fingerprint_request = request.model_dump(
-                mode="json",
-                exclude={"submission_id"},
-            )
-            if request.selected_mcp_tool_ids is None and allowed and "mcp_tool_ids" in run_input:
-                fingerprint_request["selected_mcp_tool_ids"] = list(
-                    run_input.get("mcp_tool_ids") or []
-                )
-            resolved_request_fingerprint = persistence_chat_submissions.chat_submission_fingerprint(
-                {
-                    "request": fingerprint_request,
-                    "query_agent_id": query_agent_id,
-                },
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-            )
-            if submission_id is not None:
-                request_fingerprint = resolved_request_fingerprint
-
-            if (
-                admitted_agent_profile is None
-                and submission_id is not None
-                and request_fingerprint is not None
-            ):
-                claimed_submission, created_submission = await persistence_chat_submissions.claim_chat_submission(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    submission_id=submission_id,
-                    workspace_id=effective_workspace_id,
-                    request_fingerprint_sha256=request_fingerprint,
-                )
-                if not created_submission:
-                    return _existing_chat_submission_response(
-                        claimed_submission,
-                        request=request,
-                        principal=principal,
-                        query_agent_id=query_agent_id,
-                        request_fingerprint=request_fingerprint,
-                    )
 
             if preserve_continuation_skill and admitted_agent_profile is None:
                 continuation_prior_runs = await conversations_session_queries.list_authorized_session_runs(
@@ -1824,6 +1766,11 @@ async def chat_stream(
                 skill = None
                 executor_type = HARNESS_CHAT_EXECUTOR_TYPE
                 input_modes = ["chat"]
+            elif admitted_agent_profile is not None:
+                skill = admitted_agent_profile.skill
+                locked_skill_label = public_skill_display_label(
+                    skill.get("skill_display_label")
+                )
             elif selected_skill_for_execution is not None:
                 assert authorization_kwargs is not None
                 skill = await runs_capability_admission.authorize_selected_run_capabilities(
@@ -1893,6 +1840,7 @@ async def chat_stream(
                     rollout_key=principal.user_id,
                     mcp_tool_ids_for_skill=runs_capability_admission.run_mcp_tool_ids_for_skill,
                     conflict_error=RepositoryConflictError,
+                    department_id=principal.department_id, roles=principal.roles, permissions=principal.permissions,
                 )
             elif admitted_agent_profile is not None:
                 skill_version, release_decision_payload, skill_manifests = None, {}, []
@@ -1905,6 +1853,7 @@ async def chat_stream(
                     input_payload=run_input,
                     tenant_id=principal.tenant_id,
                     rollout_key=principal.user_id,
+                    department_id=principal.department_id, roles=principal.roles, permissions=principal.permissions,
                 )
                 skill_manifests = admission.skill_manifests
                 skill_version = admission.skill_version
@@ -1974,31 +1923,6 @@ async def chat_stream(
                 reusable_file_ids=reusable_primary_file_ids,
                 input_modes=(None if admitted_agent_profile is not None else input_modes),
             )
-            if admitted_agent_profile is not None:
-                # Canonical clients supply their own key; a legacy unkeyed
-                # Agent request gets one here. Both are claimed only after
-                # every capability and resource check has passed, immediately
-                # before the first session/run write.
-                if submission_id is None:
-                    submission_id = str(uuid4())
-                    request_fingerprint = resolved_request_fingerprint
-                assert request_fingerprint is not None
-                claimed_submission, created_submission = await persistence_chat_submissions.claim_chat_submission(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    submission_id=submission_id,
-                    workspace_id=effective_workspace_id,
-                    request_fingerprint_sha256=request_fingerprint,
-                )
-                if not created_submission:
-                    return _existing_chat_submission_response(
-                        claimed_submission,
-                        request=request,
-                        principal=principal,
-                        query_agent_id=query_agent_id,
-                        request_fingerprint=request_fingerprint,
-                    )
             if request.session_id is None:
                 session_create_kwargs = {
                     "tenant_id": principal.tenant_id,

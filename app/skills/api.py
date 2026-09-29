@@ -1,7 +1,8 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypedDict
 
 from app.skills.application.run_admission import (
+    MAX_SKILL_RUN_MANIFESTS,
     SkillRunAdmission,
     SkillRunAdmissionService,
 )
@@ -89,6 +90,9 @@ async def admit_skill_run(
     tenant_id: str,
     rollout_key: str,
     expected_version: str | None = None,
+    department_id: str = "",
+    roles: list[str] | None = None,
+    permissions: list[str] | None = None,
 ) -> SkillRunAdmission:
     """Resolve release policy and lock the Skill manifest for one run."""
     if _skill_run_admission_service is None:
@@ -101,6 +105,31 @@ async def admit_skill_run(
         tenant_id=tenant_id,
         rollout_key=rollout_key,
         expected_version=expected_version,
+        department_id=department_id, roles=roles, permissions=permissions,
+    )
+
+
+async def admit_skill_set(
+    conn: Any,
+    *,
+    roots: Sequence[tuple[str, dict[str, Any], str | None]],
+    input_payload: dict[str, Any],
+    tenant_id: str,
+    rollout_key: str,
+    department_id: str = "",
+    roles: list[str] | None = None,
+    permissions: list[str] | None = None,
+) -> list[SkillRunAdmission]:
+    """Resolve an already-authorized root set with one shared dependency closure."""
+    if _skill_run_admission_service is None:
+        raise RuntimeError("skill_run_admission_not_configured")
+    return await _skill_run_admission_service.admit_set(
+        conn,
+        roots=roots,
+        department_id=department_id, roles=roles, permissions=permissions,
+        input_payload=input_payload,
+        tenant_id=tenant_id,
+        rollout_key=rollout_key,
     )
 
 
@@ -188,9 +217,11 @@ def restore_admitted_skill_manifest_authority(
 __all__ = [
     "AdminSkillListResponse",
     "AdminSkillSummaryResponse",
+    "MAX_SKILL_RUN_MANIFESTS",
     "SkillRunAdmission",
     "SkillRunVersionMismatch",
     "admit_skill_run",
+    "admit_skill_set",
     "configure_skill_run_admission",
     "configure_skill_display_version_persistence",
     "list_uploaded_skill_display_version_rows",

@@ -148,7 +148,6 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
         tenant_id="tenant-a",
         user_id="user-a",
         agent_id="agt_support",
-        revision=7,
         cursor=None,
         limit=21,
     ) == []
@@ -172,10 +171,10 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
     assert "profile.agent_id = sessions.agent_id" in normalized
     assert "profile.revision = sessions.admitted_agent_profile_revision" in normalized
     assert "profile.content_hash = sessions.admitted_agent_profile_hash" in normalized
-    assert "join agent_profiles current_profile" in normalized
-    assert "current_profile.lifecycle_status = 'published'" in normalized
-    assert "join agents current_agent" in normalized
-    assert "current_agent.status = 'active'" in normalized
+    assert "join agent_profiles current_profile" not in normalized
+    assert "current_profile.lifecycle_status = 'published'" not in normalized
+    assert "join agents current_agent" not in normalized
+    assert "current_agent.status = 'active'" not in normalized
     assert "current_profile.lifecycle_status = 'published'" not in detail_normalized
     assert (
         "profile.skill_set @> '[{\"skill_id\": \"baoyu-translate\"}]'::jsonb)"
@@ -187,7 +186,7 @@ async def test_agent_conversation_repository_selects_complete_pinned_public_iden
     ) in detail_normalized
     assert "sessions.purpose" in normalized
     assert "sessions.purpose = 'conversation'" in normalized
-    assert captured[0][1] == ("tenant-a", "user-a", "agt_support", 7, 21)
+    assert captured[0][1] == ("tenant-a", "user-a", "agt_support", 21)
     assert captured[1][1] == ("tenant-a", "user-a", "ses_1")
 
 
@@ -218,7 +217,6 @@ async def test_agent_conversation_repository_excludes_builder_test_sessions():
         tenant_id="tenant-a",
         user_id="user-a",
         agent_id="agt_support",
-        revision=7,
         cursor=None,
         limit=20,
     )
@@ -260,7 +258,7 @@ async def test_list_sessions_projects_retired_pinned_profile_as_tombstone(monkey
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
+async def test_list_sessions_returns_one_agent_page_across_revisions_with_opaque_cursor(
     monkeypatch,
 ):
     from datetime import datetime, timezone
@@ -271,7 +269,7 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
             "workspace_id": "default",
             "agent_id": "agt_support",
             "title": f"Support {index}",
-            "admitted_agent_profile_revision": 7,
+            "admitted_agent_profile_revision": 4 + index,
             "admitted_agent_profile_hash": "a" * 64,
             "agent_profile_name": "Support assistant",
             "agent_profile_description": "Approved support help.",
@@ -286,10 +284,10 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
     ]
 
     async def fake_list_agent_conversations(
-        conn, *, tenant_id, user_id, agent_id, revision, cursor, limit
+        conn, *, tenant_id, user_id, agent_id, cursor, limit
     ):
         assert (tenant_id, user_id) == ("tenant-a", "user-a")
-        assert (agent_id, revision, cursor, limit) == ("agt_support", 7, None, 3)
+        assert (agent_id, cursor, limit) == ("agt_support", None, 3)
         return rows
 
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
@@ -300,13 +298,13 @@ async def test_list_sessions_returns_one_agent_revision_page_with_opaque_cursor(
 
     response = await list_sessions(
         agent_id="agt_support",
-        revision=7,
         cursor=None,
         limit=2,
         principal=principal(),
     )
 
     assert [session.session_id for session in response.sessions] == ["ses_3", "ses_2"]
+    assert [item.agent_conversation.revision for item in response.sessions] == [7, 6]
     assert response.next_cursor is not None
     padding = "=" * (-len(response.next_cursor) % 4)
     cursor_payload = json.loads(
@@ -415,15 +413,15 @@ def test_retired_session_projection_detects_non_primary_profile_skill():
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_delegates_current_publication_filtering_to_repository(
+async def test_list_sessions_reads_owned_history_without_current_publication_requirement(
     monkeypatch,
 ):
     calls: list[tuple[object, ...]] = []
 
     async def list_owned_history(
-        conn, *, tenant_id, user_id, agent_id, revision, cursor, limit
+        conn, *, tenant_id, user_id, agent_id, cursor, limit
     ):
-        calls.append((tenant_id, user_id, agent_id, revision, cursor, limit))
+        calls.append((tenant_id, user_id, agent_id, cursor, limit))
         return []
 
     monkeypatch.setattr("app.routes.chat_sessions.transaction", fake_transaction)
@@ -434,7 +432,6 @@ async def test_list_sessions_delegates_current_publication_filtering_to_reposito
 
     response = await list_sessions(
         agent_id="agt_support",
-        revision=7,
         cursor=None,
         limit=20,
         principal=principal(),
@@ -442,7 +439,7 @@ async def test_list_sessions_delegates_current_publication_filtering_to_reposito
 
     assert response.sessions == []
     assert response.next_cursor is None
-    assert calls == [("tenant-a", "user-a", "agt_support", 7, None, 21)]
+    assert calls == [("tenant-a", "user-a", "agt_support", None, 21)]
 
 
 @pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
@@ -452,13 +449,12 @@ def test_agent_conversation_history_contract_is_mounted_on_chat_aliases(
     from datetime import datetime, timezone
 
     async def list_page(
-        _conn, *, tenant_id, user_id, agent_id, revision, cursor, limit
+        _conn, *, tenant_id, user_id, agent_id, cursor, limit
     ):
-        assert (tenant_id, user_id, agent_id, revision, cursor, limit) == (
+        assert (tenant_id, user_id, agent_id, cursor, limit) == (
             "tenant-a",
             "user-a",
             "agt_support",
-            7,
             None,
             2,
         )
@@ -487,7 +483,7 @@ def test_agent_conversation_history_contract_is_mounted_on_chat_aliases(
     )
 
     response = chat_submission_client.get(
-        f"{prefix}/chat/sessions?agent_id=agt_support&revision=7&limit=1",
+        f"{prefix}/chat/sessions?agent_id=agt_support&limit=1",
         headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
     )
 
@@ -502,9 +498,8 @@ def test_agent_conversation_history_contract_is_mounted_on_chat_aliases(
 async def test_list_sessions_rejects_incomplete_or_invalid_agent_cursor_scope():
     with pytest.raises(HTTPException) as incomplete:
         await list_sessions(
-            agent_id="agt_support",
-            revision=None,
-            cursor=None,
+            agent_id=None,
+            cursor="provided-without-agent",
             limit=20,
             principal=principal(),
         )
@@ -514,8 +509,7 @@ async def test_list_sessions_rejects_incomplete_or_invalid_agent_cursor_scope():
     with pytest.raises(HTTPException) as invalid_cursor:
         await list_sessions(
             agent_id="agt_support",
-            revision=7,
-            cursor="not-a-cursor",
+                cursor="not-a-cursor",
             limit=20,
             principal=principal(),
         )

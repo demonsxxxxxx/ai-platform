@@ -15,14 +15,14 @@ export const AGENT_PROFILE_AVATAR_REFS = [
 
 export type AgentProfileAvatarRef = (typeof AGENT_PROFILE_AVATAR_REFS)[number];
 
-/** Optimistic client lock for one published Agent Profile revision. */
+/** Ordinary-user selection resolves to the current publication on the server. */
 export interface SelectedAgentProfileRequest {
   agent_id: string;
-  expected_revision: number;
 }
 
 /** Safe ordinary-user market card. Execution configuration stays server-owned. */
-export interface AgentProfilePublicProjection extends SelectedAgentProfileRequest {
+export interface AgentProfilePublicProjection {
+  agent_id: string;
   name: string;
   description: string;
   starter_prompts: string[];
@@ -116,7 +116,6 @@ export function projectAgentProfilePublicProjection(value: unknown): AgentProfil
   const record = requireRecord(value, PROFILE_ERROR);
   return {
     agent_id: requireString(record.agent_id, PROFILE_ERROR),
-    expected_revision: requirePositiveRevision(record.expected_revision, PROFILE_ERROR),
     name: requireString(record.name, PROFILE_ERROR),
     description: requireString(record.description, PROFILE_ERROR, true),
     starter_prompts: requireStringList(record.starter_prompts, PROFILE_ERROR),

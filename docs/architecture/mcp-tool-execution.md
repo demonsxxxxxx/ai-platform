@@ -26,13 +26,15 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 
 1. Keep `server::raw_tool` references and canonical platform subject identities
    unchanged. Build an explicit canonical-to-SDK alias map in the Claude
-   adapter; reject ambiguous aliases and normalized Server-name collisions.
+   adapter; use stable bounded hash suffixes to disambiguate normalized names.
    Resolve incoming hook/message/denial names consistently, without guessing
    that underscores mean dots. Sanitize aliases as private runtime identities.
 2. Before model execution, open the selected external Servers using the
    installed MCP client, current static headers and `JWT-Authorization`.
    Discover all pages with bounded time/size/cursor/name validation. Missing
-   selected tools or failed connections fail admission with a safe error.
+   selected tools or failed connections remove only those optional capabilities.
+   Servers discover concurrently; discovery timeouts end before the task waits
+   for connection release.
    Expose only selected Tool definitions using the SDK's in-process MCP Server
    support; preserve model-visible input schemas, annotations, result content,
    structured result data and `isError`. Remote `outputSchema` remains on the
@@ -42,7 +44,7 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
    content item while retaining the typed field for direct MCP callers.
    Forward calls to the original remote names. Do not expose
    unselected siblings or use a Server-wide wildcard permission grant.
-3. Own remote sessions in the existing execution task. Close SDK query streams,
+3. Each discovery task owns and closes its remote session. Close SDK query streams,
    sessions, transports and tasks on success, failure, timeout and cancellation.
    Use `strict_mcp_config=True` so project/user/plugin MCP config cannot expand
    the Server set. Selection remains optional use: a connected selected tool
@@ -50,7 +52,8 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
    `PreToolUse` may arrive before the corresponding assistant `ToolUseBlock`; the
    hook's validated call ID, tool name and private input seed the same per-call
    state so event publication order cannot turn an authorized call into a false
-   denial. After admission, a missing terminal hook is
+   denial. Known failed calls to platform-authorized read-only tools may recover.
+   For write-capable calls after admission, a missing terminal hook is
    `mcp_execution_outcome_unknown`; a completed hook whose durable callback or
    public receipt is incomplete is `mcp_execution_succeeded_receipt_incomplete`.
    Both require reconciliation and are not retryable. SDK error messages,

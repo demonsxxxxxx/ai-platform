@@ -1,3 +1,4 @@
+from tests.support.skill_admission import admitted_skill
 import app.agent_apps.infrastructure.catalog_postgres as _owner_agent_apps_infrastructure_catalog_postgres
 import app.conversations.infrastructure.postgres as _owner_conversations_infrastructure_postgres
 import app.conversations.infrastructure.session_queries_postgres as _owner_conversations_infrastructure_session_queries_postgres
@@ -61,7 +62,8 @@ from app.routes.chat import (
     retry_chat_submission_admission as _route_retry_chat_submission_admission,
 )
 from app.settings import Settings
-_ORIGINAL_SKILL_RUN_MATERIALIZER = _owner_skills_application_run_admission._materialize_manifest_pins
+_ORIGINAL_SKILL_RUN_ADMISSION = _owner_skills_application_run_admission.admit
+_ORIGINAL_SKILL_SET_ADMISSION = _owner_skills_application_run_admission.admit_set
 
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = _repo_app_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities
 _ORIGINAL_GET_LATEST_AUTHORIZED_SESSION_RUN_INPUT = (
@@ -504,7 +506,7 @@ def test_rejection_fingerprint_covers_complete_request_without_retaining_raw_val
             request=candidate,
             principal=principal(),
             query_agent_id=query_agent_id,
-            code=code,
+
         )
 
     expected = fingerprint()
@@ -537,12 +539,12 @@ def test_rejection_fingerprint_covers_complete_request_without_retaining_raw_val
     assert fingerprint(request.model_copy(update={"submission_id": None})) == expected
     assert fingerprint(request.model_copy(update={"input": dict(reversed(request.input.items()))})) == expected
     assert fingerprint(request.model_copy(update={"file_ids": list(reversed(request.file_ids))})) != expected
-    assert fingerprint(code="capability_not_authorized") != expected
+    assert fingerprint(code="capability_not_authorized") == expected
     assert expected != _canonical_pre_persistence_rejection_fingerprint(
         request=request,
         principal=principal(user_id="user-b"),
         query_agent_id="query-a",
-        code="mcp_tool_not_available",
+
     )
     assert len(expected) == 64
     assert not any(raw in expected for raw in ("agent-a", "skill-a", "secret-a", "file-a"))
@@ -593,29 +595,37 @@ async def test_mcp_denial_audit_redacts_raw_identity_and_correlates_deterministi
     assert "private-credential" not in serialized_records
 
 
+
+
 @pytest.fixture(autouse=True)
 def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
     configure_skill_services()
+    async def claim_new_submission(*_args, **_kwargs):
+        return ({"state": "resolving"}, True)
+    async def finalize_submission(*_args, **_kwargs):
+        return None
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "claim_chat_submission", claim_new_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", finalize_submission)
     async def no_submission(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', no_submission)
 
-    async def materialize_skill_manifests(_service,
-        _conn,
-        *,
-        skill_id,
-        input_payload,
-        release_policy_version,
-    ):
-        del input_payload, release_policy_version
-        return [snapshot_manifest(skill_id)]
+    async def materialize_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest(skill_id)])
 
     monkeypatch.setattr(
         _owner_skills_application_run_admission,
-        "_materialize_manifest_pins",
+        "admit",
         materialize_skill_manifests,
     )
+
+    async def admit_set(service, conn, *, roots, input_payload, tenant_id, rollout_key, **kwargs):
+        return [await service.admit(conn, skill=skill, skill_id=skill_id, input_payload=input_payload,
+                    tenant_id=tenant_id, rollout_key=rollout_key, **kwargs)
+                for skill_id, skill, _expected in roots]
+
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit_set", admit_set)
 
     async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
         return await _repo_app_skills_infrastructure_resolution_postgres.resolve_agent_skill(
@@ -770,8 +780,8 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
         calls["queue_input"] = payload["input"]
         return 1
 
-    async def manifests(*_args, **_kwargs):
-        return [snapshot_manifest("general-chat")]
+    async def manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest("general-chat")])
 
     async def noop(*_args, **_kwargs):
         return None
@@ -797,7 +807,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'append_message', append_message)
     monkeypatch.setattr(_owner_files_infrastructure_run_bindings_postgres, 'bind_files_to_run', noop)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', noop)
-    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", manifests)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService.admit", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
 
     response = await chat_stream(
@@ -859,7 +869,7 @@ async def test_chat_stream_never_turns_bash_text_into_required_capability(
     manifests, enqueue = AsyncMock(return_value=[manifest]), AsyncMock(return_value=1)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', authorize)
-    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", manifests)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService.admit", manifests)
     monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
     request = ChatStreamRequest(message=message)
 
@@ -921,15 +931,8 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
 
     async def claim_submission(*_args, **kwargs):
         calls.append("claim")
-        assert calls == [
-            "admission_lock",
-            "provision",
-            ("session", False),
-            ("session", True),
-            "latest_input",
-            "claim",
-        ]
-        assert kwargs["workspace_id"] == "workspace-owned"
+        assert calls == ["admission_lock", "provision", "claim"]
+        assert kwargs["workspace_id"] is None
         assert kwargs["request_fingerprint_sha256"] == fingerprint
         return (
             {
@@ -970,18 +973,11 @@ async def test_keyed_continuation_provisions_principal_and_claims_saved_workspac
     response = await chat_stream(request, principal=principal())
 
     assert response.session_id == "session-owned"
-    assert calls == [
-        "admission_lock",
-        "provision",
-        ("session", False),
-        ("session", True),
-        "latest_input",
-        "claim",
-    ]
+    assert calls == ["admission_lock", "provision", "claim"]
 
 
 @pytest.mark.asyncio
-async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection_before_claim(monkeypatch):
+async def test_keyed_replay_uses_original_intent_before_mutable_mcp_admission(monkeypatch):
     request = ChatStreamRequest(
         message="continue with selected tool",
         session_id="session-owned",
@@ -1034,7 +1030,6 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
     async def claim_submission(*_args, **kwargs):
         calls.append(("claim", kwargs["request_fingerprint_sha256"]))
         fingerprint_request = request.model_dump(mode="json", exclude={"submission_id"})
-        fingerprint_request["selected_mcp_tool_ids"] = ["locked-search"]
         assert kwargs["request_fingerprint_sha256"] == _repo_app_persistence_chat_submissions.chat_submission_fingerprint(
             {"request": fingerprint_request, "query_agent_id": None},
             tenant_id="tenant-a",
@@ -1079,15 +1074,9 @@ async def test_keyed_continuation_inherits_and_reauthorizes_latest_mcp_selection
     response = await chat_stream(request, principal=principal())
 
     assert response.run_id == "run-owned"
-    assert calls[:6] == [
-        "admission_lock",
-        "provision",
-        ("session", False),
-        ("session", True),
-        "latest_input",
-        ("authorize", ["locked-search"]),
-    ]
-    assert calls[6][0] == "claim"
+    assert calls[:2] == ["admission_lock", "provision"]
+    assert calls[2][0] == "claim"
+    assert len(calls) == 3
 
 
 @pytest.mark.asyncio
@@ -1204,7 +1193,7 @@ async def test_keyed_legacy_mcp_rejection_is_durable_replay_safe_and_payload_mis
     assert mismatch_info.value.status_code == 409
     assert mismatch_info.value.detail == "submission_payload_mismatch"
     assert len(set(claims[:2])) == 1
-    assert claims[2] != claims[0]
+    assert claims[-1] != claims[0]
     assert len(finalizations) == 1
     serialized_ledger = json.dumps(ledger, sort_keys=True)
     assert "unauthorized-private-tool" not in serialized_ledger
@@ -1967,6 +1956,17 @@ async def test_retry_admission_does_not_requeue_a_processing_run(monkeypatch):
 @pytest.mark.asyncio
 async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(monkeypatch):
     submission = _pending_submission_row()
+    original_request = ChatStreamRequest(
+        message="continue the accepted task",
+        submission_id=submission["submission_id"],
+    )
+    old_request = original_request.model_dump(mode="json", exclude={"submission_id"})
+    old_request["selected_mcp_tool_ids"] = ["previously-resolved-tool"]
+    old_fingerprint = _owner_persistence_chat_submissions.chat_submission_fingerprint(
+        {"request": old_request, "query_agent_id": None},
+        tenant_id=principal().tenant_id, user_id=principal().user_id,
+    )
+    submission["request_fingerprint_sha256"] = old_fingerprint
     enqueued_payloads: list[dict[str, object]] = []
     finalize_attempts = 0
 
@@ -2003,6 +2003,12 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event, raising=False)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize, raising=False)
 
+    with pytest.raises(HTTPException) as changed_protocol:
+        await chat_stream(original_request, principal=principal())
+    assert changed_protocol.value.detail == "submission_payload_mismatch"
+    recovered = await get_chat_submission(submission["submission_id"], response=Response(), principal=principal())
+    assert recovered.outcome.run_id == submission["run_id"]
+
     with pytest.raises(RuntimeError, match="ledger update lost"):
         await _admit_chat_submission(
             principal=principal(),
@@ -2015,6 +2021,9 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
 
     assert response.state == "queued"
     assert len(enqueued_payloads) == 1
+
+    assert response.outcome.run_id == submission["run_id"]
+    assert submission["request_fingerprint_sha256"] == old_fingerprint
 
 
 @pytest.mark.asyncio
@@ -2079,10 +2088,6 @@ def snapshot_manifest(skill_id, *, description="Pinned skill"):
 
 
 def uploaded_skill_version_row(skill_id="qa-file-reviewer", version="hash-uploaded", dependency_ids=None, dependency_manifests=None):
-    if skill_id == "qa-file-reviewer" and dependency_ids is None:
-        dependency_ids = ["minimax-docx"]
-    if skill_id == "qa-file-reviewer" and dependency_manifests is None:
-        dependency_manifests = [snapshot_manifest("minimax-docx", description="Pinned DOCX helper")]
     source = {
         "kind": "uploaded",
         "storage_key": f"tenants/tenant-a/skills/{skill_id}/versions/{version}/package.zip",
@@ -3037,7 +3042,7 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
     assert mismatch_info.value.status_code == 409
     assert mismatch_info.value.detail == "submission_payload_mismatch"
     assert claims[0] == claims[1]
-    assert claims[2] != claims[0]
+    assert claims[-1] != claims[0]
     assert finalizations == ["mcp_tool_not_available"]
     assert ledger["state"] == "rejected_before_persist"
     assert ledger["rejection_code"] == "mcp_tool_not_available"
@@ -3063,11 +3068,11 @@ async def test_chat_stream_prevalidates_queue_payload_before_persisting(monkeypa
         calls.append(("enqueue", payload))
         raise AssertionError("invalid queue payload must be rejected before enqueue")
 
-    async def fake_materialize_governed_skill_manifests(_service, conn, *, skill_id, input_payload, release_policy_version):
-        return [snapshot_manifest(skill_id)]
+    async def fake_materialize_governed_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest(skill_id)])
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", fake_materialize_governed_skill_manifests)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService.admit", fake_materialize_governed_skill_manifests)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fail_persist)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fail_persist)
@@ -3220,8 +3225,8 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
         calls.append(("queue_payload", payload))
         return 1
 
-    async def fake_materialize_governed_skill_manifests(_service, conn, *, skill_id, input_payload, release_policy_version):
-        return [snapshot_manifest(skill_id)]
+    async def fake_materialize_governed_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest(skill_id)])
 
     async def fake_resolve_chat_model_selection(conn, *, selection):
         assert selection == {"id": "pro-tier", "value": "openai/gpt-5"}
@@ -3236,7 +3241,7 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     monkeypatch.setattr("app.routes.chat.get_settings", lambda: current_settings)
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", fake_resolve_chat_model_selection)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", fake_materialize_governed_skill_manifests)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService.admit", fake_materialize_governed_skill_manifests)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fake_ensure_user)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
@@ -3415,7 +3420,8 @@ async def test_chat_stream_rejects_release_policy_version_that_differs_from_prim
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit_set", _ORIGINAL_SKILL_SET_ADMISSION)
 
     with pytest.raises(Exception) as exc_info:
         await chat_stream(
@@ -3440,10 +3446,8 @@ async def test_chat_stream_rejects_invalid_snapshot_governance_manifest_as_mater
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("run must not be created when snapshot governance cannot be materialized")
 
-    async def fake_materialize_skill_manifests(_service,
-        _conn, *, skill_id, input_payload, release_policy_version
-    ):
-        return [
+    async def fake_materialize_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [
             {
                 "skill_id": skill_id,
                 "version": "hash-pin",
@@ -3455,9 +3459,9 @@ async def test_chat_stream_rejects_invalid_snapshot_governance_manifest_as_mater
                 "staged": False,
                 "used": False,
             }
-        ]
+        ])
 
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fake_materialize_skill_manifests)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", fake_materialize_skill_manifests)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
@@ -3491,6 +3495,8 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
         }
 
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
+        if skill_id == "minimax-docx":
+            return uploaded_skill_version_row(skill_id, dependency_manifest["version"], dependency_ids=[])
         assert skill_id == "qa-file-reviewer"
         assert version == "hash-uploaded"
         return uploaded_skill_version_row(
@@ -3499,6 +3505,13 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
             dependency_ids=["minimax-docx"],
             dependency_manifests=[dependency_manifest],
         )
+
+    async def dependency_catalog(*_args, **_kwargs):
+        return [{"skill_id": "minimax-docx", "version": dependency_manifest["version"],
+                 "expected_version": dependency_manifest["version"], "dependency_ids": [],
+                 "status": "active", "lifecycle_status": "active", "version_status": "active",
+                 "visible_to_user": True, "department_ids": [], "allowed_roles": []}]
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_public_skill_catalog", dependency_catalog)
 
     async def noop(*args, **kwargs):
         return None
@@ -3527,7 +3540,8 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit_set", _ORIGINAL_SKILL_SET_ADMISSION)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
@@ -3627,7 +3641,8 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit_set", _ORIGINAL_SKILL_SET_ADMISSION)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
@@ -3697,7 +3712,8 @@ async def test_chat_stream_rejects_reviewed_rollout_previous_version(monkeypatch
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit_set", _ORIGINAL_SKILL_SET_ADMISSION)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', noop)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
@@ -4509,6 +4525,7 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         (None, False, False, "before_publish"),
         (None, False, False, "definitive_rejection"),
         ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", False, True, None),
+        (None, False, True, "builder_revision_changed"),
         (
             "9c356f6d-360b-41d0-a97e-3ab16d70a874",
             False,
@@ -4524,6 +4541,7 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         "unkeyed-publish-failure",
         "unkeyed-definitive-rejection",
         "restored-continuation",
+        "builder-revision-changed",
         "restored-lost-ack",
     ],
 )
@@ -4651,8 +4669,9 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             "id": "ses-profile-lock-order",
             "workspace_id": "default",
             "agent_id": "agt_support",
-            "admitted_agent_profile_revision": 7,
+            "admitted_agent_profile_revision": 6,
             "admitted_agent_profile_hash": "a" * 64,
+            "purpose": "builder_test" if enqueue_failure_mode == "builder_revision_changed" else "conversation",
         }
 
     async def authorize_profile_skill(*_args, **_kwargs):
@@ -4667,14 +4686,13 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             "input_modes": ["docx"],
         }
 
-    async def governed_manifest(*_args, **kwargs):
-        skill_id = kwargs["skill_id"]
+    async def governed_manifest(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
         manifest = (
             profile_manifest
             if skill_id == "profile-specialist"
             else secondary_profile_manifest
         )
-        return [dict(manifest)]
+        return admitted_skill(skill, tenant_id, rollout_key, [dict(manifest)])
 
     async def authorize_workspace(*_args, **_kwargs):
         calls.append("workspace_auth")
@@ -4849,7 +4867,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         profile_admission,
     )
     monkeypatch.setattr(
-        "app.routes.chat._agent_profile_authority.resolve_bound_for_submission",
+        "app.routes.chat._agent_profile_authority.resolve_for_admission",
         profile_admission,
     )
     monkeypatch.setattr(
@@ -4865,7 +4883,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
         authorize_profile_skill,
     )
-    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", governed_manifest)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService.admit", governed_manifest)
     monkeypatch.setattr(
         'app.conversations.infrastructure.postgres.ensure_workspace_belongs_to_tenant',
         authorize_workspace,
@@ -4906,12 +4924,19 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         request_payload["session_id"] = "ses-profile-lock-order"
     else:
         request_payload["file_ids"] = ["file_profile_context"]
-        request_payload["selected_agent_profile"] = {
-            "agent_id": "agt_support",
-            "expected_revision": 7,
-        }
+        request_payload["selected_agent_profile"] = {"agent_id": "agt_support"}
     chat_request = ChatStreamRequest.model_validate(request_payload)
     query_agent_id = "agt_support" if restored_continuation else "general-agent"
+    if enqueue_failure_mode == "builder_revision_changed":
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(chat_request, agent_id=query_agent_id, principal=principal())
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == "agent_profile_revision_stale"
+        assert committed_run is None
+        assert "create_run" not in calls
+        assert "enqueue" not in calls
+        return
+
     if force_creation_rollback:
         with pytest.raises(HTTPException) as exc_info:
             await chat_stream(
@@ -4954,12 +4979,10 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert calls == [
             "user_lock",
             "principal",
+            "claim",
             "profile_lock",
-            "mcp_auth",
-            "skill_auth",
             "workspace_auth",
             "file_auth",
-            "claim",
             "create_session",
             "create_run",
             "profile_reauth",
@@ -4986,10 +5009,10 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     expected_calls = [
         "user_lock",
         "principal",
+        "claim",
         "profile_lock",
-        "mcp_auth",
     ]
-    expected_calls.extend(["skill_auth", "workspace_auth", "file_auth", "claim"])
+    expected_calls.extend(["workspace_auth", "file_auth"])
     if restored_continuation:
         expected_calls.insert(expected_calls.index("workspace_auth"), "list_reusable_files")
     if not restored_continuation:
@@ -5112,7 +5135,7 @@ async def test_concurrent_profile_submits_serialize_on_user_lock_before_profile_
         message="run the selected Agent",
         selected_agent_profile=SelectedAgentProfileRequest(
             agent_id="agt_support",
-            expected_revision=7,
+
         ),
     )
 
@@ -5180,14 +5203,14 @@ async def test_profile_secondary_skill_denial_is_audited_after_transaction_rollb
                 message="run the selected Agent",
                 selected_agent_profile=SelectedAgentProfileRequest(
                     agent_id="agt_support",
-                    expected_revision=7,
+
                 ),
             ),
             principal=principal(department_id="quality", roles=["user"]),
         )
 
     assert caught.value.status_code == 403
-    assert caught.value.detail == "agent_profile_capability_not_available"
+    assert caught.value.detail["code"] == "agent_profile_capability_not_available"
     assert audited == [("chat_stream", "secondary-skill")]
 
 
@@ -5196,6 +5219,9 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
     from app.agent_apps import AgentProfileAdmission
     from app.models import AgentConversationIdentity
 
+    async def no_files(**_kwargs):
+        return SimpleNamespace(primary_file_ids=[], reusable_primary_file_ids=[], file_required=False)
+    monkeypatch.setattr("app.routes.chat.select_authorized_run_file_snapshot", no_files)
     calls: list[object] = []
     pinned_session = {
         "id": "ses_profile_first",
@@ -5249,12 +5275,13 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         raise AssertionError("a persisted Agent profile, not a prior run, owns the first Skill")
 
     async def authorize_selected(*_args, **kwargs):
+        selected = kwargs["skills"][0]
         calls.append(
             (
                 "authorize",
-                kwargs["agent_id"],
-                kwargs["skill_id"],
-                kwargs["expected_version"],
+                "agt_support",
+                selected["skill_id"],
+                selected["skill_version"],
             )
         )
         raise HTTPException(status_code=418, detail="captured_profile_skill")
@@ -5277,7 +5304,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         ensure_principal,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_bound_for_submission", bound_profile)
+    monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_for_admission", bound_profile)
     monkeypatch.setattr(
         "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_transport_mcp_defaults,
@@ -5287,7 +5314,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         forbidden_prior_run,
     )
     monkeypatch.setattr(
-        'app.runs.infrastructure.capability_admission_postgres.authorize_selected_run_capabilities',
+        "app.routes.chat.pin_agent_skill_set",
         authorize_selected,
     )
     monkeypatch.setattr(
@@ -5311,7 +5338,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
             principal=principal(),
         )
 
-    assert caught.value.detail == "captured_profile_skill"
+    assert caught.value.detail == "captured_profile_skill", repr(caught.value.__cause__)
     assert calls == [
         "user_lock",
         "principal",
