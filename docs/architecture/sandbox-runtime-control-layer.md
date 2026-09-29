@@ -161,8 +161,14 @@ sources enabled, so the file supplies the default Simplified Chinese response
 instruction. An explicit user language request takes precedence. The platform
 rewrites this file when it prepares an attempt, excludes it from artifact
 collection, and denies SDK Write/Edit access to it. The release workspace
-initializer accepts this exact attempt-root file only as a regular `0444` file;
-all other workspace entries remain subject to the owner-writable requirement.
+initializer preserves safe read-only retained files and Skill directories, including
+this `CLAUDE.md`. It requires the workspace root to be owner-writable and verifies
+write/read/delete after switching to the runtime identity. Ownership, no-follow
+inode checks, single-link regular files, filesystem boundaries, searchable
+directories, and rejection of special modes or group/other write access still
+apply to the complete retained tree. It changes ownership where required and
+preserves permission modes; preparing an attempt owns the writable modes of its
+scoped directories.
 
 Skill writes are allowed anywhere else in the assigned workspace. The protected
 roots remain `inputs/`, `.claude/`, `.ai-platform/`, the runtime configuration

@@ -1,3 +1,4 @@
+import os
 import stat
 
 import pytest
@@ -49,7 +50,7 @@ def test_workspace_snapshot_accepts_only_root_or_target_owned_regular_tree():
     )
 
 
-def test_workspace_snapshot_accepts_platform_instruction_as_exact_read_only_file():
+def test_workspace_snapshot_accepts_read_only_platform_instruction():
     validate_workspace_snapshot(
         root_device=7,
         nodes=[
@@ -84,17 +85,32 @@ def test_workspace_snapshot_accepts_platform_instruction_as_exact_read_only_file
             "runs/run-a/attempts/attempt-a/workspace/CLAUDE.md",
             0o400,
         ),
+        (
+            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
+            "runs/run-a/attempts/attempt-a/workspace/.claude/skills/report/SKILL.md",
+            0o444,
+        ),
+        (
+            "tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/"
+            "runs/run-a/attempts/attempt-a/workspace/outputs/report.txt",
+            0o400,
+        ),
     ],
 )
-def test_workspace_snapshot_rejects_other_read_only_files(path, mode):
-    with pytest.raises(WorkspacePermissionError, match="workspace entry is not owner-writable"):
-        validate_workspace_snapshot(
-            root_device=7,
-            nodes=[
-                node(".", mode=stat.S_IFDIR | 0o755),
-                node(path, mode=stat.S_IFREG | mode),
-            ],
-        )
+def test_workspace_snapshot_preserves_read_only_retained_files(path, mode):
+    validate_workspace_snapshot(
+        root_device=7,
+        nodes=[
+            node(".", mode=stat.S_IFDIR | 0o755),
+            node(path, mode=stat.S_IFREG | mode),
+        ],
+    )
+
+
+@pytest.mark.parametrize("mode", [0o500, 0o555])
+def test_workspace_snapshot_requires_writable_root(mode):
+    with pytest.raises(WorkspacePermissionError, match="runtime workspace root is not owner-writable"):
+        validate_workspace_snapshot(root_device=7, nodes=[node(".", mode=stat.S_IFDIR | mode)])
 
 
 @pytest.mark.parametrize(
@@ -111,8 +127,7 @@ def test_workspace_snapshot_rejects_other_read_only_files(path, mode):
         (node("set-id", mode=stat.S_IFREG | stat.S_ISUID | 0o600), "unsafe workspace mode"),
         (node("sticky", mode=stat.S_IFREG | stat.S_ISVTX | 0o600), "unsafe workspace mode"),
         (node("hard-link", link_count=2), "workspace hard links are not allowed"),
-        (node("not-writable", mode=stat.S_IFREG | 0o400), "workspace entry is not owner-writable"),
-        (node("bad-directory", mode=stat.S_IFDIR | 0o500), "workspace entry is not owner-writable"),
+        (node("bad-directory", mode=stat.S_IFDIR | 0o600), "workspace directory is not owner-searchable"),
     ],
 )
 def test_workspace_snapshot_rejects_unsafe_entries_before_migration(unsafe_node, message):
@@ -121,6 +136,45 @@ def test_workspace_snapshot_rejects_unsafe_entries_before_migration(unsafe_node,
             root_device=7,
             nodes=[node(".", mode=stat.S_IFDIR | 0o755), unsafe_node],
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="workspace initializer requires POSIX descriptors")
+def test_workspace_initializer_preserves_real_read_only_skill_tree_and_output(tmp_path, monkeypatch):
+    from app.runtime.sandbox import workspace_permissions
+
+    workspace = tmp_path / "tenants/t/workspaces/w/users/u/sessions/s/runs/r/attempts/a/workspace"
+    skill = workspace / ".claude/skills/report"
+    skill.mkdir(parents=True)
+    skill_file = skill / "SKILL.md"
+    skill_file.write_text("# Report\n", encoding="utf-8")
+    output = workspace / "outputs/report.txt"
+    output.parent.mkdir()
+    output.write_text("retained report\n", encoding="utf-8")
+    retained_modes = {
+        workspace / ".claude": 0o555,
+        skill.parent: 0o555,
+        skill: 0o555,
+        skill_file: 0o444,
+        output: 0o400,
+    }
+    for path, mode in retained_modes.items():
+        path.chmod(mode)
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_UID", os.geteuid())
+    monkeypatch.setattr(workspace_permissions, "RUNTIME_GID", os.getegid())
+    monkeypatch.setattr(workspace_permissions, "_drop_runtime_privileges", lambda: None)
+
+    try:
+        initialize_runtime_workspace()
+        assert skill_file.read_text(encoding="utf-8") == "# Report\n"
+        assert output.read_text(encoding="utf-8") == "retained report\n"
+        assert all(stat.S_IMODE(path.stat().st_mode) == mode for path, mode in retained_modes.items())
+        assert not (tmp_path / ".ai-platform-runtime-write-probe").exists()
+    finally:
+        # Restore fixture directory write access for pytest cleanup.
+        for path in retained_modes:
+            if path.is_dir():
+                path.chmod(0o755)
 
 
 def test_runtime_workspace_probe_removes_its_sentinel_after_readback_failure(monkeypatch):
