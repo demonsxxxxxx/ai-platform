@@ -9,7 +9,6 @@ from app.agent_apps.domain.profile_definition import (
     normalize_agent_skill_set as _normalize_agent_skill_set,
     safe_agent_avatar_seed,
 )
-from app.skills.api import is_internal_dependency_skill
 
 
 class _ConfiguredProxy:
@@ -118,10 +117,7 @@ class AgentProfilePublicProjection(TypedDict):
 
 def normalize_agent_skill_set(skill_set):
     normalized_skill_set = [normalize_agent_skill_reference(skill) for skill in skill_set]
-    return _normalize_agent_skill_set(
-        normalized_skill_set,
-        is_internal_dependency_skill,
-    )
+    return _normalize_agent_skill_set(normalized_skill_set)
 
 def safe_agent_avatar_ref(value: object, *, fallback: str = "builtin:agent") -> str:
     candidate = value.strip() if isinstance(value, str) else ""

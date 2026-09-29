@@ -4537,23 +4537,23 @@ def test_create_run_request_user_id_is_optional_legacy_field():
     assert request.user_id is None
 
 
-def test_resolve_run_selector_accepts_public_agent_ids_for_public_capabilities():
+def test_resolve_run_selector_keeps_general_chat_capability_explicit():
     agent_id, skill_id = resolve_run_selector(
         CreateRunRequest(
             workspace_id="default",
-            agent_id="knowledge-answer",
-            capability_id="knowledge_answer",
+            agent_id="general-agent",
+            capability_id="general_chat",
         ),
         principal=principal(),
     )
 
-    assert (agent_id, skill_id) == ("sop-assistant", "ragflow-knowledge-search")
+    assert (agent_id, skill_id) == ("general-agent", None)
 
 
-def test_resolve_run_selector_rejects_retired_document_review_capability():
+def test_resolve_run_selector_requires_explicit_skill_for_named_agent():
     with pytest.raises(HTTPException) as exc_info:
         resolve_run_selector(
-            CreateRunRequest(workspace_id="default", agent_id="document-review", capability_id="document_review"),
+            CreateRunRequest(workspace_id="default", agent_id="current-agent"),
             principal(),
         )
     assert exc_info.value.status_code == 400

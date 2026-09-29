@@ -7,7 +7,7 @@ import app.skills.infrastructure.versions_postgres as _repo_owner_app_skills_inf
 import app.identity.infrastructure.capability_distributions_postgres as distribution_persistence
 import app.skills.infrastructure.catalog_postgres as skill_catalog_persistence
 import app.skills.infrastructure.versions_postgres as skill_versions_persistence
-from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
+from app.platform.postgres.errors import RepositoryConflictError
 from tests.support.repository_fixtures import FakeCursor, RecordingConnection, SingleRowCursor
 
 
@@ -94,11 +94,11 @@ async def test_list_public_skill_catalog_applies_fixed_skill_id_scope(monkeypatc
 
     assert rows == []
     assert "and skills.id = any(%s)" in conn.sql
-    assert conn.params[3] == ["skill-a", "skill-b"]
+    assert conn.params[2] == ["skill-a", "skill-b"]
 
 
 @pytest.mark.asyncio
-async def test_list_public_skill_catalog_projects_public_source_without_internal_dependencies(monkeypatch):
+async def test_list_public_skill_catalog_projects_governed_release_source(monkeypatch):
     async def no_backfill(conn, *, tenant_id):
         return None
 
@@ -120,7 +120,7 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
                         "tags": ["document"],
                         "files": [{"relative_path": "SKILL.md", "content_base64": "IyBRQQ=="}],
                     },
-                    "dependency_ids": ["minimax-docx"],
+                    "dependency_ids": ["document-helper"],
                     "created_by": "dev-admin",
                     "created_at": None,
                     "updated_at": None,
@@ -153,7 +153,7 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
 
     assert rows[0]["source"]["tags"] == ["document"]
     assert rows[0]["source"]["files"][0]["relative_path"] == "SKILL.md"
-    assert rows[0]["dependency_ids"] == ["minimax-docx"]
+    assert rows[0]["dependency_ids"] == ["document-helper"]
     assert rows[0]["expected_version"] == "hash-a"
     assert rows[0]["input_modes"] == ["docx"]
     assert "skill_versions.content_hash as expected_version" in conn.sql
@@ -161,9 +161,7 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
     assert "tenant_capability_distributions.capability_id is not null" in conn.sql
     assert "tenant_workbench_skills" not in conn.sql
     assert "skills.status = 'active'" in conn.sql
-    assert conn.params[0:2] == ("default", "default")
-    assert "qa-file-reviewer" not in conn.params[2]
-    assert "minimax-docx" not in conn.params[2]
+    assert conn.params == ("default", "default", "general-chat")
 
 
 @pytest.mark.asyncio
@@ -1281,21 +1279,6 @@ async def test_list_admin_skill_summaries_excludes_package_source(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_set_workbench_skill_status_rejects_internal_dependency_skill():
-    conn = RecordingConnection()
-
-    with pytest.raises(_repo_owner_app_platform_postgres_errors.RepositoryNotFoundError, match="workbench_skill_not_found"):
-        await _repo_owner_app_skills_infrastructure_catalog_postgres.set_workbench_skill_status(
-            conn,
-            tenant_id="default",
-            skill_id="minimax-docx",
-            status="active",
-        )
-
-    assert conn.calls == []
-
-
-@pytest.mark.asyncio
 async def test_set_uploaded_workbench_skill_status_creates_authoritative_distribution(monkeypatch):
     async def no_backfill(conn, *, tenant_id):
         return None
@@ -1356,107 +1339,3 @@ async def test_set_uploaded_workbench_skill_status_creates_authoritative_distrib
     assert "tenant_workbench_skills" not in " ".join(sql for sql, _ in conn.calls)
     assert conn.calls[2][1][1:5] == ("default", "skill", "new-research-skill", "active")
     assert conn.calls[3][1] == ("default", "new-research-skill")
-
-
-@pytest.mark.asyncio
-async def test_set_public_skill_enabled_updates_existing_authoritative_distribution(monkeypatch):
-    async def existing_distribution(conn, *, tenant_id, capability_kind, capability_id):
-        return {
-            "tenant_id": tenant_id,
-            "capability_kind": capability_kind,
-            "capability_id": capability_id,
-            "status": "disabled",
-            "visible_to_user": True,
-            "scope_mode": "allowlist",
-            "department_ids": ["qa"],
-            "allowed_roles": ["qa_operator"],
-            "metadata_json": {"source": "shared"},
-        }
-
-    async def no_backfill(conn, *, tenant_id):
-        return None
-
-    monkeypatch.setattr(skill_catalog_persistence, "get_capability_distribution_row", existing_distribution)
-    monkeypatch.setattr(distribution_persistence, "ensure_tenant_capability_distribution_backfill", no_backfill)
-
-    class UploadedSkillConnection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            compact = " ".join(sql.split())
-            self.calls.append((compact, params))
-            if compact.startswith("insert into tenant_capability_distributions"):
-                return SingleRowCursor(
-                    {
-                        "id": "capdist-existing",
-                        "tenant_id": "default",
-                        "capability_kind": "skill",
-                        "capability_id": "new-research-skill",
-                        "status": "active",
-                        "visible_to_user": True,
-                        "scope_mode": "allowlist",
-                        "department_ids": ["qa"],
-                        "allowed_roles": ["qa_operator"],
-                        "metadata_json": {"source": "shared"},
-                    }
-                )
-            if compact.startswith("select skills.id as skill_id"):
-                return SingleRowCursor(
-                    {
-                        "skill_id": "new-research-skill",
-                        "name": "new-research-skill",
-                        "version": "hash-new",
-                        "description": "Summarize research briefs.",
-                        "input_modes": ["chat"],
-                        "output_modes": ["answer"],
-                        "executor_type": "claude-agent-worker",
-                        "status": "active",
-                        "visible_to_user": True,
-                    }
-                )
-            return FakeCursor()
-
-    conn = UploadedSkillConnection()
-
-    row = await _repo_owner_app_skills_infrastructure_catalog_postgres.set_public_skill_enabled(
-        conn,
-        tenant_id="default",
-        skill_id="new-research-skill",
-        status="active",
-    )
-
-    assert row["skill_id"] == "new-research-skill"
-    assert "pg_advisory_xact_lock" in conn.calls[0][0]
-    assert "select metadata_json" in conn.calls[1][0]
-    assert "insert into tenant_capability_distributions" in conn.calls[2][0]
-    assert "tenant_workbench_skills" not in " ".join(sql for sql, _ in conn.calls)
-
-
-@pytest.mark.asyncio
-async def test_set_public_skill_enabled_rejects_non_public_skill_without_distribution(monkeypatch):
-    async def missing_distribution(conn, *, tenant_id, capability_kind, capability_id):
-        return None
-
-    monkeypatch.setattr(skill_catalog_persistence, "get_capability_distribution_row", missing_distribution)
-
-    class MissingUploadedSkillConnection:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, sql, params):
-            compact = " ".join(sql.split())
-            self.calls.append((compact, params))
-            return SingleRowCursor(None)
-
-    conn = MissingUploadedSkillConnection()
-
-    with pytest.raises(RepositoryNotFoundError, match="workbench_skill_not_found"):
-        await _repo_owner_app_skills_infrastructure_catalog_postgres.set_public_skill_enabled(
-            conn,
-            tenant_id="default",
-            skill_id="minimax-docx",
-            status="active",
-        )
-
-    assert conn.calls == []

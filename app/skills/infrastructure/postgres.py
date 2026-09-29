@@ -19,7 +19,6 @@ from app.skills.pinning import (
 )
 
 _ALLOWED_EXECUTOR_TYPES = frozenset({"claude-agent-worker"})
-_TRUSTED_BUILTIN_MCP_TOOL_ID = "ragflow-knowledge-search"
 
 
 class SkillRunSnapshotError(ValueError):
@@ -224,11 +223,6 @@ def _build_replay_skill_manifest_plan(
         raw_tool_ids = root_manifests[selected_skill_id].get("mcp_tool_ids")
         if not isinstance(raw_tool_ids, list) or any(
             not isinstance(item, str) or not item for item in raw_tool_ids
-        ):
-            raise SkillRunSnapshotError("capability_not_authorized")
-        if (
-            selected_skill_id == _TRUSTED_BUILTIN_MCP_TOOL_ID
-            and _TRUSTED_BUILTIN_MCP_TOOL_ID not in raw_tool_ids
         ):
             raise SkillRunSnapshotError("capability_not_authorized")
         for tool_id in raw_tool_ids:

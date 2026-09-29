@@ -323,13 +323,7 @@ class SandboxRuntimeRequest(BaseModel):
     @field_validator("mcp_tool_ids")
     @classmethod
     def validate_mcp_tool_ids(cls, values: list[str]):
-        # The code-owned RAGFlow capability is the sole retained legacy reference.
-        return [
-            value
-            if value == "ragflow-knowledge-search"
-            else assert_mcp_tool_reference(value)
-            for value in values
-        ]
+        return [assert_mcp_tool_reference(value) for value in values]
 
     @field_validator("trace_id")
     @classmethod

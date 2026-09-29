@@ -6,7 +6,22 @@ import app.skills.infrastructure.postgres as _repo_owner_app_skills_infrastructu
 import app.skills.infrastructure.run_snapshots_postgres as _repo_owner_app_skills_infrastructure_run_snapshots_postgres
 import app.skills.pinning as _repo_owner_app_skills_pinning
 from app.platform.postgres.errors import RepositoryConflictError
+from app.skills.execution_profiles import resolve_skill_execution_profile
 from tests.support.repository_fixtures import RecordingConnection
+
+
+def _with_execution_profile(manifest):
+    profile = resolve_skill_execution_profile(
+        skill_id=manifest["skill_id"],
+        source_kind=manifest["source"]["kind"],
+        lifecycle_status="released",
+    )
+    return {
+        **manifest,
+        "lifecycle_status": "released",
+        "execution_profile": profile,
+        "builtin_tool_identities": profile["builtin_tool_identities"],
+    }
 
 
 def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
@@ -21,6 +36,7 @@ def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
         "snapshot_governance": {"selected_files": [{"sha256": "caller-controlled"}]},
     }
 
+    manifest = _with_execution_profile(manifest)
     locked = _repo_owner_app_skills_infrastructure_postgres.run_skill_snapshot_source_json(
         manifest,
         release_decision={"selected_version": "hash-v1", "selected_track": "current"},
@@ -161,7 +177,7 @@ async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact()
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
-        skill_manifests=manifests,
+        skill_manifests=[_with_execution_profile(manifest) for manifest in manifests],
         release_decision={"selected_version": "hash-v1", "selected_track": "current"},
     )
 
@@ -207,7 +223,7 @@ async def test_insert_run_skill_snapshots_allows_dependency_manifest_without_exe
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
-        skill_manifests=[primary, dependency],
+        skill_manifests=[_with_execution_profile(primary), _with_execution_profile(dependency)],
         release_decision={"selected_version": "hash-v1", "selected_track": "current"},
     )
 
@@ -244,7 +260,7 @@ async def test_insert_run_skill_snapshots_preserves_each_root_release_decision()
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
-        skill_manifests=manifests,
+        skill_manifests=[_with_execution_profile(manifest) for manifest in manifests],
         release_decision=manifests[0]["release_decision"],
     )
 

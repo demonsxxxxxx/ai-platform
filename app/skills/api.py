@@ -8,10 +8,6 @@ from app.skills.application.run_admission import (
 from app.skills.application.run_admission import (
     SkillRunVersionMismatch as SkillRunVersionMismatch,
 )
-from app.skills.domain.internal_dependencies import (
-    INTERNAL_DEPENDENCY_SKILL_IDS,
-    is_internal_dependency_skill,
-)
 from app.skills.domain.snapshot_paths import (
     skill_snapshot_components_fit as skill_snapshot_components_fit,
 )
@@ -192,13 +188,11 @@ def restore_admitted_skill_manifest_authority(
 __all__ = [
     "AdminSkillListResponse",
     "AdminSkillSummaryResponse",
-    "INTERNAL_DEPENDENCY_SKILL_IDS",
     "SkillRunAdmission",
     "SkillRunVersionMismatch",
     "admit_skill_run",
     "configure_skill_run_admission",
     "configure_skill_display_version_persistence",
-    "is_internal_dependency_skill",
     "list_uploaded_skill_display_version_rows",
     "lock_skill_for_version_upload",
     "next_uploaded_skill_display_version",

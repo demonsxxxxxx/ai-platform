@@ -1,6 +1,5 @@
 import app.platform.postgres.errors as _owner_platform_postgres_errors
 import app.skills.infrastructure.postgres as _owner_skills_infrastructure_postgres
-import base64
 import json
 
 import pytest
@@ -12,13 +11,12 @@ from app.skills.pinning import (
     build_skill_snapshot_governance,
     SkillVersionMaterializationError,
     build_skill_version_dependency_manifest_pins,
-    build_skill_manifest_pins,
     build_skill_version_manifest_pin,
     build_skill_version_policy_manifest_pins,
     build_uploaded_skill_manifest_pin,
     governed_locked_skill_version,
 )
-from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry
+from app.skills.registry import BuiltinSkillRegistry
 
 
 def write_skill(root, name, description):
@@ -31,65 +29,33 @@ def write_skill(root, name, description):
     return skill_dir
 
 
-def test_build_skill_manifest_pins_keeps_primary_independent_from_available_internal_skills(tmp_path):
-    write_skill(tmp_path, "example-skill", "Review Word documents.")
-    write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
-    (tmp_path / "example-skill" / "references").mkdir()
-    (tmp_path / "example-skill" / "references" / "guide.md").write_text("review guide", encoding="utf-8")
-    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
-
-    pins = build_skill_manifest_pins(
-        skill_id="example-skill",
-        input_payload={},
-        builtin_skills=skills,
+def test_snapshot_source_locks_canonical_uploaded_tool_identities():
+    manifest = build_uploaded_skill_manifest_pin(
+        {
+            "skill_id": "example-skill",
+            "version": "hash-uploaded",
+            "content_hash": "hash-uploaded",
+            "description": "Review Word documents.",
+            "source": {
+                "kind": "uploaded",
+                "storage_key": "package.zip",
+                "files": [
+                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                ],
+            },
+            "dependency_ids": [],
+            "status": "released",
+        }
     )
-
-    assert [item["skill_id"] for item in pins] == ["example-skill"]
-    assert pins[0]["version"] == pins[0]["content_hash"]
-    assert pins[0]["dependency_ids"] == []
-    assert pins[0]["source"]["asset_dir"] == "example-skill"
-    assert [item["relative_path"] for item in pins[0]["files"]] == ["SKILL.md", "references/guide.md"]
-    assert pins[0]["files"][0]["content_base64"]
-    assert pins[0]["files"][0]["size_bytes"] == len(base64.b64decode(pins[0]["files"][0]["content_base64"]))
-    assert pins[0]["allowed"] is True
-    assert pins[0]["staged"] is False
-    assert pins[0]["used"] is False
-    assert pins[0]["builtin_tool_identities"] == ["Bash"]
-
-
-def test_builtin_tool_identity_snapshot_comes_from_server_skill_declaration_not_input(tmp_path):
-    write_skill(tmp_path, "example-skill", "Review Word documents.")
-    write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
-    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
-
-    pins = build_skill_manifest_pins(
-        skill_id="example-skill",
-        input_payload={"builtin_tool_identities": ["WebFetch", "Agent"]},
-        builtin_skills=skills,
-    )
-
-    assert len(pins) == 1
-    assert pins[0]["builtin_tool_identities"] == ["Bash"]
-
-
-def test_snapshot_source_locks_canonical_builtin_tool_identities(tmp_path):
-    write_skill(tmp_path, "example-skill", "Review Word documents.")
-    write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
-    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
-    manifest = build_skill_manifest_pins(
-        skill_id="example-skill",
-        input_payload={},
-        builtin_skills=skills,
-    )[0]
 
     expected = _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(manifest)
-    duplicated = {**manifest, "builtin_tool_identities": ["Bash", "Bash"]}
+    duplicated = {**manifest, "builtin_tool_identities": manifest["builtin_tool_identities"] * 2}
 
     assert _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(duplicated) == expected
     for forged_identity in ("Agent", "WebFetch"):
         with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
             _owner_skills_infrastructure_postgres.run_skill_snapshot_source_json(
-                {**manifest, "builtin_tool_identities": ["Bash", forged_identity]}
+                {**manifest, "builtin_tool_identities": manifest["builtin_tool_identities"] + [forged_identity]}
             )
 
 
@@ -279,52 +245,6 @@ def test_build_skill_snapshot_governance_rejects_invalid_or_escaped_file_entries
             build_skill_snapshot_governance({**base_manifest, "files": files})
 
 
-def test_build_skill_manifest_pins_keeps_ragflow_skill_as_single_zero_dependency_manifest(tmp_path):
-    write_skill(tmp_path, "ragflow-knowledge-search", "Read-only SOP knowledge retrieval.")
-    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
-
-    pins = build_skill_manifest_pins(
-        skill_id="ragflow-knowledge-search",
-        input_payload={},
-        builtin_skills=skills,
-    )
-
-    assert [item["skill_id"] for item in pins] == ["ragflow-knowledge-search"]
-    assert pins[0]["version"] == pins[0]["content_hash"]
-    assert pins[0]["dependency_ids"] == []
-    assert pins[0]["source"]["asset_dir"] == "ragflow-knowledge-search"
-    assert [item["relative_path"] for item in pins[0]["files"]] == ["SKILL.md"]
-    assert pins[0]["allowed"] is True
-    assert pins[0]["staged"] is False
-    assert pins[0]["used"] is False
-
-
-def test_build_skill_manifest_pins_keeps_explicit_peer_skills_independent(tmp_path):
-    write_skill(tmp_path, "example-skill", "Review Word documents.")
-    write_skill(tmp_path, "peer-skill", "Peer documents.")
-    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
-
-    pins = build_skill_manifest_pins(
-        skill_id="example-skill",
-        input_payload={"skill_ids": ["peer-skill"]},
-        builtin_skills=skills,
-    )
-
-    assert [pin["skill_id"] for pin in pins] == ["example-skill", "peer-skill"]
-    assert [pin["dependency_ids"] for pin in pins] == [[], []]
-
-
-def test_build_skill_manifest_pins_returns_empty_for_non_builtin_skill(tmp_path):
-    write_skill(tmp_path, "example-skill", "Review Word documents.")
-    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
-
-    assert build_skill_manifest_pins(
-        skill_id="general-chat",
-        input_payload={},
-        builtin_skills=skills,
-    ) == []
-
-
 def test_build_uploaded_skill_manifest_pin_uses_source_snapshot_files():
     files = [
         {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5},
@@ -397,7 +317,7 @@ def test_build_uploaded_skill_manifest_pin_rejects_overlong_utf8_path_component(
         )
 
 
-def test_build_skill_version_manifest_pin_uses_builtin_snapshot_files():
+def test_build_skill_version_manifest_pin_preserves_historical_builtin_source():
     files = [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}]
 
     pin = build_skill_version_manifest_pin(
@@ -417,13 +337,13 @@ def test_build_skill_version_manifest_pin_uses_builtin_snapshot_files():
     assert pin["lifecycle_status"] == "released"
     assert pin["execution_profile"] == {
         "schema_version": "ai-platform.skill-execution-profile.v1",
-        "strategy": "sdk_native",
-        "trust_basis": "repository_builtin",
-        "builtin_tool_identities": ["Bash"],
+        "strategy": "sdk_restricted",
+        "trust_basis": "legacy_or_unreviewed",
+        "builtin_tool_identities": [],
         "workspace_contract": "ai-platform.skill-workspace.v1",
-        "command_isolation": "sibling-tool-sandbox-v1",
+        "command_isolation": "none",
     }
-    assert pin["builtin_tool_identities"] == ["Bash"]
+    assert pin["builtin_tool_identities"] == []
 
 
 def test_snapshot_source_rejects_forged_uploaded_execution_profile():
@@ -665,66 +585,3 @@ def test_builtin_skill_registry_rejects_symlinked_files(tmp_path):
 
     with pytest.raises(ValueError, match="symlink"):
         BuiltinSkillRegistry(tmp_path).list_builtin_skills()
-
-
-def test_build_skill_manifest_pins_rejects_symlinked_files(tmp_path):
-    skill_dir = write_skill(tmp_path, "example-skill", "Review Word documents.")
-    dependency_dir = write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
-    outside = tmp_path / "outside.md"
-    outside.write_text("outside", encoding="utf-8")
-    _symlink_or_skip(outside, skill_dir / "references-link.md")
-
-    with pytest.raises(ValueError, match="symlink"):
-        build_skill_manifest_pins(
-            skill_id="example-skill",
-            input_payload={},
-            builtin_skills=[
-                BuiltinSkill(
-                    name="example-skill",
-                    description="Review Word documents.",
-                    path=skill_dir,
-                    version="hash",
-                    source={"kind": "builtin", "asset_dir": "example-skill"},
-                    entry={"kind": "filesystem", "path": str(skill_dir)},
-                ),
-                BuiltinSkill(
-                    name="minimax-docx",
-                    description="Manipulate Word documents.",
-                    path=dependency_dir,
-                    version="hash-minimax",
-                    source={"kind": "builtin", "asset_dir": "minimax-docx"},
-                    entry={"kind": "filesystem", "path": str(dependency_dir)},
-                )
-            ],
-        )
-
-
-def test_build_skill_manifest_pins_rejects_oversized_file(monkeypatch, tmp_path):
-    skill_dir = write_skill(tmp_path, "example-skill", "Review Word documents.")
-    write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
-    large = skill_dir / "large.bin"
-    large.write_bytes(b"0123456789")
-    monkeypatch.setattr("app.skills.pinning.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
-
-    with pytest.raises(ValueError, match="file too large"):
-        build_skill_manifest_pins(
-            skill_id="example-skill",
-            input_payload={},
-            builtin_skills=BuiltinSkillRegistry(tmp_path).list_builtin_skills(),
-        )
-
-
-def test_build_skill_manifest_pins_rejects_oversized_total(monkeypatch, tmp_path):
-    skill_dir = write_skill(tmp_path, "example-skill", "Review Word documents.")
-    write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
-    (skill_dir / "a.bin").write_bytes(b"12345")
-    (skill_dir / "b.bin").write_bytes(b"67890")
-    monkeypatch.setattr("app.skills.pinning.MAX_SKILL_SNAPSHOT_FILE_BYTES", 100)
-    monkeypatch.setattr("app.skills.pinning.MAX_SKILL_SNAPSHOT_TOTAL_BYTES", 20)
-
-    with pytest.raises(ValueError, match="snapshot too large"):
-        build_skill_manifest_pins(
-            skill_id="example-skill",
-            input_payload={},
-            builtin_skills=BuiltinSkillRegistry(tmp_path).list_builtin_skills(),
-        )

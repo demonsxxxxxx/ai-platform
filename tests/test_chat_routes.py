@@ -31,7 +31,6 @@ import app.persistence.chat_submissions as _repo_app_persistence_chat_submission
 import app.platform.postgres.errors as _repo_app_platform_postgres_errors
 import app.runs.infrastructure.capability_admission_postgres as _repo_app_runs_infrastructure_capability_admission_postgres
 import app.skills.infrastructure.resolution_postgres as _repo_app_skills_infrastructure_resolution_postgres
-from app.runs.infrastructure import capability_admission_postgres as capability_admission_persistence
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
@@ -626,6 +625,14 @@ def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
             skill_id=skill_id,
         )
 
+    async def allow_selected(conn, *, expected_version, rollout_key, **kwargs):
+        # Route outcome tests retain their authorizer; selected version locking
+        # is exercised by test_chat_selected_skill_routing and authorization tests.
+        return await _owner_runs_infrastructure_capability_admission_postgres.authorize_run_capabilities(
+            conn, **kwargs
+        )
+
+    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_selected_run_capabilities', allow_selected)
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', allow, raising=False)
 
     async def insert_creation_snapshots(*_args, **_kwargs):
@@ -2343,7 +2350,7 @@ async def test_create_chat_session_uses_platform_principal(monkeypatch):
 
 @pytest.mark.parametrize(
     "agent_id",
-    ["translate", "baoyu-translate", "document-translation", "retired-agent"],
+    ["translate", "baoyu-translate"],
 )
 @pytest.mark.asyncio
 async def test_create_chat_session_rejects_retired_agent_selectors(agent_id):
@@ -2375,11 +2382,11 @@ async def test_create_chat_session_rejects_inactive_custom_agent_after_migration
 
 
 @pytest.mark.asyncio
-async def test_create_chat_session_maps_public_agent_id_before_persisting(monkeypatch):
+async def test_create_chat_session_uses_requested_agent_id_without_alias_conversion(monkeypatch):
     calls = []
 
     async def fake_get_agent(conn, *, tenant_id, agent_id):
-        assert (tenant_id, agent_id) == ("tenant-a", "qa-word-review")
+        assert (tenant_id, agent_id) == ("tenant-a", "document-review")
         return {"id": agent_id}
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
@@ -2397,7 +2404,7 @@ async def test_create_chat_session_maps_public_agent_id_before_persisting(monkey
             {
                 "id": "ses_public_review",
                 "workspace_id": "default",
-                "agent_id": "qa-word-review",
+                "agent_id": "document-review",
                 "title": "Review",
                 "created_at": None,
                 "updated_at": None,
@@ -2416,7 +2423,7 @@ async def test_create_chat_session_maps_public_agent_id_before_persisting(monkey
         principal=principal(),
     )
 
-    assert calls == [("session", "qa-word-review")]
+    assert calls == [("session", "document-review")]
     assert response.agent_id == "document-review"
 
 
@@ -2783,7 +2790,8 @@ async def test_chat_stream_capability_distribution_denial_precedes_create_run(mo
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                agent_id="document-review",
+                agent_id="qa-word-review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-current"},
                 message="review this document",
                 file_ids=["file_1"],
             ),
@@ -2840,7 +2848,8 @@ async def test_chat_stream_audits_capability_denial_after_source_transaction_rol
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                agent_id="document-review",
+                agent_id="qa-word-review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-current"},
                 message="review this document",
                 file_ids=["file_1"],
             ),
@@ -2859,7 +2868,7 @@ async def test_chat_stream_audits_capability_denial_after_source_transaction_rol
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_direct_ragflow_without_explicit_selector_uses_unified_authorizer(monkeypatch):
+async def test_chat_stream_explicit_skill_uses_unified_authorizer(monkeypatch):
     calls = []
 
     async def deny(*args, **kwargs):
@@ -2877,6 +2886,7 @@ async def test_chat_stream_direct_ragflow_without_explicit_selector_uses_unified
         await chat_stream(
             ChatStreamRequest(
                 agent_id="sop-assistant",
+                selected_skill={"skill_id": "ragflow-knowledge-search", "expected_version": "hash-current"},
                 message="search the knowledge base",
             ),
             principal=principal(department_id="qa", roles=["user"]),
@@ -3528,7 +3538,8 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
 
     response = await chat_stream(
         ChatStreamRequest(
-            agent_id="document-review",
+            agent_id="qa-word-review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-current"},
             message="review this document",
             input={"note": "uploaded policy"},
         ),
@@ -3627,7 +3638,8 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
 
     response = await chat_stream(
         ChatStreamRequest(
-            agent_id="document-review",
+            agent_id="qa-word-review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-current"},
             message="review this document",
             input={"note": "rollout policy"},
         ),
@@ -3697,7 +3709,8 @@ async def test_chat_stream_rejects_reviewed_rollout_previous_version(monkeypatch
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                agent_id="document-review",
+                agent_id="qa-word-review",
+                selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-current"},
                 message="review this document",
                 input={"note": "rollout policy"},
             ),
@@ -4360,6 +4373,7 @@ async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(mo
     first = await chat_stream(
         ChatStreamRequest(
             message="翻译这个 Word 文档",
+            selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "hash-current"},
             attachments=[
                 {
                     "key": "file_routed",
@@ -4368,7 +4382,7 @@ async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(mo
                 }
             ],
         ),
-        agent_id="document-review",
+        agent_id="qa-word-review",
         principal=principal(),
     )
 
@@ -5450,271 +5464,6 @@ async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_falls_back_to_general_chat_when_implicit_knowledge_admission_fails(monkeypatch):
-    """An unavailable implicit route must not expose or execute its capability."""
-
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        if (agent_id, skill_id) == ("sop-assistant", "ragflow-knowledge-search"):
-            raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
-        assert (agent_id, skill_id) == ("general-agent", "general-chat")
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_implicit_fallback"
-
-    async def fake_create_run(conn, **kwargs):
-        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"]))
-        return "run_implicit_fallback"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["agent_id"], payload["skill_id"]))
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
-    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
-    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
-    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
-    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="这个权限申请要怎么做？"),
-        principal=principal(),
-    )
-
-    assert response.status == "queued"
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "general_chat"
-    assert response.intent_decision.reason == "已使用通用对话处理"
-    assert "ragflow-knowledge-search" not in response.intent_decision.model_dump_json()
-    assert ("resolve", "sop-assistant", "ragflow-knowledge-search") in calls
-    assert ("resolve", "general-agent", "general-chat") not in calls
-    assert ("run", "general-agent", None) in calls
-    assert ("queue", "general-agent", None) in calls
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_keeps_implicit_knowledge_intent_when_rag_admission_succeeds(monkeypatch):
-    """Authorized RAG remains the selected implicit knowledge capability."""
-
-    calls = []
-
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        calls.append(("resolve", agent_id, skill_id))
-        assert (agent_id, skill_id) == ("sop-assistant", "ragflow-knowledge-search")
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_implicit_rag"
-
-    async def fake_create_run(conn, **kwargs):
-        return "run_implicit_rag"
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_enqueue_run(payload):
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
-    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
-    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
-    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
-    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="这个权限申请要怎么做？"),
-        principal=principal(),
-    )
-
-    assert response.status == "queued"
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "knowledge_answer"
-    assert ("resolve", "sop-assistant", "ragflow-knowledge-search") in calls
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_fails_closed_when_implicit_knowledge_intent_has_no_safe_fallback(
-    monkeypatch,
-):
-    """A missing Harness chat agent must not silently reroute a denied intent."""
-
-    calls = []
-
-    async def deny(conn, **kwargs):
-        calls.append(("authorize", kwargs["agent_id"], kwargs["skill_id"]))
-        raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
-
-    async def fail_create_run(*args, **kwargs):
-        raise AssertionError("denied implicit routing must not create a run")
-
-    async def missing_harness_agent(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities', deny)
-    monkeypatch.setattr('app.agent_apps.infrastructure.catalog_postgres.get_agent', missing_harness_agent)
-    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await chat_stream(
-            ChatStreamRequest(message="这个权限申请要怎么做？"),
-            principal=principal(),
-        )
-
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "harness_chat_agent_unavailable"
-    assert calls == [
-        ("authorize", "sop-assistant", "ragflow-knowledge-search"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_admin_implicit_disabled_knowledge_falls_back_with_strict_admission(monkeypatch):
-    """Implicit routing must not use the administrator distribution bypass."""
-
-    calls = []
-
-    async def authorize(conn, **kwargs):
-        calls.append((kwargs["agent_id"], kwargs["skill_id"], kwargs["is_admin"]))
-        assert kwargs["is_admin"] is False
-        if kwargs["skill_id"] == "ragflow-knowledge-search":
-            raise _repo_app_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized")
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_admin_implicit_fallback"
-
-    async def fake_create_run(conn, **kwargs):
-        return "run_admin_implicit_fallback"
-
-    async def fake_enqueue_run(payload):
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities', authorize)
-    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
-    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
-    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
-    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="这个权限申请要怎么做？"),
-        principal=principal(roles=["admin"]),
-    )
-
-    assert response.status == "queued"
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "general_chat"
-    assert "ragflow-knowledge-search" not in response.intent_decision.model_dump_json()
-    assert calls == [
-        ("sop-assistant", "ragflow-knowledge-search", False),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_chat_stream_implicit_rag_backing_mcp_failure_falls_back_to_general_chat(monkeypatch):
-    """The candidate admission includes backing MCP/server health before selection."""
-
-    calls = []
-
-    async def authorize(conn, **kwargs):
-        calls.append((kwargs["agent_id"], kwargs["skill_id"], kwargs["is_admin"]))
-        if kwargs["skill_id"] == "ragflow-knowledge-search":
-            return await _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES(conn, **kwargs)
-        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
-
-    async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        assert (tenant_id, agent_id, skill_id) == (
-            "tenant-a",
-            "sop-assistant",
-            "ragflow-knowledge-search",
-        )
-        return {
-            "skill_id": skill_id,
-            "skill_status": "active",
-            "executor_type": "ragflow",
-            "backing_mcp_tool_id": "tenant-search",
-        }
-
-    async def get_distribution(conn, *, tenant_id, capability_kind, capability_id):
-        return {
-            "status": "active",
-            "visible_to_user": True,
-            "scope_mode": "allowlist",
-            "department_ids": [],
-            "allowed_roles": [],
-        }
-
-    async def get_tool(conn, *, tenant_id, tool_id):
-        assert (tenant_id, tool_id) == ("tenant-a", "tenant-search")
-        return {
-            "tool_id": tool_id,
-            "server_id": "tenant-search-server",
-            "effective_status": "active",
-            "server_status": "disabled",
-            "visible_to_user": True,
-        }
-
-    async def noop(*args, **kwargs):
-        return None
-
-    async def fake_create_session(conn, **kwargs):
-        return "ses_mcp_fallback"
-
-    async def fake_create_run(conn, **kwargs):
-        return "run_mcp_fallback"
-
-    async def fake_enqueue_run(payload):
-        return 1
-
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr('app.runs.infrastructure.capability_admission_postgres.authorize_run_capabilities', authorize)
-    monkeypatch.setattr(capability_admission_persistence, "resolve_agent_skill", resolve_agent_skill)
-    monkeypatch.setattr(capability_admission_persistence, "get_capability_distribution_row", get_distribution)
-    monkeypatch.setattr(capability_admission_persistence, "get_mcp_tool_registry_entry", get_tool)
-    monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
-    monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
-    monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
-    monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
-    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
-
-    response = await chat_stream(
-        ChatStreamRequest(message="这个权限申请要怎么做？"),
-        principal=principal(department_id="qa", roles=["qa_operator"]),
-    )
-
-    assert response.status == "queued"
-    assert response.intent_decision is not None
-    assert response.intent_decision.selected_capability == "general_chat"
-    assert calls == [
-        ("sop-assistant", "ragflow-knowledge-search", False),
-    ]
-
-
-
-
 @pytest.mark.asyncio
 async def test_chat_stream_records_intent_decision_and_confirmed_event(monkeypatch):
     events = []
@@ -5839,7 +5588,8 @@ async def test_chat_stream_maps_unreleased_skill_version_conflict_to_409(monkeyp
     with pytest.raises(Exception) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                message="查询知识库", confirmed_capability_id="knowledge_answer"
+                message="查询知识库", agent_id="sop-assistant",
+                selected_skill={"skill_id": "ragflow-knowledge-search", "expected_version": "hash-current"}
             ),
             principal=principal(user_id="user-skill-status", tenant_id="tenant-a"),
         )
@@ -5915,7 +5665,8 @@ async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                message="查询知识库", confirmed_capability_id="knowledge_answer"
+                message="查询知识库", agent_id="sop-assistant",
+                selected_skill={"skill_id": "ragflow-knowledge-search", "expected_version": "hash-current"}
             ),
             principal=principal(
                 user_id="user-skill-status",

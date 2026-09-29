@@ -341,22 +341,6 @@ def install_route_fakes(
         overlays[(tenant_id, user_id, skill_id, file_path)] = row
         return dict(row)
 
-    async def fake_set_status(conn, *, tenant_id, skill_id, status):
-        calls.append(("set_status", {"tenant_id": tenant_id, "skill_id": skill_id, "status": status}))
-        for catalog_row in catalog_rows:
-            if catalog_row["skill_id"] == skill_id:
-                catalog_row["status"] = status
-                catalog_row["visible_to_user"] = True
-                break
-        return {
-            "skill_id": skill_id,
-            "name": "QA Word Review",
-            "version": "hash-a",
-            "description": "Review Word documents.",
-            "status": status,
-            "visible_to_user": True,
-        }
-
     async def fail_direct_release_write(*args, **kwargs):
         calls.append(("forbidden_release_write", kwargs))
         raise AssertionError("marketplace routes must not write Skill versions or release policy")
@@ -388,7 +372,6 @@ def install_route_fakes(
     monkeypatch.setattr(_owner_skills_infrastructure_file_overlays_postgres, 'list_user_skill_file_overlays', fake_list_overlays)
     monkeypatch.setattr(_owner_skills_infrastructure_file_overlays_postgres, 'upsert_user_skill_file', fake_upsert_file)
     monkeypatch.setattr(_owner_skills_infrastructure_file_overlays_postgres, 'delete_user_skill_file', fake_delete_file)
-    monkeypatch.setattr(_owner_skills_infrastructure_catalog_postgres, 'set_public_skill_enabled', fake_set_status)
     monkeypatch.setattr(_owner_skills_infrastructure_versions_postgres, 'upsert_skill_version', fail_direct_release_write)
     monkeypatch.setattr(_owner_skills_infrastructure_versions_postgres, 'set_skill_release_policy', fail_direct_release_write)
     monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', fake_ensure_user)

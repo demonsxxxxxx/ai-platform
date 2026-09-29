@@ -21,10 +21,7 @@ from app.control_plane_contracts import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     sanitize_public_text,
 )
-from app.skills.dependencies import (
-    INTERNAL_DEPENDENCY_SKILL_IDS,
-    SkillDependencyPolicyError,
-)
+from app.skills.dependencies import SkillDependencyPolicyError
 from app.skills.lifecycle import is_user_runnable_status, normalize_skill_version_status
 from app.skills.pinning import (
     MAX_SKILL_SNAPSHOT_FILE_BYTES,
@@ -332,8 +329,6 @@ def parse_authorized_skill_catalog_snapshot(
     skill_ids = [entry.skill_id for entry in entries]
     if len(skill_ids) != len(set(skill_ids)):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_duplicate_skill")
-    if any(skill_id in INTERNAL_DEPENDENCY_SKILL_IDS for skill_id in skill_ids):
-        raise AuthorizedSkillCatalogError("authorized_skill_catalog_private_dependency_exposed")
     truncated = value.get("truncated")
     omitted_count = value.get("omitted_count")
     if (
@@ -533,13 +528,19 @@ def load_runtime_authorized_skill_catalog(
     if _manifest_set_digest(manifest_json) != snapshot.materialization_sha256:
         raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
     entry_by_id = {entry.skill_id: entry for entry in snapshot.entries}
+    manifest_dependency_ids = {
+        dependency_id
+        for item in manifest_by_id.values()
+        for dependency_id in item.get("dependency_ids") or []
+        if isinstance(dependency_id, str)
+    }
     for skill_id, manifest in manifest_by_id.items():
         entry = entry_by_id.get(skill_id)
         if entry is not None and (
             not entry.available or str(manifest.get("version") or "") != entry.version
         ):
             raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
-        if entry is None and skill_id not in INTERNAL_DEPENDENCY_SKILL_IDS:
+        if entry is None and skill_id not in manifest_dependency_ids:
             raise AuthorizedSkillCatalogError("authorized_skill_materializations_mismatch")
         dependency_ids = manifest.get("dependency_ids") or []
         if any(dependency_id not in manifest_by_id for dependency_id in dependency_ids):
@@ -835,10 +836,7 @@ def _selected_materialization_candidates(
 ) -> list[_Candidate]:
     """Decode the Agent's exact pinned Skill Set and authorized dependencies."""
 
-    if (
-        selected_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID
-        or selected_skill_id in INTERNAL_DEPENDENCY_SKILL_IDS
-    ):
+    if selected_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
         return []
     routed = candidates.get(selected_skill_id)
     if routed is None:
@@ -894,7 +892,6 @@ def _fixed_skill_query_scope(
             for item in skill_set
             if isinstance(item, dict)
             and str(item.get("skill_id") or "") != LEGACY_SYNTHETIC_CHAT_SKILL_ID
-            and str(item.get("skill_id") or "") not in INTERNAL_DEPENDENCY_SKILL_IDS
         )
     )
     if not roots and binding.selected_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
@@ -1025,22 +1022,29 @@ async def resolve_authorized_skill_catalog(
         if candidate is not None:
             candidates[skill_id] = candidate
     candidates = _exclude_unavailable_dependency_candidates(candidates)
-    discoverable_candidates = {
-        skill_id: candidate
-        for skill_id, candidate in candidates.items()
-        if skill_id not in INTERNAL_DEPENDENCY_SKILL_IDS
-    }
     required_skill_ids = tuple(
         dict.fromkeys(
             str(item.get("skill_id") or "")
             for item in skill_set or []
             if isinstance(item, dict)
             and str(item.get("skill_id") or "") != LEGACY_SYNTHETIC_CHAT_SKILL_ID
-            and str(item.get("skill_id") or "") not in INTERNAL_DEPENDENCY_SKILL_IDS
         )
     )
     if not required_skill_ids and binding.selected_skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID:
         required_skill_ids = (binding.selected_skill_id,)
+    configured_root_ids = set(required_skill_ids)
+    if binding.selected_skill_id != LEGACY_SYNTHETIC_CHAT_SKILL_ID:
+        configured_root_ids.add(binding.selected_skill_id)
+    dependency_ids = {
+        dependency_id
+        for candidate in candidates.values()
+        for dependency_id in candidate.dependency_ids
+    }
+    discoverable_candidates = {
+        skill_id: candidate
+        for skill_id, candidate in candidates.items()
+        if skill_id not in dependency_ids or skill_id in configured_root_ids
+    }
     if any(skill_id not in discoverable_candidates for skill_id in required_skill_ids):
         raise AuthorizedSkillCatalogError("authorized_skill_catalog_required_skill_unavailable")
 

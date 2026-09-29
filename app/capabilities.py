@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-CapabilityId = Literal["general_chat", "knowledge_answer"]
+CapabilityId = Literal["general_chat"]
 
 
 @dataclass(frozen=True)
@@ -26,15 +26,6 @@ CAPABILITIES: dict[str, CapabilityDefinition] = {
         skill_id=None,
         input_modes=["chat"],
         output_modes=["answer"],
-    ),
-    "knowledge_answer": CapabilityDefinition(
-        capability_id="knowledge_answer",
-        label="知识库问答",
-        description="基于公司知识库和 SOP 检索回答。",
-        agent_id="sop-assistant",
-        skill_id="ragflow-knowledge-search",
-        input_modes=["chat"],
-        output_modes=["answer", "citations"],
     ),
 }
 

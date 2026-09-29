@@ -353,16 +353,12 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
     assert body["recent_snapshots"][0]["run_id"] == "run-a"
     assert body["dependency_policy"] == {
         "skill_id": "qa-file-reviewer",
-        "public": True,
-        "internal_dependency": False,
         "dependency_ids": ["minimax-docx"],
         "dependency_details": [
             {
                 "skill_id": "minimax-docx",
                 "status": "allowed",
-                "reason": "declared_internal_dependency",
-                "public": False,
-                "internal_dependency": True,
+                "reason": "declared_dependency",
                 "available": True,
             }
         ],
@@ -378,17 +374,13 @@ def test_admin_skill_detail_response_rejects_extra_dependency_policy_fields():
         },
         "dependency_policy": {
             "skill_id": "qa-file-reviewer",
-            "public": True,
-            "internal_dependency": False,
             "dependency_ids": ["minimax-docx"],
             "unexpected_internal": "storage-key",
             "dependency_details": [
                 {
                     "skill_id": "minimax-docx",
                     "status": "allowed",
-                    "reason": "declared_internal_dependency",
-                    "public": False,
-                    "internal_dependency": True,
+                    "reason": "declared_dependency",
                     "available": True,
                     "unexpected_internal": "package.zip",
                 }
@@ -405,16 +397,12 @@ def test_dependency_policy_reports_missing_persisted_internal_dependency_for_adm
 
     assert policy == {
         "skill_id": "qa-file-reviewer",
-        "public": True,
-        "internal_dependency": False,
         "dependency_ids": ["minimax-docx"],
         "dependency_details": [
             {
                 "skill_id": "minimax-docx",
                 "status": "blocked",
                 "reason": "skill_dependency_missing",
-                "public": False,
-                "internal_dependency": True,
                 "available": False,
             }
         ],
@@ -433,16 +421,12 @@ def test_dependency_policy_allows_persisted_ctd_stability_reference_dependency()
 
     assert policy == {
         "skill_id": "ctd-32s73-stability-template-fill",
-        "public": True,
-        "internal_dependency": False,
         "dependency_ids": ["reference-fact-extraction"],
         "dependency_details": [
             {
                 "skill_id": "reference-fact-extraction",
                 "status": "allowed",
-                "reason": "declared_internal_dependency",
-                "public": False,
-                "internal_dependency": True,
+                "reason": "declared_dependency",
                 "available": True,
             }
         ],
@@ -454,7 +438,7 @@ def test_dependency_policy_allows_persisted_ctd_stability_reference_dependency()
     ) == ["reference-fact-extraction"]
 
 
-def test_dependency_policy_reports_persisted_public_dependency_without_allowing_it():
+def test_dependency_policy_accepts_persisted_dependency_without_name_classification():
     available = {"ragflow-knowledge-search", "minimax-docx", "qa-file-reviewer"}
     policy = skill_dependency_policy(
         "qa-file-reviewer",
@@ -466,15 +450,14 @@ def test_dependency_policy_reports_persisted_public_dependency_without_allowing_
     assert policy["dependency_details"] == [
         {
             "skill_id": "ragflow-knowledge-search",
-            "status": "blocked",
-            "reason": "skill_dependency_not_internal",
-            "public": True,
-            "internal_dependency": False,
+            "status": "allowed",
+            "reason": "declared_dependency",
             "available": True,
         }
     ]
-    with pytest.raises(SkillDependencyPolicyError, match="skill_dependency_not_internal: ragflow-knowledge-search"):
-        validate_skill_dependency_ids("qa-file-reviewer", ["ragflow-knowledge-search"], available)
+    assert validate_skill_dependency_ids(
+        "qa-file-reviewer", ["ragflow-knowledge-search"], available
+    ) == ["ragflow-knowledge-search"]
 
 
 def test_admin_skill_detail_does_not_infer_dependency_without_persisted_version(monkeypatch):
@@ -503,8 +486,6 @@ def test_admin_skill_detail_does_not_infer_dependency_without_persisted_version(
     assert response.status_code == 200
     assert response.json()["dependency_policy"] == {
         "skill_id": "qa-file-reviewer",
-        "public": True,
-        "internal_dependency": False,
         "dependency_ids": [],
         "dependency_details": [],
     }
@@ -2065,7 +2046,6 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2119,7 +2099,6 @@ def test_admin_promote_rejects_unreviewed_release_evidence_before_policy_lookup(
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", blocked_release_review)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2197,7 +2176,6 @@ def test_admin_promote_accepts_gray_rollout_policy(monkeypatch):
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2262,7 +2240,6 @@ def test_admin_promote_gray_rejects_unmaterializable_existing_policy_current_ver
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fail_set_policy)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fail_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2317,7 +2294,6 @@ def test_admin_promote_gray_without_policy_uses_catalog_version_as_previous(monk
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2464,7 +2440,6 @@ def test_admin_promote_rejects_builtin_version_that_cannot_be_materialized(monke
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "current-hash")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2622,7 +2597,6 @@ def test_admin_promote_rejects_fileless_builtin_version(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fail_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2699,7 +2673,6 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2798,7 +2771,6 @@ def test_admin_rollback_rejects_builtin_version_that_cannot_be_materialized(monk
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "current-hash")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2947,7 +2919,6 @@ def test_admin_rollback_rejects_fileless_builtin_version(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fail_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
     response = client.post(
@@ -2971,7 +2942,6 @@ def test_admin_rollback_requires_existing_policy(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
     response = client.post(
@@ -3016,7 +2986,6 @@ def test_admin_rollback_accepts_existing_gray_release_policy(monkeypatch):
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
     response = client.post(
@@ -3067,7 +3036,6 @@ def test_admin_rollback_converges_gray_policy_without_previous_version(monkeypat
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
     response = client.post(
@@ -3106,7 +3074,6 @@ def test_admin_rollback_requires_previous_version_target(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
-    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
     response = client.post(

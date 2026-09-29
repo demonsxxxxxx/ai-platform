@@ -1,6 +1,4 @@
 from app.projection_redaction import (
-    default_skill_id_for_public_agent,
-    internal_agent_id_for_request,
     public_agent_id_for_projection,
     public_skill_display_label,
     redact_raw_skill_references,
@@ -23,17 +21,6 @@ def test_public_agent_projection_maps_known_internal_agent_ids():
     assert public_agent_id_for_projection("baoyu-translate", "baoyu-translate") is None
     assert public_agent_id_for_projection("translate") is None
     assert public_agent_id_for_projection("general-agent", "general-chat") == "general-agent"
-
-
-def test_public_agent_request_ids_map_back_to_internal_selectors():
-    assert internal_agent_id_for_request("document-review") == "qa-word-review"
-    assert default_skill_id_for_public_agent("document-review") == "qa-file-reviewer"
-    assert internal_agent_id_for_request("document-translation") == "baoyu-translate"
-    assert default_skill_id_for_public_agent("document-translation") == "baoyu-translate"
-    assert internal_agent_id_for_request("knowledge-answer") == "sop-assistant"
-    assert default_skill_id_for_public_agent("knowledge-answer") == "ragflow-knowledge-search"
-    assert internal_agent_id_for_request("general-agent") == "general-agent"
-    assert default_skill_id_for_public_agent("general-agent") is None
 
 
 def test_redact_raw_skill_references_sanitizes_nested_agent_ids():

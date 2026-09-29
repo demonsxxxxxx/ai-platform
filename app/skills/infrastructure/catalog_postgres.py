@@ -4,13 +4,9 @@ from __future__ import annotations
 
 from app.control_plane_contracts import LEGACY_SYNTHETIC_CHAT_SKILL_ID
 from app.identity.infrastructure.capability_distributions_postgres import ensure_tenant_capability_distribution_backfill
-from app.identity.infrastructure.capability_distributions_postgres import get_capability_distribution_row
 from app.identity.infrastructure.capability_distributions_postgres import is_capability_distribution_archived
 from app.identity.infrastructure.capability_distributions_postgres import set_capability_distribution_status
-from app.platform.postgres.errors import RepositoryConflictError
 from app.platform.postgres.errors import RepositoryNotFoundError
-from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS
-from app.skills.dependencies import is_workbench_skill_public
 from app.skills.infrastructure.versions_postgres import _json_dict
 from app.skills.infrastructure.versions_postgres import _json_list
 from app.skills.infrastructure.versions_postgres import _principal_skill_release_decision
@@ -86,23 +82,6 @@ async def _upsert_workbench_skill_status(
     return row
 
 
-async def set_workbench_skill_status(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    skill_id: str,
-    status: str,
-) -> dict[str, Any]:
-    if not is_workbench_skill_public(skill_id):
-        raise RepositoryNotFoundError("workbench_skill_not_found")
-    return await _upsert_workbench_skill_status(
-        conn,
-        tenant_id=tenant_id,
-        skill_id=skill_id,
-        status=status,
-    )
-
-
 async def set_uploaded_workbench_skill_status(
     conn: AsyncConnection,
     *,
@@ -131,7 +110,7 @@ async def list_public_skill_catalog(
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
     skill_scope = ""
-    params: list[Any] = [tenant_id, tenant_id, sorted(PUBLIC_WORKBENCH_SKILL_IDS)]
+    params: list[Any] = [tenant_id, tenant_id]
     if skill_ids is not None:
         skill_scope = "and skills.id = any(%s)"
         params.append(sorted(set(skill_ids)))
@@ -183,7 +162,7 @@ async def list_public_skill_catalog(
         left join skill_versions as previous_skill_versions
           on previous_skill_versions.skill_id = skills.id
          and previous_skill_versions.version = skill_release_policies.previous_version
-        where (skills.id = any(%s) or tenant_capability_distributions.capability_id is not null)
+        where tenant_capability_distributions.capability_id is not null
           {skill_scope}
           and skills.id <> %s
           and skills.status = 'active'
@@ -239,31 +218,3 @@ async def list_public_skill_catalog(
         projected["input_modes"] = _json_list(projected.get("input_modes"))
         rows.append(projected)
     return rows
-
-
-async def set_public_skill_enabled(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    skill_id: str,
-    status: str,
-) -> dict[str, Any]:
-    """Set tenant availability for a user-facing public skill."""
-
-    if status not in {"active", "disabled"}:
-        raise RepositoryConflictError("invalid_skill_status")
-    if not is_workbench_skill_public(skill_id):
-        distribution = await get_capability_distribution_row(
-            conn,
-            tenant_id=tenant_id,
-            capability_kind="skill",
-            capability_id=skill_id,
-        )
-        if distribution is None:
-            raise RepositoryNotFoundError("workbench_skill_not_found")
-    return await _upsert_workbench_skill_status(
-        conn,
-        tenant_id=tenant_id,
-        skill_id=skill_id,
-        status=status,
-    )

@@ -1973,8 +1973,6 @@ class AdminSkillDependencyDetailResponse(BaseModel):
     skill_id: str
     status: str
     reason: str
-    public: bool = False
-    internal_dependency: bool = False
     available: bool = False
 
 
@@ -1982,8 +1980,6 @@ class AdminSkillDependencyPolicyResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     skill_id: str
-    public: bool = False
-    internal_dependency: bool = False
     dependency_ids: list[str] = Field(default_factory=list)
     dependency_details: list[AdminSkillDependencyDetailResponse] = Field(default_factory=list)
 

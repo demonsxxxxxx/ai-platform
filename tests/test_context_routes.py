@@ -1657,7 +1657,7 @@ def test_create_memory_record_denies_write_when_memory_policy_disabled_and_audit
     assert "hidden" not in str(calls)
 
 
-def test_create_memory_record_maps_public_agent_id_before_session_policy_and_audit(monkeypatch):
+def test_create_memory_record_uses_requested_agent_id_before_session_policy_and_audit(monkeypatch):
     calls = []
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
@@ -1709,7 +1709,7 @@ def test_create_memory_record_maps_public_agent_id_before_session_policy_and_aud
         headers=headers(),
         json={
             "workspace_id": "workspace-a",
-            "agent_id": "document-review",
+            "agent_id": "qa-word-review",
             "session_id": "session-a",
             "record_type": "session_summary",
             "content": "Do not store this.",
@@ -1724,7 +1724,7 @@ def test_create_memory_record_maps_public_agent_id_before_session_policy_and_aud
     assert "qa-word-review" not in response.text
 
 
-def test_create_memory_record_maps_public_agent_id_for_success_response(monkeypatch):
+def test_create_memory_record_uses_requested_agent_id_for_success_response(monkeypatch):
     calls = []
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
@@ -1785,7 +1785,7 @@ def test_create_memory_record_maps_public_agent_id_for_success_response(monkeypa
         headers=headers(),
         json={
             "workspace_id": "workspace-a",
-            "agent_id": "document-review",
+            "agent_id": "qa-word-review",
             "session_id": "session-a",
             "record_type": "task_note",
             "content": "Store this.",
@@ -2024,7 +2024,7 @@ def test_delete_memory_record_soft_deletes_and_writes_audit(monkeypatch):
     }
 
 
-def test_delete_memory_record_maps_public_agent_id_before_session_delete_and_audit(monkeypatch):
+def test_delete_memory_record_uses_requested_agent_id_before_session_delete_and_audit(monkeypatch):
     calls = []
 
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
@@ -2060,7 +2060,7 @@ def test_delete_memory_record_maps_public_agent_id_before_session_delete_and_aud
     client = TestClient(create_app())
 
     response = client.delete(
-        "/api/ai/memory/records/mem-a?workspace_id=workspace-a&agent_id=document-review&session_id=session-a",
+        "/api/ai/memory/records/mem-a?workspace_id=workspace-a&agent_id=qa-word-review&session_id=session-a",
         headers=headers(),
     )
 
@@ -2236,7 +2236,7 @@ def test_list_memory_records_returns_empty_when_memory_policy_disabled(monkeypat
     assert response.json() == {"memory_records": []}
 
 
-def test_list_memory_records_maps_public_agent_id_before_session_policy(monkeypatch):
+def test_list_memory_records_uses_requested_agent_id_before_session_policy(monkeypatch):
     calls = []
 
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
@@ -2271,7 +2271,7 @@ def test_list_memory_records_maps_public_agent_id_before_session_policy(monkeypa
     client = TestClient(create_app())
 
     response = client.get(
-        "/api/ai/memory/records?workspace_id=workspace-a&agent_id=document-review&session_id=session-a",
+        "/api/ai/memory/records?workspace_id=workspace-a&agent_id=qa-word-review&session_id=session-a",
         headers=headers(),
     )
 
@@ -2281,7 +2281,7 @@ def test_list_memory_records_maps_public_agent_id_before_session_policy(monkeypa
     assert calls[1][0] == "policy"
 
 
-def test_list_memory_records_maps_public_agent_id_for_non_empty_response(monkeypatch):
+def test_list_memory_records_uses_requested_agent_id_for_non_empty_response(monkeypatch):
     calls = []
 
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
@@ -2333,7 +2333,7 @@ def test_list_memory_records_maps_public_agent_id_for_non_empty_response(monkeyp
     client = TestClient(create_app())
 
     response = client.get(
-        "/api/ai/memory/records?workspace_id=workspace-a&agent_id=document-review&session_id=session-a",
+        "/api/ai/memory/records?workspace_id=workspace-a&agent_id=qa-word-review&session_id=session-a",
         headers=headers(),
     )
 
@@ -3104,7 +3104,7 @@ def test_admin_list_memory_policies_returns_404_for_missing_or_foreign_agent(mon
     client = TestClient(create_app())
 
     response = client.get(
-        "/api/ai/admin/memory/policies?workspace_id=workspace-a&agent_id=document-review",
+        "/api/ai/admin/memory/policies?workspace_id=workspace-a&agent_id=qa-word-review",
         headers=admin_headers(),
     )
 
@@ -3368,7 +3368,7 @@ def test_update_memory_policy_returns_404_for_missing_or_foreign_agent(monkeypat
     ]
 
 
-def test_get_memory_policy_maps_public_agent_id_before_lookup(monkeypatch):
+def test_get_memory_policy_uses_requested_agent_id_before_lookup(monkeypatch):
     calls = []
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
@@ -3403,7 +3403,7 @@ def test_get_memory_policy_maps_public_agent_id_before_lookup(monkeypatch):
     client = TestClient(create_app())
 
     response = client.get(
-        "/api/ai/memory/policy?workspace_id=workspace-a&agent_id=document-review",
+        "/api/ai/memory/policy?workspace_id=workspace-a&agent_id=qa-word-review",
         headers=headers(),
     )
 
@@ -3467,7 +3467,7 @@ def test_get_memory_policy_rejects_unsafe_query_ids_with_422(monkeypatch):
     assert bad_agent.json()["detail"] == "agent_id contains unsupported characters"
 
 
-def test_update_memory_policy_maps_public_agent_id_before_writing(monkeypatch):
+def test_update_memory_policy_uses_requested_agent_id_before_writing(monkeypatch):
     calls = []
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
@@ -3517,7 +3517,7 @@ def test_update_memory_policy_maps_public_agent_id_before_writing(monkeypatch):
         headers=headers(),
         json={
             "workspace_id": "workspace-a",
-            "agent_id": "document-review",
+            "agent_id": "qa-word-review",
             "memory_enabled": False,
             "long_term_memory_enabled": False,
             "retention_days": 30,
@@ -3539,7 +3539,7 @@ def test_update_memory_policy_maps_public_agent_id_before_writing(monkeypatch):
     assert "qa-word-review" not in response.text
 
 
-def test_admin_set_memory_policy_maps_public_agent_id_before_writing(monkeypatch):
+def test_admin_set_memory_policy_uses_requested_agent_id_before_writing(monkeypatch):
     calls = []
 
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
@@ -3590,7 +3590,7 @@ def test_admin_set_memory_policy_maps_public_agent_id_before_writing(monkeypatch
         headers=admin_headers(),
         json={
             "workspace_id": "workspace-a",
-            "agent_id": "document-review",
+            "agent_id": "qa-word-review",
             "memory_enabled": False,
             "long_term_memory_enabled": False,
             "retention_days": 30,
@@ -3869,7 +3869,7 @@ def test_admin_preview_memory_redaction_returns_safe_projection_and_writes_audit
         headers=admin_headers(),
         json={
             "workspace_id": "workspace-a",
-            "agent_id": "document-review",
+            "agent_id": "qa-word-review",
             "redaction_mode": "strict",
             "content": (
                 f"Draft summary token=hidden {raw_openai} {raw_jwt} "
@@ -4629,7 +4629,7 @@ def test_admin_list_memory_policies_returns_same_tenant_public_projection(monkey
     client = TestClient(create_app())
 
     response = client.get(
-        "/api/ai/admin/memory/policies?workspace_id=workspace-a&user_id=user-b&agent_id=document-review&limit=25",
+        "/api/ai/admin/memory/policies?workspace_id=workspace-a&user_id=user-b&agent_id=qa-word-review&limit=25",
         headers=admin_headers(),
     )
 

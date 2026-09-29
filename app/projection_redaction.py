@@ -46,19 +46,6 @@ def is_retired_agent_for_projection(agent_id: object, *skill_ids: object) -> boo
     )
 
 
-INTERNAL_AGENT_ID_BY_PUBLIC_ID = {
-    "document-review": "qa-word-review",
-    "document-translation": "baoyu-translate",
-    PUBLIC_RETIRED_AGENT_ID: "baoyu-translate",
-    "knowledge-answer": "sop-assistant",
-}
-
-DEFAULT_SKILL_ID_BY_PUBLIC_AGENT_ID = {
-    "document-review": "qa-file-reviewer",
-    "document-translation": "baoyu-translate",
-    "knowledge-answer": "ragflow-knowledge-search",
-}
-
 RAW_SKILL_KEYS = {"allowed_skills", "staged_skills", "used_skills"}
 SERVER_OWNED_CONTROL_KEYS = {
     "copiedfromrunid",
@@ -162,20 +149,6 @@ def public_agent_id_for_projection(agent_id: object, skill_id: object | None = N
     if agent_id not in CAPABILITY_BY_SKILL_ID and agent_id not in CAPABILITY_BY_AGENT_ID:
         return agent_id
     return None
-
-
-def internal_agent_id_for_request(agent_id: object) -> str | None:
-    """Map public frontend agent ids back to internal executable agent ids."""
-    if not isinstance(agent_id, str) or not agent_id:
-        return None
-    return INTERNAL_AGENT_ID_BY_PUBLIC_ID.get(agent_id, agent_id)
-
-
-def default_skill_id_for_public_agent(agent_id: object) -> str | None:
-    """Return the internal default skill for a public frontend agent id."""
-    if not isinstance(agent_id, str) or not agent_id:
-        return None
-    return DEFAULT_SKILL_ID_BY_PUBLIC_AGENT_ID.get(agent_id)
 
 
 def public_skill_display_label(value: object) -> str | None:
