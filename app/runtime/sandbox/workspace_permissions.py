@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
 
@@ -13,6 +14,10 @@ RUNTIME_USER = "ai-platform"
 RUNTIME_WORKSPACE_ROOT = Path("/runtime-workspaces")
 _SENTINEL_NAME = ".ai-platform-runtime-write-probe"
 _SENTINEL_PAYLOAD = b"ai-platform-runtime-workspace-v1\n"
+_WORKSPACE_NAMESPACE = ("tenants", "workspaces", "users", "sessions", "runs", "attempts")
+_ATTEMPT_WORKSPACE_PATH = _WORKSPACE_NAMESPACE + ("workspace",)
+_PLATFORM_PRIVATE_SKILL_ROOTS = {".claude", ".pins"}
+_POSIX_ACL_NAMES = ("system.posix_acl_default", "system.posix_acl_access")
 
 
 class WorkspacePermissionError(RuntimeError):
@@ -44,16 +49,28 @@ def _is_workspace_namespace_directory(relative_path: str) -> bool:
     if relative_path == ".":
         return True
     components = relative_path.split("/")
-    namespace = ("tenants", "workspaces", "users", "sessions", "runs", "attempts")
-    return len(components) <= 2 * len(namespace) and all(
-        component and (index % 2 == 1 or component == namespace[index // 2])
+    return len(components) <= 2 * len(_WORKSPACE_NAMESPACE) and all(
+        component and (index % 2 == 1 or component == _WORKSPACE_NAMESPACE[index // 2])
         for index, component in enumerate(components)
     )
 
 
-def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNode]) -> None:
-    """Validate a complete no-follow workspace snapshot before any ownership mutation."""
+def _is_platform_private_skill_path(relative_path: str) -> bool:
+    components = relative_path.split("/")
+    return (
+        len(components) >= 14
+        and tuple(components[0:13:2]) == _ATTEMPT_WORKSPACE_PATH
+        and all(components[index] for index in range(1, 12, 2))
+        and components[13] in _PLATFORM_PRIVATE_SKILL_ROOTS
+    )
 
+
+def _validate_workspace_snapshot(
+    *,
+    root_device: int,
+    nodes: Iterable[WorkspaceNode],
+    allow_private_skill_mode_migration: bool,
+) -> None:
     snapshot = list(nodes)
     if not snapshot or snapshot[0].relative_path != ".":
         raise WorkspacePermissionError("workspace root snapshot is missing")
@@ -68,7 +85,9 @@ def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNo
             raise WorkspacePermissionError(f"workspace hard links are not allowed: {node.relative_path}")
         if node.mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX):
             raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
-        if node.mode & (stat.S_IWGRP | stat.S_IWOTH):
+        if node.mode & (stat.S_IWGRP | stat.S_IWOTH) and not (
+            allow_private_skill_mode_migration and _is_platform_private_skill_path(node.relative_path)
+        ):
             raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
         # Retained attempt data may be intentionally read-only. Only the root
         # must accept new work; dispatch prepares its scoped directories anew.
@@ -84,6 +103,16 @@ def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNo
             and not node.mode & stat.S_IRUSR
         ):
             raise WorkspacePermissionError(f"workspace namespace directory is not owner-readable: {node.relative_path}")
+
+
+def validate_workspace_snapshot(*, root_device: int, nodes: Iterable[WorkspaceNode]) -> None:
+    """Validate a complete no-follow workspace snapshot before any ownership mutation."""
+
+    _validate_workspace_snapshot(
+        root_device=root_device,
+        nodes=nodes,
+        allow_private_skill_mode_migration=False,
+    )
 
 
 def _node_from_stat(relative_path: str, stat_result: os.stat_result) -> WorkspaceNode:
@@ -160,6 +189,13 @@ def _capture_workspace_tree(root: Path) -> tuple[int, list[_OpenWorkspaceNode]]:
 
     try:
         walk(root_fd, ".")
+        captured_nodes = [handle.node for handle in handles]
+        _validate_workspace_snapshot(
+            root_device=int(root_stat.st_dev),
+            nodes=captured_nodes,
+            allow_private_skill_mode_migration=True,
+        )
+        handles = _normalize_platform_private_skill_modes(root_device=int(root_stat.st_dev), handles=handles)
         validate_workspace_snapshot(root_device=int(root_stat.st_dev), nodes=[handle.node for handle in handles])
         return root_fd, handles
     except BaseException:
@@ -183,6 +219,60 @@ def _revalidate_node(handle: _OpenWorkspaceNode) -> os.stat_result:
     ) != (expected.device, expected.inode, expected.uid, expected.gid, expected.mode, expected.link_count):
         raise WorkspacePermissionError(f"workspace entry changed during migration: {expected.relative_path}")
     return current
+
+
+def _normalize_platform_private_skill_modes(
+    *,
+    root_device: int,
+    handles: list[_OpenWorkspaceNode],
+) -> list[_OpenWorkspaceNode]:
+    normalized: list[_OpenWorkspaceNode] = []
+    removexattr = getattr(os, "removexattr", None)
+    for handle in handles:
+        node = handle.node
+        if not _is_platform_private_skill_path(node.relative_path):
+            normalized.append(handle)
+            continue
+        if removexattr is None:
+            raise WorkspacePermissionError("POSIX ACL removal is unavailable")
+        if node.device != root_device:
+            raise WorkspacePermissionError(f"workspace entry crosses filesystem boundary: {node.relative_path}")
+        if (node.uid, node.gid) not in {(0, 0), (RUNTIME_UID, RUNTIME_GID)}:
+            raise WorkspacePermissionError(f"foreign workspace owner: {node.relative_path}")
+        if not (stat.S_ISDIR(node.mode) or stat.S_ISREG(node.mode)):
+            raise WorkspacePermissionError(f"unsupported workspace entry type: {node.relative_path}")
+        if stat.S_ISREG(node.mode) and node.link_count != 1:
+            raise WorkspacePermissionError(f"workspace hard links are not allowed: {node.relative_path}")
+        if node.mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX):
+            raise WorkspacePermissionError(f"unsafe workspace mode: {node.relative_path}")
+        descriptor = handle.fd
+        if descriptor is None:
+            raise WorkspacePermissionError(f"workspace inode handle is unavailable: {node.relative_path}")
+        current = _revalidate_node(handle)
+        try:
+            for name in _POSIX_ACL_NAMES:
+                try:
+                    removexattr(descriptor, name)
+                except OSError as exc:
+                    if exc.errno not in {errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP}:
+                        raise
+            os.fchmod(descriptor, stat.S_IMODE(current.st_mode) & ~0o022)
+            updated = os.fstat(descriptor)
+        except OSError as exc:
+            raise WorkspacePermissionError(
+                f"platform-private workspace metadata migration failed: {node.relative_path}"
+            ) from exc
+        updated_node = _node_from_stat(node.relative_path, updated)
+        if (
+            updated_node.device,
+            updated_node.inode,
+            updated_node.uid,
+            updated_node.gid,
+            updated_node.link_count,
+        ) != (node.device, node.inode, node.uid, node.gid, node.link_count):
+            raise WorkspacePermissionError(f"workspace entry changed during migration: {node.relative_path}")
+        normalized.append(replace(handle, node=updated_node))
+    return normalized
 
 
 def _migrate_workspace_owners(handles: list[_OpenWorkspaceNode]) -> None:

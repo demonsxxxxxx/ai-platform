@@ -169,8 +169,15 @@ directories, and rejection of special modes or group/other write access still
 apply to the complete retained tree. Shared namespace directories from `tenants/`
 through `attempts/{attempt_id}` must also be owner-readable so scoped preparation
 can open them before restoring their writable modes. The initializer changes
-ownership where required and preserves permission modes; preparing an attempt
-owns the writable modes of its scoped directories.
+ownership where required and otherwise preserves permission modes. One bounded
+compatibility migration applies only below the exact Attempt workspace `.pins/`
+and `.claude/` roots: after the same descriptor-bound device, owner, type, link,
+and special-mode checks, it removes POSIX default/access ACLs and group/other
+write bits without reading or rewriting file content. Unsafe metadata anywhere
+else remains fail closed. New pinned and staged Skill trees use `0755`
+directories, `0644` data files, and `0755` files that were already executable,
+so the compatibility migration does not remain their steady-state creator.
+Preparing an attempt owns the writable modes of its scoped directories.
 
 Skill writes are allowed anywhere else in the assigned workspace. The protected
 roots remain `inputs/`, `.claude/`, `.ai-platform/`, the runtime configuration
